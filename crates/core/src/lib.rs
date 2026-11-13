@@ -3,5 +3,5 @@
 
 pub mod apply;
 pub mod bootstrap;
-pub mod run;
+pub mod exec;
 pub mod ssh;
