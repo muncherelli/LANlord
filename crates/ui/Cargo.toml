@@ -1,0 +1,9 @@
+[package]
+name = "lanlord-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+eframe = "0.37.0"
