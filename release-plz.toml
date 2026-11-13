@@ -7,7 +7,7 @@ changelog_update = false
 pr_body = """
 ## release
 
-{% for release in releases %}* `{{ release.package }}`: {{ release.version }}
+{% for release in releases %}* `{{ release.package }}`: {{ release.next_version }}
 {% endfor %}
 {% for release in releases %}{% if release.changelog %}### {{ release.package }}
 
