@@ -20,9 +20,9 @@ enum Command {
     Bootstrap { host: String },
     /// push the encrypted config to a host and apply it
     Apply { host: String },
-    /// add LANlord to the desktop app menu
+    /// add LANlord to the start menu (windows), applications (macos) or the app menu (linux)
     InstallLauncher,
-    /// remove LANlord from the desktop app menu
+    /// remove the launcher added by install-launcher
     UninstallLauncher,
 }
 
