@@ -11,8 +11,8 @@ the gateway is the machine lanlord manages; the client is where you run `lanlord
 | gateway | arch linux (rolling) | x86_64 | first target |
 | gateway | debian (stable) | x86_64 | supported |
 | client | macos | arm64, x86_64 | supported |
-| client | arch linux, manjaro, debian | x86_64 | supported |
-| client | windows 10+ | x86_64 | planned; needs the openssh client |
+| client | arch linux, manjaro, debian | x86_64, arm64 | supported |
+| client | windows 10+ | x86_64, arm64 | planned; needs the openssh client |
 
 other distros and architectures come after arch and debian. arch is a rolling release, so there is no fixed version to pin.
 

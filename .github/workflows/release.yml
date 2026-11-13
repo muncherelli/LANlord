@@ -29,7 +29,10 @@ jobs:
           - { name: macos-x86_64, os: macos-15-intel, flags: "" }
           - { name: linux-x86_64, os: ubuntu-latest, flags: "" }
           - { name: linux-x86_64-headless, os: ubuntu-latest, flags: "--no-default-features" }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, flags: "" }
+          - { name: linux-arm64-headless, os: ubuntu-24.04-arm, flags: "--no-default-features" }
           - { name: windows-x86_64, os: windows-latest, flags: "" }
+          - { name: windows-arm64, os: windows-11-arm, flags: "" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
