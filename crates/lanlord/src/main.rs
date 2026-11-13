@@ -20,6 +20,12 @@ enum Command {
     Bootstrap { host: String },
     /// push the encrypted config to a host and apply it
     Apply { host: String },
+    /// run a command on a host
+    Run {
+        host: String,
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
     /// add LANlord to the start menu (windows), applications (macos) or the app menu (linux)
     InstallLauncher,
     /// remove the launcher added by install-launcher
@@ -40,6 +46,7 @@ fn main() -> Result<()> {
         Some(Command::Webui) => bail!("webui is not implemented yet"),
         Some(Command::Bootstrap { host }) => lanlord_core::bootstrap::bootstrap(&host),
         Some(Command::Apply { host }) => lanlord_core::apply::apply(&host),
+        Some(Command::Run { host, command }) => lanlord_core::run::run(&host, &command),
         Some(Command::InstallLauncher | Command::UninstallLauncher) => {
             bail!("launcher setup is not implemented yet")
         }
