@@ -76,6 +76,6 @@ jobs:
           path: lcov.info
       - name: scan
         if: env.SONAR_TOKEN != ''
-        uses: SonarSource/sonarqube-scan-action@2f77a1ec69fb1d595b06f35ab27e97605bdef703 # v5
+        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
         with:
-          args: -Dsonar.rust.lcov.reportPaths=lcov.info
+          args: -Dsonar.rust.lcov.reportPaths=${{ github.workspace }}/lcov.info
