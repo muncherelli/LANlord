@@ -22,3 +22,13 @@ git_tag_enable = true
 git_tag_name = "v{{ version }}"
 changelog_update = true
 changelog_path = "CHANGELOG.md"
+
+[[package]]
+name = "lanlord-core"
+git_release_enable = false
+git_tag_enable = false
+
+[[package]]
+name = "lanlord-ui"
+git_release_enable = false
+git_tag_enable = false

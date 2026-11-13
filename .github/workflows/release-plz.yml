@@ -33,8 +33,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASES: ${{ steps.release.outputs.releases }}
         run: |
-          tag=$(echo "$RELEASES" | jq -r '.[0].tag')
-          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" -f tag="$tag"
+          # only the lanlord binary package is built, not its library crates
+          tag=$(echo "$RELEASES" | jq -r '[.[] | select(.package_name == "lanlord")][0].tag // empty')
+          if [ -n "$tag" ]; then
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" -f tag="$tag"
+          fi
 
   pr:
     runs-on: ubuntu-latest
