@@ -63,7 +63,7 @@ fn main() -> Result<()> {
                 },
                 None => Target::Gateway { host: target },
             };
-            exec(&target, &command)
+            std::process::exit(exec(&target, &command)?);
         }
         Some(Command::InstallLauncher | Command::UninstallLauncher) => {
             bail!("launcher setup is not implemented yet")
