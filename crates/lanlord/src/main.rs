@@ -47,7 +47,10 @@ fn main() -> Result<()> {
             }
             bail!("tui is not implemented yet")
         }
-        Some(Command::Gui) => bail!("gui is not implemented yet"),
+        #[cfg(feature = "gui")]
+        Some(Command::Gui) => lanlord_ui::run(),
+        #[cfg(not(feature = "gui"))]
+        Some(Command::Gui) => bail!("this build has no gui; install the desktop build"),
         Some(Command::Webui) => bail!("webui is not implemented yet"),
         Some(Command::Bootstrap { host }) => lanlord_core::bootstrap::bootstrap(&host),
         Some(Command::Apply { host }) => lanlord_core::apply::apply(&host),
