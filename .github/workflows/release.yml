@@ -8,9 +8,7 @@ on:
         required: true
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +17,10 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -29,11 +31,11 @@ jobs:
           - { name: linux-x86_64-headless, os: ubuntu-latest, flags: "--no-default-features" }
           - { name: windows-x86_64, os: windows-latest, flags: "" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: install gui libraries
         if: runner.os == 'Linux'
         run: >
@@ -48,8 +50,10 @@ jobs:
 
       - name: package
         shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          out="lanlord-${{ inputs.tag }}-${{ matrix.name }}"
+          out="lanlord-$TAG-${{ matrix.name }}"
           mkdir "$out"
           if [ "$RUNNER_OS" = Windows ]; then
             cp target/release/lanlord.exe "$out/"
@@ -63,11 +67,12 @@ jobs:
           if command -v sha256sum >/dev/null; then sha256sum "$asset" > "$asset.sha256"
           else shasum -a 256 "$asset" > "$asset.sha256"; fi
           echo "ASSET=$asset" >> "$GITHUB_ENV"
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: ${{ env.ASSET }}
       - name: upload to the release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ inputs.tag }}" "$ASSET" "$ASSET.sha256" --clobber
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
