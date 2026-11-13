@@ -12,17 +12,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the native window
+    /// open the native window
     Gui,
-    /// Run the web server
+    /// run the web server
     Webui,
-    /// Install the gateway payload on a host
+    /// install the gateway payload on a host
     Bootstrap { host: String },
-    /// Push the encrypted config to a host and apply it
+    /// push the encrypted config to a host and apply it
     Apply { host: String },
-    /// Add LANlord to the desktop app menu
+    /// add LANlord to the desktop app menu
     InstallLauncher,
-    /// Remove LANlord from the desktop app menu
+    /// remove LANlord from the desktop app menu
     UninstallLauncher,
 }
 
