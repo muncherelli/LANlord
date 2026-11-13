@@ -4,6 +4,16 @@ publish = false
 git_release_enable = false
 git_tag_enable = false
 changelog_update = false
+pr_body = """
+## release
+
+{% for release in releases %}* `{{ release.package }}`: {{ release.version }}
+{% endfor %}
+{% for release in releases %}{% if release.changelog %}### {{ release.package }}
+
+{{ release.changelog }}
+{% endif %}{% endfor %}
+"""
 
 [[package]]
 name = "lanlord"
