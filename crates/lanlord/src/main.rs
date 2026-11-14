@@ -121,7 +121,14 @@ fn main() -> Result<()> {
             },
             &mut ask,
         ),
-        Some(Command::Apply { host }) => lanlord_core::apply::apply(&host, &mut ask),
+        Some(Command::Apply { host }) => {
+            // no key yet just means no settings; a damaged key is an error
+            let identity = match identity_path()? {
+                path if path.exists() => Some(crypto::load(&path)?),
+                _ => None,
+            };
+            lanlord_core::apply::apply(&host, identity.as_ref(), &mut ask)
+        }
         Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {
             let identity = crypto::load(&identity_path()?)?;
@@ -130,8 +137,10 @@ fn main() -> Result<()> {
         }
         Some(Command::Config(ConfigCommand::Show { host })) => {
             let identity = crypto::load(&identity_path()?)?;
-            let settings = lanlord_core::config::pull(&host, &identity, &mut ask)?;
-            Ok(std::io::stdout().write_all(&settings)?)
+            match lanlord_core::config::pull(&host, &identity, &mut ask)? {
+                Some(settings) => Ok(std::io::stdout().write_all(&settings)?),
+                None => bail!("no settings on {host}; run lanlord config push first"),
+            }
         }
         Some(Command::Run {
             target,

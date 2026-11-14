@@ -23,6 +23,16 @@
         content: "{{ ansible_facts['date_time']['iso8601'] }}\n"
         mode: "0640"
 
+    - name: set the message of the day from your settings
+      ansible.builtin.copy:
+        dest: /etc/motd
+        content: "{{ motd }}"
+        mode: "0644"
+      become: true
+      when: motd is defined
+
     - name: report
       ansible.builtin.debug:
-        msg: "applied as {{ ansible_facts['user_id'] }}, escalated to {{ escalated.stdout }}"
+        msg: >-
+          applied as {{ ansible_facts['user_id'] }}, escalated to {{ escalated.stdout }},
+          settings {{ 'loaded' if motd is defined else 'not provided' }}
