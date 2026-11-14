@@ -8,6 +8,9 @@ use lanlord_core::exec::{exec, Target};
 #[derive(Parser)]
 #[command(name = "lanlord", version, about = "all your LAN are belong to you")]
 struct Cli {
+    /// print debug lines about what lanlord is doing
+    #[arg(short, long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -55,6 +58,7 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    lanlord_core::log::set_verbose(cli.verbose);
     match cli.command {
         None => {
             if !std::io::stdout().is_terminal() {

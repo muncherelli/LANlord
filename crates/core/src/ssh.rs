@@ -7,6 +7,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Result};
 
+use crate::log::{emit, Kind};
+
 /// why an ssh connection failed, as far as we can tell from its stderr.
 #[derive(Debug)]
 pub enum SshError {
@@ -122,8 +124,12 @@ impl Session {
     }
 
     fn spawn(&self, remote: &[String], input: Option<&[u8]>) -> Result<i32> {
+        emit(
+            Kind::Debug,
+            format!("ssh {} {}", self.host, remote.join(" ")),
+        );
         let mut cmd = self.command(remote);
-        cmd.stderr(Stdio::piped());
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         if input.is_some() {
             cmd.stdin(Stdio::piped());
         }
@@ -132,19 +138,29 @@ impl Session {
             // dropping stdin closes it so the remote shell sees end of input
             stdin.write_all(input)?;
         }
+        let stdout = child.stdout.take().map(|out| {
+            std::thread::spawn(move || {
+                for line in BufReader::new(out).split(b'\n').map_while(|l| l.ok()) {
+                    emit(Kind::Out, String::from_utf8_lossy(&line));
+                }
+            })
+        });
         let mut captured = String::new();
         if let Some(stderr) = child.stderr.take() {
             for line in BufReader::new(stderr).split(b'\n') {
                 let line = String::from_utf8_lossy(&line?).into_owned();
-                eprintln!("{line}");
+                emit(Kind::Err, line.as_str());
                 captured.push_str(&line);
                 captured.push('\n');
             }
         }
+        if let Some(thread) = stdout {
+            let _ = thread.join();
+        }
         match child.wait()?.code() {
             // 255 is ssh's own failure code
             Some(255) => Err(match classify(&captured) {
-                // stderr was already echoed above
+                // stderr was already shown above
                 SshError::Failed(_) => SshError::Failed("could not connect".into()),
                 known => known,
             }
@@ -249,6 +265,24 @@ mod tests {
             err.downcast_ref::<SshError>(),
             Some(SshError::AgentLocked)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_sends_output_to_the_log() {
+        use crate::log::subscribe;
+        let rx = subscribe();
+        fake("echo log-ssh-out; echo log-ssh-err >&2")
+            .run(&[])
+            .unwrap();
+        let lines: Vec<_> = rx.try_iter().collect();
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == Kind::Out && l.text == "log-ssh-out"));
+        assert!(lines
+            .iter()
+            .any(|l| l.kind == Kind::Err && l.text == "log-ssh-err"));
+        assert!(lines.iter().any(|l| l.kind == Kind::Debug));
     }
 
     #[cfg(unix)]
