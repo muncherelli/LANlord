@@ -4,6 +4,9 @@
   hosts: localhost
   connection: local
   gather_facts: true
+  # each module's tasks carry its id as a tag, so apply can run one module;
+  # its settings live under the same key in your settings file
+  tags: [gateway]
   tasks:
     - name: make sure the state directory exists
       ansible.builtin.file:
@@ -26,13 +29,13 @@
     - name: set the message of the day from your settings
       ansible.builtin.copy:
         dest: /etc/motd
-        content: "{{ motd }}"
+        content: "{{ gateway.motd }}"
         mode: "0644"
       become: true
-      when: motd is defined
+      when: gateway is defined and gateway.motd is defined
 
     - name: report
       ansible.builtin.debug:
         msg: >-
           applied as {{ ansible_facts['user_id'] }}, escalated to {{ escalated.stdout }},
-          settings {{ 'loaded' if motd is defined else 'not provided' }}
+          settings {{ 'loaded' if gateway is defined else 'not provided' }}
