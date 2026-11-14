@@ -16,7 +16,7 @@ valid() {
 
 read_password() {
   IFS= read -r password || true
-  [ -n "$password" ] || { echo "the password is empty" >&2; exit 2; }
+  [[ -n $password ]] || { echo "the password is empty" >&2; exit 2; }
 }
 
 case "$cmd" in
@@ -29,7 +29,7 @@ case "$cmd" in
       created=1
     fi
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a "$name" >/dev/null
-    if [ -n "$created" ]; then echo "created $name"; else echo "updated $name"; fi
+    if [[ -n $created ]]; then echo "created $name"; else echo "updated $name"; fi
     ;;
   admin)
     read_password

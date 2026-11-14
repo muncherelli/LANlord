@@ -22,7 +22,7 @@ printf '!root = Administrator\n' > /etc/samba/usermap
 
 # unix accounts for every samba account, and machine accounts for joined computers
 pdbedit -L 2>/dev/null | cut -d: -f1 | while read -r name; do
-  [ -n "$name" ] && [ "$name" != root ] && ! id "$name" >/dev/null 2>&1 || continue
+  [[ -n $name && $name != root ]] && ! id "$name" >/dev/null 2>&1 || continue
   case "$name" in
     *'$') useradd --badname -M -g machines -d /dev/null -s /usr/sbin/nologin "$name" ;;
     *) useradd -M -g domusers -s /usr/sbin/nologin "$name" ;;
