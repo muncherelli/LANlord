@@ -10,6 +10,26 @@ const FILES: &[(&str, &str)] = &[
         "docker.yml",
         include_str!("../payload/playbooks/docker.yml"),
     ),
+    (
+        "nt4-domain.yml",
+        include_str!("../payload/playbooks/nt4-domain.yml"),
+    ),
+    (
+        "nt4-domain/smb.conf.j2",
+        include_str!("../payload/playbooks/nt4-domain/smb.conf.j2"),
+    ),
+    (
+        "nt4-domain/image/Dockerfile",
+        include_str!("../payload/playbooks/nt4-domain/image/Dockerfile"),
+    ),
+    (
+        "nt4-domain/image/entrypoint.sh",
+        include_str!("../payload/playbooks/nt4-domain/image/entrypoint.sh"),
+    ),
+    (
+        "nt4-domain/image/lanlord-user",
+        include_str!("../payload/playbooks/nt4-domain/image/lanlord-user"),
+    ),
 ];
 
 /// the playbooks as a tar archive.
@@ -52,9 +72,9 @@ mod tests {
             entry.read_to_string(&mut text).unwrap();
             found.push((entry.path().unwrap().display().to_string(), text));
         }
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].0, "site.yml");
-        assert_eq!(found[1].0, "docker.yml");
+        let names: Vec<&str> = found.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, FILES.iter().map(|(n, _)| *n).collect::<Vec<_>>());
+        assert!(names.contains(&"nt4-domain/image/Dockerfile"));
         assert!(found[0].1.contains("import_playbook: docker.yml"));
         let mode = tar::Archive::new(bytes.as_slice())
             .entries()

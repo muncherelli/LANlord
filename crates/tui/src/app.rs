@@ -604,10 +604,11 @@ mod tests {
     fn planned_modules_do_not_apply() {
         let (mut app, applied) = applying_app();
         app.on_key(key(KeyCode::Tab));
-        app.on_key(key(KeyCode::Right));
-        app.on_key(key(KeyCode::Right));
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Right));
+        }
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.window.unwrap().id, "nt4-domain");
+        assert_eq!(app.window.unwrap().id, "web-proxy");
         app.on_key(key(KeyCode::Enter));
         assert!(applied.borrow().is_empty());
     }

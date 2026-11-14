@@ -1,0 +1,52 @@
+#!/bin/bash
+# manages samba accounts. a password is read from stdin, never from arguments.
+#   lanlord-user add NAME     create the account or set its password
+#   lanlord-user admin        set the password of the domain administrator
+#   lanlord-user delete NAME  remove the account
+#   lanlord-user list         list the accounts
+set -eu
+cmd=${1:-}
+name=${2:-}
+
+valid() {
+  case "$1" in
+    '' | *[!a-z0-9_.-]* | [!a-z]*) echo "invalid user name: $1" >&2; exit 2 ;;
+  esac
+}
+
+read_password() {
+  IFS= read -r password || true
+  [ -n "$password" ] || { echo "the password is empty" >&2; exit 2; }
+}
+
+case "$cmd" in
+  add)
+    valid "$name"
+    read_password
+    created=
+    if ! id "$name" >/dev/null 2>&1; then
+      useradd -M -g domusers -s /usr/sbin/nologin "$name"
+      created=1
+    fi
+    printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a "$name" >/dev/null
+    if [ -n "$created" ]; then echo "created $name"; else echo "updated $name"; fi
+    ;;
+  admin)
+    read_password
+    printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a root >/dev/null
+    echo "set the administrator password"
+    ;;
+  delete)
+    valid "$name"
+    smbpasswd -x "$name" >/dev/null 2>&1 || true
+    userdel "$name" >/dev/null 2>&1 || true
+    echo "deleted $name"
+    ;;
+  list)
+    pdbedit -L
+    ;;
+  *)
+    echo "usage: lanlord-user add NAME | admin | delete NAME | list" >&2
+    exit 2
+    ;;
+esac
