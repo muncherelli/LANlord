@@ -65,7 +65,7 @@ fn main() -> Result<()> {
                 Cli::command().print_help()?;
                 return Ok(());
             }
-            bail!("tui is not implemented yet")
+            lanlord_tui::run()
         }
         #[cfg(feature = "gui")]
         Some(Command::Gui) => lanlord_ui::run(),
