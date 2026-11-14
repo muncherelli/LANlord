@@ -7,7 +7,9 @@ mod ui;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use lanlord_core::apply::apply;
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
+use lanlord_core::crypto;
 use lanlord_core::exec::{exec_detached, Target};
 use lanlord_core::log::{emit, subscribe, Kind};
 use ratatui::backend::Backend;
@@ -47,6 +49,24 @@ fn spawn_runner(host: String, command: Vec<String>) {
     );
 }
 
+/// a password prompt that asks through the ui.
+fn asker(requests: Sender<PasswordRequest>) -> impl FnMut(&str) -> Result<String> {
+    move |what| {
+        let (reply, answer) = mpsc::channel();
+        requests
+            .send(PasswordRequest {
+                prompt: what.to_string(),
+                reply,
+            })
+            .map_err(|_| anyhow!("the ui is gone"))?;
+        answer
+            .recv()
+            .ok()
+            .flatten()
+            .ok_or_else(|| anyhow!("cancelled"))
+    }
+}
+
 /// run bootstrap on its own thread; passwords are asked for through the ui.
 fn spawn_bootstrap(host: String, requests: Sender<PasswordRequest>) {
     std::thread::spawn(move || {
@@ -55,21 +75,18 @@ fn spawn_bootstrap(host: String, requests: Sender<PasswordRequest>) {
             ansible: AnsibleMode::detect(),
             passwordless_sudo: false,
         };
-        let mut ask = |what: &str| -> Result<String> {
-            let (reply, answer) = mpsc::channel();
-            requests
-                .send(PasswordRequest {
-                    prompt: what.to_string(),
-                    reply,
-                })
-                .map_err(|_| anyhow!("the ui is gone"))?;
-            answer
-                .recv()
-                .ok()
-                .flatten()
-                .ok_or_else(|| anyhow!("cancelled"))
-        };
-        if let Err(err) = bootstrap(&options, &mut ask) {
+        if let Err(err) = bootstrap(&options, &mut asker(requests)) {
+            emit(Kind::Err, err.to_string());
+        }
+    });
+}
+
+/// run apply on its own thread, with your settings when you have a key.
+fn spawn_apply(host: String, modules: Vec<String>, requests: Sender<PasswordRequest>) {
+    std::thread::spawn(move || {
+        let result = crypto::load_default()
+            .and_then(|identity| apply(&host, identity.as_ref(), &modules, &mut asker(requests)));
+        if let Err(err) = result {
             emit(Kind::Err, err.to_string());
         }
     });
@@ -79,7 +96,8 @@ fn spawn_bootstrap(host: String, requests: Sender<PasswordRequest>) {
 pub fn run() -> Result<()> {
     let logs = subscribe();
     let mut app = App::new(hosts::config_path(), logs, Box::new(spawn_runner))
-        .with_bootstrapper(Box::new(spawn_bootstrap));
+        .with_bootstrapper(Box::new(spawn_bootstrap))
+        .with_applier(Box::new(spawn_apply));
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app, || {
         event::poll(Duration::from_millis(50))

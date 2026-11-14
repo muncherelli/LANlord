@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use lanlord_core::log::{emit, Kind, Line};
+use lanlord_core::modules::{Module, Status, MODULES};
 use lanlord_core::ssh::Session;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -23,6 +24,15 @@ pub enum Mode {
     AddHost,
     /// typing a password a background task is waiting for.
     Password,
+    /// a module's window is open.
+    Window,
+}
+
+/// which pane the arrow keys move in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    Hosts,
+    Desktop,
 }
 
 /// a background task asking the user for a password; the answer, or `None`
@@ -35,6 +45,9 @@ pub struct PasswordRequest {
 /// starts bootstrap on a host; it asks for passwords through the sender.
 pub type Bootstrapper = Box<dyn FnMut(String, Sender<PasswordRequest>)>;
 
+/// starts apply on a host for the given module ids (all when empty).
+pub type Applier = Box<dyn FnMut(String, Vec<String>, Sender<PasswordRequest>)>;
+
 /// starts `command` on `host`; it reports back through the log.
 pub type Runner = Box<dyn FnMut(String, Vec<String>)>;
 
@@ -42,6 +55,11 @@ pub struct App {
     pub hosts: Vec<String>,
     pub selected: usize,
     pub mode: Mode,
+    pub focus: Focus,
+    /// the selected desktop icon.
+    pub icon: usize,
+    /// the module whose window is open.
+    pub window: Option<&'static Module>,
     pub input: String,
     pub console: VecDeque<Line>,
     pub quit: bool,
@@ -51,6 +69,7 @@ pub struct App {
     logs: Receiver<Line>,
     runner: Runner,
     bootstrapper: Bootstrapper,
+    applier: Applier,
     requests: Receiver<PasswordRequest>,
     request_tx: Sender<PasswordRequest>,
 }
@@ -63,6 +82,9 @@ impl App {
             hosts,
             selected: 0,
             mode: Mode::Normal,
+            focus: Focus::Hosts,
+            icon: 0,
+            window: None,
             input: String::new(),
             console: VecDeque::new(),
             quit: false,
@@ -73,9 +95,17 @@ impl App {
             bootstrapper: Box::new(|_, _| {
                 emit(Kind::Err, "bootstrap is not available here");
             }),
+            applier: Box::new(|_, _, _| {
+                emit(Kind::Err, "apply is not available here");
+            }),
             requests,
             request_tx,
         }
+    }
+
+    pub fn with_applier(mut self, applier: Applier) -> Self {
+        self.applier = applier;
+        self
     }
 
     pub fn with_bootstrapper(mut self, bootstrapper: Bootstrapper) -> Self {
@@ -117,20 +147,28 @@ impl App {
             Mode::Normal => self.normal_key(key.code),
             Mode::Command | Mode::AddHost => self.input_key(key.code),
             Mode::Password => self.password_key(key.code),
+            Mode::Window => self.window_key(key.code),
         }
     }
 
     fn normal_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
-            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.selected + 1 < self.hosts.len() {
-                    self.selected += 1;
-                }
+            KeyCode::Tab => {
+                self.focus = match self.focus {
+                    Focus::Hosts => Focus::Desktop,
+                    Focus::Desktop => Focus::Hosts,
+                };
             }
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => self.step(-1),
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => self.step(1),
             KeyCode::Char('a') => self.mode = Mode::AddHost,
             KeyCode::Char('b') => self.bootstrap(),
+            KeyCode::Char('p') => self.apply(Vec::new()),
+            KeyCode::Enter if self.focus == Focus::Desktop => {
+                self.window = MODULES.get(self.icon);
+                self.mode = Mode::Window;
+            }
             KeyCode::Enter | KeyCode::Char('c') => {
                 if self.host().is_some() {
                     self.mode = Mode::Command;
@@ -139,6 +177,42 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// move the selection in the focused pane, staying inside it.
+    fn step(&mut self, delta: isize) {
+        let (index, len) = match self.focus {
+            Focus::Hosts => (&mut self.selected, self.hosts.len()),
+            Focus::Desktop => (&mut self.icon, MODULES.len()),
+        };
+        *index = index
+            .saturating_add_signed(delta)
+            .min(len.saturating_sub(1));
+    }
+
+    fn window_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.window = None;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter | KeyCode::Char('a') => {
+                let Some(module) = self.window else { return };
+                if module.status == Status::Available {
+                    self.apply(vec![module.id.to_string()]);
+                } else {
+                    emit(Kind::Info, format!("{} is not built yet", module.name));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn apply(&mut self, modules: Vec<String>) {
+        match self.host().map(String::from) {
+            Some(host) => (self.applier)(host, modules, self.request_tx.clone()),
+            None => emit(Kind::Info, "no hosts yet; press a to add one"),
         }
     }
 
@@ -463,5 +537,99 @@ mod tests {
         let mut app = App::new(None, rx, Box::new(|_, _| {}));
         app.hosts = vec!["a@one".into()];
         app.on_key(key(KeyCode::Char('b')));
+    }
+
+    type Applied = Rc<RefCell<Vec<(String, Vec<String>)>>>;
+
+    fn applying_app() -> (App, Applied) {
+        let applied = Rc::new(RefCell::new(Vec::new()));
+        let seen = applied.clone();
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {})).with_applier(Box::new(
+            move |host, modules, _| {
+                seen.borrow_mut().push((host, modules));
+            },
+        ));
+        app.hosts = vec!["a@one".into()];
+        (app, applied)
+    }
+
+    #[test]
+    fn tab_moves_focus_and_arrows_follow_it() {
+        let (mut app, _) = applying_app();
+        assert_eq!(app.focus, Focus::Hosts);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Desktop);
+        app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.icon, 2);
+        assert_eq!(app.selected, 0);
+        for _ in 0..20 {
+            app.on_key(key(KeyCode::Down));
+        }
+        assert_eq!(app.icon, MODULES.len() - 1);
+        for _ in 0..20 {
+            app.on_key(key(KeyCode::Left));
+        }
+        assert_eq!(app.icon, 0);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Hosts);
+    }
+
+    #[test]
+    fn enter_on_an_icon_opens_its_window_and_esc_closes_it() {
+        let (mut app, _) = applying_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Window);
+        assert_eq!(app.window.unwrap().id, "gateway");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.window.is_none());
+    }
+
+    #[test]
+    fn the_window_applies_just_its_module() {
+        let (mut app, applied) = applying_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            applied.borrow().as_slice(),
+            [("a@one".to_string(), vec!["gateway".to_string()])]
+        );
+    }
+
+    #[test]
+    fn planned_modules_do_not_apply() {
+        let (mut app, applied) = applying_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.window.unwrap().id, "docker");
+        app.on_key(key(KeyCode::Enter));
+        assert!(applied.borrow().is_empty());
+    }
+
+    #[test]
+    fn p_applies_everything_and_needs_a_host() {
+        let (mut app, applied) = applying_app();
+        app.on_key(key(KeyCode::Char('p')));
+        assert_eq!(
+            applied.borrow().as_slice(),
+            [("a@one".to_string(), Vec::<String>::new())]
+        );
+        let (mut empty, applied) = applying_app();
+        empty.hosts.clear();
+        empty.on_key(key(KeyCode::Char('p')));
+        assert!(applied.borrow().is_empty());
+    }
+
+    #[test]
+    fn default_applier_reports_it_is_unavailable() {
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {}));
+        app.hosts = vec!["a@one".into()];
+        app.on_key(key(KeyCode::Char('p')));
     }
 }

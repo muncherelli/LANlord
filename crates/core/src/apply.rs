@@ -3,12 +3,13 @@ use anyhow::{bail, Result};
 use crate::bootstrap::{run_as_root, AskPassword};
 use crate::config::{self, wrap};
 use crate::log::{emit, Kind};
+use crate::modules;
 use crate::payload;
 use crate::ssh::Session;
 
 /// the shell script that unpacks the playbooks and runs them as lanlord;
 /// `settings` is decrypted yaml that lives in /run only for the duration.
-fn script(settings: Option<&[u8]>) -> Result<String> {
+fn script(settings: Option<&[u8]>, tags: &[&str]) -> Result<String> {
     let (stage, vars) = match settings {
         Some(plain) => (
             format!(
@@ -25,6 +26,11 @@ chmod 0600 /run/lanlord/settings.yml
         ),
         None => (String::new(), ""),
     };
+    let tags = if tags.is_empty() {
+        String::new()
+    } else {
+        format!(" --tags {}", tags.join(","))
+    };
     Ok(format!(
         r#"set -eu
 if [ ! -x /opt/lanlord/venv/bin/ansible-playbook ]; then
@@ -38,7 +44,7 @@ LANLORD_PAYLOAD
 {stage}cd /opt/lanlord
 sudo -n -u lanlord env HOME=/opt/lanlord ANSIBLE_NOCOLOR=1 \
   ANSIBLE_PYTHON_INTERPRETER=auto_silent ANSIBLE_LOCAL_TEMP=/opt/lanlord/.ansible/tmp \
-  /opt/lanlord/venv/bin/ansible-playbook -i localhost,{vars} /opt/lanlord/playbooks/site.yml
+  /opt/lanlord/venv/bin/ansible-playbook -i localhost,{vars}{tags} /opt/lanlord/playbooks/site.yml
 "#,
         payload = payload::archive_base64()?
     ))
@@ -49,18 +55,35 @@ sudo -n -u lanlord env HOME=/opt/lanlord ANSIBLE_NOCOLOR=1 \
 pub fn apply(
     host: &str,
     identity: Option<&age::x25519::Identity>,
+    modules: &[String],
     ask_password: AskPassword,
 ) -> Result<()> {
-    apply_with(&Session::new(host)?, host, identity, ask_password)
+    apply_with(&Session::new(host)?, host, identity, modules, ask_password)
 }
 
 fn apply_with(
     session: &Session,
     host: &str,
     identity: Option<&age::x25519::Identity>,
+    modules: &[String],
     ask_password: AskPassword,
 ) -> Result<()> {
-    emit(Kind::Info, format!("applying to {host}"));
+    // only known module ids reach the shell script
+    let mut tags = Vec::new();
+    for id in modules {
+        match modules::find(id) {
+            Some(module) => tags.push(module.id),
+            None => bail!("unknown module: {id}"),
+        }
+    }
+    if tags.is_empty() {
+        emit(Kind::Info, format!("applying everything to {host}"));
+    } else {
+        emit(
+            Kind::Info,
+            format!("applying {} to {host}", tags.join(", ")),
+        );
+    }
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let settings = match identity {
@@ -77,7 +100,12 @@ fn apply_with(
             "no settings to apply; running the baseline only",
         ),
     }
-    match run_as_root(session, admin, script(settings.as_deref())?, ask_password)? {
+    match run_as_root(
+        session,
+        admin,
+        script(settings.as_deref(), &tags)?,
+        ask_password,
+    )? {
         0 => {
             emit(Kind::Info, "apply finished");
             Ok(())
@@ -129,7 +157,7 @@ esac"#,
 
     #[test]
     fn script_unpacks_and_runs_the_playbook_as_lanlord() {
-        let s = script(None).unwrap();
+        let s = script(None, &[]).unwrap();
         assert!(s.contains("base64 -d <<'LANLORD_PAYLOAD'"));
         assert!(s.contains("sudo -n -u lanlord tar -x"));
         assert!(s.contains("ansible-playbook -i localhost, /opt/lanlord/playbooks/site.yml"));
@@ -139,7 +167,7 @@ esac"#,
 
     #[test]
     fn script_stages_settings_in_run_and_removes_them() {
-        let s = script(Some(b"motd: hi\n")).unwrap();
+        let s = script(Some(b"motd: hi\n"), &[]).unwrap();
         assert!(s.contains("install -d -o lanlord -g lanlord -m 0700 /run/lanlord"));
         assert!(s.contains("trap 'rm -f /run/lanlord/settings.yml' EXIT"));
         assert!(s.contains("chmod 0600 /run/lanlord/settings.yml"));
@@ -165,7 +193,7 @@ esac"#,
                 .stdin
                 .take()
                 .unwrap()
-                .write_all(script(settings).unwrap().as_bytes())
+                .write_all(script(settings, &[]).unwrap().as_bytes())
                 .unwrap();
             let out = child.wait_with_output().unwrap();
             assert!(
@@ -183,6 +211,7 @@ esac"#,
             &Session::fake_gateway(true, &record, 0),
             "gw",
             None,
+            &[],
             &mut no_password,
         )
         .unwrap();
@@ -197,7 +226,7 @@ esac"#,
         let id = identity("empty");
         let record = temp("nosettings");
         let session = gateway_with_settings("", &record, 0);
-        apply_with(&session, "gw", Some(&id), &mut no_password).unwrap();
+        apply_with(&session, "gw", Some(&id), &[], &mut no_password).unwrap();
         assert!(!std::fs::read_to_string(&record)
             .unwrap()
             .contains("LANLORD_SETTINGS"));
@@ -211,7 +240,7 @@ esac"#,
         let cipher = base64::engine::general_purpose::STANDARD.encode(sealed);
         let record = temp("withsettings");
         let session = gateway_with_settings(&cipher, &record, 0);
-        apply_with(&session, "gw", Some(&id), &mut no_password).unwrap();
+        apply_with(&session, "gw", Some(&id), &[], &mut no_password).unwrap();
         let sent = std::fs::read_to_string(&record).unwrap();
         assert!(sent.contains("-e @/run/lanlord/settings.yml"));
         let body: String = sent
@@ -235,6 +264,7 @@ esac"#,
             &Session::fake_gateway(false, &record, 0),
             "gw",
             None,
+            &[],
             &mut ask,
         )
         .unwrap();
@@ -251,10 +281,51 @@ esac"#,
             &Session::fake_gateway(true, &record, 2),
             "gw",
             None,
+            &[],
             &mut no_password,
         )
         .unwrap_err();
         assert!(err.to_string().contains("status 2"), "{err}");
         let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn modules_become_tags() {
+        let s = script(None, &["gateway", "docker"]).unwrap();
+        assert!(s.contains("-i localhost, --tags gateway,docker /opt/lanlord/playbooks/site.yml"));
+        let with_settings = script(Some(b"a: 1\n"), &["gateway"]).unwrap();
+        assert!(with_settings.contains("-e @/run/lanlord/settings.yml --tags gateway"));
+    }
+
+    #[test]
+    fn apply_sends_only_the_chosen_module() {
+        let record = temp("tags");
+        apply_with(
+            &Session::fake_gateway(true, &record, 0),
+            "gw",
+            None,
+            &["gateway".to_string()],
+            &mut no_password,
+        )
+        .unwrap();
+        assert!(std::fs::read_to_string(&record)
+            .unwrap()
+            .contains("--tags gateway"));
+        let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn unknown_modules_are_refused_before_connecting() {
+        let record = temp("unknown");
+        let err = apply_with(
+            &Session::fake_gateway(true, &record, 0),
+            "gw",
+            None,
+            &["x; rm -rf /".to_string()],
+            &mut no_password,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown module"), "{err}");
+        assert!(!record.exists());
     }
 }

@@ -49,7 +49,12 @@ enum Command {
         passwordless_sudo: bool,
     },
     /// push the encrypted config to a host and apply it
-    Apply { host: String },
+    Apply {
+        host: String,
+        /// run only this module's tasks (repeatable); see the tui desktop
+        #[arg(long = "module", value_name = "ID")]
+        modules: Vec<String>,
+    },
     /// run a command on the gateway, or on a lan machine through it with --via
     Run {
         /// the gateway, or the lan machine when --via is given
@@ -121,13 +126,10 @@ fn main() -> Result<()> {
             },
             &mut ask,
         ),
-        Some(Command::Apply { host }) => {
+        Some(Command::Apply { host, modules }) => {
             // no key yet just means no settings; a damaged key is an error
-            let identity = match identity_path()? {
-                path if path.exists() => Some(crypto::load(&path)?),
-                _ => None,
-            };
-            lanlord_core::apply::apply(&host, identity.as_ref(), &mut ask)
+            let identity = crypto::load_default()?;
+            lanlord_core::apply::apply(&host, identity.as_ref(), &modules, &mut ask)
         }
         Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {

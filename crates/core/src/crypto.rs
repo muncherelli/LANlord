@@ -46,6 +46,14 @@ pub fn load(path: &Path) -> Result<Identity> {
         .map_err(|err| anyhow::anyhow!("{} is not a valid age key: {err}", path.display()))
 }
 
+/// the default key, or `None` when there is none yet; a damaged key is an error.
+pub fn load_default() -> Result<Option<Identity>> {
+    match crate::paths::identity_path() {
+        Some(path) if path.exists() => load(&path).map(Some),
+        _ => Ok(None),
+    }
+}
+
 /// encrypt `plaintext` so only `identity` can read it.
 pub fn encrypt(identity: &Identity, plaintext: &[u8]) -> Result<Vec<u8>> {
     Ok(age::encrypt(&identity.to_public(), plaintext)?)

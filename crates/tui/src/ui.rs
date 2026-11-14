@@ -1,13 +1,14 @@
 //! drawing: a classic gray-on-teal desktop with navy title bars.
 
 use lanlord_core::log::Kind;
-use ratatui::layout::{Constraint, Layout};
+use lanlord_core::modules::{Module, Status, MODULES};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Focus, Mode};
 
 const DESKTOP: Color = Color::Rgb(0, 128, 128);
 const NAVY: Color = Color::Rgb(0, 0, 128);
@@ -19,6 +20,10 @@ fn window(title: String) -> Block<'static> {
         .title(title)
         .style(Style::new().bg(GRAY).fg(Color::Black))
 }
+
+/// width and height of one desktop icon cell.
+const CELL_W: u16 = 13;
+const CELL_H: u16 = 4;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -38,7 +43,48 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(" LANlord ").style(title), rows[0]);
 
     let body = Layout::horizontal([Constraint::Length(28), Constraint::Min(10)]).split(rows[1]);
+    draw_hosts(frame, app, body[0]);
 
+    let columns = ((body[1].width.saturating_sub(2)) / CELL_W).max(1) as usize;
+    let icon_rows = MODULES.len().div_ceil(columns) as u16;
+    let right = Layout::vertical([
+        Constraint::Length(icon_rows * CELL_H + 2),
+        Constraint::Min(3),
+    ])
+    .split(body[1]);
+    draw_desktop(frame, app, right[0], columns);
+    draw_console(frame, app, right[1]);
+
+    draw_input(frame, app, rows[2]);
+
+    let hint = match app.mode {
+        Mode::Normal => {
+            " tab pane   arrows select   enter open   b bootstrap   p apply   a add host   q quit "
+        }
+        Mode::Command => " enter run   esc back ",
+        Mode::AddHost => " enter save   esc cancel ",
+        Mode::Password => " enter send   esc cancel ",
+        Mode::Window => " enter apply this module   esc close ",
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().bg(GRAY).fg(Color::Black)),
+        rows[3],
+    );
+
+    if let Some(module) = app.window {
+        draw_window(frame, module, area);
+    }
+}
+
+fn focus_title(label: &str, focused: bool) -> String {
+    if focused {
+        format!(" {label} * ")
+    } else {
+        format!(" {label} ")
+    }
+}
+
+fn draw_hosts(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = if app.hosts.is_empty() {
         vec![ListItem::new("(none - press a)")]
     } else {
@@ -48,15 +94,47 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .collect()
     };
     let list = List::new(items)
-        .block(window(" Hosts ".into()))
+        .block(window(focus_title("Hosts", app.focus == Focus::Hosts)))
         .highlight_style(Style::new().bg(NAVY).fg(Color::White));
     let mut state = ListState::default();
     if !app.hosts.is_empty() {
         state.select(Some(app.selected));
     }
-    frame.render_stateful_widget(list, body[0], &mut state);
+    frame.render_stateful_widget(list, area, &mut state);
+}
 
-    let height = body[1].height.saturating_sub(2) as usize;
+fn draw_desktop(frame: &mut Frame, app: &App, area: Rect, columns: usize) {
+    let focused = app.focus == Focus::Desktop;
+    let block = window(focus_title("Desktop", focused));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    for (i, module) in MODULES.iter().enumerate() {
+        let cell = Rect::new(
+            inner.x + (i % columns) as u16 * CELL_W,
+            inner.y + (i / columns) as u16 * CELL_H,
+            CELL_W.min(inner.width),
+            CELL_H,
+        );
+        if cell.right() > inner.right() || cell.bottom() > inner.bottom() {
+            continue;
+        }
+        let style = if focused && i == app.icon {
+            Style::new().bg(NAVY).fg(Color::White)
+        } else {
+            Style::new().bg(GRAY).fg(Color::Black)
+        };
+        let mut lines: Vec<Line> = module
+            .icon
+            .iter()
+            .map(|art| Line::from(*art).centered())
+            .collect();
+        lines.push(Line::from(module.name).centered());
+        frame.render_widget(Paragraph::new(lines).style(style), cell);
+    }
+}
+
+fn draw_console(frame: &mut Frame, app: &App, area: Rect) {
+    let height = area.height.saturating_sub(2) as usize;
     let skip = app.console.len().saturating_sub(height);
     let lines: Vec<Line> = app
         .console
@@ -78,8 +156,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .title(" Console ")
             .style(Style::new().bg(Color::Black).fg(Color::Gray)),
     );
-    frame.render_widget(console, body[1]);
+    frame.render_widget(console, area);
+}
 
+fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let (label, prompt) = match app.mode {
         Mode::AddHost => (" Add host (user@host) ".to_string(), "> "),
         Mode::Password => (
@@ -107,22 +187,40 @@ pub fn draw(frame: &mut Frame, app: &App) {
         app.input.clone()
     };
     let input = Paragraph::new(format!("{prompt}{shown}")).block(window(label));
-    frame.render_widget(input, rows[2]);
-    if app.mode != Mode::Normal {
-        let x = rows[2].x + 1 + (prompt.len() + app.input.chars().count()) as u16;
-        frame.set_cursor_position((x.min(rows[2].right().saturating_sub(2)), rows[2].y + 1));
+    frame.render_widget(input, area);
+    if matches!(app.mode, Mode::Command | Mode::AddHost | Mode::Password) {
+        let x = area.x + 1 + (prompt.len() + app.input.chars().count()) as u16;
+        frame.set_cursor_position((x.min(area.right().saturating_sub(2)), area.y + 1));
     }
+}
 
-    let hint = match app.mode {
-        Mode::Normal => " up/down select   enter command   b bootstrap   a add host   q quit ",
-        Mode::Password => " enter send   esc cancel ",
-        Mode::Command => " enter run   esc back ",
-        Mode::AddHost => " enter save   esc cancel ",
-    };
-    frame.render_widget(
-        Paragraph::new(hint).style(Style::new().bg(GRAY).fg(Color::Black)),
-        rows[3],
+/// a module's window, centered over everything.
+fn draw_window(frame: &mut Frame, module: &Module, area: Rect) {
+    let width = area.width.min(64);
+    let height = area.height.min(16);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
     );
+    frame.render_widget(Clear, rect);
+    let status = match module.status {
+        Status::Available => "available",
+        Status::Planned => "planned - not built yet",
+    };
+    let mut lines = vec![
+        Line::from(module.summary),
+        Line::from(""),
+        Line::from(format!("Status: {status}")),
+        Line::from(""),
+        Line::from("Settings (in your settings file):"),
+    ];
+    lines.extend(module.example.lines().map(|l| Line::from(format!("  {l}"))));
+    let body = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(window(format!(" {} ", module.name)));
+    frame.render_widget(body, rect);
 }
 
 #[cfg(test)]
@@ -134,7 +232,7 @@ mod tests {
     use std::sync::mpsc;
 
     fn render(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         terminal
             .backend()
@@ -157,6 +255,7 @@ mod tests {
         assert!(text.contains("(none - press a)"));
         assert!(text.contains("Console"));
         assert!(text.contains("q quit"));
+        assert!(text.contains("enter open"));
     }
 
     #[test]
@@ -191,6 +290,43 @@ mod tests {
         assert!(text.contains("> *******"));
         assert!(!text.contains("hunter2"));
         assert!(text.contains("esc cancel"));
+    }
+
+    #[test]
+    fn the_desktop_shows_every_module_icon() {
+        let text = render(&app());
+        for module in MODULES {
+            assert!(text.contains(module.name), "{}", module.name);
+        }
+        assert!(text.contains("Desktop"));
+    }
+
+    #[test]
+    fn an_open_window_shows_the_module() {
+        let mut app = app();
+        app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
+        app.mode = Mode::Window;
+        let text = render(&app);
+        assert!(text.contains("planned - not built yet"));
+        assert!(text.contains("Samba NT4-style"));
+        assert!(text.contains("domain: RETRONET"));
+        assert!(text.contains("esc close"));
+        app.window = MODULES.iter().find(|m| m.id == "gateway");
+        assert!(render(&app).contains("Status: available"));
+    }
+
+    #[test]
+    fn a_narrow_terminal_wraps_the_icons() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
+        terminal.draw(|f| draw(f, &app())).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("Remote Cmds"));
     }
 
     #[test]
