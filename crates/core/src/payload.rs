@@ -4,7 +4,13 @@ use anyhow::Result;
 use base64::Engine;
 
 /// (path under /opt/lanlord/playbooks, contents)
-const FILES: &[(&str, &str)] = &[("site.yml", include_str!("../payload/playbooks/site.yml"))];
+const FILES: &[(&str, &str)] = &[
+    ("site.yml", include_str!("../payload/playbooks/site.yml")),
+    (
+        "docker.yml",
+        include_str!("../payload/playbooks/docker.yml"),
+    ),
+];
 
 /// the playbooks as a tar archive.
 pub fn archive() -> Result<Vec<u8>> {
@@ -46,8 +52,10 @@ mod tests {
             entry.read_to_string(&mut text).unwrap();
             found.push((entry.path().unwrap().display().to_string(), text));
         }
-        assert_eq!(found.len(), 1);
+        assert_eq!(found.len(), 2);
         assert_eq!(found[0].0, "site.yml");
+        assert_eq!(found[1].0, "docker.yml");
+        assert!(found[0].1.contains("import_playbook: docker.yml"));
         let mode = tar::Archive::new(bytes.as_slice())
             .entries()
             .unwrap()

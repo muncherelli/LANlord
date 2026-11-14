@@ -39,3 +39,5 @@
         msg: >-
           applied as {{ ansible_facts['user_id'] }}, escalated to {{ escalated.stdout }},
           settings {{ 'loaded' if gateway is defined else 'not provided' }}
+
+- import_playbook: docker.yml
