@@ -126,7 +126,8 @@
       ansible.builtin.file:
         path: "/etc/systemd/network/{{ internal_interface }}.network.d"
         state: directory
-        mode: "0755"
+        group: systemd-network
+        mode: "0750"
       when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'systemd-networkd'
 
     # proxmox rewrites the main .network file of a container, but never this drop-in
@@ -136,7 +137,8 @@
         content: |
           [Network]
           Address={{ docker.internal_address }}
-        mode: "0644"
+        group: systemd-network
+        mode: "0640"
       register: networkd_address
       when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'systemd-networkd'
 
@@ -183,7 +185,7 @@
       ansible.builtin.file:
         path: /etc/lanlord
         state: directory
-        mode: "0755"
+        mode: "0750"
       when: docker is defined
 
     - name: keep netbios and smb off the host network
@@ -199,7 +201,7 @@
               iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
             }
           }
-        mode: "0644"
+        mode: "0600"
         validate: nft -c -f %s
       register: firewall_rules
       when: docker is defined
@@ -219,7 +221,7 @@
 
           [Install]
           WantedBy=multi-user.target
-        mode: "0644"
+        mode: "0640"
       register: firewall_unit
       when: docker is defined
 
