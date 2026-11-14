@@ -12,7 +12,7 @@ pub fn archive() -> Result<Vec<u8>> {
     for (path, contents) in FILES {
         let mut header = tar::Header::new_gnu();
         header.set_size(contents.len() as u64);
-        header.set_mode(0o644);
+        header.set_mode(0o640);
         header.set_mtime(0);
         header.set_cksum();
         builder.append_data(&mut header, path, contents.as_bytes())?;
@@ -48,6 +48,16 @@ mod tests {
         }
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, "site.yml");
+        let mode = tar::Archive::new(bytes.as_slice())
+            .entries()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .header()
+            .mode()
+            .unwrap();
+        assert_eq!(mode, 0o640, "playbooks are only for the lanlord user");
         assert!(found[0].1.contains("lanlord baseline"));
     }
 
