@@ -2164,6 +2164,7 @@ dependencies = [
  "lanlord-core",
  "lanlord-tui",
  "lanlord-ui",
+ "rpassword",
 ]
 
 [[package]]
@@ -2171,7 +2172,6 @@ name = "lanlord-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "rpassword",
 ]
 
 [[package]]

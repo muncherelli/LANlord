@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use lanlord_core::log::{emit, Kind, Line};
 use lanlord_core::ssh::Session;
@@ -21,7 +21,19 @@ pub enum Mode {
     Command,
     /// typing a new host to add.
     AddHost,
+    /// typing a password a background task is waiting for.
+    Password,
 }
+
+/// a background task asking the user for a password; the answer, or `None`
+/// when cancelled, goes back through `reply`.
+pub struct PasswordRequest {
+    pub prompt: String,
+    pub reply: Sender<Option<String>>,
+}
+
+/// starts bootstrap on a host; it asks for passwords through the sender.
+pub type Bootstrapper = Box<dyn FnMut(String, Sender<PasswordRequest>)>;
 
 /// starts `command` on `host`; it reports back through the log.
 pub type Runner = Box<dyn FnMut(String, Vec<String>)>;
@@ -33,14 +45,20 @@ pub struct App {
     pub input: String,
     pub console: VecDeque<Line>,
     pub quit: bool,
+    /// the password a task is waiting for, while in `Mode::Password`.
+    pub password: Option<PasswordRequest>,
     hosts_path: Option<PathBuf>,
     logs: Receiver<Line>,
     runner: Runner,
+    bootstrapper: Bootstrapper,
+    requests: Receiver<PasswordRequest>,
+    request_tx: Sender<PasswordRequest>,
 }
 
 impl App {
     pub fn new(hosts_path: Option<PathBuf>, logs: Receiver<Line>, runner: Runner) -> Self {
         let hosts = hosts_path.as_deref().map(hosts::load).unwrap_or_default();
+        let (request_tx, requests) = mpsc::channel();
         Self {
             hosts,
             selected: 0,
@@ -48,10 +66,21 @@ impl App {
             input: String::new(),
             console: VecDeque::new(),
             quit: false,
+            password: None,
             hosts_path,
             logs,
             runner,
+            bootstrapper: Box::new(|_, _| {
+                emit(Kind::Err, "bootstrap is not available here");
+            }),
+            requests,
+            request_tx,
         }
+    }
+
+    pub fn with_bootstrapper(mut self, bootstrapper: Bootstrapper) -> Self {
+        self.bootstrapper = bootstrapper;
+        self
     }
 
     /// the host commands run on.
@@ -67,6 +96,16 @@ impl App {
             }
             self.console.push_back(line);
         }
+        while let Ok(request) = self.requests.try_recv() {
+            // one prompt at a time; refuse a second until the first is answered
+            if self.password.is_some() {
+                let _ = request.reply.send(None);
+                continue;
+            }
+            self.password = Some(request);
+            self.input.clear();
+            self.mode = Mode::Password;
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -77,6 +116,7 @@ impl App {
         match self.mode {
             Mode::Normal => self.normal_key(key.code),
             Mode::Command | Mode::AddHost => self.input_key(key.code),
+            Mode::Password => self.password_key(key.code),
         }
     }
 
@@ -90,6 +130,7 @@ impl App {
                 }
             }
             KeyCode::Char('a') => self.mode = Mode::AddHost,
+            KeyCode::Char('b') => self.bootstrap(),
             KeyCode::Enter | KeyCode::Char('c') => {
                 if self.host().is_some() {
                     self.mode = Mode::Command;
@@ -117,6 +158,37 @@ impl App {
             },
             _ => {}
         }
+    }
+
+    fn bootstrap(&mut self) {
+        match self.host().map(String::from) {
+            Some(host) => (self.bootstrapper)(host, self.request_tx.clone()),
+            None => emit(Kind::Info, "no hosts yet; press a to add one"),
+        }
+    }
+
+    fn password_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.answer(None),
+            KeyCode::Enter => {
+                let password = std::mem::take(&mut self.input);
+                self.answer(Some(password));
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
+            _ => {}
+        }
+    }
+
+    /// reply to the waiting task and return to the host list.
+    fn answer(&mut self, password: Option<String>) {
+        if let Some(request) = self.password.take() {
+            let _ = request.reply.send(password);
+        }
+        self.input.clear();
+        self.mode = Mode::Normal;
     }
 
     fn run_command(&mut self) {
@@ -308,5 +380,88 @@ mod tests {
         app.drain();
         assert_eq!(app.console.len(), CONSOLE_LINES);
         assert_eq!(app.console.front().unwrap().text, "5");
+    }
+
+    #[test]
+    fn b_starts_bootstrap_on_the_selected_host() {
+        let started = Rc::new(RefCell::new(Vec::new()));
+        let seen = started.clone();
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {}))
+            .with_bootstrapper(Box::new(move |host, _| seen.borrow_mut().push(host)));
+        app.on_key(key(KeyCode::Char('b')));
+        assert!(started.borrow().is_empty());
+        app.hosts = vec!["a@one".into()];
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!(started.borrow().as_slice(), ["a@one"]);
+    }
+
+    /// an app whose bootstrapper hands its request sender back to the test.
+    fn asking_app() -> (App, Rc<RefCell<Option<Sender<PasswordRequest>>>>) {
+        let slot = Rc::new(RefCell::new(None));
+        let put = slot.clone();
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {}))
+            .with_bootstrapper(Box::new(move |_, tx| *put.borrow_mut() = Some(tx)));
+        app.hosts = vec!["a@one".into()];
+        app.on_key(key(KeyCode::Char('b')));
+        (app, slot)
+    }
+
+    fn ask(slot: &Rc<RefCell<Option<Sender<PasswordRequest>>>>) -> Receiver<Option<String>> {
+        let (reply, answer) = mpsc::channel();
+        slot.borrow()
+            .as_ref()
+            .unwrap()
+            .send(PasswordRequest {
+                prompt: "sudo password".into(),
+                reply,
+            })
+            .unwrap();
+        answer
+    }
+
+    #[test]
+    fn a_password_request_opens_the_prompt_and_answers() {
+        let (mut app, slot) = asking_app();
+        let answer = ask(&slot);
+        app.drain();
+        assert_eq!(app.mode, Mode::Password);
+        type_text(&mut app, "hunter2");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(answer.recv().unwrap(), Some("hunter2".to_string()));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.input.is_empty() && app.password.is_none());
+    }
+
+    #[test]
+    fn esc_cancels_the_prompt() {
+        let (mut app, slot) = asking_app();
+        let answer = ask(&slot);
+        app.drain();
+        type_text(&mut app, "oops");
+        app.on_key(key(KeyCode::Backspace));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(answer.recv().unwrap(), None);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn a_second_request_is_refused_while_one_is_open() {
+        let (mut app, slot) = asking_app();
+        let first = ask(&slot);
+        let second = ask(&slot);
+        app.drain();
+        assert_eq!(second.recv().unwrap(), None);
+        assert!(first.try_recv().is_err());
+        assert_eq!(app.mode, Mode::Password);
+    }
+
+    #[test]
+    fn default_bootstrapper_reports_it_is_unavailable() {
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {}));
+        app.hosts = vec!["a@one".into()];
+        app.on_key(key(KeyCode::Char('b')));
     }
 }

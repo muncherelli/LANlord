@@ -76,15 +76,18 @@ fn main() -> Result<()> {
             host,
             ansible,
             passwordless_sudo,
-        }) => bootstrap(&Options {
-            host,
-            ansible: match ansible {
-                AnsibleChoice::Auto => AnsibleMode::detect(),
-                AnsibleChoice::Local => AnsibleMode::Local,
-                AnsibleChoice::Remote => AnsibleMode::Remote,
+        }) => bootstrap(
+            &Options {
+                host,
+                ansible: match ansible {
+                    AnsibleChoice::Auto => AnsibleMode::detect(),
+                    AnsibleChoice::Local => AnsibleMode::Local,
+                    AnsibleChoice::Remote => AnsibleMode::Remote,
+                },
+                passwordless_sudo,
             },
-            passwordless_sudo,
-        }),
+            &mut |what| Ok(rpassword::prompt_password(format!("{what}: "))?),
+        ),
         Some(Command::Apply { host }) => lanlord_core::apply::apply(&host),
         Some(Command::Run {
             target,
