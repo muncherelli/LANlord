@@ -88,7 +88,9 @@ fn main() -> Result<()> {
             },
             &mut |what| Ok(rpassword::prompt_password(format!("{what}: "))?),
         ),
-        Some(Command::Apply { host }) => lanlord_core::apply::apply(&host),
+        Some(Command::Apply { host }) => lanlord_core::apply::apply(&host, &mut |what| {
+            Ok(rpassword::prompt_password(format!("{what}: "))?)
+        }),
         Some(Command::Run {
             target,
             via,

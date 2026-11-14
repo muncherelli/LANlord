@@ -227,6 +227,24 @@ impl Session {
     }
 }
 
+#[cfg(all(test, unix))]
+impl Session {
+    /// a fake ssh that answers `id -un`, lets `sudo -n true` succeed or
+    /// fail, and saves whatever the bootstrap command reads on stdin.
+    pub(crate) fn fake_gateway(sudo_ok: bool, record: &std::path::Path, exit: i32) -> Session {
+        Session::fake(&format!(
+            r#"for a; do last=$a; done
+    case "$last" in
+      "id -un") echo tester ;;
+      "sudo -n true") exit {sudo} ;;
+      *) cat > '{path}'; exit {exit} ;;
+    esac"#,
+            sudo = if sudo_ok { 0 } else { 1 },
+            path = record.display(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
