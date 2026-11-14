@@ -42,3 +42,4 @@
 
 - import_playbook: docker.yml
 - import_playbook: nt4-domain.yml
+- import_playbook: web-proxy.yml

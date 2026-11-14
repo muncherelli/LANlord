@@ -353,12 +353,12 @@ mod tests {
     #[test]
     fn an_open_window_shows_the_module() {
         let mut app = app();
-        app.window = MODULES.iter().find(|m| m.id == "web-proxy");
+        app.window = MODULES.iter().find(|m| m.id == "remote-commands");
         app.mode = Mode::Window;
         let text = render(&app);
         assert!(text.contains("planned - not built yet"));
-        assert!(text.contains("Caddy in Docker"));
-        assert!(text.contains("web-proxy:"));
+        assert!(text.contains("Run commands on NT4 servers"));
+        assert!(text.contains("remote-commands:"));
         assert!(text.contains("esc close"));
         app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
         let text = render(&app);

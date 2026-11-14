@@ -1,0 +1,125 @@
+# the web-proxy module: caddy in docker on the host network, proxying web
+# requests to sites on the internal network and, once it exists, to the lanlord
+# web interface. the docker module must have been applied first. it does
+# nothing until your settings have a `web-proxy:` section.
+#
+# web-proxy:
+#   listen: 10.10.0.97            # the address caddy binds; default: the default route's address
+#   tls: off                      # or internal, for https with caddy's own certificate authority
+#   sites:
+#     - host: nostalgia.lan       # the name clients ask for
+#       upstream: 172.16.120.20:80
+#   webui:                        # the lanlord web interface, optional
+#     host: lanlord.lan
+#     upstream: 127.0.0.1:8787
+- name: lanlord web proxy
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  tags: [web-proxy]
+  vars:
+    image: caddy:2-alpine
+    container: lanlord-caddy
+    state_dir: /opt/lanlord/caddy
+  tasks:
+    # a hyphenated name cannot be written as a variable, so look it up
+    - name: read the web-proxy settings
+      ansible.builtin.set_fact:
+        wp: "{{ lookup('ansible.builtin.vars', 'web-proxy') }}"
+      when: "lookup('ansible.builtin.varnames', '^web-proxy$', wantlist=True) | length > 0"
+
+    - name: work out the defaults
+      ansible.builtin.set_fact:
+        proxy_listen: "{{ wp.listen | default(ansible_facts['default_ipv4']['address'] | default('')) }}"
+        proxy_tls: "{{ wp.tls | default('off') }}"
+        proxy_sites: >-
+          {{ (wp.sites | default([]))
+             + ([wp.webui] if wp.webui is defined else []) }}
+      when: wp is defined
+
+    # these values end up in the caddyfile, so only plain names and addresses are accepted
+    - name: check the settings
+      ansible.builtin.assert:
+        that:
+          - proxy_listen is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+          - proxy_tls in ['off', 'internal']
+          - proxy_sites | length > 0
+          - proxy_sites | map(attribute='host') | list | length == proxy_sites | map(attribute='host') | list | unique | length
+          - proxy_sites | map(attribute='host') | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$') | list | length == proxy_sites | length
+          - proxy_sites | map(attribute='upstream') | select('match', '^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$') | list | length == proxy_sites | length
+        fail_msg: >-
+          web-proxy settings: listen is an ipv4 address, tls is off or internal, and every site
+          (and webui) has a unique host name like nostalgia.lan and an upstream like 172.16.120.20:80
+      when: wp is defined
+
+    - name: check that docker is installed
+      ansible.builtin.command: docker info --format '{% raw %}{{.ServerVersion}}{% endraw %}'
+      changed_when: false
+      when: wp is defined
+
+    - name: make the state directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0750"
+      loop:
+        - "{{ state_dir }}"
+        - "{{ state_dir }}/data"
+        - "{{ state_dir }}/config"
+      when: wp is defined
+
+    - name: write the caddyfile
+      ansible.builtin.template:
+        src: web-proxy/Caddyfile.j2
+        dest: "{{ state_dir }}/Caddyfile"
+        mode: "0640"
+      register: caddyfile
+      when: wp is defined
+
+    - name: check the caddyfile with caddy itself
+      ansible.builtin.command: >-
+        docker run --rm -v {{ state_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro {{ image }}
+        caddy validate --config /etc/caddy/Caddyfile
+      changed_when: false
+      when: wp is defined
+
+    - name: see whether the container is running
+      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }}"
+      register: running
+      changed_when: false
+      failed_when: false
+      when: wp is defined
+
+    - name: replace the container when it is new, stopped or has a new caddyfile
+      when: wp is defined and (running.stdout != 'true' or caddyfile is changed)
+      block:
+        - name: remove the old container
+          ansible.builtin.command: "docker rm -f {{ container }}"
+          changed_when: true
+          failed_when: false
+
+        - name: start caddy on the host network
+          ansible.builtin.command: >-
+            docker run -d --name {{ container }} --network host --restart unless-stopped
+            -v {{ state_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro
+            -v {{ state_dir }}/data:/data
+            -v {{ state_dir }}/config:/config
+            {{ image }}
+          changed_when: true
+
+    - name: wait for caddy to be up
+      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }}"
+      register: caddy_up
+      until: caddy_up.stdout == 'true'
+      retries: 10
+      delay: 1
+      changed_when: false
+      when: wp is defined
+
+    - name: report
+      ansible.builtin.debug:
+        msg: >-
+          caddy is proxying {{ proxy_sites | map(attribute='host') | list }} on {{ proxy_listen }}
+          ({{ 'plain http' if proxy_tls == 'off' else 'https with its own certificate authority' }})
+      when: wp is defined

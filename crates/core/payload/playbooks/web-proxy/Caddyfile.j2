@@ -1,0 +1,25 @@
+# written by lanlord; changes here are overwritten on the next apply
+{
+	admin off
+{% if proxy_tls == 'off' %}
+	auto_https off
+{% endif %}
+}
+{% for site in proxy_sites %}
+
+{{ 'http://' if proxy_tls == 'off' else '' }}{{ site.host }} {
+	bind {{ proxy_listen }}
+{% if proxy_tls == 'internal' %}
+	tls internal
+{% endif %}
+	reverse_proxy {{ site.upstream }}
+}
+{% endfor %}
+{% if proxy_tls == 'off' %}
+
+# anything that is not one of the sites above
+http:// {
+	bind {{ proxy_listen }}
+	respond "no such site" 404
+}
+{% endif %}
