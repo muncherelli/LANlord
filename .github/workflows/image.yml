@@ -1,0 +1,45 @@
+name: image
+
+# publishes the samba image the nt4-domain module runs. the tag is a hash of the
+# files it is built from, which is the same hash the playbook computes on the
+# gateway, so an apply always pulls exactly the content it was built with.
+on:
+  push:
+    branches: [trunk]
+    paths:
+      - ansible/playbooks/nt4-domain/image/**
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  samba-nt4:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CONTEXT: ansible/playbooks/nt4-domain/image
+      IMAGE: ghcr.io/muncherelli/lanlord-samba-nt4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: work out the tag
+        id: tag
+        run: echo "hash=$(cd "$CONTEXT" && cat Dockerfile entrypoint.sh lanlord-user | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.CONTEXT }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.hash }}
+            ${{ env.IMAGE }}:latest

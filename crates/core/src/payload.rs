@@ -5,42 +5,45 @@ use base64::Engine;
 
 /// (path under /opt/lanlord/playbooks, contents)
 const FILES: &[(&str, &str)] = &[
-    ("site.yml", include_str!("../payload/playbooks/site.yml")),
+    (
+        "site.yml",
+        include_str!("../../../ansible/playbooks/site.yml"),
+    ),
     (
         "network.yml",
-        include_str!("../payload/playbooks/network.yml"),
+        include_str!("../../../ansible/playbooks/network.yml"),
     ),
     (
         "docker.yml",
-        include_str!("../payload/playbooks/docker.yml"),
+        include_str!("../../../ansible/playbooks/docker.yml"),
     ),
     (
         "nt4-domain.yml",
-        include_str!("../payload/playbooks/nt4-domain.yml"),
+        include_str!("../../../ansible/playbooks/nt4-domain.yml"),
     ),
     (
         "web-proxy.yml",
-        include_str!("../payload/playbooks/web-proxy.yml"),
+        include_str!("../../../ansible/playbooks/web-proxy.yml"),
     ),
     (
         "web-proxy/Caddyfile.j2",
-        include_str!("../payload/playbooks/web-proxy/Caddyfile.j2"),
+        include_str!("../../../ansible/playbooks/web-proxy/Caddyfile.j2"),
     ),
     (
         "nt4-domain/smb.conf.j2",
-        include_str!("../payload/playbooks/nt4-domain/smb.conf.j2"),
+        include_str!("../../../ansible/playbooks/nt4-domain/smb.conf.j2"),
     ),
     (
         "nt4-domain/image/Dockerfile",
-        include_str!("../payload/playbooks/nt4-domain/image/Dockerfile"),
+        include_str!("../../../ansible/playbooks/nt4-domain/image/Dockerfile"),
     ),
     (
         "nt4-domain/image/entrypoint.sh",
-        include_str!("../payload/playbooks/nt4-domain/image/entrypoint.sh"),
+        include_str!("../../../ansible/playbooks/nt4-domain/image/entrypoint.sh"),
     ),
     (
         "nt4-domain/image/lanlord-user",
-        include_str!("../payload/playbooks/nt4-domain/image/lanlord-user"),
+        include_str!("../../../ansible/playbooks/nt4-domain/image/lanlord-user"),
     ),
 ];
 
@@ -119,7 +122,7 @@ mod tests {
                 }
             }
         }
-        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("payload/playbooks");
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ansible/playbooks");
         let mut on_disk = Vec::new();
         walk(&base, &base, &mut on_disk);
         on_disk.sort();
