@@ -11,7 +11,7 @@ use crate::ssh::Session;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-fn wrap(bytes: &[u8]) -> String {
+pub(crate) fn wrap(bytes: &[u8]) -> String {
     B64.encode(bytes)
         .as_bytes()
         .chunks(76)
@@ -34,11 +34,10 @@ chmod 0640 /opt/lanlord/config/settings.age
 }
 
 const PULL_SCRIPT: &str = r#"set -eu
-if [ ! -f /opt/lanlord/config/settings.age ]; then
-  echo "no settings on this gateway; run lanlord config push first" >&2
-  exit 3
+# prints nothing when no settings are stored yet
+if [ -f /opt/lanlord/config/settings.age ]; then
+  base64 < /opt/lanlord/config/settings.age
 fi
-base64 < /opt/lanlord/config/settings.age
 "#;
 
 fn admin(session: &Session) -> Result<String> {
@@ -86,27 +85,30 @@ fn push_with(
     }
 }
 
-/// fetch the gateway's settings and decrypt them here.
+/// fetch the gateway's settings and decrypt them here; `None` when nothing is stored.
 pub fn pull(
     host: &str,
     identity: &age::x25519::Identity,
     ask_password: AskPassword,
-) -> Result<Vec<u8>> {
+) -> Result<Option<Vec<u8>>> {
     pull_with(&Session::new(host)?, identity, ask_password)
 }
 
-fn pull_with(
+pub(crate) fn pull_with(
     session: &Session,
     identity: &age::x25519::Identity,
     ask_password: AskPassword,
-) -> Result<Vec<u8>> {
+) -> Result<Option<Vec<u8>>> {
     let admin = admin(session)?;
     let encoded = capture_as_root(session, &admin, PULL_SCRIPT.to_string(), ask_password)?;
     let compact: String = encoded.split_whitespace().collect();
+    if compact.is_empty() {
+        return Ok(None);
+    }
     let sealed = B64
         .decode(compact)
         .context("the gateway returned damaged settings")?;
-    crypto::decrypt(identity, &sealed)
+    crypto::decrypt(identity, &sealed).map(Some)
 }
 
 #[cfg(all(test, unix))]
@@ -197,16 +199,17 @@ esac"#
         );
         assert_eq!(
             pull_with(&session, &id, &mut no_password).unwrap(),
-            b"motd: hi\n"
+            Some(b"motd: hi\n".to_vec())
         );
     }
 
     #[test]
-    fn pull_explains_when_nothing_is_stored() {
+    fn pull_returns_none_when_nothing_is_stored() {
         let id = identity("none");
-        let session = serving("echo 'no settings on this gateway' >&2", 3);
-        let err = pull_with(&session, &id, &mut no_password).unwrap_err();
-        assert!(err.to_string().contains("no settings"), "{err}");
+        let session = serving("true", 0);
+        assert!(pull_with(&session, &id, &mut no_password)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
