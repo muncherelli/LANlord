@@ -177,14 +177,34 @@ pub(crate) fn run_as_root(
     script: String,
     ask_password: AskPassword,
 ) -> Result<i32> {
+    let (remote, input) = root_command(session, admin, script, ask_password)?;
+    session.run_with_stdin(&remote, input.as_bytes())
+}
+
+/// like `run_as_root`, but returns what the script printed.
+pub(crate) fn capture_as_root(
+    session: &Session,
+    admin: &str,
+    script: String,
+    ask_password: AskPassword,
+) -> Result<String> {
+    let (remote, input) = root_command(session, admin, script, ask_password)?;
+    session.capture_with_stdin(&remote, input.as_bytes())
+}
+
+fn root_command(
+    session: &Session,
+    admin: &str,
+    script: String,
+    ask_password: AskPassword,
+) -> Result<(Vec<String>, String)> {
     // sudo -n fails when a password is needed; then ask once and feed it to sudo -S
     let password = if session.capture(&sudo(&["-n", "true"])).is_ok() {
         None
     } else {
         Some(ask_password(&format!("sudo password for {admin}"))?)
     };
-    let (remote, input) = plan(script, password.as_deref());
-    session.run_with_stdin(&remote, input.as_bytes())
+    Ok(plan(script, password.as_deref()))
 }
 
 #[cfg(test)]

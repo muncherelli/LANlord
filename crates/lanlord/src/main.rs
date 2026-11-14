@@ -1,9 +1,11 @@
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
+use lanlord_core::{crypto, paths};
 
 #[derive(Parser)]
 #[command(name = "lanlord", version, about = "all your LAN are belong to you")]
@@ -20,6 +22,14 @@ enum AnsibleChoice {
     Auto,
     Local,
     Remote,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// encrypt a settings file with your key and store it on the gateway
+    Push { host: String, file: PathBuf },
+    /// fetch the gateway's settings and print them decrypted
+    Show { host: String },
 }
 
 #[derive(Subcommand)]
@@ -50,10 +60,33 @@ enum Command {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
+    /// create the key that encrypts your settings
+    Keygen,
+    /// store and read the encrypted settings on a gateway
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// add LANlord to the start menu (windows), applications (macos) or the app menu (linux)
     InstallLauncher,
     /// remove the launcher added by install-launcher
     UninstallLauncher,
+}
+
+/// ask for a password on the terminal.
+fn ask(what: &str) -> Result<String> {
+    Ok(rpassword::prompt_password(format!("{what}: "))?)
+}
+
+fn identity_path() -> Result<PathBuf> {
+    paths::identity_path().ok_or_else(|| anyhow::anyhow!("could not find a config directory"))
+}
+
+fn keygen() -> Result<()> {
+    let path = identity_path()?;
+    let recipient = crypto::generate(&path)?;
+    println!("created {}", path.display());
+    println!("public key: {recipient}");
+    println!("back this file up: without it your settings cannot be read");
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -86,11 +119,20 @@ fn main() -> Result<()> {
                 },
                 passwordless_sudo,
             },
-            &mut |what| Ok(rpassword::prompt_password(format!("{what}: "))?),
+            &mut ask,
         ),
-        Some(Command::Apply { host }) => lanlord_core::apply::apply(&host, &mut |what| {
-            Ok(rpassword::prompt_password(format!("{what}: "))?)
-        }),
+        Some(Command::Apply { host }) => lanlord_core::apply::apply(&host, &mut ask),
+        Some(Command::Keygen) => keygen(),
+        Some(Command::Config(ConfigCommand::Push { host, file })) => {
+            let identity = crypto::load(&identity_path()?)?;
+            let settings = std::fs::read(&file)?;
+            lanlord_core::config::push(&host, &identity, &settings, &mut ask)
+        }
+        Some(Command::Config(ConfigCommand::Show { host })) => {
+            let identity = crypto::load(&identity_path()?)?;
+            let settings = lanlord_core::config::pull(&host, &identity, &mut ask)?;
+            Ok(std::io::stdout().write_all(&settings)?)
+        }
         Some(Command::Run {
             target,
             via,

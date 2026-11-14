@@ -4,13 +4,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// ~/.config/lanlord/hosts, honouring XDG_CONFIG_HOME and APPDATA.
+/// ~/.config/lanlord/hosts
 pub fn config_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))?;
-    Some(base.join("lanlord").join("hosts"))
+    lanlord_core::paths::config_dir().map(|d| d.join("hosts"))
 }
 
 /// read the hosts, skipping blank lines and comments.
