@@ -2,7 +2,7 @@
 //! ssh-agent (1Password included) and known_hosts behave as they do for `ssh`.
 
 use std::fmt;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Result};
@@ -109,11 +109,25 @@ impl Session {
 
     /// run `remote` with stdout and stdin attached to ours; returns its exit code.
     pub fn run(&self, remote: &[String]) -> Result<i32> {
-        let mut child = self
-            .command(remote)
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(spawn_error)?;
+        self.spawn(remote, None)
+    }
+
+    /// run `remote` with `input` as its stdin; returns its exit code.
+    pub fn run_with_stdin(&self, remote: &[String], input: &[u8]) -> Result<i32> {
+        self.spawn(remote, Some(input))
+    }
+
+    fn spawn(&self, remote: &[String], input: Option<&[u8]>) -> Result<i32> {
+        let mut cmd = self.command(remote);
+        cmd.stderr(Stdio::piped());
+        if input.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let mut child = cmd.spawn().map_err(spawn_error)?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            // dropping stdin closes it so the remote shell sees end of input
+            stdin.write_all(input)?;
+        }
         let mut captured = String::new();
         if let Some(stderr) = child.stderr.take() {
             for line in BufReader::new(stderr).split(b'\n') {

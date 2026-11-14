@@ -1,7 +1,8 @@
 use std::io::IsTerminal;
 
 use anyhow::{bail, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
 
 #[derive(Parser)]
@@ -11,6 +12,13 @@ struct Cli {
     command: Option<Command>,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum AnsibleChoice {
+    Auto,
+    Local,
+    Remote,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// open the native window
@@ -18,7 +26,15 @@ enum Command {
     /// run the web server
     Webui,
     /// install the gateway payload on a host
-    Bootstrap { host: String },
+    Bootstrap {
+        host: String,
+        /// where ansible runs: auto picks local when ansible is installed here
+        #[arg(long, value_enum, default_value = "auto")]
+        ansible: AnsibleChoice,
+        /// let the ssh user run sudo without a password
+        #[arg(long)]
+        passwordless_sudo: bool,
+    },
     /// push the encrypted config to a host and apply it
     Apply { host: String },
     /// run a command on the gateway, or on a lan machine through it with --via
@@ -52,7 +68,19 @@ fn main() -> Result<()> {
         #[cfg(not(feature = "gui"))]
         Some(Command::Gui) => bail!("this build has no gui; install the desktop build"),
         Some(Command::Webui) => bail!("webui is not implemented yet"),
-        Some(Command::Bootstrap { host }) => lanlord_core::bootstrap::bootstrap(&host),
+        Some(Command::Bootstrap {
+            host,
+            ansible,
+            passwordless_sudo,
+        }) => bootstrap(&Options {
+            host,
+            ansible: match ansible {
+                AnsibleChoice::Auto => AnsibleMode::detect(),
+                AnsibleChoice::Local => AnsibleMode::Local,
+                AnsibleChoice::Remote => AnsibleMode::Remote,
+            },
+            passwordless_sudo,
+        }),
         Some(Command::Apply { host }) => lanlord_core::apply::apply(&host),
         Some(Command::Run {
             target,

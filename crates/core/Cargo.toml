@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+rpassword = "7.5.5"
