@@ -13,4 +13,5 @@ gui = ["dep:lanlord-ui"]
 anyhow.workspace = true
 clap.workspace = true
 lanlord-core = { path = "../core" }
+lanlord-tui = { path = "../tui" }
 lanlord-ui = { path = "../ui", optional = true }

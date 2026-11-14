@@ -17,3 +17,11 @@ pub fn exec(target: &Target, command: &[String]) -> Result<i32> {
         Target::Machine { .. } => bail!("running commands on lan machines is not implemented yet"),
     }
 }
+
+/// like `exec`, but the command reads nothing from our stdin; for the tui.
+pub fn exec_detached(target: &Target, command: &[String]) -> Result<i32> {
+    match target {
+        Target::Gateway { host } => Session::new(host)?.stream(command),
+        Target::Machine { .. } => bail!("running commands on lan machines is not implemented yet"),
+    }
+}

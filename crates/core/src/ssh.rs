@@ -71,6 +71,15 @@ fn spawn_error(err: std::io::Error) -> SshError {
     }
 }
 
+/// what the remote command reads from.
+enum Input<'a> {
+    /// our own stdin, for the cli.
+    Inherit,
+    /// nothing, for front ends that own the terminal.
+    Null,
+    Bytes(&'a [u8]),
+}
+
 /// a host reached through the system ssh client.
 pub struct Session {
     host: String,
@@ -115,26 +124,38 @@ impl Session {
 
     /// run `remote` with stdout and stdin attached to ours; returns its exit code.
     pub fn run(&self, remote: &[String]) -> Result<i32> {
-        self.spawn(remote, None)
+        self.spawn(remote, Input::Inherit)
+    }
+
+    /// like `run`, but the remote reads nothing from our stdin, so a tui
+    /// that owns the terminal keeps its keystrokes.
+    pub fn stream(&self, remote: &[String]) -> Result<i32> {
+        self.spawn(remote, Input::Null)
     }
 
     /// run `remote` with `input` as its stdin; returns its exit code.
     pub fn run_with_stdin(&self, remote: &[String], input: &[u8]) -> Result<i32> {
-        self.spawn(remote, Some(input))
+        self.spawn(remote, Input::Bytes(input))
     }
 
-    fn spawn(&self, remote: &[String], input: Option<&[u8]>) -> Result<i32> {
+    fn spawn(&self, remote: &[String], input: Input) -> Result<i32> {
         emit(
             Kind::Debug,
             format!("ssh {} {}", self.host, remote.join(" ")),
         );
         let mut cmd = self.command(remote);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        if input.is_some() {
-            cmd.stdin(Stdio::piped());
+        match input {
+            Input::Inherit => {}
+            Input::Null => {
+                cmd.stdin(Stdio::null());
+            }
+            Input::Bytes(_) => {
+                cmd.stdin(Stdio::piped());
+            }
         }
         let mut child = cmd.spawn().map_err(spawn_error)?;
-        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        if let (Input::Bytes(input), Some(mut stdin)) = (input, child.stdin.take()) {
             // dropping stdin closes it so the remote shell sees end of input
             stdin.write_all(input)?;
         }
@@ -283,6 +304,13 @@ mod tests {
             .iter()
             .any(|l| l.kind == Kind::Err && l.text == "log-ssh-err"));
         assert!(lines.iter().any(|l| l.kind == Kind::Debug));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stream_gives_the_remote_no_stdin() {
+        // wc reads nothing, so the fake exits 0 instead of waiting on us
+        assert_eq!(fake("exit $(wc -c | tr -d ' ')").stream(&[]).unwrap(), 0);
     }
 
     #[cfg(unix)]
