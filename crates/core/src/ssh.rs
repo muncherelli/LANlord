@@ -2,7 +2,7 @@
 //! ssh-agent (1Password included) and known_hosts behave as they do for `ssh`.
 
 use std::fmt;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Result};
@@ -72,6 +72,7 @@ fn spawn_error(err: std::io::Error) -> SshError {
 /// a host reached through the system ssh client.
 pub struct Session {
     host: String,
+    program: String,
 }
 
 impl Session {
@@ -81,11 +82,12 @@ impl Session {
         }
         Ok(Self {
             host: host.to_string(),
+            program: "ssh".to_string(),
         })
     }
 
     fn command(&self, remote: &[String]) -> Command {
-        let mut cmd = Command::new("ssh");
+        let mut cmd = Command::new(&self.program);
         // never prompt on the terminal; the gui and tui have no tty to answer
         cmd.args(["-o", "BatchMode=yes"]);
         // share one connection so the agent prompts once per session
@@ -109,11 +111,25 @@ impl Session {
 
     /// run `remote` with stdout and stdin attached to ours; returns its exit code.
     pub fn run(&self, remote: &[String]) -> Result<i32> {
-        let mut child = self
-            .command(remote)
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(spawn_error)?;
+        self.spawn(remote, None)
+    }
+
+    /// run `remote` with `input` as its stdin; returns its exit code.
+    pub fn run_with_stdin(&self, remote: &[String], input: &[u8]) -> Result<i32> {
+        self.spawn(remote, Some(input))
+    }
+
+    fn spawn(&self, remote: &[String], input: Option<&[u8]>) -> Result<i32> {
+        let mut cmd = self.command(remote);
+        cmd.stderr(Stdio::piped());
+        if input.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
+        let mut child = cmd.spawn().map_err(spawn_error)?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            // dropping stdin closes it so the remote shell sees end of input
+            stdin.write_all(input)?;
+        }
         let mut captured = String::new();
         if let Some(stderr) = child.stderr.take() {
             for line in BufReader::new(stderr).split(b'\n') {
@@ -188,5 +204,89 @@ mod tests {
             SshError::HostKey
         ));
         assert!(matches!(classify("boom"), SshError::Failed(_)));
+    }
+
+    /// a session that runs `script` instead of ssh, to test without a server.
+    #[cfg(unix)]
+    fn fake(script: &str) -> Session {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "lanlord-fake-ssh-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut session = Session::new("gw").unwrap();
+        session.program = path.to_string_lossy().into_owned();
+        session
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_returns_stdout() {
+        let session = fake("echo hello");
+        assert_eq!(session.capture(&["x".into()]).unwrap(), "hello\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_reports_a_failing_command() {
+        let session = fake("echo nope >&2; exit 3");
+        let err = session.capture(&[]).unwrap_err().to_string();
+        assert!(err.contains("status 3") && err.contains("nope"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_classifies_ssh_failures() {
+        let session = fake("echo 'communication with agent failed' >&2; exit 255");
+        let err = session.capture(&[]).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<SshError>(),
+            Some(SshError::AgentLocked)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_returns_the_exit_code() {
+        assert_eq!(fake("exit 0").run(&[]).unwrap(), 0);
+        assert_eq!(fake("exit 7").run(&[]).unwrap(), 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_maps_connection_failures() {
+        let err = fake("echo 'Host key verification failed.' >&2; exit 255")
+            .run(&[])
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<SshError>(),
+            Some(SshError::HostKey)
+        ));
+        let err = fake("echo weird >&2; exit 255").run(&[]).unwrap_err();
+        assert!(err.to_string().contains("could not connect"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_stdin_feeds_the_remote() {
+        // the fake ssh exits with the number of bytes it read
+        let session = fake("exit $(wc -c | tr -d ' ')");
+        assert_eq!(session.run_with_stdin(&[], b"abcde").unwrap(), 5);
+    }
+
+    #[test]
+    fn missing_ssh_is_reported() {
+        let mut session = Session::new("gw").unwrap();
+        session.program = "/nonexistent/ssh".into();
+        let err = session.capture(&[]).unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<SshError>(),
+            Some(SshError::NotInstalled)
+        ));
     }
 }
