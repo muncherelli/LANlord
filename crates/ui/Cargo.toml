@@ -6,4 +6,6 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 eframe = "0.37.0"
+lanlord-core = { version = "0.1.0", path = "../core" }
