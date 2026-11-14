@@ -119,6 +119,26 @@ fi
     Ok(s)
 }
 
+/// `sudo` followed by `args`, as a remote command.
+fn sudo(args: &[&str]) -> Vec<String> {
+    std::iter::once("sudo")
+        .chain(args.iter().copied())
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// the remote command and stdin that run `script` as root; with a password,
+/// sudo reads it from the first line of stdin.
+fn plan(script: String, password: Option<&str>) -> (Vec<String>, String) {
+    match password {
+        None => (sudo(&["-n", "sh", "-s"]), script),
+        Some(password) => (
+            sudo(&["-S", "-p", "", "sh", "-s"]),
+            format!("{password}\n{script}"),
+        ),
+    }
+}
+
 /// set up the gateway on `opts.host`; the ssh user needs sudo.
 pub fn bootstrap(opts: &Options) -> Result<()> {
     let session = Session::new(&opts.host)?;
@@ -126,19 +146,15 @@ pub fn bootstrap(opts: &Options) -> Result<()> {
     let admin = admin.trim();
     let script = script(opts, admin)?;
 
-    let sudo = |args: &[&str]| -> Vec<String> {
-        ["sudo"].iter().chain(args).map(|a| a.to_string()).collect()
-    };
     // sudo -n fails when a password is needed; then read it once and feed it to sudo -S
-    let (remote, input) = if session.capture(&sudo(&["-n", "true"])).is_ok() {
-        (sudo(&["-n", "sh", "-s"]), script)
+    let password = if session.capture(&sudo(&["-n", "true"])).is_ok() {
+        None
     } else {
-        let password = rpassword::prompt_password(format!("sudo password for {admin}: "))?;
-        (
-            sudo(&["-S", "-p", "", "sh", "-s"]),
-            format!("{password}\n{script}"),
-        )
+        Some(rpassword::prompt_password(format!(
+            "sudo password for {admin}: "
+        ))?)
     };
+    let (remote, input) = plan(script, password.as_deref());
     match session.run_with_stdin(&remote, input.as_bytes())? {
         0 => Ok(()),
         code => bail!("bootstrap failed with status {code}"),
@@ -186,6 +202,28 @@ mod tests {
         let local = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
         assert!(remote.contains("pip install --quiet ansible-core"));
         assert!(!local.contains("ansible-core"));
+    }
+
+    #[test]
+    fn plan_without_a_password_uses_noninteractive_sudo() {
+        let (remote, input) = plan("echo hi\n".into(), None);
+        assert_eq!(remote, ["sudo", "-n", "sh", "-s"]);
+        assert_eq!(input, "echo hi\n");
+    }
+
+    #[test]
+    fn plan_with_a_password_sends_it_first() {
+        let (remote, input) = plan("echo hi\n".into(), Some("hunter2"));
+        assert_eq!(remote, ["sudo", "-S", "-p", "", "sh", "-s"]);
+        assert_eq!(input, "hunter2\necho hi\n");
+    }
+
+    #[test]
+    fn detect_picks_a_mode() {
+        assert!(matches!(
+            AnsibleMode::detect(),
+            AnsibleMode::Local | AnsibleMode::Remote
+        ));
     }
 
     #[test]
