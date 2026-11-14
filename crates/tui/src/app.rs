@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use lanlord_core::log::{emit, Kind, Line};
 use lanlord_core::modules::{Module, Status, MODULES};
 use lanlord_core::ssh::Session;
+use lanlord_core::users::{self, Change, User};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::hosts;
@@ -26,6 +27,14 @@ pub enum Mode {
     Password,
     /// a module's window is open.
     Window,
+    /// typing the name of a new login.
+    UserName,
+    /// typing a login's new password.
+    UserPassword,
+    /// typing the password again.
+    UserRepeat,
+    /// asked whether to delete a login.
+    UserDelete,
 }
 
 /// which pane the arrow keys move in.
@@ -41,6 +50,26 @@ pub struct PasswordRequest {
     pub prompt: String,
     pub reply: Sender<Option<String>>,
 }
+
+/// what the nt4-domain window shows of the logins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UsersState {
+    Idle,
+    Loading,
+    Loaded(Vec<User>),
+    Failed(String),
+}
+
+/// results that background tasks send back.
+pub enum UiEvent {
+    Users(Result<Vec<User>, String>),
+}
+
+/// fetches the logins of a host.
+pub type UsersLoader = Box<dyn FnMut(String, Sender<PasswordRequest>, Sender<UiEvent>)>;
+
+/// changes a login on a host and reports the logins that result.
+pub type UsersChanger = Box<dyn FnMut(String, Change, Sender<PasswordRequest>, Sender<UiEvent>)>;
 
 /// starts bootstrap on a host; it asks for passwords through the sender.
 pub type Bootstrapper = Box<dyn FnMut(String, Sender<PasswordRequest>)>;
@@ -60,6 +89,8 @@ pub struct App {
     pub icon: usize,
     /// the module whose window is open.
     pub window: Option<&'static Module>,
+    pub users: UsersState,
+    pub user_selected: usize,
     pub input: String,
     pub console: VecDeque<Line>,
     pub quit: bool,
@@ -70,6 +101,12 @@ pub struct App {
     runner: Runner,
     bootstrapper: Bootstrapper,
     applier: Applier,
+    users_loader: UsersLoader,
+    users_changer: UsersChanger,
+    pending_name: Option<String>,
+    first_password: String,
+    events: Receiver<UiEvent>,
+    event_tx: Sender<UiEvent>,
     requests: Receiver<PasswordRequest>,
     request_tx: Sender<PasswordRequest>,
 }
@@ -78,6 +115,7 @@ impl App {
     pub fn new(hosts_path: Option<PathBuf>, logs: Receiver<Line>, runner: Runner) -> Self {
         let hosts = hosts_path.as_deref().map(hosts::load).unwrap_or_default();
         let (request_tx, requests) = mpsc::channel();
+        let (event_tx, events) = mpsc::channel();
         Self {
             hosts,
             selected: 0,
@@ -85,6 +123,8 @@ impl App {
             focus: Focus::Hosts,
             icon: 0,
             window: None,
+            users: UsersState::Idle,
+            user_selected: 0,
             input: String::new(),
             console: VecDeque::new(),
             quit: false,
@@ -98,9 +138,26 @@ impl App {
             applier: Box::new(|_, _, _| {
                 emit(Kind::Err, "apply is not available here");
             }),
+            users_loader: Box::new(|_, _, _| emit(Kind::Err, "users are not available here")),
+            users_changer: Box::new(|_, _, _, _| emit(Kind::Err, "users are not available here")),
+            pending_name: None,
+            first_password: String::new(),
+            events,
+            event_tx,
             requests,
             request_tx,
         }
+    }
+
+    /// the login a prompt is about.
+    pub fn pending_name(&self) -> Option<&str> {
+        self.pending_name.as_deref()
+    }
+
+    pub fn with_users(mut self, loader: UsersLoader, changer: UsersChanger) -> Self {
+        self.users_loader = loader;
+        self.users_changer = changer;
+        self
     }
 
     pub fn with_applier(mut self, applier: Applier) -> Self {
@@ -126,6 +183,15 @@ impl App {
             }
             self.console.push_back(line);
         }
+        while let Ok(UiEvent::Users(result)) = self.events.try_recv() {
+            self.users = match result {
+                Ok(list) => {
+                    self.user_selected = self.user_selected.min(list.len().saturating_sub(1));
+                    UsersState::Loaded(list)
+                }
+                Err(err) => UsersState::Failed(err),
+            };
+        }
         while let Ok(request) = self.requests.try_recv() {
             // one prompt at a time; refuse a second until the first is answered
             if self.password.is_some() {
@@ -145,7 +211,12 @@ impl App {
         }
         match self.mode {
             Mode::Normal => self.normal_key(key.code),
-            Mode::Command | Mode::AddHost => self.input_key(key.code),
+            Mode::Command
+            | Mode::AddHost
+            | Mode::UserName
+            | Mode::UserPassword
+            | Mode::UserRepeat => self.input_key(key.code),
+            Mode::UserDelete => self.delete_key(key.code),
             Mode::Password => self.password_key(key.code),
             Mode::Window => self.window_key(key.code),
         }
@@ -168,6 +239,9 @@ impl App {
             KeyCode::Enter if self.focus == Focus::Desktop => {
                 self.window = MODULES.get(self.icon);
                 self.mode = Mode::Window;
+                if self.is_users_window() {
+                    self.load_users();
+                }
             }
             KeyCode::Enter | KeyCode::Char('c') => {
                 if self.host().is_some() {
@@ -191,11 +265,72 @@ impl App {
             .min(len.saturating_sub(1));
     }
 
+    fn is_users_window(&self) -> bool {
+        self.window.is_some_and(|m| m.id == "nt4-domain")
+    }
+
+    /// the login selected in the nt4-domain window.
+    pub fn selected_user(&self) -> Option<&str> {
+        match &self.users {
+            UsersState::Loaded(list) => list.get(self.user_selected).map(|u| u.name.as_str()),
+            _ => None,
+        }
+    }
+
+    fn load_users(&mut self) {
+        let Some(host) = self.host().map(String::from) else {
+            self.users = UsersState::Failed("no host selected".into());
+            return;
+        };
+        self.users = UsersState::Loading;
+        (self.users_loader)(host, self.request_tx.clone(), self.event_tx.clone());
+    }
+
+    fn change_user(&mut self, change: Change) {
+        let Some(host) = self.host().map(String::from) else {
+            return;
+        };
+        self.users = UsersState::Loading;
+        self.mode = Mode::Window;
+        (self.users_changer)(host, change, self.request_tx.clone(), self.event_tx.clone());
+    }
+
     fn window_key(&mut self, code: KeyCode) {
+        let users = self.is_users_window();
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.window = None;
+                self.users = UsersState::Idle;
                 self.mode = Mode::Normal;
+            }
+            KeyCode::Up | KeyCode::Char('k') if users => {
+                self.user_selected = self.user_selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') if users => {
+                if let UsersState::Loaded(list) = &self.users {
+                    if self.user_selected + 1 < list.len() {
+                        self.user_selected += 1;
+                    }
+                }
+            }
+            KeyCode::Char('r') if users => self.load_users(),
+            KeyCode::Char('n') if users => {
+                self.input.clear();
+                self.pending_name = None;
+                self.mode = Mode::UserName;
+            }
+            KeyCode::Char('p') if users => {
+                if let Some(name) = self.selected_user().map(String::from) {
+                    self.input.clear();
+                    self.pending_name = Some(name);
+                    self.mode = Mode::UserPassword;
+                }
+            }
+            KeyCode::Char('d') if users => {
+                if let Some(name) = self.selected_user().map(String::from) {
+                    self.pending_name = Some(name);
+                    self.mode = Mode::UserDelete;
+                }
             }
             KeyCode::Enter | KeyCode::Char('a') => {
                 let Some(module) = self.window else { return };
@@ -209,6 +344,49 @@ impl App {
         }
     }
 
+    fn delete_key(&mut self, code: KeyCode) {
+        let name = self.pending_name.take();
+        match (code, name) {
+            (KeyCode::Char('y'), Some(name)) => self.change_user(Change::Remove { name }),
+            _ => self.mode = Mode::Window,
+        }
+    }
+
+    fn submit_user_name(&mut self) {
+        let name = self.input.trim().to_string();
+        if !users::valid_name(&name) {
+            emit(
+                Kind::Err,
+                "user names are lowercase letters, digits, _ . - and start with a letter",
+            );
+            return;
+        }
+        self.input.clear();
+        self.pending_name = Some(name);
+        self.mode = Mode::UserPassword;
+    }
+
+    fn submit_user_password(&mut self) {
+        if self.input.is_empty() {
+            emit(Kind::Err, "the password is empty");
+            return;
+        }
+        self.first_password = std::mem::take(&mut self.input);
+        self.mode = Mode::UserRepeat;
+    }
+
+    fn submit_user_repeat(&mut self) {
+        let again = std::mem::take(&mut self.input);
+        let password = std::mem::take(&mut self.first_password);
+        let name = self.pending_name.take();
+        if again != password {
+            emit(Kind::Err, "the passwords do not match");
+            self.mode = Mode::Window;
+        } else if let Some(name) = name {
+            self.change_user(Change::SetPassword { name, password });
+        }
+    }
+
     fn apply(&mut self, modules: Vec<String>) {
         match self.host().map(String::from) {
             Some(host) => (self.applier)(host, modules, self.request_tx.clone()),
@@ -219,8 +397,14 @@ impl App {
     fn input_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
+                let back = match self.mode {
+                    Mode::UserName | Mode::UserPassword | Mode::UserRepeat => Mode::Window,
+                    _ => Mode::Normal,
+                };
                 self.input.clear();
-                self.mode = Mode::Normal;
+                self.first_password.clear();
+                self.pending_name = None;
+                self.mode = back;
             }
             KeyCode::Backspace => {
                 self.input.pop();
@@ -228,6 +412,9 @@ impl App {
             KeyCode::Char(c) => self.input.push(c),
             KeyCode::Enter => match self.mode {
                 Mode::Command => self.run_command(),
+                Mode::UserName => self.submit_user_name(),
+                Mode::UserPassword => self.submit_user_password(),
+                Mode::UserRepeat => self.submit_user_repeat(),
                 _ => self.add_host(),
             },
             _ => {}
@@ -262,7 +449,11 @@ impl App {
             let _ = request.reply.send(password);
         }
         self.input.clear();
-        self.mode = Mode::Normal;
+        self.mode = if self.window.is_some() {
+            Mode::Window
+        } else {
+            Mode::Normal
+        };
     }
 
     fn run_command(&mut self) {
@@ -633,5 +824,242 @@ mod tests {
         let mut app = App::new(None, rx, Box::new(|_, _| {}));
         app.hosts = vec!["a@one".into()];
         app.on_key(key(KeyCode::Char('p')));
+    }
+
+    type Loads = Rc<RefCell<Vec<String>>>;
+    type Changes = Rc<RefCell<Vec<(String, Change)>>>;
+
+    fn users_app() -> (App, Loads, Changes) {
+        let loads = Rc::new(RefCell::new(Vec::new()));
+        let changes = Rc::new(RefCell::new(Vec::new()));
+        let (seen_loads, seen_changes) = (loads.clone(), changes.clone());
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {})).with_users(
+            Box::new(move |host, _, _| seen_loads.borrow_mut().push(host)),
+            Box::new(move |host, change, _, _| seen_changes.borrow_mut().push((host, change))),
+        );
+        app.hosts = vec!["a@one".into()];
+        (app, loads, changes)
+    }
+
+    fn open_users_window(app: &mut App) {
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Enter));
+    }
+
+    fn deliver(app: &mut App, names: &[&str]) {
+        let list = names
+            .iter()
+            .map(|n| User {
+                name: n.to_string(),
+            })
+            .collect();
+        app.event_tx.send(UiEvent::Users(Ok(list))).unwrap();
+        app.drain();
+    }
+
+    #[test]
+    fn opening_the_nt4_window_loads_the_users() {
+        let (mut app, loads, _) = users_app();
+        open_users_window(&mut app);
+        assert_eq!(app.window.unwrap().id, "nt4-domain");
+        assert_eq!(loads.borrow().as_slice(), ["a@one"]);
+        assert_eq!(app.users, UsersState::Loading);
+        deliver(&mut app, &["james", "olive"]);
+        assert_eq!(app.selected_user(), Some("james"));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.selected_user(), Some("olive"));
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.selected_user(), Some("james"));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.users, UsersState::Idle);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn other_windows_do_not_load_users() {
+        let (mut app, loads, _) = users_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.window.unwrap().id, "gateway");
+        assert!(loads.borrow().is_empty());
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(
+            app.mode,
+            Mode::Window,
+            "n only means something in the users window"
+        );
+    }
+
+    #[test]
+    fn errors_and_missing_hosts_show_in_the_window() {
+        let (mut app, _, _) = users_app();
+        open_users_window(&mut app);
+        app.event_tx
+            .send(UiEvent::Users(Err("no settings".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.users, UsersState::Failed("no settings".into()));
+        let (mut app, loads, _) = users_app();
+        app.hosts.clear();
+        open_users_window(&mut app);
+        assert!(matches!(app.users, UsersState::Failed(_)));
+        assert!(loads.borrow().is_empty());
+    }
+
+    #[test]
+    fn r_reloads_the_users() {
+        let (mut app, loads, _) = users_app();
+        open_users_window(&mut app);
+        app.on_key(key(KeyCode::Char('r')));
+        assert_eq!(loads.borrow().len(), 2);
+    }
+
+    #[test]
+    fn adding_a_user_asks_for_the_name_then_the_password_twice() {
+        let (mut app, _, changes) = users_app();
+        open_users_window(&mut app);
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.mode, Mode::UserName);
+        type_text(&mut app, "Bad Name");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::UserName, "an invalid name is refused");
+        for _ in 0..8 {
+            app.on_key(key(KeyCode::Backspace));
+        }
+        type_text(&mut app, "olive");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::UserPassword);
+        assert_eq!(app.pending_name(), Some("olive"));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::UserPassword, "an empty password is refused");
+        type_text(&mut app, "secret");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::UserRepeat);
+        type_text(&mut app, "secret");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Window);
+        assert_eq!(app.users, UsersState::Loading);
+        assert_eq!(
+            changes.borrow().as_slice(),
+            [(
+                "a@one".to_string(),
+                Change::SetPassword {
+                    name: "olive".into(),
+                    password: "secret".into()
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn mismatched_passwords_change_nothing() {
+        let (mut app, _, changes) = users_app();
+        open_users_window(&mut app);
+        app.on_key(key(KeyCode::Char('n')));
+        type_text(&mut app, "olive");
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "one");
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "two");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Window);
+        assert!(changes.borrow().is_empty());
+        assert!(app.pending_name().is_none());
+    }
+
+    #[test]
+    fn p_changes_the_selected_users_password() {
+        let (mut app, _, changes) = users_app();
+        open_users_window(&mut app);
+        app.on_key(key(KeyCode::Char('p')));
+        assert_eq!(
+            app.mode,
+            Mode::Window,
+            "nothing is selected before the list loads"
+        );
+        deliver(&mut app, &["james"]);
+        app.on_key(key(KeyCode::Char('p')));
+        assert_eq!(app.pending_name(), Some("james"));
+        type_text(&mut app, "new");
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "new");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            changes.borrow()[0].1,
+            Change::SetPassword {
+                name: "james".into(),
+                password: "new".into()
+            }
+        );
+    }
+
+    #[test]
+    fn esc_leaves_a_user_prompt_for_the_window() {
+        let (mut app, _, changes) = users_app();
+        open_users_window(&mut app);
+        app.on_key(key(KeyCode::Char('n')));
+        type_text(&mut app, "olive");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Window);
+        assert!(app.window.is_some());
+        assert!(app.input.is_empty() && changes.borrow().is_empty());
+    }
+
+    #[test]
+    fn deleting_needs_a_yes() {
+        let (mut app, _, changes) = users_app();
+        open_users_window(&mut app);
+        deliver(&mut app, &["james"]);
+        app.on_key(key(KeyCode::Char('d')));
+        assert_eq!(app.mode, Mode::UserDelete);
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.mode, Mode::Window);
+        assert!(changes.borrow().is_empty());
+        app.on_key(key(KeyCode::Char('d')));
+        app.on_key(key(KeyCode::Char('y')));
+        assert_eq!(
+            changes.borrow().as_slice(),
+            [(
+                "a@one".to_string(),
+                Change::Remove {
+                    name: "james".into()
+                }
+            )]
+        );
+    }
+
+    #[test]
+    fn a_sudo_prompt_returns_to_the_open_window() {
+        let (mut app, _, _) = users_app();
+        open_users_window(&mut app);
+        let (reply, answer) = mpsc::channel();
+        app.password = Some(PasswordRequest {
+            prompt: "sudo password".into(),
+            reply,
+        });
+        app.mode = Mode::Password;
+        type_text(&mut app, "pw");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(answer.recv().unwrap(), Some("pw".to_string()));
+        assert_eq!(app.mode, Mode::Window);
+    }
+
+    #[test]
+    fn default_users_hooks_report_they_are_unavailable() {
+        let (_tx, rx) = mpsc::channel();
+        let mut app = App::new(None, rx, Box::new(|_, _| {}));
+        app.hosts = vec!["a@one".into()];
+        open_users_window(&mut app);
+        app.on_key(key(KeyCode::Char('n')));
+        type_text(&mut app, "olive");
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "x");
+        app.on_key(key(KeyCode::Enter));
+        type_text(&mut app, "x");
+        app.on_key(key(KeyCode::Enter));
     }
 }
