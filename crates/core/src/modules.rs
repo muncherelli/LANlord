@@ -56,9 +56,9 @@ pub const MODULES: &[Module] = &[
         "docker",
         "Docker",
         ["  ▄▄▄  ", "▄█████▄", " ▀▀▀▀▀ "],
-        "Installs Docker and gives eth1 its own address, with eth0 firewalled off from the retro lan.",
-        "docker:\n  lan_interface: eth1\n  lan_address: 172.16.120.2/22",
-        Status::Planned,
+        "Installs Docker, gives the internal network an extra address and drops NetBIOS and SMB on the host network. Works on lxc, vms and bare metal.",
+        "docker:\n  host_interface: eth0\n  internal_interface: eth1\n  internal_address: 172.16.120.2/22",
+        Status::Available,
     ),
     Module::new(
         "nt4-domain",
@@ -129,7 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn gateway_is_the_available_module() {
+    fn gateway_and_docker_are_available() {
         assert_eq!(find("gateway").unwrap().status, Status::Available);
+        assert_eq!(find("docker").unwrap().status, Status::Available);
+        assert_eq!(find("nt4-domain").unwrap().status, Status::Planned);
     }
 }

@@ -605,8 +605,9 @@ mod tests {
         let (mut app, applied) = applying_app();
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Right));
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.window.unwrap().id, "docker");
+        assert_eq!(app.window.unwrap().id, "nt4-domain");
         app.on_key(key(KeyCode::Enter));
         assert!(applied.borrow().is_empty());
     }

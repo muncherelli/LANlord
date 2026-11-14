@@ -1,0 +1,239 @@
+# the docker module: docker itself, an address for the internal (retro) network
+# and a firewall that keeps netbios and smb off the host network. it does
+# nothing until your settings have a `docker:` section, and it works on lxc
+# containers, virtual machines and bare metal.
+#
+# docker:
+#   host_interface: eth0         # your normal network; default: the default route's interface
+#   internal_interface: eth1     # the retro network; default: the only other interface
+#   internal_address: 172.16.120.2/22   # an extra address on it, optional
+- name: lanlord docker
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  tags: [docker]
+  tasks:
+    - name: check the interface names and address in your settings
+      ansible.builtin.assert:
+        that:
+          - docker.host_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
+          - docker.internal_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
+          - docker.internal_address | default('10.0.0.1/8') is match('^[0-9a-fA-F:.]+/[0-9]{1,3}$')
+        fail_msg: "docker settings: interface names and the address need a plain value like eth1 and 172.16.120.2/22"
+      when: docker is defined
+
+    - name: work out the host network interface
+      ansible.builtin.set_fact:
+        host_interface: "{{ docker.host_interface | default(ansible_facts['default_ipv4']['interface'] | default('')) }}"
+      when: docker is defined
+
+    - name: list the interfaces that could be the internal network
+      ansible.builtin.set_fact:
+        internal_candidates: >-
+          {{ ansible_facts['interfaces']
+             | reject('match', '^(lo|docker|br-|veth|virbr|tun|tap|wg|tailscale)')
+             | reject('equalto', host_interface) | list }}
+      when: docker is defined
+
+    - name: work out the internal network interface
+      ansible.builtin.set_fact:
+        internal_interface: "{{ docker.internal_interface | default(internal_candidates[0] if internal_candidates | length == 1 else '') }}"
+      when: docker is defined
+
+    - name: stop if the interfaces are ambiguous
+      ansible.builtin.fail:
+        msg: >-
+          could not tell the interfaces apart (host: '{{ host_interface }}',
+          internal: '{{ internal_interface }}', others: {{ internal_candidates }}).
+          set docker.host_interface and docker.internal_interface in your settings.
+      when: docker is defined and (host_interface == '' or internal_interface == '' or host_interface == internal_interface)
+
+    - name: say what this machine is
+      ansible.builtin.debug:
+        msg: >-
+          {{ ansible_facts['virtualization_type'] | default('bare metal') or 'bare metal' }};
+          host network {{ host_interface }}, internal network {{ internal_interface }}
+      when: docker is defined
+
+    - name: install docker on arch
+      ansible.builtin.command: pacman -S --needed --noconfirm docker
+      register: pacman_docker
+      changed_when: "'there is nothing to do' not in pacman_docker.stdout"
+      when: docker is defined and ansible_facts['os_family'] == 'Archlinux'
+
+    - name: install docker on debian
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: true
+      when: docker is defined and ansible_facts['os_family'] == 'Debian'
+
+    - name: start docker
+      when: docker is defined
+      block:
+        - name: start docker now and at boot
+          ansible.builtin.systemd:
+            name: docker
+            enabled: true
+            state: started
+      rescue:
+        - name: explain why docker did not start
+          ansible.builtin.fail:
+            msg: >-
+              docker did not start.
+              {{ 'an lxc container needs the nesting and keyctl features turned on in proxmox.'
+                 if ansible_facts['virtualization_type'] | default('') == 'lxc' else '' }}
+
+    - name: check which storage driver docker picked
+      ansible.builtin.command: docker info --format '{% raw %}{{.Driver}}{% endraw %}'
+      register: storage_driver
+      changed_when: false
+      when: docker is defined
+
+    # docker 29 calls its overlay driver overlayfs, older versions overlay2
+    - name: warn when docker is not using an overlay driver
+      ansible.builtin.debug:
+        msg: >-
+          docker uses the {{ storage_driver.stdout }} storage driver instead of overlay.
+          on zfs give /var/lib/docker its own ext4 volume.
+      when: docker is defined and storage_driver.stdout not in ['overlay2', 'overlayfs']
+
+    - name: check that containers run
+      ansible.builtin.command: docker run --rm hello-world
+      changed_when: false
+      when: docker is defined
+
+    - name: find out which network manager is running
+      ansible.builtin.shell: |
+        for unit in systemd-networkd NetworkManager; do
+          if systemctl is-active --quiet "$unit"; then echo "$unit"; exit 0; fi
+        done
+        echo none
+      register: net_manager
+      changed_when: false
+      when: docker is defined and docker.internal_address is defined
+
+    - name: stop on a network manager we cannot configure
+      ansible.builtin.fail:
+        msg: >-
+          network manager '{{ net_manager.stdout }}' is not supported yet (systemd-networkd and
+          NetworkManager are). add {{ docker.internal_address }} to {{ internal_interface }}
+          yourself and remove internal_address from your settings.
+      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'none'
+
+    - name: make a place for the internal interface's extra settings
+      ansible.builtin.file:
+        path: "/etc/systemd/network/{{ internal_interface }}.network.d"
+        state: directory
+        mode: "0755"
+      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'systemd-networkd'
+
+    # proxmox rewrites the main .network file of a container, but never this drop-in
+    - name: give the internal interface its extra address (systemd-networkd)
+      ansible.builtin.copy:
+        dest: "/etc/systemd/network/{{ internal_interface }}.network.d/lanlord.conf"
+        content: |
+          [Network]
+          Address={{ docker.internal_address }}
+        mode: "0644"
+      register: networkd_address
+      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'systemd-networkd'
+
+    - name: apply the new address (systemd-networkd)
+      ansible.builtin.command: networkctl reload
+      changed_when: true
+      when: networkd_address is changed
+
+    - name: find the NetworkManager connection of the internal interface
+      ansible.builtin.command: "nmcli -g GENERAL.CONNECTION device show {{ internal_interface }}"
+      register: nm_connection
+      changed_when: false
+      failed_when: nm_connection.stdout == ''
+      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'NetworkManager'
+
+    - name: read its addresses
+      ansible.builtin.command: "nmcli -g ipv4.addresses connection show '{{ nm_connection.stdout }}'"
+      register: nm_addresses
+      changed_when: false
+      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'NetworkManager'
+
+    - name: give the internal interface its extra address (NetworkManager)
+      ansible.builtin.command: "nmcli connection modify '{{ nm_connection.stdout }}' +ipv4.addresses {{ docker.internal_address }}"
+      register: nm_added
+      when: >-
+        docker is defined and docker.internal_address is defined and net_manager.stdout == 'NetworkManager'
+        and docker.internal_address not in nm_addresses.stdout
+
+    - name: apply the new address (NetworkManager)
+      ansible.builtin.command: "nmcli connection up '{{ nm_connection.stdout }}'"
+      changed_when: true
+      when: nm_added is changed
+
+    - name: wait for the address to show up
+      ansible.builtin.command: "ip -o addr show dev {{ internal_interface }}"
+      register: internal_addresses
+      until: docker.internal_address.split('/')[0] in internal_addresses.stdout
+      retries: 10
+      delay: 1
+      changed_when: false
+      when: docker is defined and docker.internal_address is defined
+
+    - name: make a place for lanlord's firewall rules
+      ansible.builtin.file:
+        path: /etc/lanlord
+        state: directory
+        mode: "0755"
+      when: docker is defined
+
+    - name: keep netbios and smb off the host network
+      ansible.builtin.copy:
+        dest: /etc/lanlord/firewall.nft
+        content: |
+          add table inet lanlord
+          flush table inet lanlord
+          table inet lanlord {
+            chain input {
+              type filter hook input priority -10; policy accept;
+              iifname "{{ host_interface }}" udp dport { 137, 138 } drop
+              iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
+            }
+          }
+        mode: "0644"
+        validate: nft -c -f %s
+      register: firewall_rules
+      when: docker is defined
+
+    - name: load the firewall at boot
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/lanlord-firewall.service
+        content: |
+          [Unit]
+          Description=lanlord firewall for the internal network
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/bin/nft -f /etc/lanlord/firewall.nft
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+      register: firewall_unit
+      when: docker is defined
+
+    - name: enable the firewall and load the current rules
+      ansible.builtin.systemd:
+        name: lanlord-firewall
+        enabled: true
+        state: restarted
+        daemon_reload: true
+      when: docker is defined and (firewall_rules is changed or firewall_unit is changed)
+
+    - name: report
+      ansible.builtin.debug:
+        msg: >-
+          docker is running ({{ storage_driver.stdout }});
+          {{ internal_interface }} is the internal network and {{ host_interface }} drops netbios and smb
+      when: docker is defined
