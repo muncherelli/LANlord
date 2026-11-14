@@ -23,47 +23,67 @@ pub struct Module {
     pub status: Status,
 }
 
+impl Module {
+    const fn new(
+        id: &'static str,
+        name: &'static str,
+        icon: [&'static str; 3],
+        summary: &'static str,
+        example: &'static str,
+        status: Status,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            icon,
+            summary,
+            example,
+            status,
+        }
+    }
+}
+
 pub const MODULES: &[Module] = &[
-    Module {
-        id: "gateway",
-        name: "Gateway",
-        icon: ["┌─────┐", "│ ▒▒▒ │", "└─┬─┬─┘"],
-        summary: "Baseline for the gateway: its state record and message of the day.",
-        example: "gateway:\n  motd: \"welcome to the retronet\\n\"",
-        status: Status::Available,
-    },
-    Module {
-        id: "docker",
-        name: "Docker",
-        icon: ["  ▄▄▄  ", "▄█████▄", " ▀▀▀▀▀ "],
-        summary: "Installs Docker and gives eth1 its own address, with eth0 firewalled off from the retro lan.",
-        example: "docker:\n  lan_interface: eth1\n  lan_address: 172.16.120.2/22",
-        status: Status::Planned,
-    },
-    Module {
-        id: "nt4-domain",
-        name: "NT4 Domain",
-        icon: ["╔═════╗", "║ NT4 ║", "╚═════╝"],
-        summary: "A Samba NT4-style primary domain controller in Docker, on eth1 only, with a basic set of logins.",
-        example: "nt4-domain:\n  domain: RETRONET\n  users:\n    - name: james",
-        status: Status::Planned,
-    },
-    Module {
-        id: "web-proxy",
-        name: "Web Proxy",
-        icon: ["  ◢◣   ", " ◢██◣  ", "◢████◣ "],
-        summary: "Caddy in Docker, proxying sites on the retro lan and the lanlord web interface.",
-        example: "web-proxy:\n  sites:\n    - host: nostalgia.lan\n      upstream: 172.16.120.20:80",
-        status: Status::Planned,
-    },
-    Module {
-        id: "remote-commands",
-        name: "Remote Cmds",
-        icon: ["┌─────┐", "│ C:\\>│", "└─────┘"],
-        summary: "Run commands on NT4 servers through the Resource Kit Remote Command Service.",
-        example: "remote-commands:\n  servers:\n    - name: NTSRV1\n      address: 172.16.120.10",
-        status: Status::Planned,
-    },
+    Module::new(
+        "gateway",
+        "Gateway",
+        ["┌─────┐", "│ ▒▒▒ │", "└─┬─┬─┘"],
+        "Baseline for the gateway: its state record and message of the day.",
+        "gateway:\n  motd: \"welcome to the retronet\\n\"",
+        Status::Available,
+    ),
+    Module::new(
+        "docker",
+        "Docker",
+        ["  ▄▄▄  ", "▄█████▄", " ▀▀▀▀▀ "],
+        "Installs Docker and gives eth1 its own address, with eth0 firewalled off from the retro lan.",
+        "docker:\n  lan_interface: eth1\n  lan_address: 172.16.120.2/22",
+        Status::Planned,
+    ),
+    Module::new(
+        "nt4-domain",
+        "NT4 Domain",
+        ["╔═════╗", "║ NT4 ║", "╚═════╝"],
+        "A Samba NT4-style primary domain controller in Docker, on eth1 only, with a basic set of logins.",
+        "nt4-domain:\n  domain: RETRONET\n  users:\n    - name: james",
+        Status::Planned,
+    ),
+    Module::new(
+        "web-proxy",
+        "Web Proxy",
+        ["  ◢◣   ", " ◢██◣  ", "◢████◣ "],
+        "Caddy in Docker, proxying sites on the retro lan and the lanlord web interface.",
+        "web-proxy:\n  sites:\n    - host: nostalgia.lan\n      upstream: 172.16.120.20:80",
+        Status::Planned,
+    ),
+    Module::new(
+        "remote-commands",
+        "Remote Cmds",
+        ["┌─────┐", "│ C:\\>│", "└─────┘"],
+        "Run commands on NT4 servers through the Resource Kit Remote Command Service.",
+        "remote-commands:\n  servers:\n    - name: NTSRV1\n      address: 172.16.120.10",
+        Status::Planned,
+    ),
 ];
 
 /// look a module up by its id.
