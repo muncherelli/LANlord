@@ -2,6 +2,7 @@ use std::process::Command as Local;
 
 use anyhow::{bail, Result};
 
+use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
 /// where ansible runs for this gateway.
@@ -139,24 +140,39 @@ fn plan(script: String, password: Option<&str>) -> (Vec<String>, String) {
     }
 }
 
+/// asks the user for a password; the argument says what for.
+pub type AskPassword<'a> = &'a mut dyn FnMut(&str) -> Result<String>;
+
 /// set up the gateway on `opts.host`; the ssh user needs sudo.
-pub fn bootstrap(opts: &Options) -> Result<()> {
-    let session = Session::new(&opts.host)?;
+pub fn bootstrap(opts: &Options, ask_password: AskPassword) -> Result<()> {
+    bootstrap_with(&Session::new(&opts.host)?, opts, ask_password)
+}
+
+fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) -> Result<()> {
+    emit(Kind::Info, format!("checking {}", opts.host));
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let script = script(opts, admin)?;
 
-    // sudo -n fails when a password is needed; then read it once and feed it to sudo -S
+    // sudo -n fails when a password is needed; then ask once and feed it to sudo -S
     let password = if session.capture(&sudo(&["-n", "true"])).is_ok() {
         None
     } else {
-        Some(rpassword::prompt_password(format!(
-            "sudo password for {admin}: "
-        ))?)
+        Some(ask_password(&format!("sudo password for {admin}"))?)
     };
     let (remote, input) = plan(script, password.as_deref());
+    emit(
+        Kind::Info,
+        format!(
+            "setting up {} as {admin} (ansible: {:?})",
+            opts.host, opts.ansible
+        ),
+    );
     match session.run_with_stdin(&remote, input.as_bytes())? {
-        0 => Ok(()),
+        0 => {
+            emit(Kind::Info, "bootstrap finished");
+            Ok(())
+        }
         code => bail!("bootstrap failed with status {code}"),
     }
 }
@@ -267,6 +283,88 @@ mod tests {
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
+        }
+    }
+
+    #[cfg(unix)]
+    mod session {
+        use super::*;
+        use std::cell::Cell;
+
+        /// a fake ssh that answers `id -un`, lets `sudo -n true` succeed or
+        /// fail, and saves whatever the bootstrap command reads on stdin.
+        fn gateway(sudo_ok: bool, record: &std::path::Path, exit: i32) -> Session {
+            Session::fake(&format!(
+                r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit {sudo} ;;
+  *) cat > '{path}'; exit {exit} ;;
+esac"#,
+                sudo = if sudo_ok { 0 } else { 1 },
+                path = record.display(),
+            ))
+        }
+
+        fn temp(name: &str) -> std::path::PathBuf {
+            std::env::temp_dir().join(format!("lanlord-bootstrap-{}-{name}", std::process::id()))
+        }
+
+        fn options() -> Options {
+            Options {
+                host: "gw".into(),
+                ansible: AnsibleMode::Local,
+                passwordless_sudo: false,
+            }
+        }
+
+        #[test]
+        fn passwordless_sudo_never_asks() {
+            let record = temp("nopass");
+            let asked = Cell::new(false);
+            let mut ask = |_: &str| {
+                asked.set(true);
+                Ok("x".to_string())
+            };
+            bootstrap_with(&gateway(true, &record, 0), &options(), &mut ask).unwrap();
+            let sent = std::fs::read_to_string(&record).unwrap();
+            assert!(sent.starts_with("set -eu"), "{sent}");
+            assert!(!asked.get());
+            let _ = std::fs::remove_file(record);
+        }
+
+        #[test]
+        fn sudo_password_goes_first_on_stdin() {
+            let record = temp("pass");
+            let mut what = String::new();
+            let mut ask = |w: &str| {
+                what = w.to_string();
+                Ok("hunter2".to_string())
+            };
+            bootstrap_with(&gateway(false, &record, 0), &options(), &mut ask).unwrap();
+            let sent = std::fs::read_to_string(&record).unwrap();
+            assert!(sent.starts_with("hunter2\nset -eu"), "{sent}");
+            assert_eq!(what, "sudo password for tester");
+            let _ = std::fs::remove_file(record);
+        }
+
+        #[test]
+        fn a_cancelled_prompt_stops_bootstrap() {
+            let record = temp("cancel");
+            let mut ask = |_: &str| anyhow::bail!("cancelled");
+            let err =
+                bootstrap_with(&gateway(false, &record, 0), &options(), &mut ask).unwrap_err();
+            assert_eq!(err.to_string(), "cancelled");
+            assert!(!record.exists());
+        }
+
+        #[test]
+        fn a_failing_script_is_an_error() {
+            let record = temp("fail");
+            let mut ask = |_: &str| Ok(String::new());
+            let err = bootstrap_with(&gateway(true, &record, 4), &options(), &mut ask).unwrap_err();
+            assert!(err.to_string().contains("status 4"), "{err}");
+            let _ = std::fs::remove_file(record);
         }
     }
 }

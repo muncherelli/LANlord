@@ -15,3 +15,4 @@ clap.workspace = true
 lanlord-core = { path = "../core" }
 lanlord-tui = { path = "../tui" }
 lanlord-ui = { path = "../ui", optional = true }
+rpassword = "7.5.5"

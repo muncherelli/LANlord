@@ -82,6 +82,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let (label, prompt) = match app.mode {
         Mode::AddHost => (" Add host (user@host) ".to_string(), "> "),
+        Mode::Password => (
+            format!(
+                " {} ",
+                app.password
+                    .as_ref()
+                    .map_or("Password", |p| p.prompt.as_str())
+            ),
+            "> ",
+        ),
         _ => (
             format!(" Command on {} ", app.host().unwrap_or("-")),
             if app.mode == Mode::Command {
@@ -91,7 +100,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
             },
         ),
     };
-    let input = Paragraph::new(format!("{prompt}{}", app.input)).block(window(label));
+    // never show a password
+    let shown = if app.mode == Mode::Password {
+        "*".repeat(app.input.chars().count())
+    } else {
+        app.input.clone()
+    };
+    let input = Paragraph::new(format!("{prompt}{shown}")).block(window(label));
     frame.render_widget(input, rows[2]);
     if app.mode != Mode::Normal {
         let x = rows[2].x + 1 + (prompt.len() + app.input.chars().count()) as u16;
@@ -99,7 +114,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     let hint = match app.mode {
-        Mode::Normal => " up/down select   enter command   a add host   q quit ",
+        Mode::Normal => " up/down select   enter command   b bootstrap   a add host   q quit ",
+        Mode::Password => " enter send   esc cancel ",
         Mode::Command => " enter run   esc back ",
         Mode::AddHost => " enter save   esc cancel ",
     };
@@ -158,6 +174,23 @@ mod tests {
         assert!(text.contains("Command on me@gw"));
         assert!(text.contains("line-39"));
         assert!(!text.contains("line-0 "));
+    }
+
+    #[test]
+    fn passwords_are_masked() {
+        let (reply, _answer) = mpsc::channel();
+        let mut app = app();
+        app.mode = Mode::Password;
+        app.password = Some(crate::app::PasswordRequest {
+            prompt: "sudo password for me".into(),
+            reply,
+        });
+        app.input = "hunter2".into();
+        let text = render(&app);
+        assert!(text.contains("sudo password for me"));
+        assert!(text.contains("> *******"));
+        assert!(!text.contains("hunter2"));
+        assert!(text.contains("esc cancel"));
     }
 
     #[test]

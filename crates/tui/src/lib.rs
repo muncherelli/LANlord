@@ -7,13 +7,15 @@ mod ui;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec_detached, Target};
 use lanlord_core::log::{emit, subscribe, Kind};
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
 
-use app::App;
+use app::{App, PasswordRequest};
+use std::sync::mpsc::{self, Sender};
 
 /// draw and handle input until the app asks to quit.
 fn run_loop<B: Backend>(
@@ -45,10 +47,39 @@ fn spawn_runner(host: String, command: Vec<String>) {
     );
 }
 
+/// run bootstrap on its own thread; passwords are asked for through the ui.
+fn spawn_bootstrap(host: String, requests: Sender<PasswordRequest>) {
+    std::thread::spawn(move || {
+        let options = Options {
+            host,
+            ansible: AnsibleMode::detect(),
+            passwordless_sudo: false,
+        };
+        let mut ask = |what: &str| -> Result<String> {
+            let (reply, answer) = mpsc::channel();
+            requests
+                .send(PasswordRequest {
+                    prompt: what.to_string(),
+                    reply,
+                })
+                .map_err(|_| anyhow!("the ui is gone"))?;
+            answer
+                .recv()
+                .ok()
+                .flatten()
+                .ok_or_else(|| anyhow!("cancelled"))
+        };
+        if let Err(err) = bootstrap(&options, &mut ask) {
+            emit(Kind::Err, err.to_string());
+        }
+    });
+}
+
 /// open the tui and block until it is closed.
 pub fn run() -> Result<()> {
     let logs = subscribe();
-    let mut app = App::new(hosts::config_path(), logs, Box::new(spawn_runner));
+    let mut app = App::new(hosts::config_path(), logs, Box::new(spawn_runner))
+        .with_bootstrapper(Box::new(spawn_bootstrap));
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app, || {
         event::poll(Duration::from_millis(50))

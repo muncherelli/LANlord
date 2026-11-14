@@ -208,6 +208,25 @@ impl Session {
     }
 }
 
+#[cfg(all(test, unix))]
+impl Session {
+    /// a session that runs `script` instead of ssh, to test without a server.
+    pub(crate) fn fake(script: &str) -> Session {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "lanlord-fake-ssh-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, format!("{script}\n")).unwrap();
+        let mut session = Session::new("gw").unwrap();
+        // run it through sh so we never exec a file we just wrote (ETXTBSY)
+        session.program = vec!["sh".into(), path.to_string_lossy().into_owned()];
+        session
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,34 +264,17 @@ mod tests {
         assert!(matches!(classify("boom"), SshError::Failed(_)));
     }
 
-    /// a session that runs `script` instead of ssh, to test without a server.
-    #[cfg(unix)]
-    fn fake(script: &str) -> Session {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "lanlord-fake-ssh-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, format!("{script}\n")).unwrap();
-        let mut session = Session::new("gw").unwrap();
-        // run it through sh so we never exec a file we just wrote (ETXTBSY)
-        session.program = vec!["sh".into(), path.to_string_lossy().into_owned()];
-        session
-    }
-
     #[cfg(unix)]
     #[test]
     fn capture_returns_stdout() {
-        let session = fake("echo hello");
+        let session = Session::fake("echo hello");
         assert_eq!(session.capture(&["x".into()]).unwrap(), "hello\n");
     }
 
     #[cfg(unix)]
     #[test]
     fn capture_reports_a_failing_command() {
-        let session = fake("echo nope >&2; exit 3");
+        let session = Session::fake("echo nope >&2; exit 3");
         let err = session.capture(&[]).unwrap_err().to_string();
         assert!(err.contains("status 3") && err.contains("nope"), "{err}");
     }
@@ -280,7 +282,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn capture_classifies_ssh_failures() {
-        let session = fake("echo 'communication with agent failed' >&2; exit 255");
+        let session = Session::fake("echo 'communication with agent failed' >&2; exit 255");
         let err = session.capture(&[]).unwrap_err();
         assert!(matches!(
             err.downcast_ref::<SshError>(),
@@ -293,7 +295,7 @@ mod tests {
     fn run_sends_output_to_the_log() {
         use crate::log::subscribe;
         let rx = subscribe();
-        fake("echo log-ssh-out; echo log-ssh-err >&2")
+        Session::fake("echo log-ssh-out; echo log-ssh-err >&2")
             .run(&[])
             .unwrap();
         let lines: Vec<_> = rx.try_iter().collect();
@@ -310,27 +312,34 @@ mod tests {
     #[test]
     fn stream_gives_the_remote_no_stdin() {
         // wc reads nothing, so the fake exits 0 instead of waiting on us
-        assert_eq!(fake("exit $(wc -c | tr -d ' ')").stream(&[]).unwrap(), 0);
+        assert_eq!(
+            Session::fake("exit $(wc -c | tr -d ' ')")
+                .stream(&[])
+                .unwrap(),
+            0
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn run_returns_the_exit_code() {
-        assert_eq!(fake("exit 0").run(&[]).unwrap(), 0);
-        assert_eq!(fake("exit 7").run(&[]).unwrap(), 7);
+        assert_eq!(Session::fake("exit 0").run(&[]).unwrap(), 0);
+        assert_eq!(Session::fake("exit 7").run(&[]).unwrap(), 7);
     }
 
     #[cfg(unix)]
     #[test]
     fn run_maps_connection_failures() {
-        let err = fake("echo 'Host key verification failed.' >&2; exit 255")
+        let err = Session::fake("echo 'Host key verification failed.' >&2; exit 255")
             .run(&[])
             .unwrap_err();
         assert!(matches!(
             err.downcast_ref::<SshError>(),
             Some(SshError::HostKey)
         ));
-        let err = fake("echo weird >&2; exit 255").run(&[]).unwrap_err();
+        let err = Session::fake("echo weird >&2; exit 255")
+            .run(&[])
+            .unwrap_err();
         assert!(err.to_string().contains("could not connect"));
     }
 
@@ -338,7 +347,7 @@ mod tests {
     #[test]
     fn run_with_stdin_feeds_the_remote() {
         // the fake ssh exits with the number of bytes it read
-        let session = fake("exit $(wc -c | tr -d ' ')");
+        let session = Session::fake("exit $(wc -c | tr -d ' ')");
         assert_eq!(session.run_with_stdin(&[], b"abcde").unwrap(), 5);
     }
 
