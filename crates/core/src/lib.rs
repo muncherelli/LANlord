@@ -5,4 +5,5 @@ pub mod apply;
 pub mod bootstrap;
 pub mod exec;
 pub mod log;
+pub mod payload;
 pub mod ssh;
