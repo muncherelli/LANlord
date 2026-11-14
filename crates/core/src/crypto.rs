@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 
 use age::secrecy::ExposeSecret;
-use age::x25519::Identity;
+pub use age::x25519::Identity;
 use anyhow::{bail, Context, Result};
 
 /// create a new identity at `path` and return its public recipient.

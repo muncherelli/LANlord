@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
+use lanlord_core::users::Change;
 use lanlord_core::{crypto, paths};
 
 #[derive(Parser)]
@@ -30,6 +31,18 @@ enum ConfigCommand {
     Push { host: String, file: PathBuf },
     /// fetch the gateway's settings and print them decrypted
     Show { host: String },
+}
+
+#[derive(Subcommand)]
+enum UsersCommand {
+    /// list the logins in your settings
+    List,
+    /// add a login; asks for its password
+    Add { name: String },
+    /// change a login's password
+    Passwd { name: String },
+    /// remove a login
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -65,6 +78,12 @@ enum Command {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
+    /// manage the logins of the nt4-domain module
+    Users {
+        host: String,
+        #[command(subcommand)]
+        action: UsersCommand,
+    },
     /// create the key that encrypts your settings
     Keygen,
     /// store and read the encrypted settings on a gateway
@@ -83,6 +102,34 @@ fn ask(what: &str) -> Result<String> {
 
 fn identity_path() -> Result<PathBuf> {
     paths::identity_path().ok_or_else(|| anyhow::anyhow!("could not find a config directory"))
+}
+
+/// ask for a new password twice.
+fn new_password(name: &str) -> Result<String> {
+    let first = rpassword::prompt_password(format!("new password for {name}: "))?;
+    let again = rpassword::prompt_password("again: ")?;
+    if first != again {
+        bail!("the passwords do not match");
+    }
+    Ok(first)
+}
+
+fn users(host: &str, action: UsersCommand) -> Result<()> {
+    let identity = crypto::load(&identity_path()?)?;
+    let change = match action {
+        UsersCommand::List => {
+            for user in lanlord_core::users::list_on(host, &identity, &mut ask)? {
+                println!("{}", user.name);
+            }
+            return Ok(());
+        }
+        UsersCommand::Add { name } | UsersCommand::Passwd { name } => {
+            let password = new_password(&name)?;
+            Change::SetPassword { name, password }
+        }
+        UsersCommand::Remove { name } => Change::Remove { name },
+    };
+    lanlord_core::users::change(host, &identity, &change, &mut ask).map(|_| ())
 }
 
 fn keygen() -> Result<()> {
@@ -131,6 +178,7 @@ fn main() -> Result<()> {
             let identity = crypto::load_default()?;
             lanlord_core::apply::apply(&host, identity.as_ref(), &modules, &mut ask)
         }
+        Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {
             let identity = crypto::load(&identity_path()?)?;

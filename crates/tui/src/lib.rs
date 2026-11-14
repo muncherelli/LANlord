@@ -12,11 +12,12 @@ use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::crypto;
 use lanlord_core::exec::{exec_detached, Target};
 use lanlord_core::log::{emit, subscribe, Kind};
+use lanlord_core::users::{self, Change};
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::Terminal;
 
-use app::{App, PasswordRequest};
+use app::{App, PasswordRequest, UiEvent};
 use std::sync::mpsc::{self, Sender};
 
 /// draw and handle input until the app asks to quit.
@@ -92,12 +93,46 @@ fn spawn_apply(host: String, modules: Vec<String>, requests: Sender<PasswordRequ
     });
 }
 
+/// the key every users task needs, or why there is none.
+fn key() -> Result<crypto::Identity> {
+    crypto::load_default()?.ok_or_else(|| anyhow!("no key yet; run lanlord keygen first"))
+}
+
+/// fetch the logins on its own thread and send them to the ui.
+fn spawn_users_load(host: String, requests: Sender<PasswordRequest>, events: Sender<UiEvent>) {
+    std::thread::spawn(move || {
+        let result =
+            key().and_then(|identity| users::list_on(&host, &identity, &mut asker(requests)));
+        if let Err(err) = &result {
+            emit(Kind::Err, err.to_string());
+        }
+        let _ = events.send(UiEvent::Users(result.map_err(|e| e.to_string())));
+    });
+}
+
+/// change a login on its own thread and send the resulting logins to the ui.
+fn spawn_users_change(
+    host: String,
+    change: Change,
+    requests: Sender<PasswordRequest>,
+    events: Sender<UiEvent>,
+) {
+    std::thread::spawn(move || {
+        let result = key().and_then(|id| users::change(&host, &id, &change, &mut asker(requests)));
+        if let Err(err) = &result {
+            emit(Kind::Err, err.to_string());
+        }
+        let _ = events.send(UiEvent::Users(result.map_err(|e| e.to_string())));
+    });
+}
+
 /// open the tui and block until it is closed.
 pub fn run() -> Result<()> {
     let logs = subscribe();
     let mut app = App::new(hosts::config_path(), logs, Box::new(spawn_runner))
         .with_bootstrapper(Box::new(spawn_bootstrap))
-        .with_applier(Box::new(spawn_apply));
+        .with_applier(Box::new(spawn_apply))
+        .with_users(Box::new(spawn_users_load), Box::new(spawn_users_change));
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app, || {
         event::poll(Duration::from_millis(50))

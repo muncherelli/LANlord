@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, Focus, Mode};
+use crate::app::{App, Focus, Mode, UsersState};
 
 const DESKTOP: Color = Color::Rgb(0, 128, 128);
 const NAVY: Color = Color::Rgb(0, 0, 128);
@@ -64,7 +64,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Command => " enter run   esc back ",
         Mode::AddHost => " enter save   esc cancel ",
         Mode::Password => " enter send   esc cancel ",
+        Mode::Window if app.window.is_some_and(|m| m.id == "nt4-domain") => {
+            " n new   p password   d delete   r refresh   a apply   esc close "
+        }
         Mode::Window => " enter apply this module   esc close ",
+        Mode::UserName | Mode::UserPassword | Mode::UserRepeat => " enter next   esc cancel ",
+        Mode::UserDelete => " y delete   any other key cancels ",
     };
     frame.render_widget(
         Paragraph::new(hint).style(Style::new().bg(GRAY).fg(Color::Black)),
@@ -72,7 +77,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
 
     if let Some(module) = app.window {
-        draw_window(frame, module, area);
+        draw_window(frame, app, module, area);
     }
 }
 
@@ -171,6 +176,16 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             ),
             "> ",
         ),
+        Mode::UserName => (" New user name ".to_string(), "> "),
+        Mode::UserPassword => (
+            format!(" Password for {} ", app.pending_name().unwrap_or("?")),
+            "> ",
+        ),
+        Mode::UserRepeat => (" Repeat the password ".to_string(), "> "),
+        Mode::UserDelete => (
+            format!(" Delete {}? (y/n) ", app.pending_name().unwrap_or("?")),
+            "  ",
+        ),
         _ => (
             format!(" Command on {} ", app.host().unwrap_or("-")),
             if app.mode == Mode::Command {
@@ -181,23 +196,35 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         ),
     };
     // never show a password
-    let shown = if app.mode == Mode::Password {
+    let shown = if matches!(
+        app.mode,
+        Mode::Password | Mode::UserPassword | Mode::UserRepeat
+    ) {
         "*".repeat(app.input.chars().count())
     } else {
         app.input.clone()
     };
     let input = Paragraph::new(format!("{prompt}{shown}")).block(window(label));
     frame.render_widget(input, area);
-    if matches!(app.mode, Mode::Command | Mode::AddHost | Mode::Password) {
+    if matches!(
+        app.mode,
+        Mode::Command
+            | Mode::AddHost
+            | Mode::Password
+            | Mode::UserName
+            | Mode::UserPassword
+            | Mode::UserRepeat
+    ) {
         let x = area.x + 1 + (prompt.len() + app.input.chars().count()) as u16;
         frame.set_cursor_position((x.min(area.right().saturating_sub(2)), area.y + 1));
     }
 }
 
 /// a module's window, centered over everything.
-fn draw_window(frame: &mut Frame, module: &Module, area: Rect) {
+fn draw_window(frame: &mut Frame, app: &App, module: &Module, area: Rect) {
+    let users = module.id == "nt4-domain";
     let width = area.width.min(64);
-    let height = area.height.min(16);
+    let height = area.height.min(if users { 24 } else { 16 });
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,
@@ -217,6 +244,28 @@ fn draw_window(frame: &mut Frame, module: &Module, area: Rect) {
         Line::from("Settings (in your settings file):"),
     ];
     lines.extend(module.example.lines().map(|l| Line::from(format!("  {l}"))));
+    if users {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Logins:"));
+        match &app.users {
+            UsersState::Idle => {}
+            UsersState::Loading => lines.push(Line::from("  working...")),
+            UsersState::Failed(err) => lines.push(Line::from(format!("  could not load: {err}"))),
+            UsersState::Loaded(list) if list.is_empty() => {
+                lines.push(Line::from("  (none - press n to add one)"));
+            }
+            UsersState::Loaded(list) => {
+                for (i, user) in list.iter().enumerate() {
+                    let style = if i == app.user_selected {
+                        Style::new().bg(NAVY).fg(Color::White)
+                    } else {
+                        Style::new()
+                    };
+                    lines.push(Line::from(Span::styled(format!("  {}", user.name), style)));
+                }
+            }
+        }
+    }
     let body = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(window(format!(" {} ", module.name)));
@@ -344,5 +393,49 @@ mod tests {
         let text = render(&app);
         assert!(text.contains("Add host"));
         assert!(text.contains("esc cancel"));
+    }
+
+    #[test]
+    fn the_nt4_window_lists_the_logins() {
+        use crate::app::UsersState;
+        use lanlord_core::users::User;
+        let mut app = app();
+        app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
+        app.mode = Mode::Window;
+        app.users = UsersState::Loading;
+        assert!(render(&app).contains("working..."));
+        app.users = UsersState::Failed("no settings on gw".into());
+        assert!(render(&app).contains("could not load: no settings on gw"));
+        app.users = UsersState::Loaded(Vec::new());
+        assert!(render(&app).contains("press n to add one"));
+        app.users = UsersState::Loaded(vec![
+            User {
+                name: "james".into(),
+            },
+            User {
+                name: "olive".into(),
+            },
+        ]);
+        let text = render(&app);
+        assert!(text.contains("Logins:") && text.contains("james") && text.contains("olive"));
+        assert!(text.contains("n new") && text.contains("d delete"));
+    }
+
+    #[test]
+    fn user_prompts_are_labelled_and_passwords_masked() {
+        let mut app = app();
+        app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
+        app.mode = Mode::UserName;
+        assert!(render(&app).contains("New user name"));
+        app.mode = Mode::UserPassword;
+        app.input = "hunter2".into();
+        let text = render(&app);
+        assert!(text.contains("Password for ?") && text.contains("> *******"));
+        assert!(!text.contains("hunter2"));
+        app.mode = Mode::UserRepeat;
+        assert!(render(&app).contains("Repeat the password"));
+        app.mode = Mode::UserDelete;
+        let text = render(&app);
+        assert!(text.contains("Delete ?") && text.contains("y delete"));
     }
 }

@@ -63,7 +63,7 @@ pub fn push(
     )
 }
 
-fn push_with(
+pub(crate) fn push_with(
     session: &Session,
     host: &str,
     identity: &age::x25519::Identity,

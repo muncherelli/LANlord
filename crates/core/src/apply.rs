@@ -61,7 +61,7 @@ pub fn apply(
     apply_with(&Session::new(host)?, host, identity, modules, ask_password)
 }
 
-fn apply_with(
+pub(crate) fn apply_with(
     session: &Session,
     host: &str,
     identity: Option<&age::x25519::Identity>,

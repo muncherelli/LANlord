@@ -11,3 +11,4 @@ pub mod modules;
 pub mod paths;
 pub mod payload;
 pub mod ssh;
+pub mod users;
