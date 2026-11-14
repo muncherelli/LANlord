@@ -56,10 +56,10 @@ pub fn script(opts: &Options, admin: &str) -> Result<String> {
     let mut s = format!(
         r#"set -eu
 . /etc/os-release
-case " $ID $ID_LIKE " in
+case " ${{ID:-}} ${{ID_LIKE:-}} " in
   *" arch "*) pm=pacman ;;
   *" debian "*|*" ubuntu "*) pm=apt ;;
-  *) echo "unsupported distro: $ID" >&2; exit 1 ;;
+  *) echo "unsupported distro: ${{ID:-unknown}}" >&2; exit 1 ;;
 esac
 
 # refuse to continue if {id} belongs to someone else
@@ -80,8 +80,8 @@ else
   apt-get install -y -qq python3 python3-venv python3-pip sudo
 fi
 
-getent group lanlord >/dev/null || groupadd --system --gid {id} lanlord
-getent passwd lanlord >/dev/null || useradd --system --uid {id} --gid {id} \
+getent group lanlord >/dev/null || groupadd --gid {id} lanlord
+getent passwd lanlord >/dev/null || useradd --uid {id} --gid {id} \
   --home-dir /opt/lanlord --no-create-home \
   --shell "$(command -v nologin || echo /usr/sbin/nologin)" lanlord
 install -d -o lanlord -g lanlord -m 0750 /opt/lanlord /opt/lanlord/config
@@ -110,7 +110,7 @@ rm -f "$tmp"
             r#"
 if [ ! -x /opt/lanlord/venv/bin/ansible-playbook ]; then
   sudo -u lanlord python3 -m venv /opt/lanlord/venv
-  sudo -u lanlord /opt/lanlord/venv/bin/pip install --quiet ansible-core
+  sudo -u lanlord /opt/lanlord/venv/bin/pip install --quiet --disable-pip-version-check ansible-core
 fi
 "#,
         );
@@ -176,8 +176,8 @@ mod tests {
     #[test]
     fn creates_the_9999_service_account() {
         let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
-        assert!(s.contains("groupadd --system --gid 9999 lanlord"));
-        assert!(s.contains("useradd --system --uid 9999 --gid 9999"));
+        assert!(s.contains("groupadd --gid 9999 lanlord"));
+        assert!(s.contains("useradd --uid 9999 --gid 9999"));
         assert!(s.contains("/etc/sudoers.d/lanlord"));
     }
 
@@ -200,8 +200,16 @@ mod tests {
     fn remote_mode_installs_ansible_in_a_venv() {
         let remote = script(&opts(AnsibleMode::Remote, false), "admin").unwrap();
         let local = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
-        assert!(remote.contains("pip install --quiet ansible-core"));
+        assert!(remote.contains("pip install --quiet --disable-pip-version-check ansible-core"));
         assert!(!local.contains("ansible-core"));
+    }
+
+    #[test]
+    fn tolerates_os_release_without_id_like() {
+        // arch has no ID_LIKE and the script runs under set -u
+        let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
+        assert!(s.contains("${ID_LIKE:-}"));
+        assert!(!s.contains("$ID_LIKE"));
     }
 
     #[test]
