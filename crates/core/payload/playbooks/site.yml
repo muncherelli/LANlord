@@ -1,0 +1,28 @@
+# the playbook lanlord applies to a gateway; runs on the gateway as the
+# lanlord user, with sudo for anything that needs root
+- name: lanlord baseline
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  tasks:
+    - name: make sure the state directory exists
+      ansible.builtin.file:
+        path: /opt/lanlord/state
+        state: directory
+        mode: "0750"
+
+    - name: check that privilege escalation works
+      ansible.builtin.command: id -un
+      become: true
+      changed_when: false
+      register: escalated
+
+    - name: record when this was applied
+      ansible.builtin.copy:
+        dest: /opt/lanlord/state/applied
+        content: "{{ ansible_facts['date_time']['iso8601'] }}\n"
+        mode: "0640"
+
+    - name: report
+      ansible.builtin.debug:
+        msg: "applied as {{ ansible_facts['user_id'] }}, escalated to {{ escalated.stdout }}"

@@ -153,14 +153,6 @@ fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) 
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let script = script(opts, admin)?;
-
-    // sudo -n fails when a password is needed; then ask once and feed it to sudo -S
-    let password = if session.capture(&sudo(&["-n", "true"])).is_ok() {
-        None
-    } else {
-        Some(ask_password(&format!("sudo password for {admin}"))?)
-    };
-    let (remote, input) = plan(script, password.as_deref());
     emit(
         Kind::Info,
         format!(
@@ -168,13 +160,31 @@ fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) 
             opts.host, opts.ansible
         ),
     );
-    match session.run_with_stdin(&remote, input.as_bytes())? {
+    match run_as_root(session, admin, script, ask_password)? {
         0 => {
             emit(Kind::Info, "bootstrap finished");
             Ok(())
         }
         code => bail!("bootstrap failed with status {code}"),
     }
+}
+
+/// run `script` as root on the gateway; sudo's password is only asked for
+/// when passwordless sudo is not set up for `admin`.
+pub(crate) fn run_as_root(
+    session: &Session,
+    admin: &str,
+    script: String,
+    ask_password: AskPassword,
+) -> Result<i32> {
+    // sudo -n fails when a password is needed; then ask once and feed it to sudo -S
+    let password = if session.capture(&sudo(&["-n", "true"])).is_ok() {
+        None
+    } else {
+        Some(ask_password(&format!("sudo password for {admin}"))?)
+    };
+    let (remote, input) = plan(script, password.as_deref());
+    session.run_with_stdin(&remote, input.as_bytes())
 }
 
 #[cfg(test)]
@@ -291,21 +301,6 @@ mod tests {
         use super::*;
         use std::cell::Cell;
 
-        /// a fake ssh that answers `id -un`, lets `sudo -n true` succeed or
-        /// fail, and saves whatever the bootstrap command reads on stdin.
-        fn gateway(sudo_ok: bool, record: &std::path::Path, exit: i32) -> Session {
-            Session::fake(&format!(
-                r#"for a; do last=$a; done
-case "$last" in
-  "id -un") echo tester ;;
-  "sudo -n true") exit {sudo} ;;
-  *) cat > '{path}'; exit {exit} ;;
-esac"#,
-                sudo = if sudo_ok { 0 } else { 1 },
-                path = record.display(),
-            ))
-        }
-
         fn temp(name: &str) -> std::path::PathBuf {
             std::env::temp_dir().join(format!("lanlord-bootstrap-{}-{name}", std::process::id()))
         }
@@ -326,7 +321,12 @@ esac"#,
                 asked.set(true);
                 Ok("x".to_string())
             };
-            bootstrap_with(&gateway(true, &record, 0), &options(), &mut ask).unwrap();
+            bootstrap_with(
+                &Session::fake_gateway(true, &record, 0),
+                &options(),
+                &mut ask,
+            )
+            .unwrap();
             let sent = std::fs::read_to_string(&record).unwrap();
             assert!(sent.starts_with("set -eu"), "{sent}");
             assert!(!asked.get());
@@ -341,7 +341,12 @@ esac"#,
                 what = w.to_string();
                 Ok("hunter2".to_string())
             };
-            bootstrap_with(&gateway(false, &record, 0), &options(), &mut ask).unwrap();
+            bootstrap_with(
+                &Session::fake_gateway(false, &record, 0),
+                &options(),
+                &mut ask,
+            )
+            .unwrap();
             let sent = std::fs::read_to_string(&record).unwrap();
             assert!(sent.starts_with("hunter2\nset -eu"), "{sent}");
             assert_eq!(what, "sudo password for tester");
@@ -352,8 +357,12 @@ esac"#,
         fn a_cancelled_prompt_stops_bootstrap() {
             let record = temp("cancel");
             let mut ask = |_: &str| anyhow::bail!("cancelled");
-            let err =
-                bootstrap_with(&gateway(false, &record, 0), &options(), &mut ask).unwrap_err();
+            let err = bootstrap_with(
+                &Session::fake_gateway(false, &record, 0),
+                &options(),
+                &mut ask,
+            )
+            .unwrap_err();
             assert_eq!(err.to_string(), "cancelled");
             assert!(!record.exists());
         }
@@ -362,7 +371,12 @@ esac"#,
         fn a_failing_script_is_an_error() {
             let record = temp("fail");
             let mut ask = |_: &str| Ok(String::new());
-            let err = bootstrap_with(&gateway(true, &record, 4), &options(), &mut ask).unwrap_err();
+            let err = bootstrap_with(
+                &Session::fake_gateway(true, &record, 4),
+                &options(),
+                &mut ask,
+            )
+            .unwrap_err();
             assert!(err.to_string().contains("status 4"), "{err}");
             let _ = std::fs::remove_file(record);
         }
