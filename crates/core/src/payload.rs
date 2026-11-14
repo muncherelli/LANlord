@@ -109,7 +109,13 @@ mod tests {
                 if path.is_dir() {
                     walk(&path, base, out);
                 } else {
-                    out.push(path.strip_prefix(base).unwrap().display().to_string());
+                    // the embedded names use forward slashes on every platform
+                    let relative = path.strip_prefix(base).unwrap();
+                    let parts: Vec<_> = relative
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy())
+                        .collect();
+                    out.push(parts.join("/"));
                 }
             }
         }
