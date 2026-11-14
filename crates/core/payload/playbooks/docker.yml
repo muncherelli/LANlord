@@ -4,9 +4,11 @@
 # containers, virtual machines and bare metal.
 #
 # docker:
-#   host_interface: eth0         # your normal network; default: the default route's interface
-#   internal_interface: eth1     # the retro network; default: the only other interface
-#   internal_address: 172.16.120.2/22   # an extra address on it, optional
+#   internal_address: 172.16.120.2/22   # an extra address on the internal network; optional,
+#                                       # most setups just use the address it already has
+#
+# the interfaces come from the shared `network:` settings (see network.yml); docker.host_interface
+# and docker.internal_interface still work.
 - name: lanlord docker
   hosts: localhost
   connection: local
@@ -23,31 +25,9 @@
         fail_msg: "docker settings: interface names and the address need a plain value like eth1 and 172.16.120.2/22"
       when: docker is defined
 
-    - name: work out the host network interface
-      ansible.builtin.set_fact:
-        host_interface: "{{ docker.host_interface | default(ansible_facts['default_ipv4']['interface'] | default('')) }}"
+    - name: work out the host and internal network interfaces
+      ansible.builtin.include_tasks: network.yml
       when: docker is defined
-
-    - name: list the interfaces that could be the internal network
-      ansible.builtin.set_fact:
-        internal_candidates: >-
-          {{ ansible_facts['interfaces']
-             | reject('match', '^(lo|docker|br-|veth|virbr|tun|tap|wg|tailscale)')
-             | reject('equalto', host_interface) | list }}
-      when: docker is defined
-
-    - name: work out the internal network interface
-      ansible.builtin.set_fact:
-        internal_interface: "{{ docker.internal_interface | default(internal_candidates[0] if internal_candidates | length == 1 else '') }}"
-      when: docker is defined
-
-    - name: stop if the interfaces are ambiguous
-      ansible.builtin.fail:
-        msg: >-
-          could not tell the interfaces apart (host: '{{ host_interface }}',
-          internal: '{{ internal_interface }}', others: {{ internal_candidates }}).
-          set docker.host_interface and docker.internal_interface in your settings.
-      when: docker is defined and (host_interface == '' or internal_interface == '' or host_interface == internal_interface)
 
     - name: say what this machine is
       ansible.builtin.debug:

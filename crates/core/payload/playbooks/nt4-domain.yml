@@ -8,7 +8,7 @@
 #   mode: domain                 # or workgroup
 #   name: RETRONET               # the domain or workgroup name; you choose
 #   netbios_name: LANLORD        # the server's name; default: this machine's hostname
-#   address: 172.16.120.2/22     # default: docker.internal_address
+#   address: 172.16.120.1/22     # default: the address the internal interface already has
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
 #   users:
 #     - name: james
@@ -32,12 +32,16 @@
         nt4: "{{ lookup('ansible.builtin.vars', 'nt4-domain') }}"
       when: "lookup('ansible.builtin.varnames', '^nt4-domain$', wantlist=True) | length > 0"
 
+    - name: work out the internal network interface and its address
+      ansible.builtin.include_tasks: network.yml
+      when: nt4 is defined
+
     - name: work out the defaults
       ansible.builtin.set_fact:
         nt4_mode: "{{ nt4.mode | default('') }}"
         nt4_name: "{{ nt4.name | default('') | upper }}"
         nt4_netbios_name: "{{ (nt4.netbios_name | default(ansible_facts['hostname']) | upper)[:15] }}"
-        nt4_address: "{{ nt4.address | default(docker.internal_address | default('') if docker is defined else '') }}"
+        nt4_address: "{{ nt4.address | default(internal_address | default('')) }}"
       when: nt4 is defined
 
     - name: check the settings
@@ -50,7 +54,7 @@
           - nt4_mode == 'workgroup' or (nt4.admin_password | default('')) | length > 0
         fail_msg: >-
           nt4-domain settings: mode must be domain or workgroup; name is the domain or workgroup
-          (up to 15 letters, digits, - or _); address looks like 172.16.120.2/22 (or set docker.internal_address);
+          (up to 15 letters, digits, - or _); address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
           a domain needs an admin_password
       when: nt4 is defined
 

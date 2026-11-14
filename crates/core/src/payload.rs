@@ -7,6 +7,10 @@ use base64::Engine;
 const FILES: &[(&str, &str)] = &[
     ("site.yml", include_str!("../payload/playbooks/site.yml")),
     (
+        "network.yml",
+        include_str!("../payload/playbooks/network.yml"),
+    ),
+    (
         "docker.yml",
         include_str!("../payload/playbooks/docker.yml"),
     ),
@@ -95,6 +99,27 @@ mod tests {
             .unwrap();
         assert_eq!(mode, 0o640, "playbooks are only for the lanlord user");
         assert!(found[0].1.contains("lanlord baseline"));
+    }
+
+    #[test]
+    fn every_playbook_file_on_disk_is_embedded() {
+        fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, base, out);
+                } else {
+                    out.push(path.strip_prefix(base).unwrap().display().to_string());
+                }
+            }
+        }
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("payload/playbooks");
+        let mut on_disk = Vec::new();
+        walk(&base, &base, &mut on_disk);
+        on_disk.sort();
+        let mut embedded: Vec<String> = FILES.iter().map(|(n, _)| n.to_string()).collect();
+        embedded.sort();
+        assert_eq!(on_disk, embedded);
     }
 
     #[test]

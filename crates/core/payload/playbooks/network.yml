@@ -1,0 +1,54 @@
+# shared by the modules (included, not a play of its own): which interface is
+# the host network, which is the internal (retro) network, and the address the
+# machine already has on the internal one. nothing here changes the machine.
+#
+# network:                       # all optional
+#   host_interface: eth0         # your normal network; default: the default route's interface
+#   internal_interface: eth1     # the retro network; default: the only other interface
+- name: check the interface names in your settings
+  ansible.builtin.assert:
+    that:
+      - (network | default({})).host_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
+      - (network | default({})).internal_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
+    fail_msg: "network settings: interface names are plain values like eth1"
+
+- name: work out the host network interface
+  ansible.builtin.set_fact:
+    host_interface: >-
+      {{ (network | default({})).host_interface
+         | default((docker | default({})).host_interface
+         | default(ansible_facts['default_ipv4']['interface'] | default(''))) }}
+
+- name: list the interfaces that could be the internal network
+  ansible.builtin.set_fact:
+    internal_candidates: >-
+      {{ ansible_facts['interfaces']
+         | reject('match', '^(lo|docker|br-|veth|virbr|tun|tap|wg|tailscale)')
+         | reject('equalto', host_interface) | list }}
+
+- name: work out the internal network interface
+  ansible.builtin.set_fact:
+    internal_interface: >-
+      {{ (network | default({})).internal_interface
+         | default((docker | default({})).internal_interface
+         | default(internal_candidates[0] if internal_candidates | length == 1 else '')) }}
+
+- name: stop if the interfaces are ambiguous
+  ansible.builtin.fail:
+    msg: >-
+      could not tell the interfaces apart (host: '{{ host_interface }}',
+      internal: '{{ internal_interface }}', others: {{ internal_candidates }}).
+      set network.host_interface and network.internal_interface in your settings.
+  when: host_interface == '' or internal_interface == '' or host_interface == internal_interface
+
+# ansible names interface facts with underscores
+- name: read the addresses the machine already has
+  ansible.builtin.set_fact:
+    host_address: "{{ ansible_facts[host_interface | replace('-', '_') | replace('.', '_')]['ipv4']['address'] | default('') }}"
+    internal_ip: "{{ ansible_facts[internal_interface | replace('-', '_') | replace('.', '_')]['ipv4']['address'] | default('') }}"
+    internal_prefix: "{{ ansible_facts[internal_interface | replace('-', '_') | replace('.', '_')]['ipv4']['prefix'] | default('') }}"
+
+- name: the internal address, with its prefix
+  ansible.builtin.set_fact:
+    internal_address: "{{ internal_ip }}/{{ internal_prefix }}"
+  when: internal_ip != '' and internal_prefix != ''
