@@ -68,11 +68,11 @@ mod tests {
     #[test]
     fn subscribers_receive_every_kind() {
         let rx = subscribe();
-        emit(Kind::Debug, "log-test-debug");
-        emit(Kind::Out, "log-test-out");
+        emit(Kind::Debug, "log-recv-debug");
+        emit(Kind::Out, "log-recv-out");
         let seen: Vec<Line> = rx
             .try_iter()
-            .filter(|l| l.text.starts_with("log-test-"))
+            .filter(|l| l.text.starts_with("log-recv-"))
             .collect();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].kind, Kind::Debug);
@@ -84,6 +84,6 @@ mod tests {
         let rx = subscribe();
         drop(rx);
         // must not panic or block
-        emit(Kind::Info, "log-test-after-drop");
+        emit(Kind::Info, "log-drop-after-drop");
     }
 }

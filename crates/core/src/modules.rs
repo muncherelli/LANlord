@@ -56,8 +56,8 @@ pub const MODULES: &[Module] = &[
         "docker",
         "Docker",
         ["  ▄▄▄  ", "▄█████▄", " ▀▀▀▀▀ "],
-        "Installs Docker, gives the internal network an extra address and drops NetBIOS and SMB on the host network. Works on lxc, vms and bare metal.",
-        "docker:\n  host_interface: eth0\n  internal_interface: eth1\n  internal_address: 172.16.120.2/22",
+        "Installs Docker and drops NetBIOS and SMB on the host network. Finds the host and internal interfaces itself and works on lxc, vms and bare metal.",
+        "docker: {}\n\n# optional, found automatically:\nnetwork:\n  host_interface: eth0\n  internal_interface: eth1",
         Status::Available,
     ),
     Module::new(

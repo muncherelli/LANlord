@@ -8,7 +8,7 @@
 {% for site in proxy_sites %}
 
 {{ 'http://' if proxy_tls == 'off' else '' }}{{ site.host }} {
-	bind {{ proxy_listen }}
+	bind {{ proxy_listen | join(' ') }}
 {% if proxy_tls == 'internal' %}
 	tls internal
 {% endif %}
@@ -19,7 +19,7 @@
 
 # anything that is not one of the sites above
 http:// {
-	bind {{ proxy_listen }}
+	bind {{ proxy_listen | join(' ') }}
 	respond "no such site" 404
 }
 {% endif %}
