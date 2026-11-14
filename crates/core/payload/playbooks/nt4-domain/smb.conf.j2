@@ -1,0 +1,44 @@
+# written by lanlord; changes here are overwritten on the next apply
+[global]
+   workgroup = {{ nt4_name }}
+   netbios name = {{ nt4_netbios_name }}
+   server string = LANlord
+
+   # only the internal network ever sees this server
+   interfaces = {{ nt4_address }}
+   bind interfaces only = yes
+
+   # old windows needs smb1 and ntlmv1, which is why this must stay off the host network
+   server min protocol = NT1
+   ntlm auth = ntlmv1-permitted
+   lanman auth = {{ 'yes' if nt4.lanman_auth | default(false) else 'no' }}
+   security = user
+   encrypt passwords = yes
+   map to guest = never
+   username map = /etc/samba/usermap
+
+   passdb backend = tdbsam
+   idmap config * : backend = tdb
+   idmap config * : range = 3000-7999
+
+   wins support = yes
+   dns proxy = no
+   log level = 1
+{% if nt4_mode == 'domain' %}
+
+   server role = classic primary domain controller
+   domain logons = yes
+   domain master = yes
+   preferred master = yes
+   local master = yes
+   os level = 255
+   add machine script = /usr/sbin/useradd --badname -M -g machines -d /dev/null -s /usr/sbin/nologin %u
+
+[netlogon]
+   path = /var/lib/samba/netlogon
+   read only = yes
+   guest ok = no
+{% else %}
+
+   server role = standalone server
+{% endif %}

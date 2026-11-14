@@ -304,15 +304,17 @@ mod tests {
     #[test]
     fn an_open_window_shows_the_module() {
         let mut app = app();
-        app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
+        app.window = MODULES.iter().find(|m| m.id == "web-proxy");
         app.mode = Mode::Window;
         let text = render(&app);
         assert!(text.contains("planned - not built yet"));
-        assert!(text.contains("Samba NT4-style"));
-        assert!(text.contains("domain: RETRONET"));
+        assert!(text.contains("Caddy in Docker"));
+        assert!(text.contains("web-proxy:"));
         assert!(text.contains("esc close"));
-        app.window = MODULES.iter().find(|m| m.id == "gateway");
-        assert!(render(&app).contains("Status: available"));
+        app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
+        let text = render(&app);
+        assert!(text.contains("Status: available"));
+        assert!(text.contains("name: RETRONET"));
     }
 
     #[test]

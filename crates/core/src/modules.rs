@@ -64,9 +64,9 @@ pub const MODULES: &[Module] = &[
         "nt4-domain",
         "NT4 Domain",
         ["╔═════╗", "║ NT4 ║", "╚═════╝"],
-        "A Samba NT4-style primary domain controller in Docker, on eth1 only, with a basic set of logins.",
-        "nt4-domain:\n  domain: RETRONET\n  users:\n    - name: james",
-        Status::Planned,
+        "A Samba server in Docker for old Windows clients, on the internal network only: an NT4-style domain controller or a plain workgroup, with a basic set of logins.",
+        "nt4-domain:\n  mode: domain\n  name: RETRONET\n  admin_password: ...\n  users:\n    - name: james\n      password: ...",
+        Status::Available,
     ),
     Module::new(
         "web-proxy",
@@ -129,9 +129,10 @@ mod tests {
     }
 
     #[test]
-    fn gateway_and_docker_are_available() {
+    fn the_built_modules_are_available() {
         assert_eq!(find("gateway").unwrap().status, Status::Available);
         assert_eq!(find("docker").unwrap().status, Status::Available);
-        assert_eq!(find("nt4-domain").unwrap().status, Status::Planned);
+        assert_eq!(find("nt4-domain").unwrap().status, Status::Available);
+        assert_eq!(find("web-proxy").unwrap().status, Status::Planned);
     }
 }
