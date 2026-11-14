@@ -15,6 +15,14 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../payload/playbooks/nt4-domain.yml"),
     ),
     (
+        "web-proxy.yml",
+        include_str!("../payload/playbooks/web-proxy.yml"),
+    ),
+    (
+        "web-proxy/Caddyfile.j2",
+        include_str!("../payload/playbooks/web-proxy/Caddyfile.j2"),
+    ),
+    (
         "nt4-domain/smb.conf.j2",
         include_str!("../payload/playbooks/nt4-domain/smb.conf.j2"),
     ),

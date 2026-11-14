@@ -72,9 +72,9 @@ pub const MODULES: &[Module] = &[
         "web-proxy",
         "Web Proxy",
         ["  ◢◣   ", " ◢██◣  ", "◢████◣ "],
-        "Caddy in Docker, proxying sites on the retro lan and the lanlord web interface.",
+        "Caddy in Docker, proxying web requests to sites on the internal network and to the lanlord web interface.",
         "web-proxy:\n  sites:\n    - host: nostalgia.lan\n      upstream: 172.16.120.20:80",
-        Status::Planned,
+        Status::Available,
     ),
     Module::new(
         "remote-commands",
@@ -133,6 +133,7 @@ mod tests {
         assert_eq!(find("gateway").unwrap().status, Status::Available);
         assert_eq!(find("docker").unwrap().status, Status::Available);
         assert_eq!(find("nt4-domain").unwrap().status, Status::Available);
-        assert_eq!(find("web-proxy").unwrap().status, Status::Planned);
+        assert_eq!(find("web-proxy").unwrap().status, Status::Available);
+        assert_eq!(find("remote-commands").unwrap().status, Status::Planned);
     }
 }

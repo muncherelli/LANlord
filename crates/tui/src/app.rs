@@ -795,11 +795,11 @@ mod tests {
     fn planned_modules_do_not_apply() {
         let (mut app, applied) = applying_app();
         app.on_key(key(KeyCode::Tab));
-        for _ in 0..3 {
+        for _ in 0..4 {
             app.on_key(key(KeyCode::Right));
         }
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.window.unwrap().id, "web-proxy");
+        assert_eq!(app.window.unwrap().id, "remote-commands");
         app.on_key(key(KeyCode::Enter));
         assert!(applied.borrow().is_empty());
     }
