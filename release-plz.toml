@@ -1,6 +1,8 @@
 [workspace]
 # binaries are published to github releases, not crates.io
 publish = false
+# we do not publish to crates.io, so the git tags are what count as released
+git_only = true
 git_release_enable = false
 git_tag_enable = false
 changelog_update = false
