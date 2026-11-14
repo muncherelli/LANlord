@@ -193,11 +193,27 @@ impl Session {
 
     /// run `remote` and return its stdout, for front ends with no terminal.
     pub fn capture(&self, remote: &[String]) -> Result<String> {
-        let out = self
-            .command(remote)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(spawn_error)?;
+        self.capture_inner(remote, None)
+    }
+
+    /// like `capture`, with `input` on the remote's stdin.
+    pub fn capture_with_stdin(&self, remote: &[String], input: &[u8]) -> Result<String> {
+        self.capture_inner(remote, Some(input))
+    }
+
+    fn capture_inner(&self, remote: &[String], input: Option<&[u8]>) -> Result<String> {
+        let mut cmd = self.command(remote);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        let mut child = cmd.spawn().map_err(spawn_error)?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            stdin.write_all(input)?;
+        }
+        let out = child.wait_with_output()?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         match out.status.code() {
             Some(0) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
