@@ -72,7 +72,8 @@ fn spawn_error(err: std::io::Error) -> SshError {
 /// a host reached through the system ssh client.
 pub struct Session {
     host: String,
-    program: String,
+    /// the ssh program and any leading arguments.
+    program: Vec<String>,
 }
 
 impl Session {
@@ -82,12 +83,13 @@ impl Session {
         }
         Ok(Self {
             host: host.to_string(),
-            program: "ssh".to_string(),
+            program: vec!["ssh".to_string()],
         })
     }
 
     fn command(&self, remote: &[String]) -> Command {
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = Command::new(&self.program[0]);
+        cmd.args(&self.program[1..]);
         // never prompt on the terminal; the gui and tui have no tty to answer
         cmd.args(["-o", "BatchMode=yes"]);
         // share one connection so the agent prompts once per session
@@ -209,7 +211,6 @@ mod tests {
     /// a session that runs `script` instead of ssh, to test without a server.
     #[cfg(unix)]
     fn fake(script: &str) -> Session {
-        use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let path = std::env::temp_dir().join(format!(
@@ -217,10 +218,10 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&path, format!("{script}\n")).unwrap();
         let mut session = Session::new("gw").unwrap();
-        session.program = path.to_string_lossy().into_owned();
+        // run it through sh so we never exec a file we just wrote (ETXTBSY)
+        session.program = vec!["sh".into(), path.to_string_lossy().into_owned()];
         session
     }
 
@@ -282,7 +283,7 @@ mod tests {
     #[test]
     fn missing_ssh_is_reported() {
         let mut session = Session::new("gw").unwrap();
-        session.program = "/nonexistent/ssh".into();
+        session.program = vec!["/nonexistent/ssh".into()];
         let err = session.capture(&[]).unwrap_err();
         assert!(matches!(
             err.downcast_ref::<SshError>(),
