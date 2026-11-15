@@ -29,6 +29,9 @@ if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
     net groupmap add rid=513 ntgroup='Domain Users' unixgroup=domusers type=d
   net groupmap list | grep -q 'Domain Guests' ||
     net groupmap add rid=514 ntgroup='Domain Guests' unixgroup=domguests type=d
+  # the software share's writers, visible to windows as a domain group
+  net groupmap list | grep -q 'Software Admins' ||
+    net groupmap add ntgroup='Software Admins' unixgroup=softadmins type=d
   # what a domain admin may do: join computers, back up and restore, shut down, manage users
   domain=$(testparm -s --parameter-name=workgroup 2>/dev/null)
   for right in SeMachineAccountPrivilege SeAddUsersPrivilege SeTakeOwnershipPrivilege \

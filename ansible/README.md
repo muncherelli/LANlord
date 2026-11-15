@@ -44,5 +44,5 @@ Set `lanman_auth: true` and keep the Administrator password to 14 characters or 
 
 Roaming profiles are off by default. Set `roaming_profiles: true` to share a `profiles` folder and tell NT4 to keep each domain user's profile there, so it follows the user between machines.
 
-The software share is off by default too. Set `software: true` to add a `software` share that maps to `S:` at logon, for service packs and installers. Domain users read it; domain admins write to it. To let someone write without making them a domain admin, give their entry in `users` `software_admin: true`. Files you put in the share from the gateway land in `/opt/lanlord/nt4/lib/software`.
+The software share is off by default too. Set `software: true` to add a `software` share that maps to `S:` at logon, for service packs and installers. Domain users read it; domain admins and the Software Admins domain group write to it (the group shows up in User Manager for Domains, but LANlord decides who is in it). To let someone write without making them a domain admin, give their entry in `users` `software_admin: true`. Files you put in the share from the gateway land in `/opt/lanlord/nt4/lib/software`.
 
