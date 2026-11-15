@@ -7,11 +7,11 @@ use std::sync::Arc;
 use lanlord_core::log;
 use lanlord_core::update::{Runner, Source, Update};
 
-use eframe::egui::{self, Pos2};
+use eframe::egui;
 
 use super::harness::{click_at, desktop, frames, press, screen, until, SCREEN};
 use super::menu::Action;
-use super::{theme, Desktop, Target, TASKBAR};
+use super::{theme, Desktop, TASKBAR};
 use crate::login::fake::{id, FakeAuth};
 use crate::update_panel::Updates;
 
@@ -122,7 +122,7 @@ fn the_developer_submenu_opens_beside_its_row_and_closes_with_the_menu() {
             "{action:?}"
         );
     }
-    click_at(&mut desktop, &ctx, Pos2::new(900.0, 300.0));
+    click_at(&mut desktop, &ctx, egui::Pos2::new(900.0, 300.0));
     assert!(!desktop.start_open && !desktop.dev_open);
 }
 
@@ -161,7 +161,10 @@ fn a_rebuild_streams_into_the_console_and_starts_the_new_build() {
     );
     assert!(said.iter().any(|l| l.contains("rebuilt")), "{said:?}");
     assert!(
-        desktop.windows.iter().any(|w| w.target == Target::Console),
+        desktop
+            .windows
+            .iter()
+            .any(|w| w.target == super::Target::Console),
         "the console opens to show the build"
     );
     let _ = std::fs::remove_dir_all(repo);
