@@ -40,15 +40,20 @@
 
     - name: work out the defaults
       ansible.builtin.set_fact:
-        proxy_listen: >-
-          {{ ([wp.listen] if wp.listen is string else wp.listen | default(['host']))
-             | map('replace', 'host', host_address) | map('replace', 'internal', internal_ip) | unique | list }}
+        proxy_listen_raw: "{{ wp.listen | default(['host']) }}"
         proxy_tls: "{{ wp.tls | default('off') }}"
         proxy_sites: >-
           {{ (wp.sites | default([]))
              + ([wp.webui] if wp.webui is defined else []) }}
         status_enabled: "{{ (wp.status | default({})).enabled | default(true) }}"
         status_zone: "{{ (dns | default({})).zone | default('retronet') }}"
+      when: wp is defined
+
+    - name: turn the listen setting into addresses
+      ansible.builtin.set_fact:
+        proxy_listen: >-
+          {{ ([proxy_listen_raw] if proxy_listen_raw is string else proxy_listen_raw)
+             | map('replace', 'host', host_address) | map('replace', 'internal', internal_ip) | unique | list }}
       when: wp is defined
 
     - name: work out the status page host
