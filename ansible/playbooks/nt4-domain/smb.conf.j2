@@ -48,18 +48,22 @@
    logon home =
 {% endif %}
 
-{% if nt4.software | default(false) %}
-   # maps S: to the software share when a user logs on (the script is in netlogon)
+   # every logon runs lanlord.bat from netlogon; it maps S: and then runs your own scripts
    logon script = lanlord.bat
-{% endif %}
 
    server schannel = auto
    allow nt4 crypto = yes
    reject md5 clients = no
 
 [netlogon]
+   comment = logon scripts; domain admins may edit them
    path = /var/lib/samba/netlogon
    read only = yes
+   write list = @domadmins
+   force group = domadmins
+   create mask = 0664
+   force create mode = 0664
+   directory mask = 2775
    guest ok = no
 {% if nt4.software | default(false) %}
 

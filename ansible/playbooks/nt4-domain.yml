@@ -195,13 +195,22 @@
       changed_when: "'deleted' in user_removed.stdout"
       when: nt4 is defined
 
-    # nt4 and windows 9x read this at logon; the file needs dos line endings
-    - name: write the logon script that maps S:
+    # nt4 and windows 9x run this at every logon; it needs dos line endings. your own scripts are
+    # netlogon\logon.bat (everyone) and netlogon\<user>.bat (one user), which domain admins can edit
+    - name: write the logon script
       ansible.builtin.copy:
         dest: "{{ state_dir }}/lib/netlogon/lanlord.bat"
         mode: "0644"
-        content: "@echo off\r\nnet use S: \\\\{{ nt4_netbios_name }}\\software /persistent:no\r\n"
-      when: nt4 is defined and nt4_mode == 'domain' and (nt4.software | default(false))
+        content: '{{ logon_lines | join(crlf) }}{{ crlf }}'
+      vars:
+        crlf: "\r\n"
+        unc: '{{ "\\" ~ nt4_netbios_name }}'
+        logon_lines:
+          - '@echo off'
+          - '{{ ("net use S: " ~ unc ~ "\software /persistent:no") if nt4.software | default(false) else "" }}'
+          - 'if exist {{ unc }}\netlogon\logon.bat call {{ unc }}\netlogon\logon.bat'
+          - 'if exist {{ unc }}\netlogon\%USERNAME%.bat call {{ unc }}\netlogon\%USERNAME%.bat'
+      when: nt4 is defined and nt4_mode == 'domain'
 
     - name: list the accounts
       ansible.builtin.command: "docker exec {{ container }} lanlord-user list"

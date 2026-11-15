@@ -17,6 +17,9 @@ install -d -o root -g domusers -m 0770 /var/lib/samba/profiles
 install -d -o root -g domusers -m 0750 /var/lib/samba/homes
 install -d -m 0700 /var/lib/samba/homes/root
 
+# logon scripts: domain admins may edit them from windows (see the netlogon share)
+install -d -o root -g domadmins -m 2775 /var/lib/samba/netlogon
+
 # the software share (only used when nt4-domain.software is on): software admins and domain
 # admins write to it, everyone else reads
 install -d -o root -g softadmins -m 2775 /var/lib/samba/software
