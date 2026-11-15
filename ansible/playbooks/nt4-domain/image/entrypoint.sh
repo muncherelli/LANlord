@@ -28,18 +28,18 @@ install -d -o root -g softadmins -m 2775 /var/lib/samba/software
 if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
   # point each well-known group at its unix group, also when an older start mapped it elsewhere
   map_group() {
-    local rid=$1 ntgroup=$2 unixgroup=$3
+    local rid=$1 ntgroup=$2 unixgroup=$3 comment=$4
     if net groupmap list | grep -q "^$ntgroup "; then
-      net groupmap modify ntgroup="$ntgroup" unixgroup="$unixgroup" type=d >/dev/null || echo "could not map $ntgroup" >&2
+      net groupmap modify ntgroup="$ntgroup" unixgroup="$unixgroup" type=d comment="$comment" >/dev/null || echo "could not map $ntgroup" >&2
     else
-      net groupmap add ${rid:+rid=$rid} ntgroup="$ntgroup" unixgroup="$unixgroup" type=d >/dev/null || echo "could not map $ntgroup" >&2
+      net groupmap add ${rid:+rid=$rid} ntgroup="$ntgroup" unixgroup="$unixgroup" type=d comment="$comment" >/dev/null || echo "could not map $ntgroup" >&2
     fi
   }
-  map_group 512 'Domain Admins' domadmins
-  map_group 513 'Domain Users' domusers
-  map_group 514 'Domain Guests' domguests
+  map_group 512 'Domain Admins' domadmins 'Designated administrators of the domain'
+  map_group 513 'Domain Users' domusers 'All domain users'
+  map_group 514 'Domain Guests' domguests 'All domain guests'
   # the software share's writers, visible to windows as a domain group
-  map_group '' 'Software Admins' softadmins
+  map_group '' 'Software Admins' softadmins 'May add and change files in the software share'
   # what a domain admin may do: join computers, back up and restore, shut down, manage users
   domain=$(testparm -s --parameter-name=workgroup 2>/dev/null)
   for right in SeMachineAccountPrivilege SeAddUsersPrivilege SeTakeOwnershipPrivilege \
