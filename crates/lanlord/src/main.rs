@@ -38,7 +38,16 @@ enum UsersCommand {
     /// list the logins in your settings
     List,
     /// add a login; asks for its password
-    Add { name: String },
+    Add {
+        name: String,
+        /// also make the login a domain admin
+        #[arg(long)]
+        admin: bool,
+    },
+    /// make an existing login a domain admin
+    Promote { name: String },
+    /// take domain admin away from a login
+    Demote { name: String },
     /// change a login's password
     Passwd { name: String },
     /// remove a login
@@ -139,10 +148,24 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
             }
             return Ok(());
         }
-        UsersCommand::Add { name } | UsersCommand::Passwd { name } => {
+        UsersCommand::Add { name, admin } => {
+            let password = new_password(&name)?;
+            let mut changes = vec![Change::SetPassword {
+                name: name.clone(),
+                password,
+            }];
+            if admin {
+                changes.push(Change::SetAdmin { name, admin: true });
+            }
+            return lanlord_core::users::change_all(host, &identity, &changes, &mut ask)
+                .map(|_| ());
+        }
+        UsersCommand::Passwd { name } => {
             let password = new_password(&name)?;
             Change::SetPassword { name, password }
         }
+        UsersCommand::Promote { name } => Change::SetAdmin { name, admin: true },
+        UsersCommand::Demote { name } => Change::SetAdmin { name, admin: false },
         UsersCommand::Remove { name } => Change::Remove { name },
     };
     lanlord_core::users::change(host, &identity, &change, &mut ask).map(|_| ())

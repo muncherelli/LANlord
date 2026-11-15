@@ -18,6 +18,7 @@
 #   users:
 #     - name: james
 #       password: change-me
+#       admin: true          # a domain admin (member of Domain Admins)
 #     - name: olduser
 #       state: absent
 - name: lanlord nt4 domain
@@ -161,7 +162,7 @@
       when: nt4 is defined and nt4_mode == 'domain'
 
     - name: create or update the users
-      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }}"
+      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }} {{ 'admin' if item.admin | default(false) else 'user' }}"
       args:
         stdin: "{{ item.password }}"
       loop: >-

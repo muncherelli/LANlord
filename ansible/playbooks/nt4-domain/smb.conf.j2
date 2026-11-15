@@ -40,7 +40,8 @@
 {% if nt4.roaming_profiles | default(false) %}
    # roaming profiles: nt4 keeps each user's profile in the profiles share
    logon path = \\%N\profiles\%U
-   logon home =
+   logon home = \\%N\%U\.win9x
+   logon drive = H:
 {% else %}
    # no roaming profiles or network home directories: nt4 uses a local profile and stays quiet
    logon path =
@@ -56,6 +57,15 @@
    read only = yes
    guest ok = no
 {% if nt4.roaming_profiles | default(false) %}
+
+[homes]
+   comment = home folders; windows 95 and 98 keep their roaming profile in one
+   path = /var/lib/samba/homes/%S
+   read only = no
+   browseable = no
+   valid users = %S
+   create mask = 0600
+   directory mask = 0700
 
 [profiles]
    path = /var/lib/samba/profiles
