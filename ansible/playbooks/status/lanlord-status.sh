@@ -14,22 +14,26 @@ systemctl_cmd=${LANLORD_SYSTEMCTL:-systemctl}
 
 # every dynamic value goes through here (sed, because bash 5.2 treats & in a replacement specially)
 esc() {
-  printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&#39;/g"
+  local value=$1
+  printf '%s' "$value" | tr -d '\000-\010\013-\037' | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&#39;/g"
 }
 
 # reads a "key=value" line from the config file
 setting() {
+  local key=$1
   [[ -r $conf ]] || return 0
-  sed -n "s/^$1=//p" "$conf" | head -n 1
+  sed -n "s/^$key=//p" "$conf" | head -n 1
 }
 
 # a file's first line, or nothing
 first_line() {
-  [[ -r $1 ]] && head -n 1 "$1" 2>/dev/null
+  local file=$1
+  [[ -r $file ]] && head -n 1 "$file" 2>/dev/null
 }
 
 when() {
-  date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || date -u -r "$1" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || printf '%s' "$1"
+  local seconds=$1
+  date -u -d "@$seconds" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || date -u -r "$seconds" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || printf '%s' "$seconds"
 }
 
 heading() {
@@ -54,7 +58,8 @@ note() {
 }
 
 section_start() {
-  heading "$1"
+  local title=$1
+  heading "$title"
   printf '<tr><td bgcolor="#C0C0C0"><table border="1" cellpadding="3" cellspacing="0" width="100%%" bgcolor="#C0C0C0">\n'
 }
 
@@ -160,7 +165,7 @@ page() {
     head_row Site Upstream
     while read -r site upstream; do
       e=$(esc "$site")
-      row "<a href=\"http://$e/\">http://$e/</a>" "$(esc "$upstream")"
+      row "<a href=\"http://$e/\">http://$e/</a>" "$(esc "$upstream")" # NOSONAR the retronet is plain http
     done <<<"$sites"
   else
     note 'No sites are hosted.'
