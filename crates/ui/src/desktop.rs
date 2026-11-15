@@ -389,7 +389,7 @@ impl Desktop {
                 painter,
                 Pos2::new(rect.center().x - 16.0, rect.top() + 4.0),
                 icons::art(target.id()),
-                2.0,
+                1.0,
             );
             let galley = painter.layout(
                 target.title().to_string(),
@@ -450,7 +450,7 @@ impl Desktop {
                 icons::draw(
                     ui.painter(),
                     rect.left_top() + Vec2::new(4.0, 3.0),
-                    icons::art(window.target.id()),
+                    icons::small(window.target.id()),
                     1.0,
                 );
                 ui.painter().text(
@@ -588,7 +588,7 @@ impl Desktop {
 
     fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
         ui.horizontal(|ui| {
-            icons::draw(ui.painter(), ui.cursor().min, icons::art(module.id), 2.0);
+            icons::draw(ui.painter(), ui.cursor().min, icons::art(module.id), 1.0);
             ui.add_space(40.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(module.name).size(16.0).strong());

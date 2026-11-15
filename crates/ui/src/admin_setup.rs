@@ -209,7 +209,7 @@ impl AdminSetup {
                 ui.painter(),
                 rect.min + Vec2::new(4.0, 4.0),
                 icons::art("gateway"),
-                2.0,
+                1.0,
             );
             ui.add_space(6.0);
             ui.vertical(|ui| {
