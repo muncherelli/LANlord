@@ -3,52 +3,32 @@
 use anyhow::Result;
 use base64::Engine;
 
+/// a file under ansible/playbooks, paired with its path on the gateway.
+macro_rules! playbook {
+    ($path:literal) => {
+        (
+            $path,
+            include_str!(concat!("../../../ansible/playbooks/", $path)),
+        )
+    };
+}
+
 /// (path under /opt/lanlord/playbooks, contents)
 const FILES: &[(&str, &str)] = &[
-    (
-        "site.yml",
-        include_str!("../../../ansible/playbooks/site.yml"),
-    ),
-    (
-        "network.yml",
-        include_str!("../../../ansible/playbooks/network.yml"),
-    ),
-    (
-        "docker.yml",
-        include_str!("../../../ansible/playbooks/docker.yml"),
-    ),
-    (
-        "nt4-domain.yml",
-        include_str!("../../../ansible/playbooks/nt4-domain.yml"),
-    ),
-    (
-        "web-proxy.yml",
-        include_str!("../../../ansible/playbooks/web-proxy.yml"),
-    ),
-    (
-        "web-proxy/Caddyfile.j2",
-        include_str!("../../../ansible/playbooks/web-proxy/Caddyfile.j2"),
-    ),
-    (
-        "status/lanlord-status.sh",
-        include_str!("../../../ansible/playbooks/status/lanlord-status.sh"),
-    ),
-    (
-        "nt4-domain/smb.conf.j2",
-        include_str!("../../../ansible/playbooks/nt4-domain/smb.conf.j2"),
-    ),
-    (
-        "nt4-domain/image/Dockerfile",
-        include_str!("../../../ansible/playbooks/nt4-domain/image/Dockerfile"),
-    ),
-    (
-        "nt4-domain/image/entrypoint.sh",
-        include_str!("../../../ansible/playbooks/nt4-domain/image/entrypoint.sh"),
-    ),
-    (
-        "nt4-domain/image/lanlord-user",
-        include_str!("../../../ansible/playbooks/nt4-domain/image/lanlord-user"),
-    ),
+    playbook!("site.yml"),
+    playbook!("network.yml"),
+    playbook!("docker.yml"),
+    playbook!("nt4-domain.yml"),
+    playbook!("web-proxy.yml"),
+    playbook!("dns.yml"),
+    playbook!("dns/dnsmasq.conf.j2"),
+    playbook!("dns/image/Dockerfile"),
+    playbook!("web-proxy/Caddyfile.j2"),
+    playbook!("status/lanlord-status.sh"),
+    playbook!("nt4-domain/smb.conf.j2"),
+    playbook!("nt4-domain/image/Dockerfile"),
+    playbook!("nt4-domain/image/entrypoint.sh"),
+    playbook!("nt4-domain/image/lanlord-user"),
 ];
 
 /// the playbooks as a tar archive.
@@ -94,6 +74,9 @@ mod tests {
         let names: Vec<&str> = found.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, FILES.iter().map(|(n, _)| *n).collect::<Vec<_>>());
         assert!(names.contains(&"nt4-domain/image/Dockerfile"));
+        for name in ["dns.yml", "dns/dnsmasq.conf.j2", "dns/image/Dockerfile"] {
+            assert!(names.contains(&name), "{name} is embedded");
+        }
         assert!(found[0].1.contains("import_playbook: docker.yml"));
         let mode = tar::Archive::new(bytes.as_slice())
             .entries()

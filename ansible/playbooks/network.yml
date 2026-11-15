@@ -48,6 +48,7 @@
     host_address: "{{ ansible_facts[host_interface | replace('-', '_') | replace('.', '_')]['ipv4']['address'] | default('') }}"
     internal_ip: "{{ ansible_facts[internal_interface | replace('-', '_') | replace('.', '_')]['ipv4']['address'] | default('') }}"
     internal_prefix: "{{ ansible_facts[internal_interface | replace('-', '_') | replace('.', '_')]['ipv4']['prefix'] | default('') }}"
+    internal_netmask: "{{ ansible_facts[internal_interface | replace('-', '_') | replace('.', '_')]['ipv4']['netmask'] | default('') }}"
 
 - name: the internal address, with its prefix
   ansible.builtin.set_fact:

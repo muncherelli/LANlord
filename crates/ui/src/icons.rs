@@ -153,6 +153,25 @@ const HOSTS: [&str; 16] = [
     "................",
 ];
 
+const DNS: [&str; 16] = [
+    "................",
+    "................",
+    "....kkkkkkkk....",
+    "..kkbbbbbbbbkk..",
+    ".kbbbbkGGkbbbbk.",
+    ".kbbbkGGGGkbbbk.",
+    "kbbbbbbGGbbbbbbk",
+    "kbbbkkkkkkkkbbbk",
+    "kbbbbbbbbbbbbbbk",
+    ".kbbbbbkkbbbbbk.",
+    ".kbbbbkddkbbbbk.",
+    "..kkbbbkkbbbkk..",
+    "....kkkkkkkk....",
+    "................",
+    "................",
+    "................",
+];
+
 /// the icon for a module id, or for the built-in windows ("console", "hosts").
 pub fn art(id: &str) -> &'static [&'static str; 16] {
     match id {
@@ -161,6 +180,7 @@ pub fn art(id: &str) -> &'static [&'static str; 16] {
         "nt4-domain" => &NT4,
         "web-proxy" => &WEB,
         "remote-commands" => &COMMANDS,
+        "dns" => &DNS,
         "console" => &CONSOLE,
         _ => &HOSTS,
     }
@@ -190,6 +210,7 @@ mod tests {
             "nt4-domain",
             "web-proxy",
             "remote-commands",
+            "dns",
             "console",
             "hosts",
         ] {
