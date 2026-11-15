@@ -79,6 +79,16 @@ enum MachinesCommand {
 }
 
 #[derive(Subcommand)]
+enum LogonCommand {
+    /// list the logon scripts in the netlogon share
+    List,
+    /// print a script (logon for everyone, a login's name for one login, lanlord for the generated one)
+    Show { name: String },
+    /// store a script read from standard input
+    Set { name: String },
+}
+
+#[derive(Subcommand)]
 enum AdminCommand {
     /// list the members of lanlord-admins on the gateway
     List,
@@ -132,6 +142,12 @@ enum Command {
         host: String,
         #[command(subcommand)]
         action: MachinesCommand,
+    },
+    /// edit the logon scripts every domain logon runs
+    Logon {
+        host: String,
+        #[command(subcommand)]
+        action: LogonCommand,
     },
     /// turn the nt4-domain software share (S: at logon) on or off, and apply it
     Software {
@@ -232,6 +248,35 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
     change_machine(&Session::new(host)?, host, &identity, &change, &mut ask)
 }
 
+fn logon(host: &str, action: LogonCommand) -> Result<()> {
+    use lanlord_core::logon::{list, read, read_generated, write, GENERATED};
+    let session = lanlord_core::ssh::Session::new(host)?;
+    match action {
+        LogonCommand::List => {
+            for name in list(&session, &mut ask)? {
+                println!("{name}");
+            }
+            Ok(())
+        }
+        LogonCommand::Show { name } => {
+            let found = if name == GENERATED {
+                read_generated(&session, &mut ask)?
+            } else {
+                read(&session, &name, &mut ask)?
+            };
+            match found {
+                Some(text) => Ok(std::io::stdout().write_all(text.as_bytes())?),
+                None => bail!("no script named {name} on {host}"),
+            }
+        }
+        LogonCommand::Set { name } => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            write(&session, &name, &text, &mut ask)
+        }
+    }
+}
+
 fn admin(host: &str, action: AdminCommand) -> Result<()> {
     use lanlord_core::admins::{change, list, Action};
     let action = match action {
@@ -295,6 +340,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
+        Some(Command::Logon { host, action }) => logon(&host, action),
         Some(Command::Software { host, state }) => {
             let identity = crypto::load(&identity_path()?)?;
             let session = lanlord_core::ssh::Session::new(&host)?;

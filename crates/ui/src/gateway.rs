@@ -7,6 +7,7 @@ use lanlord_core::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use lanlord_core::crypto::{self, Identity};
 use lanlord_core::exec::{self, Target};
 use lanlord_core::leases::{self, Lease};
+use lanlord_core::logon;
 use lanlord_core::network::{self, Internal};
 use lanlord_core::nt4;
 use lanlord_core::power::{self, Outcome, Power};
@@ -39,6 +40,14 @@ pub trait Gateway: Send + Sync {
     fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()>;
     /// the dhcp leases the gateway has handed out.
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>>;
+    /// the names of the logon scripts in the netlogon share.
+    fn logon_scripts(&self, host: &str, ask: AskPassword) -> Result<Vec<String>>;
+    /// one logon script with unix line endings; `None` when it does not exist yet.
+    fn read_logon(&self, host: &str, name: &str, ask: AskPassword) -> Result<Option<String>>;
+    /// the generated `lanlord.bat`, for reference.
+    fn read_generated_logon(&self, host: &str, ask: AskPassword) -> Result<Option<String>>;
+    /// store a logon script (saved with dos line endings).
+    fn write_logon(&self, host: &str, name: &str, text: &str, ask: AskPassword) -> Result<()>;
     /// run a command on the gateway, its output going to the console; returns the exit code.
     fn run(&self, host: &str, command: &[String]) -> Result<i32>;
     /// reboot or power off the gateway.
@@ -120,6 +129,22 @@ impl Gateway for Ssh {
         leases::read_on(host, ask)
     }
 
+    fn logon_scripts(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+        logon::list(&Session::new(host)?, ask)
+    }
+
+    fn read_logon(&self, host: &str, name: &str, ask: AskPassword) -> Result<Option<String>> {
+        logon::read(&Session::new(host)?, name, ask)
+    }
+
+    fn read_generated_logon(&self, host: &str, ask: AskPassword) -> Result<Option<String>> {
+        logon::read_generated(&Session::new(host)?, ask)
+    }
+
+    fn write_logon(&self, host: &str, name: &str, text: &str, ask: AskPassword) -> Result<()> {
+        logon::write(&Session::new(host)?, name, text, ask)
+    }
+
     fn run(&self, host: &str, command: &[String]) -> Result<i32> {
         let target = Target::Gateway { host: host.into() };
         exec::exec_detached(&target, command)
@@ -153,6 +178,10 @@ mod fake {
         pub answer: Mutex<Option<String>>,
         pub internal: Mutex<Option<Internal>>,
         pub leases: Mutex<Vec<Lease>>,
+        /// the logon scripts by name, with unix line endings.
+        pub logon: Mutex<std::collections::BTreeMap<String, String>>,
+        /// the generated lanlord.bat.
+        pub generated: Mutex<Option<String>>,
         /// the exit code `run` reports.
         pub exit: Mutex<i32>,
         /// what `is_local` says.
@@ -172,6 +201,8 @@ mod fake {
                 answer: Mutex::new(None),
                 internal: Mutex::new(None),
                 leases: Mutex::new(Vec::new()),
+                logon: Mutex::new(std::collections::BTreeMap::new()),
+                generated: Mutex::new(None),
                 exit: Mutex::new(0),
                 local: Mutex::new(false),
                 outcome: Mutex::new(Outcome::Dropped),
@@ -275,6 +306,33 @@ mod fake {
         fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
             self.enter(format!("leases {host}"), ask)?;
             Ok(self.leases.lock().unwrap().clone())
+        }
+
+        fn logon_scripts(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+            self.enter(format!("logon-list {host}"), ask)?;
+            Ok(self.logon.lock().unwrap().keys().cloned().collect())
+        }
+
+        fn read_logon(&self, host: &str, name: &str, ask: AskPassword) -> Result<Option<String>> {
+            self.enter(format!("logon-read {host} {name}"), ask)?;
+            Ok(self.logon.lock().unwrap().get(name).cloned())
+        }
+
+        fn read_generated_logon(&self, host: &str, ask: AskPassword) -> Result<Option<String>> {
+            self.enter(format!("logon-generated {host}"), ask)?;
+            Ok(self.generated.lock().unwrap().clone())
+        }
+
+        fn write_logon(&self, host: &str, name: &str, text: &str, ask: AskPassword) -> Result<()> {
+            if !logon::valid_script_name(name) {
+                return Err(anyhow!("{name} is not a valid script name"));
+            }
+            self.enter(format!("logon-write {host} {name}"), ask)?;
+            self.logon
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), logon::to_unix(text));
+            Ok(())
         }
 
         fn power(&self, host: &str, action: Power, ask: AskPassword) -> Result<Outcome> {

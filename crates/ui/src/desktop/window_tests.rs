@@ -493,3 +493,92 @@ fn remote_commands_without_a_host_say_so() {
     frames(&mut desktop, &ctx, 3);
     assert!(fake.calls().is_empty());
 }
+
+fn logon_tab() -> (Desktop, egui::Context, Arc<Fake>) {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = NT4.into();
+    fake.logon
+        .lock()
+        .unwrap()
+        .insert("logon".into(), "echo hi\n".into());
+    *fake.generated.lock().unwrap() = Some("@echo off\n".into());
+    desktop.open(module("nt4-domain"));
+    desktop.nt4.tab = Tab::Logon;
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| d.nt4.logon.belongs_to("me@gw"));
+    frames(&mut desktop, &ctx, 2);
+    (desktop, ctx, fake)
+}
+
+#[test]
+fn the_logon_tab_opens_the_common_script_and_saves_edits() {
+    let (mut desktop, ctx, fake) = logon_tab();
+    assert_eq!(desktop.nt4.logon.selected(), "logon");
+    assert_eq!(desktop.nt4.logon.draft_mut().as_str(), "echo hi\n");
+    assert_eq!(enabled(&ctx, "Save script"), Some(false), "nothing changed");
+
+    desktop.nt4.logon.draft_mut().push_str("echo two\n");
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(enabled(&ctx, "Save script"), Some(true));
+    assert!(press(&mut desktop, &ctx, "Revert"));
+    assert_eq!(desktop.nt4.logon.draft_mut().as_str(), "echo hi\n");
+
+    desktop.nt4.logon.draft_mut().push_str("echo two\n");
+    assert!(press(&mut desktop, &ctx, "Save script"));
+    settled(&mut desktop, &ctx);
+    assert_eq!(fake.logon.lock().unwrap()["logon"], "echo hi\necho two\n");
+    assert!(fake
+        .calls()
+        .contains(&"logon-write me@gw logon".to_string()));
+    assert_eq!(enabled(&ctx, "Save script"), Some(false), "saved");
+}
+
+#[test]
+fn a_new_script_for_a_login_is_named_edited_and_saved() {
+    let (mut desktop, ctx, fake) = logon_tab();
+    assert!(press(&mut desktop, &ctx, "New script..."));
+    fill(desktop.nt4.logon.form_mut(), &["lanlord"]);
+    assert!(press(&mut desktop, &ctx, "OK"));
+    assert!(
+        desktop.nt4.logon.form_mut().unwrap().error.is_some(),
+        "the generated script is reserved"
+    );
+    fill(desktop.nt4.logon.form_mut(), &["muncherelli"]);
+    assert!(press(&mut desktop, &ctx, "OK"));
+    until(&mut desktop, &ctx, |d| {
+        d.nt4.logon.selected() == "muncherelli"
+    });
+    settled(&mut desktop, &ctx);
+    assert_eq!(
+        desktop.nt4.logon.entries_for_test(),
+        ["logon", "muncherelli"],
+        "listed before it is saved"
+    );
+    assert_eq!(enabled(&ctx, "New script..."), Some(true));
+
+    *desktop.nt4.logon.draft_mut() = "net use P: \\\\A\\b\n".into();
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(enabled(&ctx, "New script..."), Some(false), "unsaved edits");
+    assert!(press(&mut desktop, &ctx, "Save script"));
+    settled(&mut desktop, &ctx);
+    assert_eq!(
+        fake.logon.lock().unwrap()["muncherelli"],
+        "net use P: \\\\A\\b\n"
+    );
+    assert_eq!(
+        desktop.nt4.logon.entries_for_test(),
+        ["logon", "muncherelli"]
+    );
+}
+
+#[test]
+fn a_failing_gateway_is_reported_in_the_logon_tab() {
+    let (mut desktop, ctx, fake) = logon_tab();
+    *fake.fail.lock().unwrap() = Some("sudo said no".into());
+    assert!(press(&mut desktop, &ctx, "Reload scripts"));
+    settled(&mut desktop, &ctx);
+    assert_eq!(
+        desktop.nt4.logon.note(),
+        Some(&(true, "sudo said no".to_string()))
+    );
+}

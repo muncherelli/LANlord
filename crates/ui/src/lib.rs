@@ -10,6 +10,7 @@ mod form;
 mod gateway;
 mod hostlist;
 mod icons;
+mod logon_panel;
 mod nt4_panel;
 mod nt4_window;
 mod remote;
