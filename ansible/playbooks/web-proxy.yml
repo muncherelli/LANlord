@@ -4,7 +4,7 @@
 # nothing until your settings have a `web-proxy:` section.
 #
 # web-proxy:
-#   listen: [host]                # where caddy answers: host (your normal network, the default),
+#   listen: [host, internal]      # where caddy answers (the default is both): host is your normal network,
 #                                 # internal (the retro network), or ipv4 addresses; a list or one value
 #   tls: "off"                    # or internal, for https with caddy's own certificate authority (quote off)
 #   sites:
@@ -40,7 +40,7 @@
 
     - name: work out the defaults
       ansible.builtin.set_fact:
-        proxy_listen_raw: "{{ wp.listen | default(['host']) }}"
+        proxy_listen_raw: "{{ wp.listen | default(['host', 'internal']) }}"
         # yaml reads an unquoted `off` as the boolean false, so accept both
         proxy_tls: "{{ 'off' if (wp.tls | default('off')) in ['off', false] else wp.tls }}"
         proxy_sites: >-
