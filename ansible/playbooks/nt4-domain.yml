@@ -132,18 +132,17 @@
         nt4 is defined and (current.stdout != 'true ' ~ image ~ ':' ~ image_hash.stdout
         or smb_conf is changed)
       block:
-        - name: remove the old container
-          ansible.builtin.command: "docker rm -f {{ container }}"
-          changed_when: true
-          failed_when: false
-
-        - name: start the container on the host network
-          ansible.builtin.command: >-
-            docker run -d --name {{ container }} --network host --restart unless-stopped
-            -v {{ state_dir }}/lib:/var/lib/samba
-            -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
-            {{ image }}:{{ image_hash.stdout }}
-          changed_when: true
+        - name: replace the container, keeping the old one until the new one is healthy
+          ansible.builtin.include_tasks: replace-container.yml
+          vars:
+            rc_name: "{{ container }}"
+            rc_health: "docker exec {{ container }} smbcontrol smbd ping"
+            rc_retries: 20
+            rc_run: >-
+              docker run -d --name {{ container }} --network host --restart unless-stopped
+              -v {{ state_dir }}/lib:/var/lib/samba
+              -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
+              {{ image }}:{{ image_hash.stdout }}
 
     - name: wait for samba to answer
       ansible.builtin.command: "docker exec {{ container }} smbcontrol smbd ping"

@@ -10,6 +10,7 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 | `playbooks/nt4-domain.yml` | The NT4 Domain module. The `nt4-domain/` folder holds the Samba image and `smb.conf.j2`. |
 | `playbooks/web-proxy.yml` | The Web Proxy module. The `web-proxy/` folder holds the `Caddyfile.j2`. |
 | `playbooks/dns.yml` | The DNS module. The `dns/` folder holds `dnsmasq.conf.j2` and the dnsmasq image. |
+| `playbooks/replace-container.yml` | The shared tasks that replace a container and roll back when the new one is unhealthy. |
 | `playbooks/status/lanlord-status.sh` | The status page generator, run every 30 seconds by a systemd timer that the Web Proxy module installs. |
 
 ## How modules work
@@ -17,6 +18,18 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 - A module's tasks carry its id as a tag, so `lanlord apply <host> --module nt4-domain` runs just that module.
 - Its settings live under the same key in your encrypted settings file, and the module does nothing until that section exists.
 - The comment at the top of each playbook shows the settings it reads.
+
+## Replacing a container safely
+
+The NT4 Domain, DNS and Web Proxy modules replace their container through the shared `playbooks/replace-container.yml` whenever its image or configuration changes:
+
+1. The old container `<name>` is renamed `<name>-prev` and stopped (not removed). With host networking the two cannot listen on the same ports at once.
+2. The new container starts and must stay healthy for 3 checks in a row, 2 seconds apart: running, not restarting, and the module's check passing (`smbcontrol smbd ping` for Samba, the running state for dnsmasq and Caddy).
+3. When it does, `<name>-prev` is removed. When it does not, the failed container's last 40 log lines are printed as a debug message, it is removed, `<name>-prev` is renamed back and started, and the run fails with the reason and a note that the previous container was restored.
+
+The first run on a fresh gateway has no previous container, so a failure just fails. A leftover `<name>-prev` from an interrupted run is handled at the start of the next run: it is removed when `<name>` is running, and restored when `<name>` is missing or stopped.
+
+To find a failed replacement's logs, read the "last log lines of the failed ..." message in the apply output. The failed container is removed after that, so the output is the only copy. The previous container's own logs are `docker logs <name>`.
 
 Adding a file here means adding it to the list in `crates/core/src/payload.rs`. A test fails if a file is missing from it.
 

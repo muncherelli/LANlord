@@ -1,0 +1,145 @@
+# shared by the docker modules: replace a container, and put the previous one
+# back when the new one does not become healthy, so a bad image or entrypoint
+# never leaves the service down. include it with include_tasks and these vars:
+#   rc_name     the container name
+#   rc_run      the full `docker run -d ...` command for the new container
+#   rc_health   a command that exits 0 when the service is healthy
+#   rc_retries  optional, tries at getting a stable window (default 10)
+#   rc_delay    optional, seconds between checks (default 2)
+#   rc_checks   optional, consecutive good checks needed (default 3)
+# the old container is renamed <name>-prev and stopped, never removed until
+# the new one is healthy. host networking means the two cannot run together.
+- name: look at the container and any leftover from an interrupted run
+  ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ item }}"
+  loop: ["{{ rc_name }}", "{{ rc_name }}-prev"]
+  register: rc_found
+  changed_when: false
+  failed_when: false
+
+- name: work out what exists
+  ansible.builtin.set_fact:
+    rc_had_old: "{{ rc_found.results[0].rc == 0 }}"
+    rc_main_up: "{{ rc_found.results[0].stdout == 'true' }}"
+    rc_has_prev: "{{ rc_found.results[1].rc == 0 }}"
+    rc_swapped: false
+
+- name: drop a leftover previous container, the main one is running
+  ansible.builtin.command: "docker rm -f {{ rc_name }}-prev"
+  changed_when: true
+  when: rc_has_prev and rc_main_up
+
+- name: restore the previous container, the main one is not running
+  when: rc_has_prev and not rc_main_up
+  block:
+    - name: remove the stopped or missing main container
+      ansible.builtin.command: "docker rm -f {{ rc_name }}"
+      changed_when: true
+      failed_when: false
+
+    - name: rename the previous container back
+      ansible.builtin.command: "docker rename {{ rc_name }}-prev {{ rc_name }}"
+      changed_when: true
+
+    - name: start the restored container
+      ansible.builtin.command: "docker start {{ rc_name }}"
+      changed_when: true
+
+    - name: note that the restored container is the old one
+      ansible.builtin.set_fact:
+        rc_had_old: true
+
+- name: replace the container, rolling back when the new one is not healthy
+  block:
+    - name: set the old container aside
+      ansible.builtin.command: "docker rename {{ rc_name }} {{ rc_name }}-prev"
+      changed_when: true
+      when: rc_had_old
+
+    - name: remember that the old container was set aside
+      ansible.builtin.set_fact:
+        rc_swapped: "{{ rc_had_old }}"
+
+    - name: stop the old container to free its ports
+      ansible.builtin.command: "docker stop {{ rc_name }}-prev"
+      changed_when: true
+      when: rc_swapped
+
+    - name: start the new container
+      ansible.builtin.command: "{{ rc_run }}"
+      changed_when: true
+
+    # running, not restarting and healthy for several checks in a row
+    - name: wait until the new container is healthy and stays so
+      ansible.builtin.shell: |
+        i=0
+        first=
+        while [ "$i" -lt "$RC_CHECKS" ]; do
+          state=$(docker inspect --format "$RC_FORMAT" "$RC_NAME") || exit 1
+          set -- $state
+          if [ "$1" != true ] || [ "$2" != false ]; then echo "not running steadily: $state"; exit 1; fi
+          first=${first:-$3}
+          if [ "$3" != "$first" ]; then echo "restarted: $state"; exit 1; fi
+          sh -c "$RC_HEALTH" > /dev/null 2>&1 || { echo "health check failed: $RC_HEALTH"; exit 1; }
+          i=$((i + 1))
+          sleep "$RC_DELAY"
+        done
+      environment:
+        RC_NAME: "{{ rc_name }}"
+        RC_HEALTH: "{{ rc_health }}"
+        RC_CHECKS: "{{ rc_checks | default(3) }}"
+        RC_DELAY: "{{ rc_delay | default(2) }}"
+        RC_FORMAT: "{% raw %}{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}{% endraw %}"
+      register: rc_wait
+      until: rc_wait.rc == 0
+      retries: "{{ rc_retries | default(10) }}"
+      delay: "{{ rc_delay | default(2) }}"
+      changed_when: false
+
+    - name: note that the replacement worked
+      ansible.builtin.set_fact:
+        rc_ok: true
+
+  rescue:
+    - name: keep the failed container's logs
+      ansible.builtin.command: "docker logs --tail 40 {{ rc_name }}"
+      register: rc_logs
+      changed_when: false
+      failed_when: false
+      when: rc_swapped or not rc_had_old
+
+    - name: show the failed container's logs
+      ansible.builtin.debug:
+        msg: "{{ ['last log lines of the failed ' ~ rc_name] + rc_logs.stdout_lines + rc_logs.stderr_lines }}"
+      when: rc_logs is not skipped
+
+    - name: remove the failed container
+      ansible.builtin.command: "docker rm -f {{ rc_name }}"
+      changed_when: true
+      failed_when: false
+      when: rc_swapped or not rc_had_old
+
+    - name: put the previous container back
+      ansible.builtin.command: "docker rename {{ rc_name }}-prev {{ rc_name }}"
+      changed_when: true
+      when: rc_swapped
+
+    - name: start the previous container
+      ansible.builtin.command: "docker start {{ rc_name }}"
+      changed_when: true
+      when: rc_had_old
+
+    - name: fail with the reason
+      ansible.builtin.fail:
+        msg: >-
+          replacing {{ rc_name }} failed at '{{ ansible_failed_task.name | default('unknown step') }}':
+          {{ (ansible_failed_result.stdout | default('')) ~ ' ' ~ (ansible_failed_result.msg | default('no message')) }}
+          -- {{ 'the previous container was restored and is running again.' if rc_had_old
+             else 'there was no previous container to restore.' }}
+          the failed container's logs are shown above.
+
+  always:
+    - name: remove the previous container now that the new one is healthy
+      ansible.builtin.command: "docker rm -f {{ rc_name }}-prev"
+      changed_when: true
+      failed_when: false
+      when: rc_ok | default(false)
