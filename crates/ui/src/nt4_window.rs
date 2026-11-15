@@ -40,7 +40,7 @@ impl Nt4Window {
     }
 
     pub fn dialog(&mut self, ctx: &egui::Context, services: &Services, host: Option<&str>) {
-        self.settings.dialog(ctx);
+        self.settings.dialog(ctx, services, host);
         self.users.dialog(ctx, services, host);
     }
 }

@@ -68,6 +68,8 @@ enum MachinesCommand {
     Add { name: String },
     /// remove a machine from your settings (its account stays in the domain)
     Remove { name: String },
+    /// set a machine's account back to its first password, so it can join the domain again
+    Reset { name: String },
 }
 
 #[derive(Subcommand)]
@@ -212,6 +214,7 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
         }
         MachinesCommand::Add { name } => MachineChange::Add(name),
         MachinesCommand::Remove { name } => MachineChange::Remove(name),
+        MachinesCommand::Reset { name } => MachineChange::Reset(name),
     };
     change_machine(&Session::new(host)?, host, &identity, &change, &mut ask)
 }

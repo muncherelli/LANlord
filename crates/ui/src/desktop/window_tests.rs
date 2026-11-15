@@ -384,6 +384,33 @@ fn machines_are_removed_and_a_workgroup_needs_no_password() {
 }
 
 #[test]
+fn a_machine_account_is_reset_only_after_the_confirmation() {
+    let stored_text = "nt4-domain:\n  mode: domain\n  name: LAB\n  machines: [ws1, ws2]\n";
+    let (mut desktop, ctx, fake) = open("nt4-domain", stored_text);
+    until(&mut desktop, &ctx, |d| d.nt4.settings.belongs_to("me@gw"));
+    frames(&mut desktop, &ctx, 3);
+    assert_eq!(
+        enabled(&ctx, "Reset account..."),
+        Some(false),
+        "nothing selected"
+    );
+    desktop.nt4.settings.select(1);
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(enabled(&ctx, "Reset account..."), Some(true));
+    assert!(press(&mut desktop, &ctx, "Reset account..."));
+    frames(&mut desktop, &ctx, 2);
+    assert!(fake.calls().iter().all(|c| !c.starts_with("reset")));
+    assert!(press(&mut desktop, &ctx, "Cancel"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(fake.calls().iter().all(|c| !c.starts_with("reset")));
+    assert!(press(&mut desktop, &ctx, "Reset account..."));
+    frames(&mut desktop, &ctx, 2);
+    assert!(press(&mut desktop, &ctx, "OK"));
+    settled(&mut desktop, &ctx);
+    assert!(fake.calls().contains(&"reset me@gw ws2".to_string()));
+}
+
+#[test]
 fn a_broken_nt4_section_is_reported() {
     let (mut desktop, ctx, _) = open("nt4-domain", "nt4-domain: 3\n");
     until(&mut desktop, &ctx, |d| {
