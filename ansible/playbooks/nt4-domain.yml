@@ -196,7 +196,7 @@
       when: nt4 is defined
 
     # nt4 and windows 9x read this at logon; the file needs dos line endings
-    - name: write the logon script that maps S:
+    - name: write the logon script that maps the software drive
       ansible.builtin.copy:
         dest: "{{ state_dir }}/lib/netlogon/lanlord.bat"
         mode: "0644"

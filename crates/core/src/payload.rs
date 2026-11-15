@@ -119,6 +119,16 @@ mod tests {
     }
 
     #[test]
+    fn every_embedded_yaml_file_parses() {
+        // a task name ending in a colon, for example, would break every apply on the gateway
+        for (name, contents) in FILES.iter().filter(|(n, _)| n.ends_with(".yml")) {
+            if let Err(err) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(contents) {
+                panic!("{name} is not valid yaml: {err}");
+            }
+        }
+    }
+
+    #[test]
     fn base64_round_trips() {
         let encoded = archive_base64().unwrap();
         assert!(encoded.lines().all(|l| l.len() <= 76));
