@@ -55,6 +55,16 @@ enum UsersCommand {
 }
 
 #[derive(Subcommand)]
+enum MachinesCommand {
+    /// list the machine accounts in your settings
+    List,
+    /// create an account in advance so the machine can join without creating one
+    Add { name: String },
+    /// remove a machine from your settings (its account stays in the domain)
+    Remove { name: String },
+}
+
+#[derive(Subcommand)]
 enum AdminCommand {
     /// list the members of lanlord-admins on the gateway
     List,
@@ -102,6 +112,12 @@ enum Command {
         host: String,
         #[command(subcommand)]
         action: UsersCommand,
+    },
+    /// manage the machine accounts of the nt4-domain module
+    Machines {
+        host: String,
+        #[command(subcommand)]
+        action: MachinesCommand,
     },
     /// manage who may administer lanlord on a gateway (the lanlord-admins group)
     Admin {
@@ -171,6 +187,23 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
     lanlord_core::users::change(host, &identity, &change, &mut ask).map(|_| ())
 }
 
+fn machines(host: &str, action: MachinesCommand) -> Result<()> {
+    use lanlord_core::nt4::{change_machine, machines_on, MachineChange};
+    use lanlord_core::ssh::Session;
+    let identity = crypto::load(&identity_path()?)?;
+    let change = match action {
+        MachinesCommand::List => {
+            for name in machines_on(&Session::new(host)?, host, &identity, &mut ask)? {
+                println!("{name}");
+            }
+            return Ok(());
+        }
+        MachinesCommand::Add { name } => MachineChange::Add(name),
+        MachinesCommand::Remove { name } => MachineChange::Remove(name),
+    };
+    change_machine(&Session::new(host)?, host, &identity, &change, &mut ask)
+}
+
 fn admin(host: &str, action: AdminCommand) -> Result<()> {
     use lanlord_core::admins::{change, list, Action};
     let action = match action {
@@ -233,6 +266,7 @@ fn main() -> Result<()> {
             lanlord_core::apply::apply(&host, identity.as_ref(), &modules, &mut ask)
         }
         Some(Command::Users { host, action }) => users(&host, action),
+        Some(Command::Machines { host, action }) => machines(&host, action),
         Some(Command::Admin { host, action }) => admin(&host, action),
         Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {

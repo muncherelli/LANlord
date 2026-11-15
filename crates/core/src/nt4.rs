@@ -5,7 +5,11 @@
 use anyhow::{bail, Result};
 use serde_yaml_ng::{Mapping, Value};
 
-use crate::settings::{Settings, ValidationError};
+use crate::apply;
+use crate::bootstrap::AskPassword;
+use crate::settings::{self, Settings, ValidationError};
+use crate::ssh::Session;
+use crate::users::cached;
 
 const SECTION: &str = "nt4-domain";
 
@@ -146,6 +150,69 @@ impl Nt4Settings {
     }
 }
 
+/// what to do with a machine account.
+pub enum MachineChange {
+    Add(String),
+    Remove(String),
+}
+
+/// the machine names in `plain` settings after `change`; adding a name twice is a no-op.
+pub fn edit_machines(plain: &str, change: &MachineChange) -> Result<String> {
+    let mut settings = Settings::parse(plain)?;
+    let mut nt4 = Nt4Settings::from_settings(&settings)?;
+    match change {
+        MachineChange::Add(name) => {
+            if !valid_machine(name) {
+                bail!("{name} is not a valid machine name (up to 15 letters, digits or -)");
+            }
+            if !nt4.machines.iter().any(|m| m.eq_ignore_ascii_case(name)) {
+                nt4.machines.push(name.clone());
+            }
+        }
+        MachineChange::Remove(name) => nt4.machines.retain(|m| !m.eq_ignore_ascii_case(name)),
+    }
+    nt4.apply_to(&mut settings);
+    Ok(settings.text())
+}
+
+/// the machines your settings define on `host`.
+pub fn machines_on(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    ask_password: AskPassword,
+) -> Result<Vec<String>> {
+    let stored = settings::load_document_with(session, identity, ask_password)?;
+    if stored == settings::Document::default() {
+        bail!("no settings on {host}; run lanlord config push first");
+    }
+    Ok(Nt4Settings::from_settings(&Settings::parse(&stored.plain)?)?.machines)
+}
+
+/// change the machines in your settings on `host` and apply the module.
+pub fn change_machine(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    change: &MachineChange,
+    ask_password: AskPassword,
+) -> Result<()> {
+    let mut ask = cached(ask_password);
+    let stored = settings::load_document_with(session, identity, &mut ask)?;
+    if stored == settings::Document::default() {
+        bail!("no settings on {host}; run lanlord config push first");
+    }
+    let edited = edit_machines(&stored.plain, change)?;
+    settings::save_document_with(session, host, identity, &edited, &[], &mut ask)?;
+    apply::apply_with(
+        session,
+        host,
+        Some(identity),
+        &["nt4-domain".to_string()],
+        &mut ask,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,5 +288,49 @@ mod tests {
                 "nt4-domain.machines[3]"
             ]
         );
+    }
+
+    #[test]
+    fn machines_are_added_once_and_removed() {
+        let added = edit_machines(TEXT, &MachineChange::Add("nt4test".into())).unwrap();
+        let twice = edit_machines(&added, &MachineChange::Add("NT4TEST".into())).unwrap();
+        let machines = |t: &str| {
+            Nt4Settings::from_settings(&Settings::parse(t).unwrap())
+                .unwrap()
+                .machines
+        };
+        assert_eq!(machines(&twice), ["ws1", "ws2", "nt4test"]);
+        let removed = edit_machines(&twice, &MachineChange::Remove("WS1".into())).unwrap();
+        assert_eq!(machines(&removed), ["ws2", "nt4test"]);
+        assert!(removed.contains("james"));
+        assert!(edit_machines(TEXT, &MachineChange::Add("bad name".into())).is_err());
+    }
+
+    #[cfg(unix)]
+    mod gateway {
+        use super::*;
+        use crate::testgw::{identity, no_password, Gateway};
+
+        const STORED: &str =
+            "docker: {}\nnt4-domain:\n  mode: domain\n  name: RETRONET\n  machines: [ws1]\n";
+
+        #[test]
+        fn machines_are_listed_changed_and_applied() {
+            let (gw, id) = (Gateway::new("nt4-machines"), identity("nt4-machines"));
+            gw.seed_sealed(&id, STORED);
+            let listed = machines_on(&gw.session, "gw", &id, &mut no_password).unwrap();
+            assert_eq!(listed, ["ws1"]);
+            let add = MachineChange::Add("nt4test".into());
+            change_machine(&gw.session, "gw", &id, &add, &mut no_password).unwrap();
+            assert!(gw.plain().unwrap().contains("nt4test"));
+        }
+
+        #[test]
+        fn machines_need_settings_on_the_gateway() {
+            let (gw, id) = (Gateway::new("nt4-none"), identity("nt4-none"));
+            assert!(machines_on(&gw.session, "gw", &id, &mut no_password).is_err());
+            let add = MachineChange::Add("x".into());
+            assert!(change_machine(&gw.session, "gw", &id, &add, &mut no_password).is_err());
+        }
     }
 }
