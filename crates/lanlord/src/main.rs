@@ -189,10 +189,11 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
 
 fn machines(host: &str, action: MachinesCommand) -> Result<()> {
     use lanlord_core::nt4::{change_machine, machines_on, MachineChange};
+    use lanlord_core::ssh::Session;
     let identity = crypto::load(&identity_path()?)?;
     let change = match action {
         MachinesCommand::List => {
-            for name in machines_on(host, &identity, &mut ask)? {
+            for name in machines_on(&Session::new(host)?, host, &identity, &mut ask)? {
                 println!("{name}");
             }
             return Ok(());
@@ -200,7 +201,7 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
         MachinesCommand::Add { name } => MachineChange::Add(name),
         MachinesCommand::Remove { name } => MachineChange::Remove(name),
     };
-    change_machine(host, &identity, &change, &mut ask)
+    change_machine(&Session::new(host)?, host, &identity, &change, &mut ask)
 }
 
 fn admin(host: &str, action: AdminCommand) -> Result<()> {

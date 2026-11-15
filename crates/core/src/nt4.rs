@@ -177,14 +177,6 @@ pub fn edit_machines(plain: &str, change: &MachineChange) -> Result<String> {
 
 /// the machines your settings define on `host`.
 pub fn machines_on(
-    host: &str,
-    identity: &age::x25519::Identity,
-    ask_password: AskPassword,
-) -> Result<Vec<String>> {
-    machines_with(&Session::new(host)?, host, identity, ask_password)
-}
-
-fn machines_with(
     session: &Session,
     host: &str,
     identity: &age::x25519::Identity,
@@ -199,15 +191,6 @@ fn machines_with(
 
 /// change the machines in your settings on `host` and apply the module.
 pub fn change_machine(
-    host: &str,
-    identity: &age::x25519::Identity,
-    change: &MachineChange,
-    ask_password: AskPassword,
-) -> Result<()> {
-    change_machine_with(&Session::new(host)?, host, identity, change, ask_password)
-}
-
-fn change_machine_with(
     session: &Session,
     host: &str,
     identity: &age::x25519::Identity,
@@ -335,19 +318,19 @@ mod tests {
         fn machines_are_listed_changed_and_applied() {
             let (gw, id) = (Gateway::new("nt4-machines"), identity("nt4-machines"));
             gw.seed_sealed(&id, STORED);
-            let listed = machines_with(&gw.session, "gw", &id, &mut no_password).unwrap();
+            let listed = machines_on(&gw.session, "gw", &id, &mut no_password).unwrap();
             assert_eq!(listed, ["ws1"]);
             let add = MachineChange::Add("nt4test".into());
-            change_machine_with(&gw.session, "gw", &id, &add, &mut no_password).unwrap();
+            change_machine(&gw.session, "gw", &id, &add, &mut no_password).unwrap();
             assert!(gw.plain().unwrap().contains("nt4test"));
         }
 
         #[test]
         fn machines_need_settings_on_the_gateway() {
             let (gw, id) = (Gateway::new("nt4-none"), identity("nt4-none"));
-            assert!(machines_with(&gw.session, "gw", &id, &mut no_password).is_err());
+            assert!(machines_on(&gw.session, "gw", &id, &mut no_password).is_err());
             let add = MachineChange::Add("x".into());
-            assert!(change_machine_with(&gw.session, "gw", &id, &add, &mut no_password).is_err());
+            assert!(change_machine(&gw.session, "gw", &id, &add, &mut no_password).is_err());
         }
     }
 }
