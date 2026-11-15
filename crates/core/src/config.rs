@@ -53,9 +53,16 @@ chmod 0640 /opt/lanlord/config/settings.yml
 }
 
 /// prints `present` and then the file, or nothing when there is no plain file.
+/// a directory that cannot be searched is a failure, not an absent file, so the
+/// caller falls back to sudo.
 const PULL_PLAIN_SCRIPT: &str = r#"if [ -f /opt/lanlord/config/settings.yml ]; then
   echo present
   cat /opt/lanlord/config/settings.yml
+else
+  err=$(ls /opt/lanlord/config 2>&1 >/dev/null) || case "$err" in
+    *"No such file"*) ;;
+    *) echo "$err" >&2; exit 1 ;;
+  esac
 fi
 "#;
 
@@ -341,5 +348,22 @@ esac"#,
             pull_plain_with(&session, &mut no_password).unwrap(),
             Some(b"viasudo: 1\n".to_vec())
         );
+    }
+
+    #[test]
+    fn pull_plain_script_fails_when_the_directory_cannot_be_searched() {
+        use std::process::Command;
+        let dir = std::env::temp_dir().join(format!("lanlord-plain-{}", std::process::id()));
+        let script = PULL_PLAIN_SCRIPT.replace("/opt/lanlord/config", dir.to_str().unwrap());
+        let run = || Command::new("sh").arg("-c").arg(&script).output().unwrap();
+        assert!(
+            run().status.success(),
+            "a missing directory is just no file"
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(run().status.success() && run().stdout.is_empty());
+        std::fs::write(dir.join("settings.yml"), "a: 1\n").unwrap();
+        assert_eq!(run().stdout, b"present\na: 1\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
