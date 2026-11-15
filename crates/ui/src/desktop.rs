@@ -641,6 +641,8 @@ mod tests {
 
     /// click the button labelled `text`; false when it is missing or disabled.
     fn press(desktop: &mut Desktop, ctx: &egui::Context, text: &str) -> bool {
+        // draw first, so the button reflects what the tasks did meanwhile
+        frames(desktop, ctx, 2);
         match theme::probe::find(ctx, text) {
             Some((rect, true)) => {
                 click_at(desktop, ctx, rect.center());
