@@ -1,6 +1,8 @@
 #!/bin/bash
 # manages samba accounts. a password is read from stdin, never from arguments.
-#   lanlord-user add NAME [admin|user]  create the account or set its password; admin makes it a domain admin
+#   lanlord-user add NAME [admin|user] [software]  create the account or set its password; admin makes it a domain
+#                             admin, software lets it write to the software share without being one
+#   lanlord-user sync         rebuild the software admins group (domain admins and the software list)
 #   lanlord-user admin        set the password of the domain administrator
 #   lanlord-user delete NAME  remove the account
 #   lanlord-user machine NAME create a machine account so an nt4 computer can join without creating it
@@ -35,6 +37,31 @@ set_role() {
   fi
 }
 
+# software admins are the domain admins plus the names in the softadmins file; the group is
+# rebuilt from both lists so removing a user from either takes effect
+sync_software() {
+  local private=/var/lib/samba/private want have
+  touch "$private/domadmins" "$private/softadmins"
+  want=$(cat "$private/domadmins" "$private/softadmins" | sort -u)
+  have=$(getent group softadmins | cut -d: -f4 | tr ',' '\n')
+  for member in $have; do
+    grep -qx "$member" <<<"$want" || gpasswd -d "$member" softadmins >/dev/null 2>&1 || true
+  done
+  for member in $want; do
+    if id "$member" >/dev/null 2>&1; then usermod -aG softadmins "$member"; fi
+  done
+}
+
+set_software() {
+  local list=/var/lib/samba/private/softadmins
+  touch "$list"
+  if [[ ${1:-} == software ]]; then
+    grep -qx "$2" "$list" || echo "$2" >> "$list"
+  else
+    sed -i "/^$2\$/d" "$list"
+  fi
+}
+
 # each user's home folder, used by windows 9x roaming profiles
 make_home() {
   install -d -o "$1" -g domusers -m 0700 "/var/lib/samba/homes/$1"
@@ -51,6 +78,8 @@ case "$cmd" in
     fi
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a "$name" >/dev/null
     set_role "$name" "${3:-user}"
+    set_software "${4:-}" "$name"
+    sync_software
     make_home "$name"
     if [[ -n $created ]]; then echo "created $name"; else echo "updated $name"; fi
     ;;
@@ -76,8 +105,13 @@ case "$cmd" in
     valid "$name"
     smbpasswd -x "$name" >/dev/null 2>&1 || true
     set_role "$name" user
+    set_software none "$name"
+    sync_software
     userdel "$name" >/dev/null 2>&1 || true
     echo "deleted $name"
+    ;;
+  sync)
+    sync_software
     ;;
   list)
     pdbedit -L

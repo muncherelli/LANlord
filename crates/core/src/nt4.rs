@@ -21,6 +21,8 @@ pub struct Nt4Settings {
     /// the server's own name; empty means the machine's hostname.
     pub netbios_name: String,
     pub roaming_profiles: bool,
+    /// a software share that maps to S: at logon.
+    pub software: bool,
     pub machines: Vec<String>,
 }
 
@@ -31,6 +33,7 @@ impl Default for Nt4Settings {
             name: "RETRONET".into(),
             netbios_name: String::new(),
             roaming_profiles: false,
+            software: false,
             machines: Vec::new(),
         }
     }
@@ -88,6 +91,7 @@ impl Nt4Settings {
             name: text(map, "name").unwrap_or(defaults.name),
             netbios_name: text(map, "netbios_name").unwrap_or_default(),
             roaming_profiles: map.get("roaming_profiles").and_then(Value::as_bool) == Some(true),
+            software: map.get("software").and_then(Value::as_bool) == Some(true),
             machines,
         })
     }
@@ -107,6 +111,7 @@ impl Nt4Settings {
             map.insert("netbios_name".into(), self.netbios_name.as_str().into());
         }
         map.insert("roaming_profiles".into(), self.roaming_profiles.into());
+        map.insert("software".into(), self.software.into());
         let machines = self.machines.iter().map(|m| m.as_str().into()).collect();
         map.insert("machines".into(), Value::Sequence(machines));
         settings.set_section(SECTION, Value::Mapping(map));
@@ -243,6 +248,7 @@ mod tests {
         );
         nt4.netbios_name = "gw".into();
         nt4.roaming_profiles = true;
+        nt4.software = true;
         nt4.machines.push("ws3".into());
         nt4.apply_to(&mut settings);
         let text = settings.text();

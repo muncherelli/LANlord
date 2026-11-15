@@ -5,25 +5,38 @@
 set -eu
 mkdir -p /run/samba /var/log/samba /var/lib/samba/netlogon /var/lib/samba/private
 
+# the groups have fixed ids: samba stores its group mappings by number, and the unix groups are
+# recreated on every start, so creation order must never decide who is a domain admin
+for entry in domusers:1000 machines:1001 domadmins:1002 domguests:1003 softadmins:1004; do
+  getent group "${entry%%:*}" >/dev/null || groupadd -g "${entry##*:}" "${entry%%:*}"
+done
+
 # the roaming profiles share (only used when nt4-domain.roaming_profiles is on): members of
 # domusers may create their own profile folder in it, nobody else can
-getent group domusers >/dev/null || groupadd domusers
 install -d -o root -g domusers -m 0770 /var/lib/samba/profiles
 install -d -o root -g domusers -m 0750 /var/lib/samba/homes
 install -d -m 0700 /var/lib/samba/homes/root
 
-for group in machines domadmins domusers domguests; do
-  getent group "$group" >/dev/null || groupadd "$group"
-done
+# the software share (only used when nt4-domain.software is on): software admins and domain
+# admins write to it, everyone else reads
+install -d -o root -g softadmins -m 2775 /var/lib/samba/software
 
 # the classic domain's well-known groups, and administrator as root
 if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
-  net groupmap list | grep -q 'Domain Admins' ||
-    net groupmap add rid=512 ntgroup='Domain Admins' unixgroup=domadmins type=d
-  net groupmap list | grep -q 'Domain Users' ||
-    net groupmap add rid=513 ntgroup='Domain Users' unixgroup=domusers type=d
-  net groupmap list | grep -q 'Domain Guests' ||
-    net groupmap add rid=514 ntgroup='Domain Guests' unixgroup=domguests type=d
+  # point each well-known group at its unix group, also when an older start mapped it elsewhere
+  map_group() {
+    local rid=$1 ntgroup=$2 unixgroup=$3
+    if net groupmap list | grep -q "^$ntgroup "; then
+      net groupmap modify ntgroup="$ntgroup" unixgroup="$unixgroup" type=d >/dev/null || echo "could not map $ntgroup" >&2
+    else
+      net groupmap add ${rid:+rid=$rid} ntgroup="$ntgroup" unixgroup="$unixgroup" type=d >/dev/null || echo "could not map $ntgroup" >&2
+    fi
+  }
+  map_group 512 'Domain Admins' domadmins
+  map_group 513 'Domain Users' domusers
+  map_group 514 'Domain Guests' domguests
+  # the software share's writers, visible to windows as a domain group
+  map_group '' 'Software Admins' softadmins
   # what a domain admin may do: join computers, back up and restore, shut down, manage users
   domain=$(testparm -s --parameter-name=workgroup 2>/dev/null)
   for right in SeMachineAccountPrivilege SeAddUsersPrivilege SeTakeOwnershipPrivilege \
@@ -57,6 +70,7 @@ if [[ -f /var/lib/samba/private/domadmins ]]; then
     fi
   done < /var/lib/samba/private/domadmins
 fi
+lanlord-user sync
 
 nmbd --foreground --no-process-group --debug-stdout &
 smbd --foreground --no-process-group --debug-stdout &
