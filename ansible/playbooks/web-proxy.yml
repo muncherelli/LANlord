@@ -6,7 +6,7 @@
 # web-proxy:
 #   listen: [host]                # where caddy answers: host (your normal network, the default),
 #                                 # internal (the retro network), or ipv4 addresses; a list or one value
-#   tls: off                      # or internal, for https with caddy's own certificate authority
+#   tls: "off"                    # or internal, for https with caddy's own certificate authority (quote off)
 #   sites:
 #     - host: nostalgia.lan       # the name clients ask for
 #       upstream: 172.16.120.20:80
@@ -41,7 +41,8 @@
     - name: work out the defaults
       ansible.builtin.set_fact:
         proxy_listen_raw: "{{ wp.listen | default(['host']) }}"
-        proxy_tls: "{{ wp.tls | default('off') }}"
+        # yaml reads an unquoted `off` as the boolean false, so accept both
+        proxy_tls: "{{ 'off' if (wp.tls | default('off')) in ['off', false] else wp.tls }}"
         proxy_sites: >-
           {{ (wp.sites | default([]))
              + ([wp.webui] if wp.webui is defined else []) }}
