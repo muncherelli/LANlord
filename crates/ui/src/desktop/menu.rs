@@ -148,7 +148,7 @@ fn paint(ui: &mut Ui, rows: &[Row], rect: Rect, rects: &[Rect], strip: bool) -> 
             icons::draw(
                 ui.painter(),
                 at.left_top() + Vec2::new(4.0, 4.0),
-                icons::art(art),
+                icons::small(art),
                 1.0,
             );
         }
@@ -336,17 +336,11 @@ impl Desktop {
         } else {
             Vec2::ZERO
         };
-        let logo = Rect::from_min_size(
-            rect.left_top() + Vec2::new(6.0, 4.0) + nudge,
-            Vec2::splat(14.0),
-        );
-        ui.painter().rect_filled(logo, 0.0, NAVY);
-        ui.painter().text(
-            logo.center(),
-            Align2::CENTER_CENTER,
-            "L",
-            theme::font(),
-            WHITE,
+        icons::draw(
+            ui.painter(),
+            rect.left_top() + Vec2::new(5.0, 3.0) + nudge,
+            icons::small("lanlord"),
+            1.0,
         );
         ui.painter().text(
             rect.left_center() + Vec2::new(26.0, 0.0) + nudge,

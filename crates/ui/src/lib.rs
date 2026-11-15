@@ -11,6 +11,7 @@ mod dns_panel;
 mod form;
 mod gateway;
 mod hostlist;
+mod icon_data;
 mod icons;
 mod login;
 mod logon_panel;

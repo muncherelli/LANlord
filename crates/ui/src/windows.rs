@@ -62,7 +62,7 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool) -> TitleActions
     icons::draw(
         ui.painter(),
         rect.left_top() + Vec2::new(3.0, 2.0),
-        icons::art(icon),
+        icons::small(icon),
         1.0,
     );
     ui.painter().text(
