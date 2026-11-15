@@ -23,6 +23,11 @@ pub enum Change {
         name: String,
         password: String,
     },
+    /// make an existing user a domain admin, or stop being one.
+    SetAdmin {
+        name: String,
+        admin: bool,
+    },
     Remove {
         name: String,
     },
@@ -86,26 +91,51 @@ pub fn edit(settings: &[u8], change: &Change) -> Result<Vec<u8>> {
             }
             name
         }
-        Change::Remove { name } => name,
+        Change::SetAdmin { name, .. } | Change::Remove { name } => name,
     };
     if !valid_name(name) {
         bail!("user names are lowercase letters, digits, _ . - and start with a letter: {name:?}");
     }
     let mut root = parse(settings)?;
     let list = users(module(&mut root)?)?;
-    let mut entry = Mapping::new();
-    entry.insert("name".into(), name.as_str().into());
-    match change {
-        Change::SetPassword { password, .. } => {
+    let existing = list.iter_mut().find(|u| name_of(u) == Some(name));
+    match (change, existing) {
+        (Change::SetPassword { password, .. }, Some(entry)) => {
+            // keep everything else about the user, such as the admin flag
+            let map = entry
+                .as_mapping_mut()
+                .ok_or_else(|| anyhow!("{name} is not a mapping"))?;
+            map.insert("password".into(), password.as_str().into());
+            map.remove("state");
+        }
+        (Change::SetPassword { password, .. }, None) => {
+            let mut entry = Mapping::new();
+            entry.insert("name".into(), name.as_str().into());
             entry.insert("password".into(), password.as_str().into());
+            list.push(Value::Mapping(entry));
         }
-        Change::Remove { .. } => {
+        (Change::SetAdmin { admin, .. }, Some(entry)) => {
+            let map = entry
+                .as_mapping_mut()
+                .ok_or_else(|| anyhow!("{name} is not a mapping"))?;
+            if *admin {
+                map.insert("admin".into(), true.into());
+            } else {
+                map.remove("admin");
+            }
+        }
+        (Change::SetAdmin { .. }, None) => {
+            bail!("{name} is not in your settings; add the user first")
+        }
+        (Change::Remove { .. }, existing) => {
+            let mut entry = Mapping::new();
+            entry.insert("name".into(), name.as_str().into());
             entry.insert("state".into(), "absent".into());
+            match existing {
+                Some(slot) => *slot = Value::Mapping(entry),
+                None => list.push(Value::Mapping(entry)),
+            }
         }
-    }
-    match list.iter_mut().find(|u| name_of(u) == Some(name)) {
-        Some(existing) => *existing = Value::Mapping(entry),
-        None => list.push(Value::Mapping(entry)),
     }
     Ok(serde_yaml_ng::to_string(&Value::Mapping(root))?.into_bytes())
 }
@@ -147,18 +177,31 @@ pub fn change(
     change: &Change,
     ask_password: AskPassword,
 ) -> Result<Vec<User>> {
-    change_with(&Session::new(host)?, host, identity, change, ask_password)
+    change_all(host, identity, std::slice::from_ref(change), ask_password)
+}
+
+/// make several changes in one go (one pull, one push, one apply).
+pub fn change_all(
+    host: &str,
+    identity: &age::x25519::Identity,
+    changes: &[Change],
+    ask_password: AskPassword,
+) -> Result<Vec<User>> {
+    change_with(&Session::new(host)?, host, identity, changes, ask_password)
 }
 
 fn change_with(
     session: &Session,
     host: &str,
     identity: &age::x25519::Identity,
-    change: &Change,
+    changes: &[Change],
     ask_password: AskPassword,
 ) -> Result<Vec<User>> {
     let mut ask = cached(ask_password);
-    let updated = edit(&pull(session, host, identity, &mut ask)?, change)?;
+    let mut updated = pull(session, host, identity, &mut ask)?;
+    for change in changes {
+        updated = edit(&updated, change)?;
+    }
     config::push_with(session, host, identity, &updated, &mut ask)?;
     apply::apply_with(
         session,
@@ -293,6 +336,122 @@ mod tests {
         assert_eq!(calls, 1);
     }
 
+    #[test]
+    fn changing_a_password_keeps_the_admin_flag() {
+        let settings =
+            "nt4-domain:\n  users:\n    - name: james\n      password: one\n      admin: true\n";
+        let out = edit(
+            settings.as_bytes(),
+            &Change::SetPassword {
+                name: "james".into(),
+                password: "two".into(),
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("password: two") && text.contains("admin: true"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn admin_can_be_granted_and_revoked() {
+        let granted = edit(
+            SETTINGS.as_bytes(),
+            &Change::SetAdmin {
+                name: "james".into(),
+                admin: true,
+            },
+        )
+        .unwrap();
+        assert!(String::from_utf8(granted.clone())
+            .unwrap()
+            .contains("admin: true"));
+        let revoked = edit(
+            &granted,
+            &Change::SetAdmin {
+                name: "james".into(),
+                admin: false,
+            },
+        )
+        .unwrap();
+        assert!(!String::from_utf8(revoked).unwrap().contains("admin"));
+    }
+
+    #[test]
+    fn only_listed_users_can_be_made_admin() {
+        let err = edit(
+            SETTINGS.as_bytes(),
+            &Change::SetAdmin {
+                name: "nobody".into(),
+                admin: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not in your settings"), "{err}");
+    }
+
+    #[test]
+    fn a_user_entry_that_is_not_a_mapping_is_reported() {
+        let settings = b"nt4-domain:\n  users:\n    - james\n";
+        // a bare name is not a user entry, so it is never matched; a mapping without a name is skipped
+        let out = edit(
+            settings,
+            &Change::SetPassword {
+                name: "olive".into(),
+                password: "pw".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["olive"]);
+        let scalar = b"nt4-domain:\n  users:\n    - name: james\n";
+        let granted = edit(
+            scalar,
+            &Change::SetAdmin {
+                name: "james".into(),
+                admin: true,
+            },
+        )
+        .unwrap();
+        assert!(String::from_utf8(granted).unwrap().contains("admin: true"));
+    }
+
+    #[test]
+    fn revoking_admin_from_a_plain_user_changes_nothing_else() {
+        let out = edit(
+            SETTINGS.as_bytes(),
+            &Change::SetAdmin {
+                name: "james".into(),
+                admin: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["james"]);
+        assert!(String::from_utf8(out).unwrap().contains("password: one"));
+    }
+
+    #[test]
+    fn setting_a_password_for_an_absent_user_brings_them_back_with_their_admin_flag() {
+        let settings =
+            b"nt4-domain:\n  users:\n    - name: gone\n      state: absent\n      admin: true\n";
+        let out = edit(
+            settings,
+            &Change::SetPassword {
+                name: "gone".into(),
+                password: "back".into(),
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(out.clone()).unwrap();
+        assert!(
+            !text.contains("absent") && text.contains("admin: true"),
+            "{text}"
+        );
+        assert_eq!(names(&out), ["gone"]);
+    }
+
     #[cfg(unix)]
     mod gateway {
         use super::*;
@@ -357,7 +516,14 @@ esac"#
                 name: "olive".into(),
                 password: "pw".into(),
             };
-            let now = change_with(&session, "gw", &id, &change, &mut no_password).unwrap();
+            let now = change_with(
+                &session,
+                "gw",
+                &id,
+                std::slice::from_ref(&change),
+                &mut no_password,
+            )
+            .unwrap();
             assert_eq!(
                 now.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
                 ["james", "olive"]
@@ -394,9 +560,15 @@ esac"#
             let change = Change::Remove {
                 name: "james".into(),
             };
-            let err = change_with(&session, "gw", &id, &change, &mut no_password)
-                .unwrap_err()
-                .to_string();
+            let err = change_with(
+                &session,
+                "gw",
+                &id,
+                std::slice::from_ref(&change),
+                &mut no_password,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(err.contains("no settings on gw"), "{err}");
             assert!(!dir.join("push.rec").exists());
             let _ = std::fs::remove_dir_all(dir);

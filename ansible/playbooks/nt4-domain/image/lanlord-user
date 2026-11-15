@@ -1,6 +1,6 @@
 #!/bin/bash
 # manages samba accounts. a password is read from stdin, never from arguments.
-#   lanlord-user add NAME     create the account or set its password
+#   lanlord-user add NAME [admin|user]  create the account or set its password; admin makes it a domain admin
 #   lanlord-user admin        set the password of the domain administrator
 #   lanlord-user delete NAME  remove the account
 #   lanlord-user machine NAME create a machine account so an nt4 computer can join without creating it
@@ -20,6 +20,26 @@ read_password() {
   [[ -n $password ]] || { echo "the password is empty" >&2; exit 2; }
 }
 
+
+# domain admin membership is the unix group domadmins; it is also written to a file in the
+# persistent samba directory so entrypoint.sh can restore it when the container is replaced
+set_role() {
+  local list=/var/lib/samba/private/domadmins
+  touch "$list"
+  if [[ $2 == admin ]]; then
+    usermod -aG domadmins "$1"
+    grep -qx "$1" "$list" || echo "$1" >> "$list"
+  else
+    gpasswd -d "$1" domadmins >/dev/null 2>&1 || true
+    sed -i "/^$1\$/d" "$list"
+  fi
+}
+
+# each user's home folder, used by windows 9x roaming profiles
+make_home() {
+  install -d -o "$1" -g domusers -m 0700 "/var/lib/samba/homes/$1"
+}
+
 case "$cmd" in
   add)
     valid "$name"
@@ -30,6 +50,8 @@ case "$cmd" in
       created=1
     fi
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a "$name" >/dev/null
+    set_role "$name" "${3:-user}"
+    make_home "$name"
     if [[ -n $created ]]; then echo "created $name"; else echo "updated $name"; fi
     ;;
   admin)
@@ -53,6 +75,7 @@ case "$cmd" in
   delete)
     valid "$name"
     smbpasswd -x "$name" >/dev/null 2>&1 || true
+    set_role "$name" user
     userdel "$name" >/dev/null 2>&1 || true
     echo "deleted $name"
     ;;
