@@ -19,6 +19,7 @@ pub mod passwords;
 pub mod paths;
 pub mod payload;
 pub mod power;
+pub mod purge;
 pub mod settings;
 pub mod signin;
 pub mod ssh;
