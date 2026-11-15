@@ -19,9 +19,11 @@ pub mod passwords;
 pub mod paths;
 pub mod payload;
 pub mod power;
+pub mod prefs;
 pub mod settings;
 pub mod signin;
 pub mod ssh;
 #[cfg(all(test, unix))]
 mod testgw;
+pub mod update;
 pub mod users;

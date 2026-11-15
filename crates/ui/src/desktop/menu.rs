@@ -22,6 +22,14 @@ pub enum Action {
     /// back to the logon box.
     LogOff,
     Power(Power),
+    /// switch the background update check on or off.
+    ToggleUpdates,
+    /// open or close the Developer submenu.
+    Developer,
+    /// rebuild this build from its checkout and start it again.
+    Rebuild,
+    /// look for an update now.
+    CheckUpdates,
     About,
     Quit,
 }
@@ -63,6 +71,8 @@ pub enum Confirm {
     /// reboot or power off this host; the host is fixed when asked.
     Power(Power, String),
     About,
+    /// rebuild and relaunch; the box has one tick for pulling trunk first.
+    Rebuild,
 }
 
 /// the menu's rows and box.
@@ -155,7 +165,7 @@ fn paint(ui: &mut Ui, rows: &[Row], rect: Rect, rects: &[Rect], strip: bool) -> 
         if item.ticked {
             tick(ui.painter(), at.left_center() + Vec2::new(6.0, 0.0), colour);
         }
-        let text_at = if item.art.is_some() || !strip {
+        let text_at = if item.art.is_some() || item.ticked || !strip {
             28.0
         } else {
             6.0
@@ -229,9 +239,45 @@ impl Desktop {
             }));
         }
         rows.push(Row::Separator);
+        rows.push(Row::Item(Item {
+            ticked: self.updates.enabled(),
+            ..Item::new("Automatic updates", Action::ToggleUpdates)
+        }));
+        if self.dev.is_some() {
+            rows.push(Row::Item(Item {
+                arrow: true,
+                ..Item::new("Developer", Action::Developer)
+            }));
+        }
+        rows.push(Row::Separator);
         rows.push(Row::Item(Item::new("About LANlord", Action::About)));
         rows.push(Row::Item(Item::new("Quit LANlord", Action::Quit)));
         rows
+    }
+
+    /// the Developer submenu, only there in a development build.
+    pub(super) fn dev_rows(&self) -> Vec<Row> {
+        vec![
+            Row::Item(Item {
+                enabled: !self.is_rebuilding(),
+                ..Item::new("Rebuild and relaunch...", Action::Rebuild)
+            }),
+            Row::Item(Item::new("Check for updates now", Action::CheckUpdates)),
+        ]
+    }
+
+    /// where the Developer submenu sits, beside the Developer row of the main menu.
+    fn dev_boxes(&self, rows: &[Row], main: &Placed) -> Option<Boxes> {
+        if !self.dev_open {
+            return None;
+        }
+        let at = rows.iter().zip(&main.1).find_map(|(row, rect)| match row {
+            Row::Item(item) if item.action == Action::Developer => Some(*rect),
+            _ => None,
+        })?;
+        let sub = self.dev_rows();
+        let placed = geometry(&sub, main.0.right() - 2.0, at.bottom() + 7.0, false);
+        Some((sub, placed))
     }
 
     /// where the menu sits on `screen`.
@@ -251,10 +297,22 @@ impl Desktop {
         })
     }
 
+    /// the centre of the Developer submenu item that does `action`, for tests.
+    #[cfg(test)]
+    pub(super) fn dev_item_at(&self, screen: Rect, action: &Action) -> Option<Pos2> {
+        let (rows, main) = self.menu_boxes(screen);
+        let (sub, placed) = self.dev_boxes(&rows, &main)?;
+        sub.iter().zip(&placed.1).find_map(|(row, rect)| match row {
+            Row::Item(item) if item.action == *action => Some(rect.center()),
+            _ => None,
+        })
+    }
+
     pub(super) fn start_menu(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
         let (rows, main) = self.menu_boxes(screen);
-        let chosen = Area::new(Id::unique("start-menu"))
+        let dev = self.dev_boxes(&rows, &main);
+        let mut chosen = Area::new(Id::unique("start-menu"))
             .order(Order::Foreground)
             .fixed_pos(main.0.min)
             .show(ctx, |ui| {
@@ -262,15 +320,31 @@ impl Desktop {
                 paint(ui, &rows, main.0, &main.1, true)
             })
             .inner;
+        if let Some((sub, placed)) = &dev {
+            let from_sub = Area::new(Id::unique("dev-menu"))
+                .order(Order::Foreground)
+                .fixed_pos(placed.0.min)
+                .show(ctx, |ui| {
+                    ui.allocate_exact_size(placed.0.size(), Sense::hover());
+                    paint(ui, sub, placed.0, &placed.1, false)
+                })
+                .inner;
+            chosen = chosen.or(from_sub);
+        }
         match chosen {
             Some(action) => self.do_action(ctx, action),
             None => {
                 // a click anywhere else closes the menu
                 let pos = ctx.input(|i| i.pointer.interact_pos());
+                let inside = |p: Pos2| {
+                    main.0.contains(p)
+                        || dev.as_ref().is_some_and(|(_, placed)| placed.0.contains(p))
+                };
                 let outside = ctx.input(|i| i.pointer.any_pressed())
-                    && pos.is_some_and(|p| !main.0.contains(p) && p.y < screen.bottom() - TASKBAR);
+                    && pos.is_some_and(|p| !inside(p) && p.y < screen.bottom() - TASKBAR);
                 if outside {
                     self.start_open = false;
+                    self.dev_open = false;
                 }
             }
         }
@@ -278,6 +352,23 @@ impl Desktop {
 
     pub(super) fn do_action(&mut self, ctx: &egui::Context, action: Action) {
         match action {
+            Action::Developer => {
+                // the submenu opens beside the row; the menu stays up
+                self.dev_open = !self.dev_open;
+                return;
+            }
+            Action::ToggleUpdates => {
+                let on = !self.updates.enabled();
+                self.updates.set_enabled(on);
+                if on {
+                    self.updates.check_now(ctx);
+                }
+            }
+            Action::CheckUpdates => {
+                emit(Kind::Info, "looking for updates");
+                self.updates.check_now(ctx);
+            }
+            Action::Rebuild => self.ask_rebuild(),
             Action::Open(target) => self.open(target),
             Action::SwitchServer | Action::LogOff => self.log_off(),
             Action::Power(power) => self.ask_power(power),
@@ -291,6 +382,20 @@ impl Desktop {
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
         self.start_open = false;
+        self.dev_open = false;
+    }
+
+    fn ask_rebuild(&mut self) {
+        let Some(repo) = self.dev.clone() else { return };
+        let text = format!(
+            "Rebuild LANlord from {} and start it again?\nThis window closes when the build works, and you sign in again.",
+            repo.display()
+        );
+        self.confirm = Some((
+            Confirm::Rebuild,
+            Form::new("rebuild", "Rebuild and relaunch", &text)
+                .check("Pull the latest trunk first", false),
+        ));
     }
 
     fn ask_power(&mut self, power: Power) {
@@ -316,13 +421,15 @@ impl Desktop {
         match form.show(ctx) {
             None => self.confirm = Some((kind, form)),
             Some(FormAnswer::Cancel) => {}
-            Some(FormAnswer::Ok) => {
-                if let Confirm::Power(power, host) = kind {
+            Some(FormAnswer::Ok) => match kind {
+                Confirm::Power(power, host) => {
                     if !self.services.power(&host, power) {
                         emit(Kind::Err, format!("{host} is busy; try again in a moment"));
                     }
                 }
-            }
+                Confirm::Rebuild => self.start_rebuild(form.checked(0)),
+                Confirm::About => {}
+            },
         }
     }
 

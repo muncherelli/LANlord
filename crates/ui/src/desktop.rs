@@ -10,6 +10,7 @@ use eframe::egui::{
 };
 use lanlord_core::log::{emit, Kind};
 use lanlord_core::modules::{Module, Status, MODULES};
+use lanlord_core::update;
 
 mod menu;
 
@@ -30,6 +31,7 @@ use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
 use crate::tasks::PasswordRequest;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
+use crate::update_panel::{Choice, Updates};
 use crate::windows;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
@@ -97,6 +99,15 @@ pub struct Desktop {
     signed_in: Option<SignedIn>,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
+    /// the update notice beside the clock.
+    updates: Updates,
+    /// the checkout a development build rebuilds from, and the build that is running.
+    dev: Option<PathBuf>,
+    exe: Option<PathBuf>,
+    /// a rebuild in progress; it answers once, with the error when it failed.
+    rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// the Developer submenu is open.
+    dev_open: bool,
 }
 
 impl Desktop {
@@ -124,7 +135,29 @@ impl Desktop {
             login: None,
             signed_in: None,
             admin_setup: None,
+            updates: Updates::quiet(),
+            dev: None,
+            exe: None,
+            rebuilding: None,
+            dev_open: false,
         }
+    }
+
+    /// look for updates in the background, and offer a rebuild when this is a development build.
+    pub fn watch_updates(&mut self, updates: Updates, dev: Option<PathBuf>, exe: Option<PathBuf>) {
+        self.updates = updates;
+        self.dev = dev;
+        self.exe = exe;
+    }
+
+    /// the logon box for `host`, signing in at once with whatever the agent offers.
+    pub fn resume(&mut self, host: &str) {
+        let Some(auth) = self.auth.clone() else {
+            return;
+        };
+        let mut login = LoginBox::new(auth, &self.services.ctx, Some(host));
+        login.submit();
+        self.login = Some(login);
     }
 
     /// start at the logon box. lanlord on the gateway itself has one server and no logon.
@@ -163,6 +196,9 @@ impl Desktop {
             let (id, tab) = item.split_once('@').unwrap_or((item, ""));
             if id == "menu" {
                 self.start_open = true;
+            } else if id == "developer" {
+                self.start_open = true;
+                self.dev_open = true;
             } else if let Some(target) = self.icons.iter().copied().find(|t| t.id() == id) {
                 self.open(target);
                 if id == "nt4-domain" {
@@ -223,6 +259,8 @@ impl Desktop {
             .show(ui, |ui| self.icons(ui));
 
         self.console.drain();
+        self.updates.tick(&ctx);
+        self.poll_rebuild(&ctx);
         self.settings.poll();
         self.nt4.poll();
         self.dns.poll();
@@ -351,6 +389,7 @@ impl Desktop {
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.confirmation(ctx);
+        self.update_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
                 Some(Answer::Ok(text)) => {
@@ -362,6 +401,89 @@ impl Desktop {
                 Some(Answer::Cancel) => {}
                 None => self.add_host = Some(dialog),
             }
+        }
+    }
+}
+
+// updates and rebuilding a development build
+impl Desktop {
+    /// the balloon and the box of the update notice, and what they ask for.
+    fn update_notice(&mut self, ctx: &egui::Context) {
+        if self.updates.balloon(ctx, TASKBAR) {
+            self.updates.open_dialog();
+        }
+        if self.updates.dialog(ctx) == Some(Choice::Install) {
+            self.install_update();
+        }
+    }
+
+    /// install what the notice found: rebuild from trunk, or open the release page.
+    fn install_update(&mut self) {
+        let Some(found) = self.updates.found().cloned() else {
+            return;
+        };
+        match found.source {
+            update::Source::Git => self.start_rebuild(true),
+            update::Source::Release { url } => {
+                if let Err(error) = update::open_release(&url) {
+                    emit(
+                        Kind::Err,
+                        format!("could not open the download page: {error}"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// is a rebuild running?
+    pub(super) fn is_rebuilding(&self) -> bool {
+        self.rebuilding.is_some()
+    }
+
+    /// rebuild this build in the background, with its output in the console; when it works the
+    /// new build starts and this one quits, and when it fails this window stays open.
+    pub(super) fn start_rebuild(&mut self, pull: bool) {
+        let (Some(repo), Some(exe)) = (self.dev.clone(), self.exe.clone()) else {
+            emit(Kind::Err, "this build cannot be rebuilt from here");
+            return;
+        };
+        if self.is_rebuilding() {
+            return;
+        }
+        self.open(Target::Console);
+        let steps = update::rebuild_steps(&repo, &exe, pull);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.services.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(update::rebuild(&steps).map_err(|e| e.to_string()));
+            ctx.request_repaint();
+        });
+        self.rebuilding = Some(rx);
+    }
+
+    /// once a frame: when the rebuild finished, start the new build and quit, or say why not.
+    fn poll_rebuild(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.rebuilding else {
+            return;
+        };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the rebuild stopped unexpectedly".into())
+            }
+        };
+        self.rebuilding = None;
+        match result {
+            Ok(()) => {
+                let host = self.signed_in.as_ref().map(|s| s.target.clone());
+                let exe = self.exe.clone().unwrap_or_default();
+                match update::relaunch(&exe, host.as_deref()) {
+                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    Err(error) => emit(Kind::Err, format!("rebuilt, but {error}")),
+                }
+            }
+            Err(error) => emit(Kind::Err, format!("the rebuild failed: {error}")),
         }
     }
 }
@@ -479,8 +601,8 @@ impl Desktop {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let clock = chrono::Local::now().format("%-I:%M %p").to_string();
+                // the clock and the shield sit flat on the taskbar, with one etched line to their left
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(78.0, 22.0), Sense::hover());
-                bevel(ui.painter(), rect, false);
                 ui.painter().text(
                     rect.center(),
                     Align2::CENTER_CENTER,
@@ -488,6 +610,14 @@ impl Desktop {
                     theme::font(),
                     BLACK,
                 );
+                if self.updates.visible() && self.updates.shield(ui) {
+                    self.updates.open_dialog();
+                }
+                let (line, _) = ui.allocate_exact_size(Vec2::new(2.0, 20.0), Sense::hover());
+                ui.painter()
+                    .vline(line.left() + 0.5, line.y_range(), (1.0, theme::SHADOW));
+                ui.painter()
+                    .vline(line.left() + 1.5, line.y_range(), (1.0, WHITE));
             });
         });
     }
@@ -721,6 +851,8 @@ mod login_tests;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]
+mod update_tests;
+#[cfg(test)]
 mod window_tests;
 #[cfg(test)]
 mod tests {
@@ -806,6 +938,9 @@ mod tests {
         assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Logins);
         desktop.open_spec("nt4-domain");
         assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Settings);
+        desktop.start_open = false;
+        desktop.open_spec("developer");
+        assert!(desktop.start_open && desktop.dev_open);
     }
 
     #[test]
