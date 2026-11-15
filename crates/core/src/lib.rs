@@ -10,6 +10,7 @@ pub mod exec;
 pub mod hosts;
 pub mod leases;
 pub mod log;
+pub mod logon;
 pub mod modules;
 pub mod network;
 pub mod nt4;
