@@ -6,7 +6,9 @@ use anyhow::{bail, Result};
 use serde_yaml_ng::{Mapping, Value};
 
 use crate::apply;
-use crate::bootstrap::AskPassword;
+use crate::bootstrap::{capture_as_root, AskPassword};
+use crate::config;
+use crate::log::{emit, Kind};
 use crate::settings::{self, Settings, ValidationError};
 use crate::ssh::Session;
 use crate::users::cached;
@@ -159,6 +161,8 @@ impl Nt4Settings {
 pub enum MachineChange {
     Add(String),
     Remove(String),
+    /// set the account back to its first password so the machine can join again.
+    Reset(String),
 }
 
 /// the machine names in `plain` settings after `change`; adding a name twice is a no-op.
@@ -175,6 +179,8 @@ pub fn edit_machines(plain: &str, change: &MachineChange) -> Result<String> {
             }
         }
         MachineChange::Remove(name) => nt4.machines.retain(|m| !m.eq_ignore_ascii_case(name)),
+        // the account lives in the container, not in the settings
+        MachineChange::Reset(_) => {}
     }
     nt4.apply_to(&mut settings);
     Ok(settings.text())
@@ -194,7 +200,23 @@ pub fn machines_on(
     Ok(Nt4Settings::from_settings(&Settings::parse(&stored.plain)?)?.machines)
 }
 
-/// change the machines in your settings on `host` and apply the module.
+/// set the account of machine `name` back to its first password, inside the container. the machine
+/// must be taken out of the domain and joined again afterwards.
+pub fn reset_machine(session: &Session, name: &str, ask_password: AskPassword) -> Result<()> {
+    if !valid_machine(name) {
+        bail!("{name} is not a valid machine name (up to 15 letters, digits or -)");
+    }
+    let admin = config::admin(session)?;
+    // the container's accounts are lower case
+    let name = name.to_ascii_lowercase();
+    let script = format!("docker exec lanlord-nt4 lanlord-user machine {name} reset\n");
+    let out = capture_as_root(session, &admin, script, ask_password)?;
+    emit(Kind::Info, out.trim());
+    Ok(())
+}
+
+/// change the machines in your settings on `host` and apply the module; a reset only touches the
+/// account on the gateway.
 pub fn change_machine(
     session: &Session,
     host: &str,
@@ -202,6 +224,9 @@ pub fn change_machine(
     change: &MachineChange,
     ask_password: AskPassword,
 ) -> Result<()> {
+    if let MachineChange::Reset(name) = change {
+        return reset_machine(session, name, ask_password);
+    }
     change_section(session, host, identity, ask_password, |plain| {
         edit_machines(plain, change)
     })
@@ -340,6 +365,9 @@ mod tests {
         assert_eq!(machines(&removed), ["ws2", "nt4test"]);
         assert!(removed.contains("james"));
         assert!(edit_machines(TEXT, &MachineChange::Add("bad name".into())).is_err());
+        // a reset does not touch the settings
+        let reset = edit_machines(TEXT, &MachineChange::Reset("ws1".into())).unwrap();
+        assert_eq!(machines(&reset), machines(TEXT));
     }
 
     #[cfg(unix)]
@@ -361,6 +389,32 @@ mod tests {
             assert!(gw.plain().unwrap().contains("nt4test"));
             set_software(&gw.session, "gw", &id, true, &mut no_password).unwrap();
             assert!(gw.plain().unwrap().contains("software: true"));
+        }
+
+        #[test]
+        fn a_reset_runs_in_the_container_and_leaves_the_settings_alone() {
+            let (gw, id) = (Gateway::new("nt4-reset"), identity("nt4-reset"));
+            gw.seed_sealed(&id, STORED);
+            let before = gw.plain();
+            let record = gw.dir.join("sent");
+            let session = Session::fake_gateway(true, &record, 0);
+            let reset = MachineChange::Reset("WS1".into());
+            change_machine(&session, "gw", &id, &reset, &mut no_password).unwrap();
+            let sent = std::fs::read_to_string(&record).unwrap();
+            assert!(sent.contains("docker exec lanlord-nt4 lanlord-user machine ws1 reset"));
+            assert_eq!(gw.plain(), before);
+        }
+
+        #[test]
+        fn a_reset_refuses_bad_names_and_reports_failure() {
+            let record =
+                std::env::temp_dir().join(format!("lanlord-nt4-bad-{}", std::process::id()));
+            let ok = Session::fake_gateway(true, &record, 0);
+            assert!(reset_machine(&ok, "bad name; rm", &mut no_password).is_err());
+            assert!(!record.exists(), "nothing is sent for a bad name");
+            let failing = Session::fake_gateway(true, &record, 3);
+            assert!(reset_machine(&failing, "ws1", &mut no_password).is_err());
+            let _ = std::fs::remove_file(&record);
         }
 
         #[test]

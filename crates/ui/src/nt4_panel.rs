@@ -34,6 +34,8 @@ fn load(
 enum Ask {
     Machine,
     AdminPassword,
+    /// reset the account of this machine.
+    Reset(String),
 }
 
 #[derive(Default)]
@@ -88,6 +90,22 @@ impl Nt4Panel {
         let job = services.spawn(host, move |gateway, ask| load(gateway, &target, ask));
         self.remote
             .track(host, job, "loading...", "loaded the settings", true);
+    }
+
+    /// set a machine's account back to its first password, then reload.
+    fn reset(&mut self, services: &Services, host: &str, name: &str) {
+        let (target, name) = (host.to_string(), name.to_string());
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.reset_machine(&target, &name, ask)?;
+            load(gateway, &target, ask)
+        });
+        self.remote.track(
+            host,
+            job,
+            "resetting...",
+            "reset the machine account",
+            false,
+        );
     }
 
     fn save(&mut self, services: &Services, host: &str, apply: bool) {
@@ -222,12 +240,24 @@ impl Nt4Panel {
                     self.selected = None;
                 }
             }
+            if theme::action(ui, "Reset account...", idle && self.form.is_none() && picked.is_some())
+                .clicked()
+            {
+                if let Some(name) = picked.map(|i| self.draft.machines[i].clone()) {
+                    let text = format!(
+                        "Set the account of {name} back to its first password?\nThe machine must be taken out of the domain (made a member of a workgroup) and joined again, with \"Create a Computer Account\" unticked. You may be asked for the sudo password."
+                    );
+                    self.form = Some((
+                        Ask::Reset(name),
+                        Form::new("nt4-reset", "Reset machine account", &text),
+                    ));
+                }
+            }
         });
-        let _ = idle;
     }
 
     /// the box for a machine name or the administrator password.
-    pub fn dialog(&mut self, ctx: &egui::Context) {
+    pub fn dialog(&mut self, ctx: &egui::Context, services: &Services, host: Option<&str>) {
         let Some((ask, mut form)) = self.form.take() else {
             return;
         };
@@ -237,6 +267,11 @@ impl Nt4Panel {
             Some(FormAnswer::Ok) => match ask {
                 Ask::AdminPassword => {
                     self.new_password = Some(form.raw(0).to_string()).filter(|p| !p.is_empty());
+                }
+                Ask::Reset(name) => {
+                    if let Some(host) = host {
+                        self.reset(services, host, &name);
+                    }
                 }
                 Ask::Machine => {
                     let name = form.value(0).to_string();
@@ -255,6 +290,11 @@ impl Nt4Panel {
     #[cfg(test)]
     pub fn form_mut(&mut self) -> Option<&mut Form> {
         self.form.as_mut().map(|(_, form)| form)
+    }
+
+    #[cfg(test)]
+    pub fn select(&mut self, row: usize) {
+        self.selected = Some(row);
     }
 
     #[cfg(test)]

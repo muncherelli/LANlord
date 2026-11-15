@@ -8,6 +8,7 @@ use lanlord_core::crypto::{self, Identity};
 use lanlord_core::exec::{self, Target};
 use lanlord_core::leases::{self, Lease};
 use lanlord_core::network::{self, Internal};
+use lanlord_core::nt4;
 use lanlord_core::power::{self, Outcome, Power};
 use lanlord_core::settings::{self, Document, Settings};
 use lanlord_core::ssh::Session;
@@ -34,6 +35,8 @@ pub trait Gateway: Send + Sync {
     /// change logins (names and flags in the plain settings, passwords in the
     /// secrets) and apply the nt4-domain module.
     fn change_users(&self, host: &str, changes: &[Change], ask: AskPassword) -> Result<()>;
+    /// set the account of machine `name` back to its first password, so it can join again.
+    fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()>;
     /// the dhcp leases the gateway has handed out.
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>>;
     /// run a command on the gateway, its output going to the console; returns the exit code.
@@ -107,6 +110,10 @@ impl Gateway for Ssh {
 
     fn change_users(&self, host: &str, changes: &[Change], ask: AskPassword) -> Result<()> {
         users::change_all(host, &key()?, changes, ask).map(|_| ())
+    }
+
+    fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
+        nt4::reset_machine(&Session::new(host)?, name, ask)
     }
 
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
@@ -259,6 +266,10 @@ mod fake {
                 .unwrap()
                 .push(format!("apply {host} [nt4-domain]"));
             Ok(())
+        }
+
+        fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
+            self.enter(format!("reset {host} {name}"), ask)
         }
 
         fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
