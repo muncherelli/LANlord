@@ -493,6 +493,32 @@ def s_lanlord():
     return g
 
 
+def s_update():
+    """the update notice: a shield in the windows update blue and yellow."""
+    g = Grid(16)
+    g.rect(3, 1, 10, 1, "k")
+    g.rect(2, 2, 12, 7, "k")
+    g.rect(3, 9, 10, 2, "k")
+    g.rect(4, 11, 8, 1, "k")
+    g.rect(5, 12, 6, 1, "k")
+    g.rect(6, 13, 4, 1, "k")
+    g.rect(7, 14, 2, 1, "k")
+    g.rect(3, 2, 10, 7, "b")
+    g.rect(4, 9, 8, 2, "b")
+    g.rect(5, 11, 6, 1, "b")
+    g.rect(6, 12, 4, 1, "b")
+    g.rect(7, 13, 2, 1, "b")
+    g.rect(3, 2, 10, 1, "c")
+    g.rect(3, 2, 1, 7, "c")
+    g.rect(7, 3, 2, 8, "y")
+    g.rect(4, 6, 8, 2, "y")
+    g.rect(7, 3, 1, 8, "w")
+    g.rect(4, 6, 8, 1, "w")
+    g.rect(12, 3, 1, 6, "n")
+    g.rect(11, 9, 1, 2, "n")
+    return g
+
+
 BIG = {
     "GATEWAY": gateway, "DOCKER": docker, "NT4": tower, "WEB": globe, "COMMANDS": remote,
     "CONSOLE": console, "DNS": dns, "SETTINGS": settings, "HOSTS": hosts, "FOLDER": folder,
@@ -501,6 +527,7 @@ SMALL = {
     "GATEWAY": s_gateway, "DOCKER": s_docker, "NT4": s_tower, "WEB": s_globe,
     "COMMANDS": lambda: s_window(False), "CONSOLE": lambda: s_window(True), "DNS": s_dns,
     "SETTINGS": s_settings, "HOSTS": s_hosts, "FOLDER": s_folder, "LANLORD": s_lanlord,
+    "UPDATE": s_update,
 }
 
 

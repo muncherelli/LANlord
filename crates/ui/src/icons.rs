@@ -46,7 +46,7 @@ pub fn art(id: &str) -> &'static [&'static str] {
     }
 }
 
-/// the hand-drawn 16 by 16 icon for the same ids, plus "lanlord" for the menu button.
+/// the hand-drawn 16 by 16 icon for the same ids, plus "lanlord" for the menu button and "update" for the update notice.
 pub fn small(id: &str) -> &'static [&'static str] {
     match id {
         "gateway" => &data::SMALL_GATEWAY,
@@ -59,6 +59,7 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "settings" => &data::SMALL_SETTINGS,
         "folder" => &data::SMALL_FOLDER,
         "lanlord" => &data::SMALL_LANLORD,
+        "update" => &data::SMALL_UPDATE,
         _ => &data::SMALL_HOSTS,
     }
 }
@@ -118,7 +119,7 @@ mod tests {
 
     #[test]
     fn small_icons_are_16_square_and_use_palette_colours() {
-        for id in IDS.iter().chain(["lanlord"].iter()) {
+        for id in IDS.iter().chain(["lanlord", "update"].iter()) {
             check(id, small(id), 16);
         }
     }

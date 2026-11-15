@@ -559,3 +559,22 @@ pub(crate) const SMALL_LANLORD: [&str; 16] = [
     ".kkkkkkkkkkkkkk.",
     "................",
 ];
+
+pub(crate) const SMALL_UPDATE: [&str; 16] = [
+    "................",
+    "...kkkkkkkkkk...",
+    "..kcccccccccck..",
+    "..kcbbbwybbbnk..",
+    "..kcbbbwybbbnk..",
+    "..kcbbbwybbbnk..",
+    "..kcwwwwwwwwnk..",
+    "..kcyyywyyyynk..",
+    "..kcbbbwybbbnk..",
+    "...kbbbwybbnk...",
+    "...kbbbwybbnk...",
+    "....kbbbbbbk....",
+    ".....kbbbbk.....",
+    "......kbbk......",
+    ".......kk.......",
+    "................",
+];
