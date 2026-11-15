@@ -90,13 +90,13 @@ enum LogonCommand {
 
 #[derive(Subcommand)]
 enum AdminCommand {
-    /// list the members of lanlord-admins on the gateway
+    /// list the members of admins on the gateway
     List,
-    /// add an existing gateway user to lanlord-admins
+    /// add an existing gateway user to admins
     Add { user: String },
-    /// remove a user from lanlord-admins; the last member stays
+    /// remove a user from admins; the last member stays
     Remove { user: String },
-    /// create a new administrator account (a login, in lanlord-admins and sudo); asks for its password
+    /// create a new administrator account (a login, in admins and sudo); asks for its password
     Create {
         name: String,
         /// a public key file to authorize for ssh, or - to read it from standard input
@@ -165,7 +165,7 @@ enum Command {
         #[arg(value_enum)]
         state: Switch,
     },
-    /// manage who may administer lanlord on a gateway (the lanlord-admins group)
+    /// manage who may administer lanlord on a gateway (the admins group)
     Admin {
         host: String,
         #[command(subcommand)]

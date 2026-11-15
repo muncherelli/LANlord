@@ -4,6 +4,7 @@
 
 use anyhow::{bail, Result};
 
+use crate::admins::ADMINS_GID;
 use crate::bootstrap::{capture_as_root, run_as_root, AskPassword};
 use crate::config::{admin, wrap};
 use crate::ssh::Session;
@@ -17,9 +18,6 @@ pub const COMMON: &str = "logon";
 
 /// the generated script that calls the others; it is rewritten on every apply.
 pub const GENERATED: &str = "lanlord";
-
-/// the id of the domadmins group inside the container (see entrypoint.sh), so admins can edit.
-const DOMADMINS_GID: u32 = 1002;
 
 /// a script is a few lines of batch; anything bigger is a mistake.
 pub const MAX_BYTES: usize = 64 * 1024;
@@ -86,7 +84,7 @@ trap 'rm -f "$tmp"' EXIT
 base64 -d <<'LANLORD_PAYLOAD' > "$tmp"
 {}
 LANLORD_PAYLOAD
-if [ "$(id -u)" = 0 ]; then chown 0:{DOMADMINS_GID} "$tmp"; fi
+if [ "$(id -u)" = 0 ]; then chown 0:{ADMINS_GID} "$tmp"; fi
 chmod 0664 "$tmp"
 mv "$tmp" "$dir/{name}.bat"
 "#,
@@ -194,7 +192,7 @@ mod tests {
         assert!(!script.contains("rm -rf"), "{script}");
         assert_eq!(payload(&script), b"net use X: \\\\A\\b; rm -rf /\r\n");
         assert!(script.contains("mv \"$tmp\" \"$dir/muncherelli.bat\""));
-        assert!(script.contains("chown 0:1002"));
+        assert!(script.contains("chown 0:9998"));
         assert!(script.contains("chmod 0664"));
     }
 

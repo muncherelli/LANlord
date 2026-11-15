@@ -2,7 +2,7 @@ use std::process::Command as Local;
 
 use anyhow::{bail, Result};
 
-use crate::admins::ADMINS_GROUP;
+use crate::admins::{ADMINS_GID, ADMINS_GROUP};
 use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
@@ -40,13 +40,10 @@ pub struct Options {
 /// the unix account that owns /opt/lanlord and runs ansible on the gateway.
 const SERVICE_ID: u32 = 9999;
 
-/// the gid of `lanlord-admins`, the people allowed to administer lanlord.
-const ADMINS_ID: u32 = 9998;
-
-/// how long sudo remembers the password of a `lanlord-admins` member, in minutes.
+/// how long sudo remembers the password of a `admins` member, in minutes.
 pub(crate) const SUDO_MINUTES: u32 = 15;
 
-/// the sudoers rules for `lanlord-admins`: they may use sudo, and one password prompt is
+/// the sudoers rules for `admins`: they may use sudo, and one password prompt is
 /// remembered for `SUDO_MINUTES` across all the ssh sessions lanlord opens (they have no tty,
 /// so the default per-tty record would never be reused).
 pub(crate) fn admins_sudoers() -> String {
@@ -99,7 +96,7 @@ pub fn script(opts: &Options, admin: &str) -> Result<String> {
     }
     let id = SERVICE_ID;
     let admins = ADMINS_GROUP;
-    let admins_id = ADMINS_ID;
+    let admins_id = ADMINS_GID;
     let id_checks = format!(
         r#"{}{}{}gid=$(getent group {admins} | cut -d: -f3 || true)
 if [ -n "$gid" ] && [ "$gid" != {admins_id} ]; then
@@ -152,7 +149,7 @@ install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansib
         service_sudoers = install_sudoers("lanlord", "lanlord ALL=(ALL) NOPASSWD: ALL\n"),
         admins_sudoers = install_sudoers(ADMINS_GROUP, &admins_sudoers()),
     );
-    // the per-user rule is named so that it sorts after lanlord-admins: the last match wins
+    // the per-user rule is named so that it sorts after admins: the last match wins
     if opts.passwordless_sudo && !is_root {
         s.push('\n');
         s.push_str(&install_sudoers(
@@ -314,10 +311,10 @@ mod tests {
     #[test]
     fn creates_the_admins_group_and_joins_the_ssh_user() {
         let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
-        assert!(s.contains("groupadd --gid 9998 lanlord-admins"));
-        assert!(s.contains("usermod -aG lanlord-admins admin"));
+        assert!(s.contains("groupadd --gid 9998 admins"));
+        assert!(s.contains("usermod -aG admins admin"));
         assert!(s.contains("gid 9998 is already used by group"));
-        assert!(s.contains("group lanlord-admins already exists with gid"));
+        assert!(s.contains("group admins already exists with gid"));
     }
 
     #[test]
@@ -389,19 +386,19 @@ mod tests {
     #[test]
     fn admins_remember_one_sudo_password_for_fifteen_minutes() {
         let rules = admins_sudoers();
-        assert!(rules.contains("Defaults:%lanlord-admins timestamp_type=global\n"));
-        assert!(rules.contains("Defaults:%lanlord-admins timestamp_timeout=15\n"));
-        assert!(rules.contains("%lanlord-admins ALL=(ALL:ALL) ALL\n"));
+        assert!(rules.contains("Defaults:%admins timestamp_type=global\n"));
+        assert!(rules.contains("Defaults:%admins timestamp_timeout=15\n"));
+        assert!(rules.contains("%admins ALL=(ALL:ALL) ALL\n"));
         let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
-        assert!(s.contains("/etc/sudoers.d/lanlord-admins"));
+        assert!(s.contains("/etc/sudoers.d/admins"));
         assert!(s.contains("visudo -cf"));
-        assert!(s.contains("install -m 0440 \"$tmp\" /etc/sudoers.d/lanlord-admins"));
+        assert!(s.contains("install -m 0440 \"$tmp\" /etc/sudoers.d/admins"));
     }
 
     #[test]
     fn the_per_user_rule_sorts_after_the_group_rule() {
         // sudoers reads /etc/sudoers.d in name order and the last match wins
-        let group = "lanlord-admins";
+        let group = "admins";
         let user = format!("lanlord-nopasswd-{}", "admin");
         assert!(user.as_str() > group);
     }
@@ -411,7 +408,7 @@ mod tests {
         let s = script(&opts(AnsibleMode::Local, true), "root").unwrap();
         assert!(!s.contains("usermod -aG"));
         assert!(!s.contains("lanlord-nopasswd-"));
-        assert!(s.contains("/etc/sudoers.d/lanlord-admins"));
+        assert!(s.contains("/etc/sudoers.d/admins"));
     }
 
     #[cfg(unix)]
@@ -511,7 +508,7 @@ mod tests {
         }
 
         /// a fake gateway where sudo remembers a password once `sudo -v` has been run, like the
-        /// shared timestamp from the lanlord-admins sudoers rules.
+        /// shared timestamp from the admins sudoers rules.
         fn remembering(dir: &std::path::Path, user: &str, v_exit: i32) -> Session {
             Session::fake(&format!(
                 r#"for a; do last=$a; done

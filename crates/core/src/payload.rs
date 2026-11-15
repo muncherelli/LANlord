@@ -129,6 +129,56 @@ mod tests {
     }
 
     #[test]
+    fn the_entrypoint_pins_the_builtin_group_ids() {
+        let (_, entrypoint) = FILES
+            .iter()
+            .find(|(n, _)| *n == "nt4-domain/image/entrypoint.sh")
+            .unwrap();
+        let line = entrypoint
+            .lines()
+            .find_map(|l| l.strip_prefix("for entry in "))
+            .unwrap();
+        let pinned: Vec<(&str, u32)> = line
+            .trim_end_matches("; do")
+            .split_whitespace()
+            .map(|e| {
+                let (name, gid) = e.split_once(':').unwrap();
+                (name, gid.parse().unwrap())
+            })
+            .collect();
+        assert_eq!(pinned, crate::admins::BUILTIN_GROUPS);
+        assert!(pinned.iter().all(|(_, gid)| (9000..=9998).contains(gid)));
+    }
+
+    #[test]
+    fn the_old_group_names_are_gone() {
+        // the admins group is one group everywhere; only the entrypoint may still read the old file
+        let legacy =
+            |line: &str| line.contains("private/domadmins") || line.contains("called domadmins");
+        for (name, contents) in FILES {
+            for line in contents.lines().filter(|l| !legacy(l)) {
+                assert!(
+                    !line.contains("lanlord-admins") && !line.contains("domadmins"),
+                    "{name} still names the old group: {line}"
+                );
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|n| n == "payload.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !text.contains("lanlord-admins") && !text.contains("domadmins"),
+                "{} still names the old group",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn base64_round_trips() {
         let encoded = archive_base64().unwrap();
         assert!(encoded.lines().all(|l| l.len() <= 76));

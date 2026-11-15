@@ -1,5 +1,5 @@
 //! the screen root lands on after logging on: create the first administrator. root is allowed
-//! to sign in, but day-to-day work belongs to a personal account that is in `lanlord-admins`
+//! to sign in, but day-to-day work belongs to a personal account that is in `admins`
 //! and has sudo, preferably signed in with an ssh key.
 
 use eframe::egui::{self, Align2, Area, Frame, Id, Margin, Order, Vec2};
@@ -217,7 +217,7 @@ impl AdminSetup {
                 ui.label(
                     "You are logged on as root. That is allowed, but root should not be your \
                      everyday account. Create an administrator for yourself: a login that is \
-                     in lanlord-admins and can use sudo.",
+                     in admins and can use sudo.",
                 );
             });
         });

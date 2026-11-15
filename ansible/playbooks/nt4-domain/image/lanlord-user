@@ -25,17 +25,17 @@ read_password() {
 }
 
 
-# domain admin membership is the unix group domadmins; it is also written to a file in the
+# domain admin membership is the unix group admins; it is also written to a file in the
 # persistent samba directory so entrypoint.sh can restore it when the container is replaced
 set_role() {
-  local list=/var/lib/samba/private/domadmins
+  local name=$1 role=$2 list=/var/lib/samba/private/admins
   touch "$list"
-  if [[ $2 == admin ]]; then
-    usermod -aG domadmins "$1"
-    grep -qx "$1" "$list" || echo "$1" >> "$list"
+  if [[ $role == admin ]]; then
+    usermod -aG admins "$name"
+    grep -qx "$name" "$list" || echo "$name" >> "$list"
   else
-    gpasswd -d "$1" domadmins >/dev/null 2>&1 || true
-    sed -i "/^$1\$/d" "$list"
+    gpasswd -d "$name" admins >/dev/null 2>&1 || true
+    sed -i "/^$name\$/d" "$list"
   fi
 }
 
@@ -43,8 +43,8 @@ set_role() {
 # rebuilt from both lists so removing a user from either takes effect
 sync_software() {
   local private=/var/lib/samba/private want have
-  touch "$private/domadmins" "$private/softadmins"
-  want=$(cat "$private/domadmins" "$private/softadmins" | sort -u)
+  touch "$private/admins" "$private/softadmins"
+  want=$(cat "$private/admins" "$private/softadmins" | sort -u)
   have=$(getent group softadmins | cut -d: -f4 | tr ',' '\n')
   for member in $have; do
     grep -qx "$member" <<<"$want" || gpasswd -d "$member" softadmins >/dev/null 2>&1 || true

@@ -1,4 +1,4 @@
-//! who may administer lanlord on a gateway: the members of `lanlord-admins`.
+//! who may administer lanlord on a gateway: the members of the `admins` group.
 
 use anyhow::{bail, Result};
 
@@ -7,7 +7,21 @@ use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
 /// the unix group whose members may administer lanlord.
-pub(crate) const ADMINS_GROUP: &str = "lanlord-admins";
+pub(crate) const ADMINS_GROUP: &str = "admins";
+
+/// its gid, the same on the gateway and inside the samba container so file ownership matches.
+pub const ADMINS_GID: u32 = 9998;
+
+/// the groups lanlord defines itself, with fixed gids in 9000-9998 (the `lanlord` service account
+/// is 9999, and people get ids from 10000 up). the samba entrypoint pins the same list; a test
+/// keeps the two in step.
+pub const BUILTIN_GROUPS: &[(&str, u32)] = &[
+    (ADMINS_GROUP, ADMINS_GID),
+    ("domusers", 9997),
+    ("domguests", 9996),
+    ("machines", 9995),
+    ("softadmins", 9994),
+];
 
 pub enum Action {
     Add(String),
@@ -15,15 +29,20 @@ pub enum Action {
 }
 
 /// shell that sets `members` to the comma separated members, or fails when the group is missing.
-const READ_MEMBERS: &str = r#"line=$(getent group lanlord-admins) || {
-  echo "group lanlord-admins does not exist; run lanlord bootstrap first" >&2; exit 1
+fn read_members() -> String {
+    format!(
+        r#"line=$(getent group {ADMINS_GROUP}) || {{
+  echo "group {ADMINS_GROUP} does not exist; run lanlord bootstrap first" >&2; exit 1
+}}
+members=${{line##*:}}
+"#
+    )
 }
-members=${line##*:}
-"#;
 
 fn list_script() -> String {
+    let read_members = read_members();
     format!(
-        "set -eu\n{READ_MEMBERS}printf '%s\\n' \"$members\" | tr ',' '\\n' | sed '/^$/d' | sort\n"
+        "set -eu\n{read_members}printf '%s\\n' \"$members\" | tr ',' '\\n' | sed '/^$/d' | sort\n"
     )
 }
 
@@ -54,7 +73,8 @@ echo "removed {user} from {ADMINS_GROUP}"
 "#
         ),
     };
-    Ok(format!("set -eu\n{READ_MEMBERS}{body}"))
+    let read_members = read_members();
+    Ok(format!("set -eu\n{read_members}{body}"))
 }
 
 /// the ssh user, for the sudo password prompt.
@@ -65,7 +85,7 @@ fn admin_of(session: &Session) -> Result<String> {
         .to_string())
 }
 
-/// the members of `lanlord-admins` on `host`.
+/// the members of `admins` on `host`.
 pub fn list(host: &str, ask_password: AskPassword) -> Result<Vec<String>> {
     list_with(&Session::new(host)?, ask_password)
 }
@@ -76,7 +96,7 @@ fn list_with(session: &Session, ask_password: AskPassword) -> Result<Vec<String>
     Ok(out.lines().map(str::to_string).collect())
 }
 
-/// add or remove a member of `lanlord-admins` on `host`.
+/// add or remove a member of `admins` on `host`.
 pub fn change(host: &str, action: &Action, ask_password: AskPassword) -> Result<()> {
     change_with(&Session::new(host)?, action, ask_password)
 }
@@ -109,7 +129,7 @@ esac"#,
     }
 
     fn temp(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("lanlord-admins-{}-{name}", std::process::id()))
+        std::env::temp_dir().join(format!("admins-{}-{name}", std::process::id()))
     }
 
     fn no_password(_: &str) -> Result<String> {
@@ -150,16 +170,16 @@ esac"#,
     fn add_checks_the_user_exists_and_is_idempotent() {
         let s = change_script(&Action::Add("bob".into())).unwrap();
         assert!(s.contains("id -u bob"));
-        assert!(s.contains("usermod -aG lanlord-admins bob"));
-        assert!(s.contains("bob is already in lanlord-admins"));
+        assert!(s.contains("usermod -aG admins bob"));
+        assert!(s.contains("bob is already in admins"));
     }
 
     #[test]
     fn remove_keeps_the_last_member() {
         let s = change_script(&Action::Remove("bob".into())).unwrap();
-        assert!(s.contains("last member of lanlord-admins"));
-        assert!(s.contains("gpasswd -d bob lanlord-admins"));
-        assert!(s.contains("bob is not in lanlord-admins"));
+        assert!(s.contains("last member of admins"));
+        assert!(s.contains("gpasswd -d bob admins"));
+        assert!(s.contains("bob is not in admins"));
     }
 
     #[test]
@@ -176,7 +196,7 @@ esac"#,
         let members = list_with(&gateway(&record, "alice\nbob", 0), &mut no_password).unwrap();
         assert_eq!(members, ["alice", "bob"]);
         let sent = std::fs::read_to_string(&record).unwrap();
-        assert!(sent.contains("getent group lanlord-admins"));
+        assert!(sent.contains("getent group admins"));
         let _ = std::fs::remove_file(record);
     }
 

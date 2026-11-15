@@ -59,8 +59,8 @@
    comment = logon scripts; domain admins may edit them
    path = /var/lib/samba/netlogon
    read only = yes
-   write list = @domadmins
-   force group = domadmins
+   write list = @admins
+   force group = admins
    create mask = 0664
    force create mode = 0664
    directory mask = 2775
@@ -71,8 +71,8 @@
    comment = software installers; domain users read, domain admins and software admins write
    path = /var/lib/samba/software
    read only = yes
-   valid users = @domusers @domadmins
-   write list = @domadmins @softadmins
+   valid users = @domusers @admins
+   write list = @admins @softadmins
    force group = softadmins
    create mask = 0664
    force create mode = 0664
