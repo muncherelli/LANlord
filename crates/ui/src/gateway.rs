@@ -47,7 +47,7 @@ pub trait Gateway: Send + Sync {
     fn change_users(&self, host: &str, changes: &[Change], ask: AskPassword) -> Result<()>;
     /// set the account of machine `name` back to its first password, so it can join again.
     fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()>;
-    /// create an administrator login, in lanlord-admins and sudo, with an optional ssh key.
+    /// create an administrator login, in admins and sudo, with an optional ssh key.
     fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()>;
     /// the dhcp leases the gateway has handed out.
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>>;

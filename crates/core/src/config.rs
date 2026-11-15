@@ -4,6 +4,7 @@
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 
+use crate::admins::ADMINS_GROUP;
 use crate::bootstrap::{capture_as_root, run_as_root, AskPassword};
 use crate::crypto;
 use crate::log::{emit, Kind};
@@ -20,17 +21,22 @@ pub(crate) fn wrap(bytes: &[u8]) -> String {
         .join("\n")
 }
 
-/// the config directory belongs to lanlord-admins when that group exists, so
+/// the config directory belongs to the admins group when that group exists, so
 /// admins can read the plain settings; the age file inside stays lanlord only.
-const CONFIG_DIR: &str = r#"group=lanlord
-if getent group lanlord-admins >/dev/null 2>&1; then group=lanlord-admins; fi
+fn config_dir() -> String {
+    format!(
+        r#"group=lanlord
+if getent group {ADMINS_GROUP} >/dev/null 2>&1; then group={ADMINS_GROUP}; fi
 install -d -o lanlord -g "$group" -m 0750 /opt/lanlord/config
-"#;
+"#
+    )
+}
 
 fn push_script(ciphertext: &[u8]) -> String {
+    let config_dir = config_dir();
     format!(
         r#"set -eu
-{CONFIG_DIR}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.age >/dev/null
+{config_dir}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.age >/dev/null
 {}
 LANLORD_PAYLOAD
 chmod 0640 /opt/lanlord/config/settings.age
@@ -40,9 +46,10 @@ chmod 0640 /opt/lanlord/config/settings.age
 }
 
 fn push_plain_script(plaintext: &[u8]) -> String {
+    let config_dir = config_dir();
     format!(
         r#"set -eu
-{CONFIG_DIR}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.yml >/dev/null
+{config_dir}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.yml >/dev/null
 {}
 LANLORD_PAYLOAD
 chgrp "$group" /opt/lanlord/config/settings.yml
@@ -311,7 +318,7 @@ esac"#
         let sent = std::fs::read_to_string(&record).unwrap();
         assert!(sent.contains("tee /opt/lanlord/config/settings.yml"));
         assert!(sent.contains("chmod 0640 /opt/lanlord/config/settings.yml"));
-        assert!(sent.contains("lanlord-admins"));
+        assert!(sent.contains("admins"));
         assert_eq!(payload(&sent), b"dns: {}\n");
         let _ = std::fs::remove_file(&record);
         let failing = Session::fake_gateway(true, &record, 4);

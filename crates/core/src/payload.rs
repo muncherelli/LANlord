@@ -129,6 +129,34 @@ mod tests {
     }
 
     #[test]
+    fn the_old_group_names_are_gone() {
+        // the admins group is one group everywhere; only the entrypoint may still read the old file
+        let legacy =
+            |line: &str| line.contains("private/domadmins") || line.contains("called domadmins");
+        for (name, contents) in FILES {
+            for line in contents.lines().filter(|l| !legacy(l)) {
+                assert!(
+                    !line.contains("lanlord-admins") && !line.contains("domadmins"),
+                    "{name} still names the old group: {line}"
+                );
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().is_some_and(|n| n == "payload.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !text.contains("lanlord-admins") && !text.contains("domadmins"),
+                "{} still names the old group",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn base64_round_trips() {
         let encoded = archive_base64().unwrap();
         assert!(encoded.lines().all(|l| l.len() <= 76));

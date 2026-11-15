@@ -4,15 +4,12 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 
-use crate::admins::ADMINS_GROUP;
+use crate::admins::{ADMINS_GID, ADMINS_GROUP};
 use crate::bootstrap::{install_sudoers, run_as_root, valid_user, AskPassword, ROOT_ADVICE};
 use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
-
-/// the gid of `lanlord-admins`, as bootstrap creates it.
-const ADMINS_ID: u32 = 9998;
 
 /// the longest public key line accepted.
 const MAX_KEY: usize = 8192;
@@ -125,7 +122,7 @@ fn create_script(
 if id -u {name} >/dev/null 2>&1; then
   echo "the user {name} already exists" >&2; exit 1
 fi
-getent group {admins} >/dev/null || groupadd --gid {ADMINS_ID} {admins}
+getent group {admins} >/dev/null || groupadd --gid {ADMINS_GID} {admins}
 groups={admins}
 for g in sudo wheel; do
   if getent group "$g" >/dev/null; then groups="$groups,$g"; break; fi
@@ -149,7 +146,7 @@ rm -f "$tmp"
         ));
     }
     if passwordless_sudo {
-        // named to sort after lanlord-admins, so this rule wins
+        // named to sort after admins, so this rule wins
         s.push_str(&install_sudoers(
             &format!("lanlord-nopasswd-{name}"),
             &format!("{name} ALL=(ALL) NOPASSWD: ALL\n"),
@@ -160,7 +157,7 @@ rm -f "$tmp"
 }
 
 /// create the administrator `name` on `host`: a login with `password`, a member of
-/// `lanlord-admins` and of the distro's sudo group, with `ssh_public_key` as an authorized
+/// `admins` and of the distro's sudo group, with `ssh_public_key` as an authorized
 /// key when given. passwordless sudo is only set up when `passwordless_sudo` asks for it.
 pub fn create_admin(
     session: &Session,
@@ -226,8 +223,8 @@ mod tests {
     fn the_script_creates_the_account_and_hides_the_password() {
         let s = create_script("olive", "pa'ss$word", Some(KEY), false).unwrap();
         assert!(s.contains("useradd --create-home"));
-        assert!(s.contains("groups=lanlord-admins"));
-        assert!(s.contains("groupadd --gid 9998 lanlord-admins"));
+        assert!(s.contains("groups=admins"));
+        assert!(s.contains("groupadd --gid 9998 admins"));
         assert!(s.contains("for g in sudo wheel"));
         assert!(s.contains("chpasswd"));
         assert!(
