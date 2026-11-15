@@ -20,11 +20,17 @@ pub(crate) fn wrap(bytes: &[u8]) -> String {
         .join("\n")
 }
 
+/// the config directory belongs to lanlord-admins when that group exists, so
+/// admins can read the plain settings; the age file inside stays lanlord only.
+const CONFIG_DIR: &str = r#"group=lanlord
+if getent group lanlord-admins >/dev/null 2>&1; then group=lanlord-admins; fi
+install -d -o lanlord -g "$group" -m 0750 /opt/lanlord/config
+"#;
+
 fn push_script(ciphertext: &[u8]) -> String {
     format!(
         r#"set -eu
-install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config
-base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.age >/dev/null
+{CONFIG_DIR}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.age >/dev/null
 {}
 LANLORD_PAYLOAD
 chmod 0640 /opt/lanlord/config/settings.age
@@ -32,6 +38,26 @@ chmod 0640 /opt/lanlord/config/settings.age
         wrap(ciphertext)
     )
 }
+
+fn push_plain_script(plaintext: &[u8]) -> String {
+    format!(
+        r#"set -eu
+{CONFIG_DIR}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.yml >/dev/null
+{}
+LANLORD_PAYLOAD
+chgrp "$group" /opt/lanlord/config/settings.yml
+chmod 0640 /opt/lanlord/config/settings.yml
+"#,
+        wrap(plaintext)
+    )
+}
+
+/// prints `present` and then the file, or nothing when there is no plain file.
+const PULL_PLAIN_SCRIPT: &str = r#"if [ -f /opt/lanlord/config/settings.yml ]; then
+  echo present
+  cat /opt/lanlord/config/settings.yml
+fi
+"#;
 
 const PULL_SCRIPT: &str = r#"set -eu
 # prints nothing when no settings are stored yet
@@ -109,6 +135,48 @@ pub(crate) fn pull_with(
         .decode(compact)
         .context("the gateway returned damaged settings")?;
     crypto::decrypt(identity, &sealed).map(Some)
+}
+
+/// store the plain (unencrypted, readable) settings on the gateway.
+pub fn push_plain(host: &str, plaintext: &[u8], ask_password: AskPassword) -> Result<()> {
+    push_plain_with(&Session::new(host)?, host, plaintext, ask_password)
+}
+
+pub(crate) fn push_plain_with(
+    session: &Session,
+    host: &str,
+    plaintext: &[u8],
+    ask_password: AskPassword,
+) -> Result<()> {
+    emit(Kind::Info, format!("storing plain settings on {host}"));
+    let admin = admin(session)?;
+    match run_as_root(session, &admin, push_plain_script(plaintext), ask_password)? {
+        0 => Ok(()),
+        code => bail!("storing the plain settings failed with status {code}"),
+    }
+}
+
+/// the plain settings on the gateway; `None` when there are none.
+pub fn pull_plain(host: &str, ask_password: AskPassword) -> Result<Option<Vec<u8>>> {
+    pull_plain_with(&Session::new(host)?, ask_password)
+}
+
+/// admins read the file directly; sudo is the fallback for accounts not in the group yet.
+pub(crate) fn pull_plain_with(
+    session: &Session,
+    ask_password: AskPassword,
+) -> Result<Option<Vec<u8>>> {
+    let direct = session.capture(&["sh".into(), "-c".into(), PULL_PLAIN_SCRIPT.into()]);
+    let output = match direct {
+        Ok(output) => output,
+        Err(_) => {
+            let admin = admin(session)?;
+            capture_as_root(session, &admin, PULL_PLAIN_SCRIPT.to_string(), ask_password)?
+        }
+    };
+    Ok(output
+        .strip_prefix("present\n")
+        .map(|body| body.as_bytes().to_vec()))
 }
 
 #[cfg(all(test, unix))]
@@ -225,5 +293,53 @@ esac"#
         let sealed = crypto::encrypt(&other, b"secret: 1\n").unwrap();
         let session = serving(&format!("printf '%s\\n' '{}'", B64.encode(&sealed)), 0);
         assert!(pull_with(&session, &mine, &mut no_password).is_err());
+    }
+
+    #[test]
+    fn push_plain_sends_readable_settings_for_the_admins_group() {
+        let record =
+            std::env::temp_dir().join(format!("lanlord-config-plain-{}", std::process::id()));
+        let session = Session::fake_gateway(true, &record, 0);
+        push_plain_with(&session, "gw", b"dns: {}\n", &mut no_password).unwrap();
+        let sent = std::fs::read_to_string(&record).unwrap();
+        assert!(sent.contains("tee /opt/lanlord/config/settings.yml"));
+        assert!(sent.contains("chmod 0640 /opt/lanlord/config/settings.yml"));
+        assert!(sent.contains("lanlord-admins"));
+        assert_eq!(payload(&sent), b"dns: {}\n");
+        let _ = std::fs::remove_file(&record);
+        let failing = Session::fake_gateway(true, &record, 4);
+        let err = push_plain_with(&failing, "gw", b"a: 1\n", &mut no_password).unwrap_err();
+        assert!(err.to_string().contains("status 4"), "{err}");
+        let _ = std::fs::remove_file(&record);
+    }
+
+    #[test]
+    fn pull_plain_reads_the_file_or_nothing() {
+        let present = serving("printf 'present\\nmotd: hi\\n'", 0);
+        assert_eq!(
+            pull_plain_with(&present, &mut no_password).unwrap(),
+            Some(b"motd: hi\n".to_vec())
+        );
+        assert!(pull_plain_with(&serving("true", 0), &mut no_password)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn pull_plain_falls_back_to_sudo_when_the_direct_read_fails() {
+        // the direct `sh -c` read is refused; the sudo run answers
+        let session = Session::fake(
+            r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit 0 ;;
+  sh*) echo denied >&2; exit 1 ;;
+  *) cat >/dev/null; printf 'present\nviasudo: 1\n' ;;
+esac"#,
+        );
+        assert_eq!(
+            pull_plain_with(&session, &mut no_password).unwrap(),
+            Some(b"viasudo: 1\n".to_vec())
+        );
     }
 }

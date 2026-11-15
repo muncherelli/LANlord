@@ -1,14 +1,23 @@
-//! the desktop: icons, windows and a taskbar with a start menu.
-//! the contents are dummy data for now; this is about the look.
+//! the desktop: icons, windows and a taskbar with a start menu. the windows
+//! show the real hosts, console and settings; gateway work runs in the
+//! background through `Services`.
+
+use std::path::PathBuf;
 
 use eframe::egui::{
-    self, Align, Align2, Color32, Frame, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense,
-    Ui, Vec2,
+    self, Align, Align2, Frame, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense, Ui, Vec2,
 };
+use lanlord_core::log::{emit, Kind};
 use lanlord_core::modules::{Module, Status, MODULES};
 
+use crate::console::{self, Console};
+use crate::dialogs::{Answer, TextDialog};
+use crate::hostlist::HostList;
 use crate::icons;
-use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, TEAL, WHITE};
+use crate::services::Services;
+use crate::settings_editor::SettingsEditor;
+use crate::tasks::PasswordRequest;
+use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
 use crate::windows;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
@@ -20,6 +29,7 @@ enum Target {
     Module(usize),
     Console,
     Hosts,
+    Settings,
 }
 
 impl Target {
@@ -28,6 +38,7 @@ impl Target {
             Self::Module(i) => MODULES[i].id,
             Self::Console => "console",
             Self::Hosts => "hosts",
+            Self::Settings => "settings",
         }
     }
 
@@ -36,6 +47,7 @@ impl Target {
             Self::Module(i) => MODULES[i].name,
             Self::Console => "Console",
             Self::Hosts => "Hosts",
+            Self::Settings => "Settings",
         }
     }
 }
@@ -51,42 +63,32 @@ pub struct Desktop {
     windows: Vec<Window>,
     active: Option<Target>,
     start_open: bool,
-    hosts: Vec<String>,
-    host: usize,
-    users: Vec<String>,
-    user: usize,
-    console: Vec<(Color32, String)>,
+    hosts: HostList,
+    console: Console,
+    services: Services,
+    settings: SettingsEditor,
+    /// a task is waiting for this password.
+    password: Option<(PasswordRequest, TextDialog)>,
+    add_host: Option<TextDialog>,
 }
 
-impl Default for Desktop {
-    fn default() -> Self {
+impl Desktop {
+    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `services`.
+    pub fn new(services: Services, hosts_path: Option<PathBuf>) -> Self {
         let mut icons: Vec<Target> = (0..MODULES.len()).map(Target::Module).collect();
-        icons.push(Target::Console);
-        icons.push(Target::Hosts);
+        icons.extend([Target::Settings, Target::Console, Target::Hosts]);
         Self {
             icons,
             selected: None,
             windows: Vec::new(),
             active: None,
             start_open: false,
-            hosts: vec!["linuxuser@lanlord.lan".into(), "admin@backup.lan".into()],
-            host: 0,
-            users: vec!["james".into(), "olive".into()],
-            user: 0,
-            console: vec![
-                (
-                    Color32::from_rgb(85, 255, 255),
-                    "linuxuser@lanlord.lan$ uname -sr".into(),
-                ),
-                (Color32::LIGHT_GRAY, "Linux 7.0.14-28-pve".into()),
-                (Color32::from_rgb(85, 255, 255), "exit 0".into()),
-                (
-                    Color32::from_rgb(85, 255, 255),
-                    "applying nt4-domain to linuxuser@lanlord.lan".into(),
-                ),
-                (Color32::LIGHT_GRAY, "ok: [localhost]".into()),
-                (Color32::from_rgb(85, 255, 255), "apply finished".into()),
-            ],
+            hosts: HostList::new(hosts_path),
+            console: Console::new(&services.ctx),
+            services,
+            settings: SettingsEditor::default(),
+            password: None,
+            add_host: None,
         }
     }
 }
@@ -104,12 +106,9 @@ impl Desktop {
         self.start_open = false;
     }
 
-    fn log(&mut self, text: String) {
-        self.console.push((Color32::from_rgb(85, 255, 255), text));
-    }
-
-    fn host(&self) -> &str {
-        self.hosts.get(self.host).map_or("-", String::as_str)
+    /// the host every action targets.
+    fn host(&self) -> Option<String> {
+        self.hosts.selected().map(String::from)
     }
 }
 
@@ -140,9 +139,46 @@ impl Desktop {
             .frame(Frame::new().fill(TEAL))
             .show(ui, |ui| self.icons(ui));
 
+        self.console.drain();
+        self.settings.poll();
         self.show_windows(&ctx);
         if self.start_open {
             self.start_menu(&ctx);
+        }
+        self.dialogs(&ctx);
+    }
+
+    /// the modal boxes: a task's password prompt and the add-host box.
+    fn dialogs(&mut self, ctx: &egui::Context) {
+        if self.password.is_none() {
+            self.password = self.services.tasks.next_request().map(|request| {
+                let dialog = TextDialog::new("password", "Password", &request.prompt, true);
+                (request, dialog)
+            });
+        }
+        if let Some((request, mut dialog)) = self.password.take() {
+            match dialog.show(ctx) {
+                Some(answer) => {
+                    let _ = request.reply.send(match answer {
+                        Answer::Ok(password) => Some(password),
+                        Answer::Cancel => None,
+                    });
+                }
+                None => self.password = Some((request, dialog)),
+            }
+        }
+        self.settings.dialog(ctx);
+        if let Some(mut dialog) = self.add_host.take() {
+            match dialog.show(ctx) {
+                Some(Answer::Ok(text)) => {
+                    if let Err(error) = self.hosts.add(&text) {
+                        dialog.error = Some(error);
+                        self.add_host = Some(dialog);
+                    }
+                }
+                Some(Answer::Cancel) => {}
+                None => self.add_host = Some(dialog),
+            }
         }
     }
 }
@@ -308,7 +344,7 @@ impl Desktop {
     fn start_menu(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
         let width = 190.0;
-        let rows = MODULES.len() + 2;
+        let rows = MODULES.len() + 3;
         let height = rows as f32 * 26.0 + 14.0;
         let pos = Pos2::new(screen.left() + 2.0, screen.bottom() - TASKBAR - height);
         let mut chosen: Option<Option<Target>> = None;
@@ -357,6 +393,9 @@ impl Desktop {
                         chosen = Some(Some(Target::Module(i)));
                     }
                 }
+                if item(ui, "Settings", Some("settings"), &mut y) {
+                    chosen = Some(Some(Target::Settings));
+                }
                 if item(ui, "Console", Some("console"), &mut y) {
                     chosen = Some(Some(Target::Console));
                 }
@@ -397,6 +436,7 @@ impl Desktop {
                 Target::Module(_) => Vec2::new(420.0, 400.0),
                 Target::Console => Vec2::new(520.0, 260.0),
                 Target::Hosts => Vec2::new(340.0, 250.0),
+                Target::Settings => Vec2::new(520.0, 520.0),
             };
             let shown = windows::show(
                 ctx,
@@ -426,6 +466,10 @@ impl Desktop {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
             Target::Console => self.console_window(ui),
             Target::Hosts => self.hosts_window(ui),
+            Target::Settings => {
+                let host = self.host();
+                self.settings.show(ui, &self.services, host.as_deref());
+            }
         }
     }
 
@@ -455,33 +499,24 @@ impl Desktop {
             ui.label("Logins:");
             theme::sunken(ui, WHITE, |ui| {
                 ui.set_width(ui.available_width());
-                ui.set_min_height(64.0);
-                for (i, user) in self.users.clone().iter().enumerate() {
-                    if theme::list_row(ui, user, self.user == i).clicked() {
-                        self.user = i;
-                    }
-                }
-            });
-            ui.horizontal(|ui| {
-                if theme::button(ui, "Add...", false).clicked() {
-                    self.log("add a login (preview only)".into());
-                }
-                if theme::button(ui, "Password...", false).clicked() {
-                    self.log("change a password (preview only)".into());
-                }
-                if theme::button(ui, "Delete", false).clicked() {
-                    self.log("delete a login (preview only)".into());
-                }
+                ui.set_min_height(48.0);
+                ui.label("Loading the logins from the gateway is coming.");
             });
         }
         ui.add_space(8.0);
+        let host = self.host();
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let available = module.status == Status::Available;
-            if theme::button(ui, "Apply", false).clicked() && available {
-                let line = format!("applying {} to {}", module.id, self.host());
-                self.log(line);
+            let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
+            let ready = module.status == Status::Available && !busy;
+            let apply = theme::action(ui, "Apply", ready && host.is_some());
+            if let (true, Some(host)) = (apply.clicked(), &host) {
+                self.services.apply(host, vec![module.id.to_string()]);
             }
-            ui.label(format!("Host: {}", self.host()));
+            ui.label(match (&host, busy) {
+                (None, _) => "No host selected".to_string(),
+                (Some(host), true) => format!("Host: {host} - working..."),
+                (Some(host), false) => format!("Host: {host}"),
+            });
         });
     }
 
@@ -493,8 +528,11 @@ impl Desktop {
                 .max_height(ui.available_height() - 4.0)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    for (colour, line) in &self.console {
-                        ui.label(RichText::new(line).monospace().color(*colour));
+                    for line in self.console.lines() {
+                        let text = RichText::new(&line.text)
+                            .monospace()
+                            .color(console::colour(line.kind));
+                        ui.label(text);
                     }
                 });
         });
@@ -502,37 +540,69 @@ impl Desktop {
 
     fn hosts_window(&mut self, ui: &mut Ui) {
         ui.label("Gateways lanlord manages:");
+        let mut picked = None;
         theme::sunken(ui, WHITE, |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height(90.0);
-            for (i, host) in self.hosts.clone().iter().enumerate() {
-                if theme::list_row(ui, host, self.host == i).clicked() {
-                    self.host = i;
+            if self.hosts.hosts().is_empty() {
+                ui.label("No gateways yet. Click Add... and type user@gateway.");
+            }
+            for (i, host) in self.hosts.hosts().iter().enumerate() {
+                if theme::list_row(ui, host, self.hosts.selected_index() == i).clicked() {
+                    picked = Some(i);
                 }
             }
         });
+        if let Some(i) = picked {
+            self.hosts.select(i);
+        }
         ui.add_space(6.0);
+        let host = self.host();
+        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
+        let ready = host.is_some() && !busy;
         ui.horizontal(|ui| {
-            if theme::button(ui, "Add...", false).clicked() {
-                self.log("add a host (preview only)".into());
+            if theme::action(ui, "Add...", true).clicked() && self.add_host.is_none() {
+                self.add_host = Some(TextDialog::new(
+                    "add-host",
+                    "Add a host",
+                    "Gateway as user@host:",
+                    false,
+                ));
             }
-            if theme::button(ui, "Remove", false).clicked() {
-                self.log("remove a host (preview only)".into());
+            if theme::action(ui, "Remove", ready).clicked() {
+                if let Err(error) = self.hosts.remove_selected() {
+                    emit(Kind::Err, error);
+                }
             }
-            if theme::button(ui, "Bootstrap", false).clicked() {
-                let line = format!("bootstrapping {} (preview only)", self.host());
-                self.log(line);
+            if theme::action(ui, "Bootstrap", ready).clicked() {
+                if let Some(host) = &host {
+                    self.services.bootstrap(host);
+                }
             }
         });
-        let _ = SHADOW;
+        if busy {
+            ui.label(RichText::new("working...").italics());
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
     use super::*;
+    use crate::gateway::Fake;
+    use lanlord_core::log::Kind;
 
     const SCREEN: Vec2 = Vec2::new(960.0, 640.0);
+
+    fn desktop() -> (Desktop, egui::Context, Arc<Fake>) {
+        let ctx = egui::Context::default();
+        let fake = Arc::new(Fake::new());
+        let desktop = Desktop::new(Services::new(fake.clone(), &ctx), None);
+        (desktop, ctx, fake)
+    }
 
     fn frame(desktop: &mut Desktop, ctx: &egui::Context, events: Vec<egui::Event>) {
         let input = egui::RawInput {
@@ -546,6 +616,12 @@ mod tests {
             .clear();
     }
 
+    fn frames(desktop: &mut Desktop, ctx: &egui::Context, n: usize) {
+        for _ in 0..n {
+            frame(desktop, ctx, Vec::new());
+        }
+    }
+
     fn click(at: Pos2) -> Vec<egui::Event> {
         let button = |pressed| egui::Event::PointerButton {
             pos: at,
@@ -556,32 +632,94 @@ mod tests {
         vec![egui::Event::PointerMoved(at), button(true), button(false)]
     }
 
+    fn click_at(desktop: &mut Desktop, ctx: &egui::Context, at: Pos2) {
+        for event in click(at) {
+            frame(desktop, ctx, vec![event]);
+        }
+        frames(desktop, ctx, 2);
+    }
+
+    /// click the button labelled `text`; false when it is missing or disabled.
+    fn press(desktop: &mut Desktop, ctx: &egui::Context, text: &str) -> bool {
+        // draw first, so the button reflects what the tasks did meanwhile
+        frames(desktop, ctx, 2);
+        match theme::probe::find(ctx, text) {
+            Some((rect, true)) => {
+                click_at(desktop, ctx, rect.center());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn enabled(ctx: &egui::Context, text: &str) -> Option<bool> {
+        theme::probe::find(ctx, text).map(|(_, on)| on)
+    }
+
+    fn key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn type_text(desktop: &mut Desktop, ctx: &egui::Context, text: &str) {
+        frame(desktop, ctx, vec![egui::Event::Text(text.into())]);
+        frame(desktop, ctx, vec![key(egui::Key::Enter)]);
+        frames(desktop, ctx, 2);
+    }
+
+    /// draw frames until `done` holds.
+    fn until(desktop: &mut Desktop, ctx: &egui::Context, done: impl Fn(&Desktop) -> bool) {
+        let start = Instant::now();
+        while !done(desktop) {
+            assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+            frames(desktop, ctx, 1);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn idle(host: &'static str) -> impl Fn(&Desktop) -> bool {
+        move |d| !d.services.busy(host)
+    }
+
+    fn with_host(desktop: &mut Desktop, ctx: &egui::Context) {
+        desktop.hosts.add("me@gw").unwrap();
+        frames(desktop, ctx, 2);
+    }
+
     #[test]
     fn the_empty_desktop_draws() {
-        let (ctx, mut desktop) = (egui::Context::default(), Desktop::default());
-        for _ in 0..3 {
-            frame(&mut desktop, &ctx, Vec::new());
-        }
-        assert_eq!(desktop.icons.len(), MODULES.len() + 2);
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 3);
+        assert_eq!(desktop.icons.len(), MODULES.len() + 3);
         assert!(desktop.windows.is_empty());
     }
 
     #[test]
-    fn every_window_draws() {
-        let (ctx, mut desktop) = (egui::Context::default(), Desktop::default());
+    fn every_window_draws_with_and_without_a_host() {
+        let (mut desktop, ctx, fake) = desktop();
         for target in desktop.icons.clone() {
             desktop.open(target);
         }
-        for _ in 0..3 {
-            frame(&mut desktop, &ctx, Vec::new());
-        }
+        frames(&mut desktop, &ctx, 3);
+        assert!(
+            fake.calls().is_empty(),
+            "nothing is contacted without a host"
+        );
+        with_host(&mut desktop, &ctx);
+        until(&mut desktop, &ctx, idle("me@gw"));
+        frames(&mut desktop, &ctx, 3);
         assert_eq!(desktop.windows.len(), desktop.icons.len());
         assert!(desktop.windows.iter().all(|w| !w.minimized));
     }
 
     #[test]
     fn opening_a_window_twice_reuses_it_and_unminimizes_it() {
-        let mut desktop = Desktop::default();
+        let (mut desktop, _, _) = desktop();
         desktop.open(Target::Console);
         desktop.windows[0].minimized = true;
         desktop.open(Target::Console);
@@ -591,19 +729,24 @@ mod tests {
     }
 
     #[test]
-    fn the_start_menu_draws_and_lists_the_modules() {
-        let (ctx, mut desktop) = (egui::Context::default(), Desktop::default());
+    fn the_start_menu_opens_settings() {
+        let (mut desktop, ctx, _) = desktop();
         desktop.start_open = true;
-        for _ in 0..3 {
-            frame(&mut desktop, &ctx, Vec::new());
-        }
+        frames(&mut desktop, &ctx, 3);
         assert!(desktop.start_open);
+        // the settings row is third from the bottom, above Console and Shut Down
+        let rows = MODULES.len() + 3;
+        let top = SCREEN.y - TASKBAR - (rows as f32 * 26.0 + 14.0);
+        let row = top + 8.0 + (MODULES.len() as f32) * 26.0 + 12.0;
+        click_at(&mut desktop, &ctx, Pos2::new(100.0, row));
+        assert_eq!(desktop.active, Some(Target::Settings));
+        assert!(!desktop.start_open);
     }
 
     #[test]
     fn clicking_an_icon_selects_it_and_clicking_the_desktop_clears_it() {
-        let (ctx, mut desktop) = (egui::Context::default(), Desktop::default());
-        frame(&mut desktop, &ctx, Vec::new());
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
         // the first icon's cell starts at (12, 12)
         for events in click(Pos2::new(54.0, 54.0)).into_iter().map(|e| vec![e]) {
             frame(&mut desktop, &ctx, events);
@@ -617,9 +760,9 @@ mod tests {
 
     #[test]
     fn taskbar_buttons_raise_and_minimize() {
-        let (ctx, mut desktop) = (egui::Context::default(), Desktop::default());
+        let (mut desktop, ctx, _) = desktop();
         desktop.open(Target::Console);
-        frame(&mut desktop, &ctx, Vec::new());
+        frames(&mut desktop, &ctx, 1);
         // the first window button sits just right of the start button
         let button = Pos2::new(
             70.0 + 4.0 + 4.0 + 2.0 + 20.0 + 75.0,
@@ -642,11 +785,290 @@ mod tests {
     }
 
     #[test]
-    fn the_preview_buttons_write_to_the_console() {
-        let mut desktop = Desktop::default();
-        let before = desktop.console.len();
-        desktop.log("hello".into());
-        assert_eq!(desktop.console.len(), before + 1);
-        assert_eq!(desktop.host(), "linuxuser@lanlord.lan");
+    fn the_hosts_window_starts_empty_and_adds_through_the_dialog() {
+        let (mut desktop, ctx, _) = desktop();
+        desktop.open(Target::Hosts);
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(enabled(&ctx, "Remove"), Some(false));
+        assert_eq!(enabled(&ctx, "Bootstrap"), Some(false));
+        assert!(press(&mut desktop, &ctx, "Add..."));
+        assert!(desktop.add_host.is_some());
+        type_text(&mut desktop, &ctx, "two words");
+        assert!(
+            desktop.add_host.is_some(),
+            "a bad host keeps the dialog open"
+        );
+        assert!(desktop.hosts.hosts().is_empty());
+        let dialog = desktop.add_host.as_mut().unwrap();
+        dialog.error = None;
+        // clear the text by cancelling and starting over
+        frame(&mut desktop, &ctx, vec![key(egui::Key::Escape)]);
+        assert!(desktop.add_host.is_none());
+        assert!(press(&mut desktop, &ctx, "Add..."));
+        type_text(&mut desktop, &ctx, "me@gw");
+        assert!(desktop.add_host.is_none());
+        assert_eq!(desktop.hosts.hosts(), ["me@gw"]);
+        assert_eq!(enabled(&ctx, "Remove"), Some(true));
+    }
+
+    #[test]
+    fn hosts_are_selected_by_clicking_and_removed_with_the_button() {
+        let (mut desktop, ctx, _) = desktop();
+        desktop.hosts.add("me@one").unwrap();
+        desktop.hosts.add("me@two").unwrap();
+        desktop.open(Target::Hosts);
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(desktop.host().as_deref(), Some("me@two"));
+        // the list starts under the title bar, the label and the window margin
+        let (add, _) = theme::probe::find(&ctx, "Add...").unwrap();
+        click_at(
+            &mut desktop,
+            &ctx,
+            Pos2::new(add.left() + 10.0, add.top() - 100.0),
+        );
+        assert_eq!(desktop.host().as_deref(), Some("me@one"));
+        assert!(press(&mut desktop, &ctx, "Remove"));
+        assert_eq!(desktop.hosts.hosts(), ["me@two"]);
+        assert!(press(&mut desktop, &ctx, "Remove"));
+        frames(&mut desktop, &ctx, 2);
+        assert!(desktop.host().is_none());
+        assert_eq!(enabled(&ctx, "Remove"), Some(false));
+    }
+
+    #[test]
+    fn bootstrap_runs_through_the_gateway_and_asks_for_the_password() {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.password_prompt.lock().unwrap() = Some("sudo password for me".into());
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Hosts);
+        frames(&mut desktop, &ctx, 2);
+        assert!(press(&mut desktop, &ctx, "Bootstrap"));
+        until(&mut desktop, &ctx, |d| d.password.is_some());
+        assert_eq!(
+            desktop.password.as_ref().unwrap().1.prompt(),
+            "sudo password for me"
+        );
+        assert_eq!(
+            enabled(&ctx, "Bootstrap"),
+            Some(false),
+            "working: buttons are off"
+        );
+        assert_eq!(enabled(&ctx, "Remove"), Some(false));
+        type_text(&mut desktop, &ctx, "hunter2");
+        until(&mut desktop, &ctx, idle("me@gw"));
+        assert_eq!(fake.calls(), ["bootstrap me@gw"]);
+        assert_eq!(fake.answer.lock().unwrap().as_deref(), Some("hunter2"));
+        assert!(desktop.password.is_none());
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(enabled(&ctx, "Bootstrap"), Some(true));
+    }
+
+    #[test]
+    fn cancelling_the_password_dialog_cancels_the_task() {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.password_prompt.lock().unwrap() = Some("pw".into());
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Hosts);
+        frames(&mut desktop, &ctx, 2);
+        let seen = lanlord_core::log::subscribe();
+        assert!(press(&mut desktop, &ctx, "Bootstrap"));
+        until(&mut desktop, &ctx, |d| d.password.is_some());
+        frame(&mut desktop, &ctx, vec![key(egui::Key::Escape)]);
+        until(&mut desktop, &ctx, idle("me@gw"));
+        assert!(fake.answer.lock().unwrap().is_none());
+        let errors: Vec<String> = seen
+            .try_iter()
+            .filter(|l| l.kind == Kind::Err)
+            .map(|l| l.text)
+            .collect();
+        assert!(errors.iter().any(|e| e == "cancelled"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_module_window_applies_just_that_module() {
+        let (mut desktop, ctx, fake) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Module(0));
+        frames(&mut desktop, &ctx, 2);
+        assert!(press(&mut desktop, &ctx, "Apply"));
+        until(&mut desktop, &ctx, idle("me@gw"));
+        assert_eq!(fake.calls(), [format!("apply me@gw [{}]", MODULES[0].id)]);
+    }
+
+    #[test]
+    fn modules_that_are_planned_or_have_no_host_cannot_apply() {
+        let (mut desktop, ctx, fake) = desktop();
+        let planned = MODULES
+            .iter()
+            .position(|m| m.status == Status::Planned)
+            .expect("a planned module");
+        desktop.open(Target::Module(planned));
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(enabled(&ctx, "Apply"), Some(false), "no host");
+        with_host(&mut desktop, &ctx);
+        assert_eq!(enabled(&ctx, "Apply"), Some(false), "planned");
+        assert!(!press(&mut desktop, &ctx, "Apply"));
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn the_nt4_window_no_longer_shows_dummy_logins() {
+        let (mut desktop, ctx, _) = desktop();
+        let nt4 = MODULES.iter().position(|m| m.id == "nt4-domain").unwrap();
+        desktop.open(Target::Module(nt4));
+        frames(&mut desktop, &ctx, 2);
+        for label in ["Add...", "Password...", "Delete"] {
+            assert!(theme::probe::find(&ctx, label).is_none(), "{label}");
+        }
+    }
+
+    #[test]
+    fn the_settings_window_loads_edits_saves_reloads_and_applies() {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.stored.lock().unwrap() = "# mine\ngateway:\n  motd: hi\n".into();
+        desktop.open(Target::Settings);
+        frames(&mut desktop, &ctx, 2);
+        assert!(fake.calls().is_empty(), "no host, no contact");
+        with_host(&mut desktop, &ctx);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@gw"));
+        assert_eq!(desktop.settings.text, "# mine\ngateway:\n  motd: hi\n");
+
+        desktop.settings.text.push_str("# more\n");
+        frames(&mut desktop, &ctx, 2);
+        assert!(press(&mut desktop, &ctx, "Save"));
+        until(&mut desktop, &ctx, |d| !d.settings.dirty());
+        assert_eq!(
+            *fake.stored.lock().unwrap(),
+            "# mine\ngateway:\n  motd: hi\n# more\n"
+        );
+
+        desktop.settings.text = "changed".into();
+        assert!(press(&mut desktop, &ctx, "Reload"));
+        until(&mut desktop, &ctx, |d| !d.settings.dirty());
+        assert!(desktop.settings.text.ends_with("# more\n"));
+
+        assert!(press(&mut desktop, &ctx, "Apply"));
+        until(&mut desktop, &ctx, idle("me@gw"));
+        assert!(press(&mut desktop, &ctx, "Apply module"));
+        until(&mut desktop, &ctx, idle("me@gw"));
+        assert_eq!(
+            fake.calls(),
+            [
+                "load me@gw",
+                "save me@gw",
+                "load me@gw",
+                "apply me@gw []",
+                &format!("apply me@gw [{}]", MODULES[0].id)
+            ]
+        );
+    }
+
+    #[test]
+    fn secrets_are_set_through_the_masked_dialog_and_saved() {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.stored.lock().unwrap() = "nt4-domain:\n  name: RETRO\n".into();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@gw"));
+        frames(&mut desktop, &ctx, 2);
+        assert!(press(&mut desktop, &ctx, "Set..."));
+        assert!(desktop.settings.secret_dialog_open());
+        type_text(&mut desktop, &ctx, "s3cret");
+        assert!(desktop.settings.pending_update("nt4-domain.admin_password"));
+        assert!(press(&mut desktop, &ctx, "Save"));
+        until(&mut desktop, &ctx, |d| !d.settings.dirty());
+        let secrets = fake.secrets.lock().unwrap().clone();
+        assert_eq!(
+            secrets,
+            [(
+                "nt4-domain.admin_password".to_string(),
+                "s3cret".to_string()
+            )]
+        );
+        assert!(!fake.stored.lock().unwrap().contains("s3cret"));
+    }
+
+    #[test]
+    fn a_secret_typed_into_the_plain_text_disables_saving() {
+        let (mut desktop, ctx, fake) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@gw"));
+        desktop.settings.text = "a:\n  password: x\n".into();
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(enabled(&ctx, "Save"), Some(false));
+        assert_eq!(fake.calls(), ["load me@gw"]);
+    }
+
+    #[test]
+    fn broken_yaml_disables_saving() {
+        let (mut desktop, ctx, fake) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@gw"));
+        desktop.settings.text = "a: [oops".into();
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(enabled(&ctx, "Save"), Some(false));
+        assert!(!press(&mut desktop, &ctx, "Save"));
+        assert_eq!(fake.calls(), ["load me@gw"]);
+    }
+
+    #[test]
+    fn a_missing_key_shows_in_the_settings_window() {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.fail.lock().unwrap() = Some("no key yet; run `lanlord keygen`".into());
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| {
+            d.settings.message.is_some() && !d.settings.working()
+        });
+        assert!(desktop
+            .settings
+            .message
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("keygen"));
+        frames(&mut desktop, &ctx, 3);
+        assert_eq!(
+            fake.calls().len(),
+            1,
+            "a failed load is not retried by itself"
+        );
+    }
+
+    #[test]
+    fn switching_hosts_loads_the_new_hosts_settings() {
+        let (mut desktop, ctx, fake) = desktop();
+        desktop.hosts.add("me@one").unwrap();
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@one"));
+        *fake.stored.lock().unwrap() = "other: 1\n".into();
+        desktop.hosts.add("me@two").unwrap();
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@two"));
+        assert_eq!(desktop.settings.text, "other: 1\n");
+    }
+
+    #[test]
+    fn the_console_shows_what_lanlord_logs() {
+        let (mut desktop, ctx, _) = desktop();
+        desktop.open(Target::Console);
+        for (kind, text) in [
+            (Kind::Out, "desk-test-out"),
+            (Kind::Err, "desk-test-err"),
+            (Kind::Info, "desk-test-info"),
+            (Kind::Debug, "desk-test-debug"),
+        ] {
+            lanlord_core::log::emit(kind, text);
+        }
+        until(&mut desktop, &ctx, |d| {
+            d.console
+                .lines()
+                .iter()
+                .filter(|l| l.text.starts_with("desk-test-"))
+                .count()
+                == 4
+        });
+        frames(&mut desktop, &ctx, 2);
     }
 }

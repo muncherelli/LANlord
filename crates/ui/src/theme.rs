@@ -50,6 +50,8 @@ pub fn button(ui: &mut Ui, text: &str, pressed: bool) -> Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), font(), BLACK);
     let size = Vec2::new((galley.size().x + 22.0).max(75.0), 23.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    #[cfg(test)]
+    probe::record(ui, text, rect, true);
     let down = pressed || response.is_pointer_button_down_on();
     ui.painter().rect_filled(rect, 0.0, GRAY);
     bevel(ui.painter(), rect, !down);
@@ -60,6 +62,25 @@ pub fn button(ui: &mut Ui, text: &str, pressed: bool) -> Response {
     };
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0 + nudge, galley, BLACK);
+    response
+}
+
+/// a button that does nothing and shows gray text when `enabled` is false.
+pub fn action(ui: &mut Ui, text: &str, enabled: bool) -> Response {
+    if enabled {
+        return button(ui, text, false);
+    }
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font(), SHADOW);
+    let size = Vec2::new((galley.size().x + 22.0).max(75.0), 23.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    #[cfg(test)]
+    probe::record(ui, text, rect, false);
+    ui.painter().rect_filled(rect, 0.0, GRAY);
+    bevel(ui.painter(), rect, true);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, SHADOW);
     response
 }
 
@@ -120,4 +141,29 @@ pub fn apply(ctx: &egui::Context) {
         }
         style.spacing.item_spacing = Vec2::new(6.0, 4.0);
     });
+}
+
+/// lets headless tests find a button by its label.
+#[cfg(test)]
+pub mod probe {
+    use std::collections::HashMap;
+
+    use eframe::egui::{Context, Id, Rect, Ui};
+
+    type Buttons = HashMap<String, (Rect, bool)>;
+
+    pub fn record(ui: &Ui, text: &str, rect: Rect, enabled: bool) {
+        ui.ctx().data_mut(|d| {
+            let buttons: &mut Buttons = d.get_temp_mut_or_default(Id::unique("test-buttons"));
+            buttons.insert(text.to_string(), (rect, enabled));
+        });
+    }
+
+    /// where the button labelled `text` was drawn last, and whether it was enabled.
+    pub fn find(ctx: &Context, text: &str) -> Option<(Rect, bool)> {
+        ctx.data(|d| {
+            d.get_temp::<Buttons>(Id::unique("test-buttons"))
+                .and_then(|b| b.get(text).copied())
+        })
+    }
 }
