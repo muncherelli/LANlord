@@ -25,10 +25,11 @@ install -d -o root -g softadmins -m 2775 /var/lib/samba/software
 if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
   # point each well-known group at its unix group, also when an older start mapped it elsewhere
   map_group() {
-    if net groupmap list | grep -q "^$2 "; then
-      net groupmap modify ntgroup="$2" unixgroup="$3" type=d >/dev/null || echo "could not map $2" >&2
+    local rid=$1 ntgroup=$2 unixgroup=$3
+    if net groupmap list | grep -q "^$ntgroup "; then
+      net groupmap modify ntgroup="$ntgroup" unixgroup="$unixgroup" type=d >/dev/null || echo "could not map $ntgroup" >&2
     else
-      net groupmap add ${1:+rid=$1} ntgroup="$2" unixgroup="$3" type=d >/dev/null || echo "could not map $2" >&2
+      net groupmap add ${rid:+rid=$rid} ntgroup="$ntgroup" unixgroup="$unixgroup" type=d >/dev/null || echo "could not map $ntgroup" >&2
     fi
   }
   map_group 512 'Domain Admins' domadmins
