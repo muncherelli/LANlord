@@ -26,7 +26,7 @@ if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
   # point each well-known group at its unix group, also when an older start mapped it elsewhere
   map_group() {
     if net groupmap list | grep -q "^$2 "; then
-      net groupmap modify ntgroup="$2" unixgroup="$3" >/dev/null || echo "could not map $2" >&2
+      net groupmap modify ntgroup="$2" unixgroup="$3" type=d >/dev/null || echo "could not map $2" >&2
     else
       net groupmap add ${1:+rid=$1} ntgroup="$2" unixgroup="$3" type=d >/dev/null || echo "could not map $2" >&2
     fi
