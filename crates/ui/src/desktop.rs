@@ -167,6 +167,7 @@ impl Desktop {
                 None => self.password = Some((request, dialog)),
             }
         }
+        self.settings.dialog(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
                 Some(Answer::Ok(text)) => {
@@ -435,7 +436,7 @@ impl Desktop {
                 Target::Module(_) => Vec2::new(420.0, 400.0),
                 Target::Console => Vec2::new(520.0, 260.0),
                 Target::Hosts => Vec2::new(340.0, 250.0),
-                Target::Settings => Vec2::new(480.0, 420.0),
+                Target::Settings => Vec2::new(520.0, 520.0),
             };
             let shown = windows::show(
                 ctx,
@@ -958,6 +959,43 @@ mod tests {
                 &format!("apply me@gw [{}]", MODULES[0].id)
             ]
         );
+    }
+
+    #[test]
+    fn secrets_are_set_through_the_masked_dialog_and_saved() {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.stored.lock().unwrap() = "nt4-domain:\n  name: RETRO\n".into();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@gw"));
+        frames(&mut desktop, &ctx, 2);
+        assert!(press(&mut desktop, &ctx, "Set..."));
+        assert!(desktop.settings.secret_dialog_open());
+        type_text(&mut desktop, &ctx, "s3cret");
+        assert!(desktop.settings.pending_update("nt4-domain.admin_password"));
+        assert!(press(&mut desktop, &ctx, "Save"));
+        until(&mut desktop, &ctx, |d| !d.settings.dirty());
+        let secrets = fake.secrets.lock().unwrap().clone();
+        assert_eq!(
+            secrets,
+            [(
+                "nt4-domain.admin_password".to_string(),
+                "s3cret".to_string()
+            )]
+        );
+        assert!(!fake.stored.lock().unwrap().contains("s3cret"));
+    }
+
+    #[test]
+    fn a_secret_typed_into_the_plain_text_disables_saving() {
+        let (mut desktop, ctx, fake) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        until(&mut desktop, &ctx, |d| d.settings.belongs_to("me@gw"));
+        desktop.settings.text = "a:\n  password: x\n".into();
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(enabled(&ctx, "Save"), Some(false));
+        assert_eq!(fake.calls(), ["load me@gw"]);
     }
 
     #[test]

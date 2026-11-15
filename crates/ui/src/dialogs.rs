@@ -38,6 +38,7 @@ impl TextDialog {
         }
     }
 
+    #[cfg(test)]
     pub fn prompt(&self) -> &str {
         &self.prompt
     }

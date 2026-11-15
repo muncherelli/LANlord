@@ -47,6 +47,11 @@ impl Settings {
         }
     }
 
+    /// the paths of secret-looking values in these settings.
+    pub fn secret_paths(&self) -> Vec<String> {
+        secret_paths(&Value::Mapping(self.root.clone()))
+    }
+
     pub fn section(&self, key: &str) -> Option<&Value> {
         self.root.get(key)
     }
