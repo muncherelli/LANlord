@@ -129,6 +129,28 @@ mod tests {
     }
 
     #[test]
+    fn the_entrypoint_pins_the_builtin_group_ids() {
+        let (_, entrypoint) = FILES
+            .iter()
+            .find(|(n, _)| *n == "nt4-domain/image/entrypoint.sh")
+            .unwrap();
+        let line = entrypoint
+            .lines()
+            .find_map(|l| l.strip_prefix("for entry in "))
+            .unwrap();
+        let pinned: Vec<(&str, u32)> = line
+            .trim_end_matches("; do")
+            .split_whitespace()
+            .map(|e| {
+                let (name, gid) = e.split_once(':').unwrap();
+                (name, gid.parse().unwrap())
+            })
+            .collect();
+        assert_eq!(pinned, crate::admins::BUILTIN_GROUPS);
+        assert!(pinned.iter().all(|(_, gid)| (9000..=9998).contains(gid)));
+    }
+
+    #[test]
     fn the_old_group_names_are_gone() {
         // the admins group is one group everywhere; only the entrypoint may still read the old file
         let legacy =

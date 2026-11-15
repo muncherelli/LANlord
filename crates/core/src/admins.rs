@@ -10,7 +10,18 @@ use crate::ssh::Session;
 pub(crate) const ADMINS_GROUP: &str = "admins";
 
 /// its gid, the same on the gateway and inside the samba container so file ownership matches.
-pub(crate) const ADMINS_GID: u32 = 9998;
+pub const ADMINS_GID: u32 = 9998;
+
+/// the groups lanlord defines itself, with fixed gids in 9000-9998 (the `lanlord` service account
+/// is 9999, and people get ids from 10000 up). the samba entrypoint pins the same list; a test
+/// keeps the two in step.
+pub const BUILTIN_GROUPS: &[(&str, u32)] = &[
+    (ADMINS_GROUP, ADMINS_GID),
+    ("domusers", 9997),
+    ("domguests", 9996),
+    ("machines", 9995),
+    ("softadmins", 9994),
+];
 
 pub enum Action {
     Add(String),
