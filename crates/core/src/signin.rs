@@ -59,7 +59,7 @@ impl fmt::Display for SigninError {
                  Add your key to the agent or ask an administrator to authorise it.",
                 methods.join(", ")
             ),
-            Self::WrongPassword => write!(f, "The user name or password is incorrect."),
+            Self::WrongPassword => write!(f, "The username or password is incorrect."),
             Self::HostKeyUnknown => write!(f, "The server's identity is not known yet."),
             Self::HostKeyChanged => write!(
                 f,
@@ -253,9 +253,7 @@ fn check_target(target: &str) -> Result<(), SigninError> {
     Session::new(target).map_err(|err| SigninError::Other(err.to_string()))?;
     match target.split_once('@') {
         Some((user, host)) if !user.is_empty() && !host.is_empty() => Ok(()),
-        _ => Err(SigninError::Other(
-            "type a user name and a host name".into(),
-        )),
+        _ => Err(SigninError::Other("type a username and a hostname".into())),
     }
 }
 
@@ -324,7 +322,7 @@ fn classify(stderr: &str, used_password: bool) -> SigninError {
         || has("Name or service not known")
         || has("nodename nor servname")
     {
-        SigninError::Unreachable("That host name could not be found.".into())
+        SigninError::Unreachable("That hostname could not be found.".into())
     } else if has("timed out") {
         SigninError::Timeout
     } else if has("Connection refused") {

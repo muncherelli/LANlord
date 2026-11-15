@@ -161,7 +161,7 @@ fn the_form_is_checked_before_anything_is_sent() {
     assert!(press(&mut desktop, &ctx, "Create"));
     assert_eq!(
         desktop.admin_setup.as_ref().unwrap().status(),
-        "Type a user name for the new administrator."
+        "Type a username for the new administrator."
     );
     fill_admin(&mut desktop, "alice", "", "");
     assert!(press(&mut desktop, &ctx, "Create"));

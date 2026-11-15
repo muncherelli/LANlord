@@ -249,11 +249,11 @@ impl LoginBox {
         if user.is_empty() {
             return match host.split_once('@') {
                 Some((u, h)) if !u.is_empty() && !h.is_empty() => Ok(host.to_string()),
-                _ => Err("Type a user name.".into()),
+                _ => Err("Type a username.".into()),
             };
         }
         if host.is_empty() {
-            return Err("Type a host name.".into());
+            return Err("Type a hostname.".into());
         }
         Ok(format!("{user}@{host}"))
     }
@@ -470,7 +470,7 @@ impl LoginBox {
     fn name_rows(&mut self, ui: &mut egui::Ui, first: bool) -> bool {
         let password_stage = self.stage == Stage::Password;
         let mut enter = false;
-        controls::row(ui, "User name:", |ui| {
+        controls::row(ui, "Username:", |ui| {
             let response = controls::edit(ui, &mut self.user, 240.0);
             if first && !password_stage && self.user.is_empty() {
                 response.request_focus();
@@ -478,7 +478,7 @@ impl LoginBox {
             enter |= pressed_enter(ui, &response);
         });
         ui.add_space(4.0);
-        controls::row(ui, "Host name:", |ui| {
+        controls::row(ui, "Hostname:", |ui| {
             let response = controls::edit(ui, &mut self.host, 240.0);
             if first && !password_stage && !self.user.is_empty() {
                 response.request_focus();
@@ -568,7 +568,7 @@ fn intro(ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.vertical(|ui| {
             ui.set_width(ui.available_width());
-            ui.label("Type the name you use on the gateway and its host name or address.");
+            ui.label("Type the name you use on the gateway and its hostname or address.");
         });
     });
     ui.add_space(8.0);
@@ -759,10 +759,10 @@ mod tests {
         let mut rig = rig(None);
         rig.frames(2);
         assert!(rig.press("OK"));
-        assert_eq!(rig.login.status(), "Type a user name.");
+        assert_eq!(rig.login.status(), "Type a username.");
         rig.fill("alice", "");
         assert!(rig.press("OK"));
-        assert_eq!(rig.login.status(), "Type a host name.");
+        assert_eq!(rig.login.status(), "Type a hostname.");
         assert!(rig.auth.calls().is_empty());
         rig.fill("", "bob@gw");
         assert_eq!(rig.login.target().unwrap(), "bob@gw");
@@ -866,7 +866,7 @@ mod tests {
             (SigninError::HostKeyChanged, "changed"),
             (SigninError::AgentLocked, "agent"),
             (
-                SigninError::Unreachable("That host name could not be found.".into()),
+                SigninError::Unreachable("That hostname could not be found.".into()),
                 "found",
             ),
         ] {

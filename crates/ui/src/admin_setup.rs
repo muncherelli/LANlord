@@ -111,7 +111,7 @@ impl AdminSetup {
         }
         let name = self.name.trim().to_string();
         if name.is_empty() {
-            self.say("Type a user name for the new administrator.", true);
+            self.say("Type a username for the new administrator.", true);
             return;
         }
         if self.password.is_empty() {
@@ -223,7 +223,7 @@ impl AdminSetup {
         });
         ui.add_space(8.0);
         let first = !self.focus;
-        controls::row(ui, "User name:", |ui| {
+        controls::row(ui, "Username:", |ui| {
             let response = controls::edit(ui, &mut self.name, 260.0);
             if first {
                 response.request_focus();
