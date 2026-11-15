@@ -2,6 +2,7 @@ use std::process::Command as Local;
 
 use anyhow::{bail, Result};
 
+use crate::admins::ADMINS_GROUP;
 use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
@@ -39,8 +40,23 @@ pub struct Options {
 /// the unix account that owns /opt/lanlord and runs ansible on the gateway.
 const SERVICE_ID: u32 = 9999;
 
+/// the gid of `lanlord-admins`, the people allowed to administer lanlord.
+const ADMINS_ID: u32 = 9998;
+
+/// shell that refuses to continue when `id` belongs to an account other than `name`.
+fn id_taken_check(kind: &str, id_name: &str, id: u32, name: &str) -> String {
+    let db = if kind == "user" { "passwd" } else { kind };
+    format!(
+        r#"owner=$(getent {db} {id} | cut -d: -f1 || true)
+if [ -n "$owner" ] && [ "$owner" != {name} ]; then
+  echo "{id_name} {id} is already used by {kind} $owner" >&2; exit 1
+fi
+"#
+    )
+}
+
 /// a unix account name safe to put in a sudoers file and a shell script.
-fn valid_user(name: &str) -> bool {
+pub(crate) fn valid_user(name: &str) -> bool {
     let mut chars = name.chars();
     chars
         .next()
@@ -54,6 +70,18 @@ pub fn script(opts: &Options, admin: &str) -> Result<String> {
         bail!("unexpected management user name: {admin:?}");
     }
     let id = SERVICE_ID;
+    let admins = ADMINS_GROUP;
+    let admins_id = ADMINS_ID;
+    let id_checks = format!(
+        r#"{}{}{}gid=$(getent group {admins} | cut -d: -f3 || true)
+if [ -n "$gid" ] && [ "$gid" != {admins_id} ]; then
+  echo "group {admins} already exists with gid $gid" >&2; exit 1
+fi
+"#,
+        id_taken_check("group", "gid", id, "lanlord"),
+        id_taken_check("user", "uid", id, "lanlord"),
+        id_taken_check("group", "gid", admins_id, admins),
+    );
     let mut s = format!(
         r#"set -eu
 . /etc/os-release
@@ -63,16 +91,8 @@ case " ${{ID:-}} ${{ID_LIKE:-}} " in
   *) echo "unsupported distro: ${{ID:-unknown}}" >&2; exit 1 ;;
 esac
 
-# refuse to continue if {id} belongs to someone else
-owner=$(getent group {id} | cut -d: -f1 || true)
-if [ -n "$owner" ] && [ "$owner" != lanlord ]; then
-  echo "gid {id} is already used by group $owner" >&2; exit 1
-fi
-owner=$(getent passwd {id} | cut -d: -f1 || true)
-if [ -n "$owner" ] && [ "$owner" != lanlord ]; then
-  echo "uid {id} is already used by user $owner" >&2; exit 1
-fi
-
+# refuse to continue if {id} or {admins_id} belong to someone else
+{id_checks}
 if [ "$pm" = pacman ]; then
   pacman -S --needed --noconfirm python python-pip sudo
 else
@@ -85,7 +105,11 @@ getent group lanlord >/dev/null || groupadd --gid {id} lanlord
 getent passwd lanlord >/dev/null || useradd --uid {id} --gid {id} \
   --home-dir /opt/lanlord --no-create-home \
   --shell "$(command -v nologin || echo /usr/sbin/nologin)" lanlord
-install -d -o lanlord -g lanlord -m 0750 /opt/lanlord /opt/lanlord/config
+getent group {admins} >/dev/null || groupadd --gid {admins_id} {admins}
+usermod -aG {admins} {admin}
+# root owns /opt/lanlord so lanlord cannot swap out the venv; it owns only what it writes
+install -d -o root -g lanlord -m 0750 /opt/lanlord
+install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansible
 
 # lanlord runs ansible, which needs root; it has no password and no login
 tmp=$(mktemp)
@@ -110,9 +134,11 @@ rm -f "$tmp"
         s.push_str(
             r#"
 if [ ! -x /opt/lanlord/venv/bin/ansible-playbook ]; then
-  sudo -u lanlord python3 -m venv /opt/lanlord/venv
-  sudo -u lanlord /opt/lanlord/venv/bin/pip install --quiet --disable-pip-version-check ansible-core
+  python3 -m venv /opt/lanlord/venv
+  /opt/lanlord/venv/bin/pip install --quiet --disable-pip-version-check ansible-core
 fi
+# lanlord runs this python as root through sudo, so lanlord must not be able to write it
+chown -R root:root /opt/lanlord/venv
 "#,
         );
     }
@@ -235,10 +261,28 @@ mod tests {
     }
 
     #[test]
+    fn creates_the_admins_group_and_joins_the_ssh_user() {
+        let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
+        assert!(s.contains("groupadd --gid 9998 lanlord-admins"));
+        assert!(s.contains("usermod -aG lanlord-admins admin"));
+        assert!(s.contains("gid 9998 is already used by group"));
+        assert!(s.contains("group lanlord-admins already exists with gid"));
+    }
+
+    #[test]
+    fn the_venv_is_owned_by_root() {
+        let s = script(&opts(AnsibleMode::Remote, false), "admin").unwrap();
+        assert!(s.contains("chown -R root:root /opt/lanlord/venv"));
+        assert!(!s.contains("sudo -u lanlord"));
+        assert!(s.contains("-m 0750 /opt/lanlord/config /opt/lanlord/.ansible"));
+    }
+
+    #[test]
     fn passwordless_sudo_is_opt_in() {
         let off = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
         let on = script(&opts(AnsibleMode::Local, true), "admin").unwrap();
-        assert!(!off.contains("lanlord-admin"));
+        assert!(!off.contains("sudoers.d/lanlord-admin"));
+        assert!(on.contains("sudoers.d/lanlord-admin"));
         assert!(on.contains("admin ALL=(ALL) NOPASSWD: ALL"));
     }
 

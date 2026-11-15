@@ -24,6 +24,7 @@ const FILES: &[(&str, &str)] = &[
     playbook!("dns/dnsmasq.conf.j2"),
     playbook!("dns/image/Dockerfile"),
     playbook!("web-proxy/Caddyfile.j2"),
+    playbook!("status/lanlord-status.sh"),
     playbook!("nt4-domain/smb.conf.j2"),
     playbook!("nt4-domain/image/Dockerfile"),
     playbook!("nt4-domain/image/entrypoint.sh"),
@@ -126,5 +127,73 @@ mod tests {
             .decode(joined)
             .unwrap();
         assert_eq!(decoded, archive().unwrap());
+    }
+
+    #[cfg(unix)]
+    fn run_status(tag: &str, with_inputs: bool) -> String {
+        let dir = std::env::temp_dir().join(format!("lanlord-status-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name);
+        if with_inputs {
+            std::fs::write(
+                path("status.conf"),
+                "interface=eth1\nip=172.16.120.1\nzone=retronet\nsite=nostalgia.lan 172.16.120.20:80\n",
+            )
+            .unwrap();
+            std::fs::write(
+                path("leases"),
+                "1999999999 aa:bb:cc:dd:ee:01 172.16.120.20 <script>alert(1)</script> *\n0 aa:bb:cc:dd:ee:02 172.16.120.9 w98 *\n",
+            )
+            .unwrap();
+            std::fs::write(path("applied"), "2026-01-01 10:00:00\n").unwrap();
+            std::fs::write(path("version"), "1.2.3\n").unwrap();
+            std::fs::write(
+                path("smb.conf"),
+                "[global]\n   workgroup = RETRO\n   server role = classic primary domain controller\n",
+            )
+            .unwrap();
+        }
+        let status = std::process::Command::new("bash")
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../ansible/playbooks/status/lanlord-status.sh"),
+            )
+            .env("LANLORD_STATUS_CONF", path("status.conf"))
+            .env("LANLORD_STATUS_WWW", path("www"))
+            .env("LANLORD_STATE_DIR", &dir)
+            .env("LANLORD_LEASES", path("leases"))
+            .env("LANLORD_SMB_CONF", path("smb.conf"))
+            .env("LANLORD_DOCKER", "lanlord-no-such-docker")
+            .env("LANLORD_IP", "lanlord-no-such-ip")
+            .env("LANLORD_SYSTEMCTL", "lanlord-no-such-systemctl")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let page = std::fs::read_to_string(path("www/index.html")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        page
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_page_escapes_lease_hostnames() {
+        let page = run_status("full", true);
+        assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!page.contains("<script>"));
+        assert!(page.contains("172.16.120.9"));
+        assert!(page.contains("http://nostalgia.lan/"));
+        assert!(page.contains("RETRO"));
+        assert!(page.contains("1.2.3"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn status_page_renders_without_inputs() {
+        let page = run_status("empty", false);
+        assert!(page.contains("<title>LANlord"));
+        assert!(page.contains("No machines were found"));
+        assert!(page.contains("No NT4 domain is configured"));
+        assert!(page.contains("No sites are hosted"));
     }
 }

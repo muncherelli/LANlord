@@ -19,11 +19,12 @@
          | default((docker | default({})).host_interface
          | default(ansible_facts['default_ipv4']['interface'] | default(''))) }}
 
+# loading a tunnel module (gre, sit, ipip...) makes the kernel add fallback devices like gre0 and tunl0
 - name: list the interfaces that could be the internal network
   ansible.builtin.set_fact:
     internal_candidates: >-
       {{ ansible_facts['interfaces']
-         | reject('match', '^(lo|docker|br-|veth|virbr|tun|tap|wg|tailscale)')
+         | reject('match', '^(lo|docker|br-|veth|virbr|tun|tap|wg|tailscale|gre|erspan|sit|ip6|tunl|ifb|dummy|teql|vti|ip_vti)')
          | reject('equalto', host_interface) | list }}
 
 - name: work out the internal network interface

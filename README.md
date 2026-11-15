@@ -20,7 +20,7 @@ LANlord is early software. The pieces below work today, but expect rough edges.
 | Gateway | A baseline: the apply-time record and the message of the day. |
 | Docker | Installs Docker and drops NetBIOS and SMB on the host network. Works on LXC containers, VMs and bare metal. |
 | NT4 Domain | Samba in a container, as an NT4-style domain controller or a plain workgroup server, bound to the internal network. Includes login management. |
-| Web Proxy | Caddy in a container, proxying sites on the internal network, with plain HTTP or Caddy's own certificate authority. |
+| Web Proxy | Caddy in a container, proxying sites on the internal network, with plain HTTP or Caddy's own certificate authority. It also serves a plain HTML retronet status page (machines, services, sites) at `http://lanlord.retronet/` and on the internal address, readable by old browsers. |
 | DNS | dnsmasq in a container: local-only DNS for the retronet and optional DHCP without a gateway option, for Windows 98, 2000, NT4 and old Linux clients. |
 
 Planned: Let's Encrypt certificates through Cloudflare, a Cloudflare tunnel, running commands on NT4 servers through the Resource Kit Remote Command Service, links for remote retro machines, and the web interface with PAM login.
@@ -61,6 +61,8 @@ Other distributions and architectures will follow. Arch is a rolling release, so
 
 - Your settings are encrypted on your machine with [age](https://age-encryption.org). The gateway stores only ciphertext. During an apply, the plaintext exists on the gateway only briefly, in a root-only directory on a memory-backed filesystem.
 - The `lanlord` account on the gateway can run commands as root, because Ansible needs that. Treat access to it like root access.
+- Membership of the `lanlord-admins` group on the gateway is a root-level grant, because LANlord applies configuration as root. The group exists to say who may administer LANlord, and `lanlord bootstrap` adds the ssh user to it. Manage it with `lanlord admin <host> list`, `add <user>` and `remove <user>`. The planned next step is a root-owned socket daemon that accepts only members of this group, so that administering LANlord no longer needs a general sudo rule.
+- The Python virtual environment in `/opt/lanlord/venv` is owned by root, not by `lanlord`. Ansible runs from it as root, so a writable copy would let the `lanlord` account run its own code as root.
 - The Samba container speaks SMB1 and NTLMv1 so that old Windows can join. That is why it listens only on the internal network, and why a firewall rule drops those protocols on the host network.
 
 ## Development
