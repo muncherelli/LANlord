@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="LANlord" width="320"></p>
+
 # LANlord
 
 [![Release](https://img.shields.io/github/v/release/muncherelli/LANlord?label=release)](https://github.com/muncherelli/LANlord/releases)

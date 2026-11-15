@@ -24,6 +24,10 @@ pub fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("LANlord")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+                    .map_err(|e| anyhow!("{e}"))?,
+            )
             .with_inner_size([960.0, 640.0])
             .with_min_inner_size([640.0, 420.0]),
         ..Default::default()
