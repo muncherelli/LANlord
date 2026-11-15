@@ -3,6 +3,7 @@
 //! background through `Services`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{
     self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
@@ -22,6 +23,7 @@ use crate::dns_panel::DnsPanel;
 use crate::form::Form;
 use crate::hostlist::HostList;
 use crate::icons;
+use crate::login::{Auth, LoginBox, Message, Outcome, SignedIn};
 use crate::nt4_window::Nt4Window;
 use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
@@ -84,11 +86,23 @@ pub struct Desktop {
     commands: CommandPanel,
     /// the box asking before a reboot or power off, or showing the version.
     confirm: Option<(Confirm, Form)>,
-    /// the list of servers beside the menu is open.
-    submenu: bool,
     /// a task is waiting for this password.
     password: Option<(PasswordRequest, TextDialog)>,
     add_host: Option<TextDialog>,
+    /// how to sign in; `None` when lanlord runs on the gateway itself (or in a test).
+    auth: Option<Arc<dyn Auth>>,
+    /// the logon box, shown instead of the desktop until someone is signed in.
+    login: Option<LoginBox>,
+    signed_in: Option<SignedIn>,
+    /// the notice after logging on as root, and the box that follows its first button.
+    root_notice: Option<(RootNotice, Message)>,
+}
+
+/// where the notice about being logged on as root stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootNotice {
+    Ask,
+    NotWired,
 }
 
 impl Desktop {
@@ -110,10 +124,27 @@ impl Desktop {
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             confirm: None,
-            submenu: false,
             password: None,
             add_host: None,
+            auth: None,
+            login: None,
+            signed_in: None,
+            root_notice: None,
         }
+    }
+
+    /// start at the logon box. lanlord on the gateway itself has one server and no logon.
+    pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
+        if self.services.is_local() {
+            return;
+        }
+        let last = self.hosts.selected().map(String::from);
+        self.login = Some(LoginBox::new(
+            auth.clone(),
+            &self.services.ctx,
+            last.as_deref(),
+        ));
+        self.auth = Some(auth);
     }
 }
 
@@ -176,6 +207,10 @@ impl Desktop {
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
+        if self.login.is_some() {
+            self.show_login(ui, &ctx);
+            return;
+        }
         egui::Panel::bottom("taskbar")
             .exact_size(TASKBAR)
             .frame(
@@ -199,6 +234,56 @@ impl Desktop {
             self.start_menu(&ctx);
         }
         self.dialogs(&ctx);
+    }
+
+    /// the logon box on the bare desktop colour: no icons or taskbar until someone is signed in.
+    fn show_login(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(TEAL))
+            .show(ui, |_| {});
+        let known = self.hosts.hosts().to_vec();
+        let outcome = self
+            .login
+            .as_mut()
+            .and_then(|login| login.show(ctx, &known));
+        match outcome {
+            Some(Outcome::SignedIn(signed_in)) => self.finish_login(signed_in),
+            Some(Outcome::ShutDown) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {}
+        }
+    }
+
+    /// someone signed in: the server joins the list and every action targets it.
+    fn finish_login(&mut self, signed_in: SignedIn) {
+        self.login = None;
+        if let Err(error) = self.hosts.add(&signed_in.target) {
+            emit(Kind::Err, error);
+        }
+        self.windows.clear();
+        self.active = None;
+        self.selected = None;
+        self.start_open = false;
+        if signed_in.identity.is_root() {
+            self.root_notice = Some((RootNotice::Ask, root_notice_box()));
+        }
+        self.signed_in = Some(signed_in);
+    }
+
+    /// back to the logon box, closing the connection that was kept open for this server.
+    fn log_off(&mut self) {
+        let Some(auth) = self.auth.clone() else {
+            return;
+        };
+        let last = self.signed_in.take().map(|s| s.target);
+        if let Some(target) = last.clone() {
+            let closer = auth.clone();
+            std::thread::spawn(move || closer.sign_out(&target));
+        }
+        self.windows.clear();
+        self.active = None;
+        self.start_open = false;
+        self.root_notice = None;
+        self.login = Some(LoginBox::new(auth, &self.services.ctx, last.as_deref()));
     }
 
     /// the modal boxes: a task's password prompt and the add-host box.
@@ -225,6 +310,7 @@ impl Desktop {
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.confirmation(ctx);
+        self.root_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
                 Some(Answer::Ok(text)) => {
@@ -236,6 +322,38 @@ impl Desktop {
                 Some(Answer::Cancel) => {}
                 None => self.add_host = Some(dialog),
             }
+        }
+    }
+}
+
+fn root_notice_box() -> Message {
+    Message::new(
+        "root-notice",
+        "Logged On As Root",
+        "You are logged on as root. That is fine, but we recommend creating a privileged \
+         administrator account and using it from now on.",
+        &["Create account...", "Not now"],
+    )
+}
+
+impl Desktop {
+    /// the notice after logging on as root. creating the account is not wired to anything yet:
+    /// the one call site to fill in is the `RootNotice::Ask` arm below.
+    fn root_notice(&mut self, ctx: &egui::Context) {
+        let Some((stage, message)) = self.root_notice.take() else {
+            return;
+        };
+        match (stage, message.show(ctx)) {
+            (_, None) => self.root_notice = Some((stage, message)),
+            (RootNotice::Ask, Some(0)) => {
+                let text = "Creating the account from here is not available yet. \
+                            Until then, create one on the gateway and sign in with it.";
+                self.root_notice = Some((
+                    RootNotice::NotWired,
+                    Message::new("root-not-wired", "Create Account", text, &["OK"]),
+                ));
+            }
+            _ => {}
         }
     }
 }
@@ -306,7 +424,6 @@ impl Desktop {
             let start = self.menu_button(ui);
             if start.clicked() {
                 self.start_open = !self.start_open;
-                self.submenu = false;
             }
             self.server_chip(ui);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), Sense::hover());
@@ -591,6 +708,8 @@ impl Desktop {
 
 #[cfg(test)]
 mod harness;
+#[cfg(test)]
+mod login_tests;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]

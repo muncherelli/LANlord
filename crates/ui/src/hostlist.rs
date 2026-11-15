@@ -49,16 +49,16 @@ impl HostList {
             return Err("type a host like user@gateway".into());
         }
         Session::new(host).map_err(|err| err.to_string())?;
-        match &self.path {
-            Some(path) => {
-                hosts::add(path, host).map_err(|err| format!("could not save {host}: {err}"))?;
-                self.hosts = hosts::load(path);
-            }
-            None if !self.hosts.iter().any(|h| h == host) => self.hosts.push(host.to_string()),
-            None => {}
+        let saved = match &self.path {
+            Some(path) => hosts::add(path, host).map(|()| self.hosts = hosts::load(path)),
+            None => Ok(()),
+        };
+        // a host that could not be saved is still used for this session
+        if (self.path.is_none() || saved.is_err()) && !self.hosts.iter().any(|h| h == host) {
+            self.hosts.push(host.to_string());
         }
         self.selected = self.hosts.iter().position(|h| h == host).unwrap_or(0);
-        Ok(())
+        saved.map_err(|err| format!("could not save {host}: {err}"))
     }
 
     /// drop the selected host from the list and the file.
@@ -109,6 +109,19 @@ mod tests {
         assert!(list.add("two words").is_err());
         assert_eq!(HostList::new(Some(path.clone())).hosts().len(), 2);
         cleanup(&path);
+    }
+
+    #[test]
+    fn a_host_that_cannot_be_saved_is_still_used() {
+        // a file where the config directory should be makes saving fail
+        let path = temp("unsaved");
+        std::fs::create_dir_all(path.parent().unwrap().parent().unwrap()).unwrap();
+        std::fs::write(path.parent().unwrap(), "not a directory").unwrap();
+        let mut list = HostList::new(Some(path.clone()));
+        let err = list.add("me@one").unwrap_err();
+        assert!(err.contains("could not save"), "{err}");
+        assert_eq!(list.selected(), Some("me@one"));
+        let _ = std::fs::remove_file(path.parent().unwrap());
     }
 
     #[test]

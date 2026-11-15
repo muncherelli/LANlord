@@ -302,6 +302,10 @@ fn keygen() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    // ssh starts this program to ask for a password during a gui logon
+    if let Some(code) = lanlord_core::signin::askpass_main() {
+        std::process::exit(code);
+    }
     let cli = Cli::parse();
     lanlord_core::log::set_verbose(cli.verbose);
     match cli.command {
