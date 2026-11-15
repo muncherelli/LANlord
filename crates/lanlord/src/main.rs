@@ -46,6 +46,16 @@ enum UsersCommand {
 }
 
 #[derive(Subcommand)]
+enum AdminCommand {
+    /// list the members of lanlord-admins on the gateway
+    List,
+    /// add an existing gateway user to lanlord-admins
+    Add { user: String },
+    /// remove a user from lanlord-admins; the last member stays
+    Remove { user: String },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// open the native window
     Gui,
@@ -83,6 +93,12 @@ enum Command {
         host: String,
         #[command(subcommand)]
         action: UsersCommand,
+    },
+    /// manage who may administer lanlord on a gateway (the lanlord-admins group)
+    Admin {
+        host: String,
+        #[command(subcommand)]
+        action: AdminCommand,
     },
     /// create the key that encrypts your settings
     Keygen,
@@ -132,6 +148,21 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
     lanlord_core::users::change(host, &identity, &change, &mut ask).map(|_| ())
 }
 
+fn admin(host: &str, action: AdminCommand) -> Result<()> {
+    use lanlord_core::admins::{change, list, Action};
+    let action = match action {
+        AdminCommand::List => {
+            for member in list(host, &mut ask)? {
+                println!("{member}");
+            }
+            return Ok(());
+        }
+        AdminCommand::Add { user } => Action::Add(user),
+        AdminCommand::Remove { user } => Action::Remove(user),
+    };
+    change(host, &action, &mut ask)
+}
+
 fn keygen() -> Result<()> {
     let path = identity_path()?;
     let recipient = crypto::generate(&path)?;
@@ -179,6 +210,7 @@ fn main() -> Result<()> {
             lanlord_core::apply::apply(&host, identity.as_ref(), &modules, &mut ask)
         }
         Some(Command::Users { host, action }) => users(&host, action),
+        Some(Command::Admin { host, action }) => admin(&host, action),
         Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {
             let identity = crypto::load(&identity_path()?)?;
