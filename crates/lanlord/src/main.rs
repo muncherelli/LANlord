@@ -54,6 +54,12 @@ enum UsersCommand {
     Remove { name: String },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Switch {
+    On,
+    Off,
+}
+
 #[derive(Subcommand)]
 enum MachinesCommand {
     /// list the machine accounts in your settings
@@ -118,6 +124,12 @@ enum Command {
         host: String,
         #[command(subcommand)]
         action: MachinesCommand,
+    },
+    /// turn the nt4-domain software share (S: at logon) on or off, and apply it
+    Software {
+        host: String,
+        #[arg(value_enum)]
+        state: Switch,
     },
     /// manage who may administer lanlord on a gateway (the lanlord-admins group)
     Admin {
@@ -267,6 +279,12 @@ fn main() -> Result<()> {
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
+        Some(Command::Software { host, state }) => {
+            let identity = crypto::load(&identity_path()?)?;
+            let session = lanlord_core::ssh::Session::new(&host)?;
+            let on = matches!(state, Switch::On);
+            lanlord_core::nt4::set_software(&session, &host, &identity, on, &mut ask)
+        }
         Some(Command::Admin { host, action }) => admin(&host, action),
         Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {

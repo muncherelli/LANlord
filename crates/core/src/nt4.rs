@@ -202,12 +202,42 @@ pub fn change_machine(
     change: &MachineChange,
     ask_password: AskPassword,
 ) -> Result<()> {
+    change_section(session, host, identity, ask_password, |plain| {
+        edit_machines(plain, change)
+    })
+}
+
+/// turn the software share on or off in your settings on `host` and apply the module.
+pub fn set_software(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    on: bool,
+    ask_password: AskPassword,
+) -> Result<()> {
+    change_section(session, host, identity, ask_password, |plain| {
+        let mut settings = Settings::parse(plain)?;
+        let mut nt4 = Nt4Settings::from_settings(&settings)?;
+        nt4.software = on;
+        nt4.apply_to(&mut settings);
+        Ok(settings.text())
+    })
+}
+
+/// edit the plain settings with `edit`, store them and apply the nt4-domain module.
+fn change_section(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    ask_password: AskPassword,
+    edit: impl FnOnce(&str) -> Result<String>,
+) -> Result<()> {
     let mut ask = cached(ask_password);
     let stored = settings::load_document_with(session, identity, &mut ask)?;
     if stored == settings::Document::default() {
         bail!("no settings on {host}; run lanlord config push first");
     }
-    let edited = edit_machines(&stored.plain, change)?;
+    let edited = edit(&stored.plain)?;
     settings::save_document_with(session, host, identity, &edited, &[], &mut ask)?;
     apply::apply_with(
         session,
@@ -329,6 +359,8 @@ mod tests {
             let add = MachineChange::Add("nt4test".into());
             change_machine(&gw.session, "gw", &id, &add, &mut no_password).unwrap();
             assert!(gw.plain().unwrap().contains("nt4test"));
+            set_software(&gw.session, "gw", &id, true, &mut no_password).unwrap();
+            assert!(gw.plain().unwrap().contains("software: true"));
         }
 
         #[test]
