@@ -15,6 +15,15 @@
 	reverse_proxy {{ site.upstream }}
 }
 {% endfor %}
+{% if status_enabled %}
+
+# the retronet status page, on the internal address only and always plain http
+http://{{ status_host }}, http://{{ internal_ip }} {
+	bind {{ internal_ip }}
+	root * /srv/status
+	file_server
+}
+{% endif %}
 {% if proxy_tls == 'off' %}
 
 # anything that is not one of the sites above
