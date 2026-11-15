@@ -356,8 +356,8 @@ mod tests {
         app.window = MODULES.iter().find(|m| m.id == "remote-commands");
         app.mode = Mode::Window;
         let text = render(&app);
-        assert!(text.contains("planned - not built yet"));
-        assert!(text.contains("Run commands on NT4 servers"));
+        assert!(text.contains("Status: available"));
+        assert!(text.contains("Run commands on the gateway"));
         assert!(text.contains("remote-commands:"));
         assert!(text.contains("esc close"));
         app.window = MODULES.iter().find(|m| m.id == "nt4-domain");
@@ -411,9 +411,11 @@ mod tests {
         app.users = UsersState::Loaded(vec![
             User {
                 name: "james".into(),
+                admin: false,
             },
             User {
                 name: "olive".into(),
+                admin: false,
             },
         ]);
         let text = render(&app);

@@ -1,19 +1,23 @@
 //! the nt4-domain module's logins, kept in the `users` list of your settings.
-//! changing one pulls your settings, edits them here, pushes them back and
-//! applies the module.
+//! names, admin flags and removals live in the plain settings; passwords are
+//! secrets and live in the encrypted ones. changing a login pulls both, edits
+//! them here, pushes them back and applies the module.
 
 use anyhow::{anyhow, bail, Result};
 use serde_yaml_ng::{Mapping, Value};
 
+use crate::apply;
 use crate::bootstrap::AskPassword;
+use crate::settings::{self, Document};
 use crate::ssh::Session;
-use crate::{apply, config};
 
 const MODULE: &str = "nt4-domain";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct User {
     pub name: String,
+    /// a member of Domain Admins.
+    pub admin: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,8 +81,12 @@ pub fn list(settings: &[u8]) -> Result<Vec<User>> {
     Ok(users(module)?
         .iter()
         .filter(|u| !is_absent(u))
-        .filter_map(name_of)
-        .map(|name| User { name: name.into() })
+        .filter_map(|u| {
+            Some(User {
+                name: name_of(u)?.into(),
+                admin: u.get("admin").and_then(Value::as_bool) == Some(true),
+            })
+        })
         .collect())
 }
 
@@ -140,8 +148,67 @@ pub fn edit(settings: &[u8], change: &Change) -> Result<Vec<u8>> {
     Ok(serde_yaml_ng::to_string(&Value::Mapping(root))?.into_bytes())
 }
 
+/// where a user's password lives among the secrets.
+pub fn secret_path(name: &str) -> String {
+    format!("{MODULE}.users[{name}].password")
+}
+
+/// the result of `edit_split`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Edited {
+    /// the new plain settings: no passwords in them.
+    pub plain: String,
+    /// secrets to set, as (path, password).
+    pub secrets: Vec<(String, String)>,
+    /// paths of secrets to forget, for users that were removed.
+    pub removed: Vec<String>,
+}
+
+fn strip_password(plain: &[u8], name: &str) -> Result<Vec<u8>> {
+    let mut root = parse(plain)?;
+    for entry in users(module(&mut root)?)? {
+        if name_of(entry) == Some(name) {
+            if let Some(map) = entry.as_mapping_mut() {
+                map.remove("password");
+            }
+        }
+    }
+    Ok(serde_yaml_ng::to_string(&Value::Mapping(root))?.into_bytes())
+}
+
+/// apply `changes` to the plain settings: what stays plain comes back as
+/// text, the passwords come back as secrets to store.
+pub fn edit_split(plain: &[u8], changes: &[Change]) -> Result<Edited> {
+    let mut text = plain.to_vec();
+    let mut secrets: Vec<(String, String)> = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    for change in changes {
+        text = edit(&text, change)?;
+        match change {
+            Change::SetPassword { name, password } => {
+                text = strip_password(&text, name)?;
+                let path = secret_path(name);
+                removed.retain(|p| *p != path);
+                secrets.retain(|(p, _)| *p != path);
+                secrets.push((path, password.clone()));
+            }
+            Change::Remove { name } => {
+                let path = secret_path(name);
+                secrets.retain(|(p, _)| *p != path);
+                removed.push(path);
+            }
+            Change::SetAdmin { .. } => {}
+        }
+    }
+    Ok(Edited {
+        plain: String::from_utf8(text)?,
+        secrets,
+        removed,
+    })
+}
+
 /// remembers the first password it is given, so one change asks once.
-pub(crate) fn cached<'a>(ask: AskPassword<'a>) -> impl FnMut(&str) -> Result<String> + 'a {
+pub fn cached<'a>(ask: AskPassword<'a>) -> impl FnMut(&str) -> Result<String> + 'a {
     let mut saved: Option<String> = None;
     move |what| {
         if saved.is_none() {
@@ -151,14 +218,17 @@ pub(crate) fn cached<'a>(ask: AskPassword<'a>) -> impl FnMut(&str) -> Result<Str
     }
 }
 
-fn pull(
+fn document(
     session: &Session,
     host: &str,
     identity: &age::x25519::Identity,
     ask: AskPassword,
-) -> Result<Vec<u8>> {
-    config::pull_with(session, identity, ask)?
-        .ok_or_else(|| anyhow!("no settings on {host}; run lanlord config push first"))
+) -> Result<Document> {
+    let document = settings::load_document_with(session, identity, ask)?;
+    if document == Document::default() {
+        bail!("no settings on {host}; run lanlord config push first");
+    }
+    Ok(document)
 }
 
 /// the users your settings define on `host`.
@@ -167,7 +237,12 @@ pub fn list_on(
     identity: &age::x25519::Identity,
     ask_password: AskPassword,
 ) -> Result<Vec<User>> {
-    list(&pull(&Session::new(host)?, host, identity, ask_password)?)
+    let session = Session::new(host)?;
+    list(
+        document(&session, host, identity, ask_password)?
+            .plain
+            .as_bytes(),
+    )
 }
 
 /// make the change in your settings on `host`, apply the module and return the users now defined.
@@ -198,11 +273,17 @@ fn change_with(
     ask_password: AskPassword,
 ) -> Result<Vec<User>> {
     let mut ask = cached(ask_password);
-    let mut updated = pull(session, host, identity, &mut ask)?;
-    for change in changes {
-        updated = edit(&updated, change)?;
-    }
-    config::push_with(session, host, identity, &updated, &mut ask)?;
+    let stored = document(session, host, identity, &mut ask)?;
+    let edited = edit_split(stored.plain.as_bytes(), changes)?;
+    settings::save_changes_with(
+        session,
+        host,
+        identity,
+        &edited.plain,
+        &edited.secrets,
+        &edited.removed,
+        &mut ask,
+    )?;
     apply::apply_with(
         session,
         host,
@@ -210,7 +291,7 @@ fn change_with(
         &[MODULE.to_string()],
         &mut ask,
     )?;
-    list(&updated)
+    list(edited.plain.as_bytes())
 }
 
 #[cfg(test)]
@@ -452,116 +533,127 @@ mod tests {
         assert_eq!(names(&out), ["gone"]);
     }
 
+    #[test]
+    fn edit_split_keeps_passwords_out_of_the_plain_text() {
+        let edited = edit_split(
+            SETTINGS.as_bytes(),
+            &[
+                Change::SetPassword {
+                    name: "olive".into(),
+                    password: "pw".into(),
+                },
+                Change::SetAdmin {
+                    name: "olive".into(),
+                    admin: true,
+                },
+                Change::Remove {
+                    name: "james".into(),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(!edited.plain.contains("pw") && !edited.plain.contains("password"));
+        assert!(edited.plain.contains("admin: true"));
+        assert_eq!(
+            edited.secrets,
+            [(
+                "nt4-domain.users[olive].password".to_string(),
+                "pw".to_string()
+            )]
+        );
+        assert_eq!(edited.removed, ["nt4-domain.users[james].password"]);
+        let users = list(edited.plain.as_bytes()).unwrap();
+        assert_eq!(
+            users,
+            [User {
+                name: "olive".into(),
+                admin: true
+            }]
+        );
+    }
+
+    #[test]
+    fn the_last_change_to_a_user_wins() {
+        let set = |name: &str| Change::SetPassword {
+            name: name.into(),
+            password: "new".into(),
+        };
+        let remove = |name: &str| Change::Remove { name: name.into() };
+        let edited = edit_split(SETTINGS.as_bytes(), &[set("james"), remove("james")]).unwrap();
+        assert!(edited.secrets.is_empty() && edited.removed.len() == 1);
+        let edited = edit_split(SETTINGS.as_bytes(), &[remove("james"), set("james")]).unwrap();
+        assert!(edited.removed.is_empty() && edited.secrets.len() == 1);
+        assert!(edit_split(b"docker: {}\n", &[set("james")]).is_err());
+    }
+
     #[cfg(unix)]
     mod gateway {
         use super::*;
-        use crate::crypto;
-        use base64::Engine;
+        use crate::testgw::{identity, no_password, Gateway};
 
-        const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
-
-        fn identity(name: &str) -> age::x25519::Identity {
-            let path = std::env::temp_dir()
-                .join(format!("lanlord-users-{}-{name}", std::process::id()))
-                .join("identity");
-            crypto::generate(&path).unwrap();
-            let identity = crypto::load(&path).unwrap();
-            let _ = std::fs::remove_dir_all(path.parent().unwrap());
-            identity
-        }
-
-        /// a fake gateway that serves `served` as the stored settings and
-        /// records the push and apply scripts it receives.
-        fn gateway(served: &str, dir: &std::path::Path) -> Session {
-            std::fs::create_dir_all(dir).unwrap();
-            std::fs::write(dir.join("served.b64"), served).unwrap();
-            let d = dir.display();
-            Session::fake(&format!(
-                r#"for a; do last=$a; done
-case "$last" in
-  "id -un") echo tester ;;
-  "sudo -n true") exit 0 ;;
-  *)
-    input=$(cat)
-    case "$input" in
-      *"base64 < /opt/lanlord/config/settings.age"*) cat '{d}/served.b64' ;;
-      *"tee /opt/lanlord/config/settings.age"*) printf '%s' "$input" > '{d}/push.rec' ;;
-      *) printf '%s' "$input" > '{d}/apply.rec' ;;
-    esac ;;
-esac"#
-            ))
-        }
-
-        fn no_password(_: &str) -> Result<String> {
-            bail!("no password expected")
-        }
-
-        fn script_payload(script: &str, marker: &str) -> Vec<u8> {
-            let body: String = script
-                .lines()
-                .skip_while(|l| !l.contains(marker))
-                .skip(1)
-                .take_while(|l| *l != "LANLORD_PAYLOAD")
-                .collect();
-            B64.decode(body).unwrap()
-        }
+        const LEGACY: &str = "docker:\n  internal_address: 172.16.120.2/22\nnt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: james\n      password: one\n      admin: true\n";
 
         #[test]
-        fn a_change_pulls_edits_pushes_and_applies_the_module() {
-            let id = identity("change");
-            let sealed = crypto::encrypt(&id, SETTINGS.as_bytes()).unwrap();
-            let dir = std::env::temp_dir().join(format!("lanlord-users-gw-{}", std::process::id()));
-            let session = gateway(&B64.encode(sealed), &dir);
+        fn a_change_stores_names_plain_and_passwords_encrypted() {
+            let (gw, id) = (Gateway::new("users-change"), identity("users-change"));
+            gw.seed_sealed(&id, LEGACY);
             let change = Change::SetPassword {
                 name: "olive".into(),
                 password: "pw".into(),
             };
             let now = change_with(
-                &session,
+                &gw.session,
                 "gw",
                 &id,
                 std::slice::from_ref(&change),
                 &mut no_password,
             )
             .unwrap();
-            assert_eq!(
-                now.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
-                ["james", "olive"]
-            );
+            let names: Vec<_> = now.iter().map(|u| (u.name.as_str(), u.admin)).collect();
+            assert_eq!(names, [("james", true), ("olive", false)]);
 
-            let push = std::fs::read_to_string(dir.join("push.rec")).unwrap();
-            let stored =
-                crypto::decrypt(&id, &script_payload(&push, "<<'LANLORD_PAYLOAD'")).unwrap();
-            assert_eq!(names(&stored), ["james", "olive"]);
-
-            let apply = std::fs::read_to_string(dir.join("apply.rec")).unwrap();
-            assert!(apply.contains("--tags nt4-domain"));
-            assert!(apply.contains("-e @/run/lanlord/settings.yml"));
-            let _ = std::fs::remove_dir_all(dir);
+            let plain = gw.plain().unwrap();
+            assert!(!plain.contains("one") && !plain.contains("pw"), "{plain}");
+            assert!(plain.contains("olive") && plain.contains("admin: true"));
+            let sealed = gw.sealed(&id).unwrap();
+            assert!(sealed.contains("one") && sealed.contains("pw"), "{sealed}");
+            assert!(!sealed.contains("RETRONET"), "{sealed}");
         }
 
         #[test]
-        fn list_on_reads_the_gateways_settings() {
-            let id = identity("list");
-            let sealed = crypto::encrypt(&id, SETTINGS.as_bytes()).unwrap();
-            let dir = std::env::temp_dir().join(format!("lanlord-users-ls-{}", std::process::id()));
-            let session = gateway(&B64.encode(sealed), &dir);
-            let settings = pull(&session, "gw", &id, &mut no_password).unwrap();
-            assert_eq!(names(&settings), ["james"]);
-            let _ = std::fs::remove_dir_all(dir);
+        fn removing_a_user_forgets_the_password_and_admin_changes_touch_only_plain() {
+            let (gw, id) = (Gateway::new("users-remove"), identity("users-remove"));
+            gw.seed_sealed(&id, LEGACY);
+            let admin = Change::SetAdmin {
+                name: "james".into(),
+                admin: false,
+            };
+            change_with(&gw.session, "gw", &id, &[admin], &mut no_password).unwrap();
+            assert!(gw.sealed(&id).unwrap().contains("one"), "kept");
+            let remove = Change::Remove {
+                name: "james".into(),
+            };
+            change_with(&gw.session, "gw", &id, &[remove], &mut no_password).unwrap();
+            assert!(!gw.sealed(&id).unwrap().contains("one"));
+            assert!(gw.plain().unwrap().contains("state: absent"));
+        }
+
+        #[test]
+        fn the_users_come_from_the_plain_settings() {
+            let (gw, id) = (Gateway::new("users-list"), identity("users-list"));
+            gw.seed_sealed(&id, LEGACY);
+            let doc = document(&gw.session, "gw", &id, &mut no_password).unwrap();
+            assert_eq!(names(doc.plain.as_bytes()), ["james"]);
         }
 
         #[test]
         fn changing_users_needs_settings_on_the_gateway() {
-            let id = identity("none");
-            let dir =
-                std::env::temp_dir().join(format!("lanlord-users-none-{}", std::process::id()));
-            let session = gateway("", &dir);
+            let (gw, id) = (Gateway::new("users-none"), identity("users-none"));
             let change = Change::Remove {
                 name: "james".into(),
             };
             let err = change_with(
-                &session,
+                &gw.session,
                 "gw",
                 &id,
                 std::slice::from_ref(&change),
@@ -570,8 +662,7 @@ esac"#
             .unwrap_err()
             .to_string();
             assert!(err.contains("no settings on gw"), "{err}");
-            assert!(!dir.join("push.rec").exists());
-            let _ = std::fs::remove_dir_all(dir);
+            assert!(gw.plain().is_none() && gw.sealed(&id).is_none());
         }
     }
 }

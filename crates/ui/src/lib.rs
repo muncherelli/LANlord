@@ -1,16 +1,26 @@
 //! the native window, drawn with egui so it looks the same on every platform
 //! (and, later, in a browser).
 
+mod command_panel;
 mod console;
 mod desktop;
 mod dialogs;
+mod dns_panel;
+mod form;
 mod gateway;
 mod hostlist;
 mod icons;
+mod nt4_panel;
+mod nt4_window;
+mod remote;
 mod services;
 mod settings_editor;
 mod tasks;
+#[cfg(test)]
+mod testkit;
 mod theme;
+mod users_panel;
+mod widgets;
 mod windows;
 
 use std::sync::Arc;
