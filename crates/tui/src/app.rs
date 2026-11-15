@@ -858,6 +858,7 @@ mod tests {
             .map(|n| User {
                 name: n.to_string(),
                 admin: false,
+                software_admin: false,
             })
             .collect();
         app.event_tx.send(UiEvent::Users(Ok(list))).unwrap();

@@ -93,14 +93,15 @@ impl UsersPanel {
                 vec![
                     user.name.clone(),
                     if user.admin { "yes" } else { "no" }.into(),
+                    if user.software_admin { "yes" } else { "no" }.into(),
                     if has { "set" } else { "not set" }.into(),
                 ]
             })
             .collect();
         let table = Table {
             id: "users-table",
-            headings: &["Login", "Domain admin", "Password"],
-            widths: &[150.0, 100.0],
+            headings: &["Login", "Domain admin", "Software admin", "Password"],
+            widths: &[150.0, 100.0, 110.0],
             rows: &rows,
             selected: self.selected,
             bad: &[],
@@ -126,7 +127,11 @@ impl UsersPanel {
                     Form::new("user-add", "Add a login", "")
                         .text("Name", "")
                         .secret("Password")
-                        .check("Domain admin", false),
+                        .check("Domain admin", false)
+                        .check(
+                            "Software admin (for non-admins; admins write already)",
+                            false,
+                        ),
                 ));
             }
             if theme::action(ui, "Password...", idle && has && self.form.is_none()).clicked() {
@@ -163,6 +168,23 @@ impl UsersPanel {
                         admin: !admin,
                     };
                     self.change(services, host, vec![change], "domain admin changed");
+                }
+            }
+            let software = picked.as_ref().is_some_and(|u| u.software_admin);
+            let label = if software {
+                "Remove software admin"
+            } else {
+                "Make software admin"
+            };
+            // domain admins already write to the software share, so the flag only matters for others
+            let others = picked.as_ref().is_some_and(|u| !u.admin);
+            if theme::action(ui, label, idle && has && others).clicked() {
+                if let Some(user) = &picked {
+                    let change = Change::SetSoftwareAdmin {
+                        name: user.name.clone(),
+                        software_admin: !software,
+                    };
+                    self.change(services, host, vec![change], "software admin changed");
                 }
             }
             if theme::action(ui, "Reload logins", idle).clicked() {
@@ -204,7 +226,16 @@ impl UsersPanel {
                 }
                 let mut changes = vec![set_password(&name, form.raw(1))?];
                 if form.checked(0) {
-                    changes.push(Change::SetAdmin { name, admin: true });
+                    changes.push(Change::SetAdmin {
+                        name: name.clone(),
+                        admin: true,
+                    });
+                }
+                if form.checked(1) {
+                    changes.push(Change::SetSoftwareAdmin {
+                        name,
+                        software_admin: true,
+                    });
                 }
                 Ok((changes, "login added".into()))
             }

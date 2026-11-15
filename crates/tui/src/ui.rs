@@ -412,10 +412,12 @@ mod tests {
             User {
                 name: "james".into(),
                 admin: false,
+                software_admin: false,
             },
             User {
                 name: "olive".into(),
                 admin: false,
+                software_admin: false,
             },
         ]);
         let text = render(&app);
