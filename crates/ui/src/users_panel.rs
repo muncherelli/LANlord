@@ -105,7 +105,7 @@ impl UsersPanel {
             rows: &rows,
             selected: self.selected,
             bad: &[],
-            height: 150.0,
+            height: 200.0,
         };
         if let Some(i) = table.show(ui) {
             self.selected = Some(i);
@@ -113,7 +113,9 @@ impl UsersPanel {
         if rows.is_empty() && self.remote.note.is_none() {
             ui.label("No logins yet.");
         }
+        ui.add_space(6.0);
         self.buttons(ui, services, host, idle);
+        ui.add_space(6.0);
         self.remote.show_note(ui);
     }
 
@@ -154,6 +156,7 @@ impl UsersPanel {
                 }
             }
         });
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             let admin = picked.as_ref().is_some_and(|u| u.admin);
             let label = if admin {

@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Align2, Id, Margin, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
+use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
 
 /// what the title-bar buttons asked for this frame.
@@ -54,16 +55,22 @@ enum Glyph {
     Close,
 }
 
-fn title_bar(ui: &mut Ui, title: &str, active: bool) -> TitleActions {
+fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool) -> TitleActions {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.0, if active { NAVY } else { SHADOW });
+    icons::draw(
+        ui.painter(),
+        rect.left_top() + Vec2::new(3.0, 2.0),
+        icons::art(icon),
+        1.0,
+    );
     ui.painter().text(
-        rect.left_center() + Vec2::new(6.0, 0.0),
+        rect.left_center() + Vec2::new(23.0, 0.0),
         Align2::LEFT_CENTER,
         title,
         theme::font(),
-        WHITE,
+        if active { WHITE } else { GRAY },
     );
     let size = Vec2::new(16.0, 14.0);
     let top = rect.top() + 3.0;
@@ -81,6 +88,7 @@ fn title_bar(ui: &mut Ui, title: &str, active: bool) -> TitleActions {
 }
 
 /// show a window; returns what its title bar asked for and whether it was clicked.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
     id: &str,
@@ -98,12 +106,20 @@ pub fn show(
         .resizable(true)
         .default_pos(start)
         .default_size(size)
-        .min_size(Vec2::new(280.0, 120.0))
+        .min_size(Vec2::new(320.0, 180.0))
         .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)))
         .show(ctx, |ui| {
-            actions = title_bar(ui, title, active);
+            actions = title_bar(ui, id, title, active);
             ui.add_space(4.0);
-            content(ui);
+            // a window smaller than its contents scrolls instead of cutting them off
+            egui::ScrollArea::vertical()
+                .id_salt(("window-scroll", id))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    egui::Frame::new()
+                        .inner_margin(Margin::symmetric(7, 3))
+                        .show(ui, content);
+                });
         })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);

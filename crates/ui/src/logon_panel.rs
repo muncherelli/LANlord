@@ -6,6 +6,7 @@ use eframe::egui::{self, CollapsingHeader, ScrollArea, TextEdit, Ui};
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::logon::{self, valid_script_name};
 
+use crate::controls;
 use crate::form::{Form, FormAnswer};
 use crate::gateway::Gateway;
 use crate::remote::Remote;
@@ -116,17 +117,18 @@ impl LogonPanel {
             self.reload(services, host);
         }
         let idle = !services.busy(host) && !self.remote.busy();
-        ScrollArea::vertical()
-            .id_salt("logon-scroll")
-            .show(ui, |ui| {
-                ui.label(
-                    "Every domain logon runs these after S: is mapped: logon.bat for everyone, then <login>.bat for one login.",
-                );
-                self.list(ui, services, host, idle);
-                self.editor(ui, services, host, idle);
-                self.generated(ui);
-                self.remote.show_note(ui);
-            });
+        ui.label(
+            "Every domain logon runs these after S: is mapped: logon.bat for everyone, then <login>.bat for one login.",
+        );
+        ui.add_space(4.0);
+        controls::group(ui, "Scripts", |ui| self.list(ui, services, host, idle));
+        ui.add_space(4.0);
+        let caption = format!("{}.bat", self.selected);
+        controls::group(ui, &caption, |ui| self.editor(ui, services, host, idle));
+        ui.add_space(4.0);
+        self.generated(ui);
+        ui.add_space(4.0);
+        self.remote.show_note(ui);
     }
 
     fn list(&mut self, ui: &mut Ui, services: &Services, host: &str, idle: bool) {
@@ -160,7 +162,7 @@ impl LogonPanel {
             rows: &rows,
             selected: names.iter().position(|n| *n == self.selected),
             bad: &[],
-            height: 90.0,
+            height: 80.0,
         };
         if let Some(i) = table.show(ui) {
             if self.dirty() {
@@ -173,6 +175,7 @@ impl LogonPanel {
                 self.reload(services, host);
             }
         }
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             let free = idle && !self.dirty() && self.form.is_none();
             if theme::action(ui, "New script...", free).clicked() {
@@ -192,13 +195,12 @@ impl LogonPanel {
     }
 
     fn editor(&mut self, ui: &mut Ui, services: &Services, host: &str, idle: bool) {
-        ui.label(format!("Editing {}.bat:", self.selected));
         theme::sunken(ui, WHITE, |ui| {
             ScrollArea::vertical()
                 .id_salt("logon-editor")
                 .show(ui, |ui| {
                     ui.add_sized(
-                        [ui.available_width(), 150.0],
+                        [ui.available_width(), 130.0],
                         TextEdit::multiline(&mut self.draft)
                             .font(egui::TextStyle::Monospace)
                             .frame(egui::Frame::NONE)
@@ -206,6 +208,7 @@ impl LogonPanel {
                     );
                 });
         });
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             let changed = idle && self.dirty();
             if theme::action(ui, "Save script", changed).clicked() {

@@ -4,7 +4,7 @@
 use std::net::Ipv4Addr;
 
 use anyhow::Result;
-use eframe::egui::{self, ScrollArea, Ui};
+use eframe::egui::{self, Ui};
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::leases::Lease;
 use lanlord_core::network::Internal;
@@ -12,6 +12,7 @@ use lanlord_core::settings::{
     Dhcp, DnsSettings, Record, Settings, StaticLease, Subnet, ValidationError,
 };
 
+use crate::controls;
 use crate::form::{Form, FormAnswer};
 use crate::gateway::Gateway;
 use crate::remote::Remote;
@@ -71,6 +72,8 @@ pub struct DnsPanel {
     record_row: Option<usize>,
     current_row: Option<usize>,
     form: Option<(Ask, Form)>,
+    /// the open tab: settings, static leases, extra records or current leases.
+    pub tab: usize,
 }
 
 impl DnsPanel {
@@ -138,15 +141,28 @@ impl DnsPanel {
         }
         let idle = !services.busy(host) && !self.remote.busy();
         let errors = self.errors();
-        ScrollArea::vertical().id_salt("dns-scroll").show(ui, |ui| {
-            self.network_line(ui);
-            self.fields(ui, &errors);
-            self.leases_table(ui, &errors);
-            self.records_table(ui, &errors);
-            self.current_table(ui);
-            self.buttons(ui, services, host, idle, &errors);
-            self.remote.show_note(ui);
+        let mut tab = self.tab;
+        let labels = [
+            "Settings",
+            "Static leases",
+            "Extra records",
+            "Current leases",
+        ];
+        controls::tabs(ui, &labels, &mut tab, |ui, open| match open {
+            1 => self.leases_table(ui, &errors),
+            2 => self.records_table(ui, &errors),
+            3 => self.current_table(ui),
+            _ => {
+                self.network_line(ui);
+                ui.add_space(4.0);
+                self.fields(ui, &errors);
+            }
         });
+        self.tab = tab;
+        ui.add_space(6.0);
+        self.buttons(ui, services, host, idle, &errors);
+        ui.add_space(4.0);
+        self.remote.show_note(ui);
     }
 
     fn network_line(&self, ui: &mut Ui) {
@@ -167,29 +183,34 @@ impl DnsPanel {
     }
 
     fn fields(&mut self, ui: &mut Ui, errors: &[ValidationError]) {
-        labelled_edit(ui, "Zone", &mut self.draft.zone, 160.0);
-        field_error(ui, errors, "dns.zone");
-        let mut on = self.draft.dhcp.is_some();
-        if ui.checkbox(&mut on, "DHCP server on").changed() {
-            if on {
-                self.draft.dhcp = Some(self.stash.clone());
-            } else if let Some(dhcp) = self.draft.dhcp.take() {
-                self.stash = dhcp;
+        controls::group(ui, "Names", |ui| {
+            labelled_edit(ui, "Zone", &mut self.draft.zone, 170.0);
+            field_error(ui, errors, "dns.zone");
+        });
+        ui.add_space(4.0);
+        controls::group(ui, "DHCP", |ui| {
+            let mut on = self.draft.dhcp.is_some();
+            if controls::check(ui, &mut on, "DHCP server on").changed() {
+                if on {
+                    self.draft.dhcp = Some(self.stash.clone());
+                } else if let Some(dhcp) = self.draft.dhcp.take() {
+                    self.stash = dhcp;
+                }
             }
-        }
-        if let Some(dhcp) = &mut self.draft.dhcp {
-            labelled_edit(ui, "Range start", &mut dhcp.range_start, 160.0);
-            field_error(ui, errors, "dns.dhcp.range[0]");
-            labelled_edit(ui, "Range end", &mut dhcp.range_end, 160.0);
-            field_error(ui, errors, "dns.dhcp.range[1]");
-            field_error(ui, errors, "dns.dhcp.range");
-            labelled_edit(ui, "Lease time", &mut dhcp.lease, 160.0);
-            field_error(ui, errors, "dns.dhcp.lease");
-        }
+            if let Some(dhcp) = &mut self.draft.dhcp {
+                ui.add_space(2.0);
+                labelled_edit(ui, "Range start", &mut dhcp.range_start, 170.0);
+                field_error(ui, errors, "dns.dhcp.range[0]");
+                labelled_edit(ui, "Range end", &mut dhcp.range_end, 170.0);
+                field_error(ui, errors, "dns.dhcp.range[1]");
+                field_error(ui, errors, "dns.dhcp.range");
+                labelled_edit(ui, "Lease time", &mut dhcp.lease, 170.0);
+                field_error(ui, errors, "dns.dhcp.lease");
+            }
+        });
     }
 
     fn leases_table(&mut self, ui: &mut Ui, errors: &[ValidationError]) {
-        ui.label("Static leases:");
         let hosts: Vec<StaticLease> = self
             .draft
             .dhcp
@@ -208,7 +229,7 @@ impl DnsPanel {
             rows: &rows,
             selected: self.lease_row,
             bad: &bad,
-            height: 70.0,
+            height: 190.0,
         };
         if let Some(i) = table.show(ui) {
             self.lease_row = Some(i);
@@ -258,7 +279,6 @@ impl DnsPanel {
     }
 
     fn records_table(&mut self, ui: &mut Ui, errors: &[ValidationError]) {
-        ui.label("Extra DNS records:");
         let rows: Vec<Vec<String>> = self
             .draft
             .records
@@ -273,7 +293,7 @@ impl DnsPanel {
             rows: &rows,
             selected: self.record_row,
             bad: &bad,
-            height: 60.0,
+            height: 190.0,
         };
         if let Some(i) = table.show(ui) {
             self.record_row = Some(i);
@@ -325,7 +345,7 @@ impl DnsPanel {
     }
 
     fn current_table(&mut self, ui: &mut Ui) {
-        ui.label("Current leases (read from the gateway):");
+        ui.label("Read from the gateway:");
         let leases = match self.remote.data.as_ref().map(|d| &d.leases) {
             Some(Ok(leases)) => leases.clone(),
             Some(Err(why)) => {
@@ -352,7 +372,7 @@ impl DnsPanel {
             rows: &rows,
             selected: self.current_row,
             bad: &[],
-            height: 70.0,
+            height: 190.0,
         };
         if let Some(i) = table.show(ui) {
             self.current_row = Some(i);
@@ -386,22 +406,21 @@ impl DnsPanel {
         idle: bool,
         errors: &[ValidationError],
     ) {
-        ui.separator();
-        ui.horizontal(|ui| {
+        controls::buttons(ui, |ui| {
             let ok = idle && errors.is_empty();
-            if theme::action(ui, "Save DNS", ok).clicked() {
-                self.save(services, host, false);
+            if theme::action(ui, "Reload DNS", idle).clicked() {
+                self.reload(services, host);
             }
             if theme::action(ui, "Save DNS & apply", ok).clicked() {
                 self.save(services, host, true);
             }
-            if theme::action(ui, "Reload DNS", idle).clicked() {
-                self.reload(services, host);
+            if theme::action(ui, "Save DNS", ok).clicked() {
+                self.save(services, host, false);
+            }
+            if !errors.is_empty() {
+                ui.label(format!("{} problem(s) to fix before saving.", errors.len()));
             }
         });
-        if !errors.is_empty() {
-            ui.label(format!("{} problem(s) to fix before saving.", errors.len()));
-        }
     }
 
     /// the box for a lease or a record, drawn on top of everything.

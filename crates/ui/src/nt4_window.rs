@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Ui};
 
+use crate::controls;
 use crate::logon_panel::LogonPanel;
 use crate::nt4_panel::Nt4Panel;
 use crate::services::Services;
@@ -32,22 +33,35 @@ impl Nt4Window {
 
     /// draw the tab strip and the open tab.
     pub fn show(&mut self, ui: &mut Ui, services: &Services, host: Option<&str>) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
-            ui.selectable_value(&mut self.tab, Tab::Logins, "Logins");
-            ui.selectable_value(&mut self.tab, Tab::Logon, "Logon scripts");
-        });
-        ui.separator();
-        match self.tab {
-            Tab::Settings => self.settings.show(ui, services, host),
-            Tab::Logins => self.users.show(ui, services, host),
-            Tab::Logon => self.logon.show(ui, services, host),
-        }
+        let mut chosen = match self.tab {
+            Tab::Settings => 0,
+            Tab::Logins => 1,
+            Tab::Logon => 2,
+        };
+        controls::tabs(
+            ui,
+            &["Settings", "Logins", "Logon scripts"],
+            &mut chosen,
+            |ui, open| match chosen_tab(open) {
+                Tab::Settings => self.settings.show(ui, services, host),
+                Tab::Logins => self.users.show(ui, services, host),
+                Tab::Logon => self.logon.show(ui, services, host),
+            },
+        );
+        self.tab = chosen_tab(chosen);
     }
 
     pub fn dialog(&mut self, ctx: &egui::Context, services: &Services, host: Option<&str>) {
         self.settings.dialog(ctx, services, host);
         self.users.dialog(ctx, services, host);
         self.logon.dialog(ctx);
+    }
+}
+
+fn chosen_tab(index: usize) -> Tab {
+    match index {
+        1 => Tab::Logins,
+        2 => Tab::Logon,
+        _ => Tab::Settings,
     }
 }

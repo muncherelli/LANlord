@@ -2,7 +2,7 @@
 //! it, the background job fetching or changing it, and the line of text
 //! telling you how that went.
 
-use eframe::egui::{Color32, RichText, Ui};
+use eframe::egui::{Color32, Ui};
 
 use crate::tasks::Job;
 
@@ -119,13 +119,12 @@ impl<T> Remote<T> {
         }
     }
 
-    /// draw the note.
+    /// draw the note in a status bar.
     pub fn show_note(&self, ui: &mut Ui) {
         match &self.note {
-            Some((true, text)) => ui.colored_label(RED, text),
-            Some((false, text)) => ui.label(RichText::new(text.as_str()).italics()),
-            None => ui.label(""),
-        };
+            Some((error, text)) => crate::controls::status_bar(ui, text, *error),
+            None => crate::controls::status_bar(ui, "", false),
+        }
     }
 }
 

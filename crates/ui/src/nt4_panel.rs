@@ -1,9 +1,10 @@
 //! the nt4 domain's settings tab: domain, server name, machines, roaming
 //! profiles and the administrator password (which is only ever set, never shown).
 
-use eframe::egui::{self, ComboBox, Ui};
+use eframe::egui::{self, Ui};
 use lanlord_core::nt4::{valid_machine, Nt4Settings};
 
+use crate::controls;
 use crate::form::{Form, FormAnswer};
 use crate::remote::Remote;
 use crate::services::{update_settings, Services};
@@ -146,57 +147,67 @@ impl Nt4Panel {
         }
         let idle = !services.busy(host) && !self.remote.busy();
         let errors = self.draft.validate(self.password_set());
-        labelled_edit(ui, "Domain name", &mut self.draft.name, 160.0);
-        field_error(ui, &errors, "nt4-domain.name");
-        labelled_edit(ui, "Server name", &mut self.draft.netbios_name, 160.0);
-        ui.label("(blank: the gateway's hostname)");
-        field_error(ui, &errors, "nt4-domain.netbios_name");
-        ui.horizontal(|ui| {
-            ui.label("Mode");
-            ComboBox::from_id_salt("nt4-mode")
-                .selected_text(self.draft.mode.clone())
-                .show_ui(ui, |ui| {
+        controls::group(ui, "Domain", |ui| {
+            labelled_edit(ui, "Domain name", &mut self.draft.name, 170.0);
+            field_error(ui, &errors, "nt4-domain.name");
+            controls::row(ui, "Server name", |ui| {
+                controls::edit(ui, &mut self.draft.netbios_name, 170.0);
+                ui.label("blank: the gateway's hostname");
+            });
+            field_error(ui, &errors, "nt4-domain.netbios_name");
+            controls::row(ui, "Mode", |ui| {
+                let mode = self.draft.mode.clone();
+                controls::dropdown(ui, "nt4-mode", &mode, 120.0, |ui| {
                     for mode in ["domain", "workgroup"] {
                         ui.selectable_value(&mut self.draft.mode, mode.to_string(), mode);
                     }
                 });
-            ui.checkbox(&mut self.draft.roaming_profiles, "Roaming profiles");
-            ui.checkbox(&mut self.draft.software, "Software share (S:)");
+            });
+            field_error(ui, &errors, "nt4-domain.mode");
+            controls::row(ui, "Options", |ui| {
+                controls::check(ui, &mut self.draft.roaming_profiles, "Roaming profiles");
+                ui.add_space(8.0);
+                controls::check(ui, &mut self.draft.software, "Software share (S:)");
+            });
+            controls::row(ui, "Administrator", |ui| {
+                let state = match (self.new_password.is_some(), self.password_set()) {
+                    (true, _) => "password: new value on Save",
+                    (false, true) => "password: set",
+                    (false, false) => "password: not set",
+                };
+                ui.label(state);
+                if theme::action(ui, "Set password...", idle && self.form.is_none()).clicked() {
+                    self.form = Some((
+                        Ask::AdminPassword,
+                        Form::new(
+                            "nt4-admin",
+                            "Administrator password",
+                            "Stored encrypted and never shown again; Show lets you copy it first.",
+                        )
+                        .secret("Password"),
+                    ));
+                }
+            });
+            field_error(ui, &errors, "nt4-domain.admin_password");
         });
-        field_error(ui, &errors, "nt4-domain.mode");
-        ui.horizontal(|ui| {
-            let state = match (self.new_password.is_some(), self.password_set()) {
-                (true, _) => "new value on Save",
-                (false, true) => "set",
-                (false, false) => "not set",
-            };
-            ui.label(format!("Administrator password: {state}"));
-            if theme::action(ui, "Set password...", idle && self.form.is_none()).clicked() {
-                self.form = Some((
-                    Ask::AdminPassword,
-                    Form::new(
-                        "nt4-admin",
-                        "Administrator password",
-                        "Stored encrypted and never shown again; Show lets you copy it first.",
-                    )
-                    .secret("Password"),
-                ));
-            }
+        ui.add_space(4.0);
+        controls::group(ui, "Machines to prepare accounts for", |ui| {
+            self.machines_list(ui, &errors, idle);
         });
-        field_error(ui, &errors, "nt4-domain.admin_password");
-        self.machines_list(ui, &errors, idle);
+        ui.add_space(6.0);
         let blocked = !errors.is_empty();
-        ui.horizontal(|ui| {
-            if theme::action(ui, "Save settings", idle && !blocked).clicked() {
-                self.save(services, host, false);
+        controls::buttons(ui, |ui| {
+            if theme::action(ui, "Reload settings", idle).clicked() {
+                self.reload(services, host);
             }
             if theme::action(ui, "Save & apply", idle && !blocked).clicked() {
                 self.save(services, host, true);
             }
-            if theme::action(ui, "Reload settings", idle).clicked() {
-                self.reload(services, host);
+            if theme::action(ui, "Save settings", idle && !blocked).clicked() {
+                self.save(services, host, false);
             }
         });
+        ui.add_space(4.0);
         self.remote.show_note(ui);
     }
 
@@ -206,7 +217,6 @@ impl Nt4Panel {
         errors: &[lanlord_core::settings::ValidationError],
         idle: bool,
     ) {
-        ui.label("Machines to prepare accounts for:");
         let rows: Vec<Vec<String>> = self
             .draft
             .machines

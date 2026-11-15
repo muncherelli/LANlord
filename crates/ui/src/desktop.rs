@@ -16,6 +16,7 @@ use menu::Confirm;
 
 use crate::command_panel::CommandPanel;
 use crate::console::{self, Console};
+use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
 use crate::form::Form;
@@ -127,6 +128,27 @@ impl Desktop {
         }
         self.active = Some(target);
         self.start_open = false;
+    }
+
+    /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
+    /// icons, and for the nt4 window the number of the tab. it lets the real desktop be opened
+    /// on a chosen view, for screenshots.
+    pub fn open_spec(&mut self, spec: &str) {
+        for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (id, tab) = item.split_once('@').unwrap_or((item, ""));
+            if id == "menu" {
+                self.start_open = true;
+            } else if let Some(target) = self.icons.iter().copied().find(|t| t.id() == id) {
+                self.open(target);
+                if id == "nt4-domain" {
+                    self.nt4.tab = match tab {
+                        "1" => crate::nt4_window::Tab::Logins,
+                        "2" => crate::nt4_window::Tab::Logon,
+                        _ => crate::nt4_window::Tab::Settings,
+                    };
+                }
+            }
+        }
     }
 
     /// the host every action targets.
@@ -362,32 +384,53 @@ impl Desktop {
     }
 }
 
+/// the part of the screen above the taskbar.
+fn desktop_area(ctx: &egui::Context) -> Rect {
+    let screen = ctx.content_rect();
+    Rect::from_min_max(screen.min, screen.max - Vec2::new(0.0, TASKBAR))
+}
+
+/// how big a window opens, before it is cut down to fit the desktop.
+fn window_size(target: Target) -> Vec2 {
+    match target {
+        Target::Module(i) => match MODULES[i].id {
+            "nt4-domain" => Vec2::new(600.0, 600.0),
+            "dns" => Vec2::new(620.0, 580.0),
+            "remote-commands" => Vec2::new(580.0, 580.0),
+            _ => Vec2::new(480.0, 320.0),
+        },
+        Target::Console => Vec2::new(600.0, 300.0),
+        Target::Hosts => Vec2::new(380.0, 280.0),
+        Target::Settings => Vec2::new(600.0, 520.0),
+    }
+}
+
+/// where the `n`th window opens: stepped down and right of the last one, and never so far
+/// that it hangs off the desktop or covers the icons.
+fn cascade(n: usize, area: Rect, size: Vec2) -> Pos2 {
+    let step = (n % 8) as f32;
+    let x = (area.left() + 110.0 + step * 28.0).min(area.right() - size.x);
+    let y = (area.top() + 10.0 + step * 26.0).min(area.bottom() - size.y);
+    Pos2::new(x.max(area.left()), y.max(area.top()))
+}
+
 // the windows
 impl Desktop {
     fn show_windows(&mut self, ctx: &egui::Context) {
         let mut windows = std::mem::take(&mut self.windows);
         let mut close = Vec::new();
+        let area = desktop_area(ctx);
         for (n, window) in windows.iter_mut().enumerate() {
             if window.minimized {
                 continue;
             }
             let target = window.target;
-            let size = match target {
-                Target::Module(i) => match MODULES[i].id {
-                    "nt4-domain" => Vec2::new(480.0, 520.0),
-                    "dns" => Vec2::new(560.0, 600.0),
-                    "remote-commands" => Vec2::new(520.0, 480.0),
-                    _ => Vec2::new(420.0, 400.0),
-                },
-                Target::Console => Vec2::new(520.0, 260.0),
-                Target::Hosts => Vec2::new(340.0, 250.0),
-                Target::Settings => Vec2::new(520.0, 520.0),
-            };
+            let size = window_size(target).min(area.size() - Vec2::new(116.0, 8.0));
             let shown = windows::show(
                 ctx,
                 target.id(),
                 target.title(),
-                Pos2::new(130.0 + n as f32 * 30.0, 30.0 + n as f32 * 26.0),
+                cascade(n, area, size),
                 size,
                 self.active == Some(target),
                 |ui| self.contents(ui, target),
@@ -421,7 +464,7 @@ impl Desktop {
     fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
         ui.horizontal(|ui| {
             icons::draw(ui.painter(), ui.cursor().min, icons::art(module.id), 2.0);
-            ui.add_space(38.0);
+            ui.add_space(40.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new(module.name).size(16.0).strong());
                 let status = match module.status {
@@ -431,9 +474,11 @@ impl Desktop {
                 ui.label(format!("Status: {status}"));
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(2.0);
         ui.label(module.summary);
-        ui.add_space(6.0);
+        ui.add_space(4.0);
+        controls::separator(ui);
+        ui.add_space(4.0);
         let host = self.host();
         match module.id {
             "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
@@ -449,35 +494,39 @@ impl Desktop {
 
     /// a module with nothing to edit yet: its example settings and an Apply button.
     fn plain_module(&mut self, ui: &mut Ui, module: &'static Module, host: Option<String>) {
-        ui.label("Settings (in your settings file):");
-        theme::sunken(ui, WHITE, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(module.example).monospace());
+        controls::group(ui, "Settings (in your settings file)", |ui| {
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(module.example).monospace());
+            });
         });
-        ui.add_space(8.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-            let ready = module.status == Status::Available && !busy;
+        ui.add_space(6.0);
+        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
+        let ready = module.status == Status::Available && !busy;
+        controls::buttons(ui, |ui| {
             let apply = theme::action(ui, "Apply", ready && host.is_some());
             if let (true, Some(host)) = (apply.clicked(), &host) {
                 self.services.apply(host, vec![module.id.to_string()]);
             }
-            ui.label(match (&host, busy) {
-                (None, _) => "No host selected".to_string(),
-                (Some(host), true) => format!("Host: {host} - working..."),
-                (Some(host), false) => format!("Host: {host}"),
-            });
         });
+        let status = match (&host, busy) {
+            (None, _) => "No host selected".to_string(),
+            (Some(host), true) => format!("Host: {host} - working..."),
+            (Some(host), false) => format!("Host: {host}"),
+        };
+        controls::status_bar(ui, &status, false);
     }
 
     fn console_window(&mut self, ui: &mut Ui) {
+        let height = controls::fill_height(ui);
         theme::sunken(ui, BLACK, |ui| {
             ui.set_width(ui.available_width());
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
-                .max_height(ui.available_height() - 4.0)
+                .max_height(height)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    ui.set_min_height(height);
                     for line in self.console.lines() {
                         let text = RichText::new(&line.text)
                             .monospace()
@@ -493,19 +542,20 @@ impl Desktop {
             ui.label("This computer is the server; there are no other hosts to pick.");
             return;
         }
-        ui.label("Gateways lanlord manages:");
         let mut picked = None;
-        theme::sunken(ui, WHITE, |ui| {
-            ui.set_width(ui.available_width());
-            ui.set_min_height(90.0);
-            if self.hosts.hosts().is_empty() {
-                ui.label("No gateways yet. Click Add... and type user@gateway.");
-            }
-            for (i, host) in self.hosts.hosts().iter().enumerate() {
-                if theme::list_row(ui, host, self.hosts.selected_index() == i).clicked() {
-                    picked = Some(i);
+        controls::group(ui, "Gateways lanlord manages", |ui| {
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ui.set_min_height(100.0);
+                if self.hosts.hosts().is_empty() {
+                    ui.label("No gateways yet. Click Add... and type user@gateway.");
                 }
-            }
+                for (i, host) in self.hosts.hosts().iter().enumerate() {
+                    if theme::list_row(ui, host, self.hosts.selected_index() == i).clicked() {
+                        picked = Some(i);
+                    }
+                }
+            });
         });
         if let Some(i) = picked {
             self.hosts.select(i);
@@ -534,9 +584,8 @@ impl Desktop {
                 }
             }
         });
-        if busy {
-            ui.label(RichText::new("working...").italics());
-        }
+        ui.add_space(6.0);
+        controls::status_bar(ui, if busy { "working..." } else { "ready" }, false);
     }
 }
 
@@ -576,6 +625,60 @@ mod tests {
         frames(&mut desktop, &ctx, 3);
         assert_eq!(desktop.windows.len(), desktop.icons.len());
         assert!(desktop.windows.iter().all(|w| !w.minimized));
+    }
+
+    #[test]
+    fn windows_cascade_inside_the_desktop_and_clear_of_the_icons() {
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0));
+        let size = Vec2::new(600.0, 500.0);
+        let mut last = Pos2::ZERO;
+        for n in 0..20 {
+            let pos = cascade(n, area, size);
+            assert!(
+                area.contains_rect(Rect::from_min_size(pos, size)),
+                "{n}: {pos:?}"
+            );
+            if n > 0 && n % 8 != 0 {
+                assert!(pos.y >= last.y, "steps down");
+            }
+            last = pos;
+        }
+        assert!(
+            cascade(0, area, size).x >= 100.0,
+            "the first window leaves the icons visible"
+        );
+        // a small desktop pins the window to its corner instead of pushing it out of sight
+        let tiny = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 300.0));
+        assert_eq!(cascade(3, tiny, Vec2::new(500.0, 300.0)), Pos2::ZERO);
+    }
+
+    #[test]
+    fn every_window_has_a_size_that_fits_the_default_desktop() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        let area = desktop_area(&ctx);
+        for target in desktop.icons.clone() {
+            let size = window_size(target);
+            assert!(
+                size.x + 116.0 <= area.width() && size.y + 8.0 <= area.height(),
+                "{}",
+                target.title()
+            );
+        }
+    }
+
+    #[test]
+    fn a_spec_opens_the_named_windows_menu_and_tab() {
+        let (mut desktop, _, _) = desktop();
+        desktop.open_spec("gateway, nt4-domain@2 ,menu,nothing,,");
+        let open: Vec<_> = desktop.windows.iter().map(|w| w.target.id()).collect();
+        assert_eq!(open, ["gateway", "nt4-domain"]);
+        assert!(desktop.start_open);
+        assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Logon);
+        desktop.open_spec("nt4-domain@1");
+        assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Logins);
+        desktop.open_spec("nt4-domain");
+        assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Settings);
     }
 
     #[test]
@@ -695,7 +798,7 @@ mod tests {
         click_at(
             &mut desktop,
             &ctx,
-            Pos2::new(add.left() + 10.0, add.top() - 100.0),
+            Pos2::new(add.left() + 10.0, add.top() - 110.0),
         );
         assert_eq!(desktop.host().as_deref(), Some("me@one"));
         assert!(press(&mut desktop, &ctx, "Remove"));

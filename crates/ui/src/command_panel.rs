@@ -3,10 +3,11 @@
 
 use std::sync::mpsc::Receiver;
 
-use eframe::egui::{Key, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{Frame, Key, Margin, RichText, ScrollArea, TextEdit, Ui};
 use lanlord_core::log::{self, Kind, Line};
 
 use crate::console;
+use crate::controls;
 use crate::services::Services;
 use crate::tasks::Job;
 use crate::theme::{self, BLACK};
@@ -112,41 +113,64 @@ impl CommandPanel {
             ui.label("No host yet. Add one in the Hosts window first.");
             return;
         };
-        ui.label(format!("Target: the gateway, {host}"));
-        ui.label(RichText::new("NT4 machines: protocol still being researched").italics());
-        let rows: Vec<Vec<String>> = machines.iter().map(|m| vec![m.clone()]).collect();
-        let table = Table {
-            id: "command-machines",
-            headings: &["Machines (not available yet)"],
-            widths: &[200.0],
-            rows: &rows,
-            selected: None,
-            bad: &[],
-            height: 40.0,
-        };
-        ui.add_enabled_ui(false, |ui| table.show(ui));
         let idle = !services.busy(host) && self.running.is_none();
-        let enter = ui
-            .horizontal(|ui| {
-                let edit = ui.add(
-                    TextEdit::singleline(&mut self.line)
-                        .hint_text("command to run on the gateway")
-                        .desired_width(ui.available_width() - 90.0),
-                );
-                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                let run = theme::action(ui, "Run", idle && !self.line.trim().is_empty());
-                run.clicked() || (enter && idle)
-            })
-            .inner;
+        let mut enter = false;
+        controls::group(ui, "Run on the gateway", |ui| {
+            enter = ui
+                .horizontal(|ui| {
+                    let width = ui.available_width() - 100.0;
+                    let edit = controls::field(ui, |ui| {
+                        ui.add(
+                            TextEdit::singleline(&mut self.line)
+                                .hint_text("command to run on the gateway")
+                                .desired_width(width)
+                                .frame(Frame::new())
+                                .margin(Margin::ZERO),
+                        )
+                    });
+                    let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                    let run = theme::action(ui, "Run", idle && !self.line.trim().is_empty());
+                    run.clicked() || (enter && idle)
+                })
+                .inner;
+            ui.add_space(4.0);
+            self.history_table(ui);
+        });
         if enter {
             self.run(services, host);
         }
-        self.history_table(ui);
-        self.output_pane(ui);
+        ui.add_space(4.0);
+        controls::group(ui, "Output", |ui| self.output_pane(ui));
+        ui.add_space(4.0);
+        controls::group(
+            ui,
+            "NT4 machines (the protocol is still being researched)",
+            |ui| {
+                let rows: Vec<Vec<String>> = machines.iter().map(|m| vec![m.clone()]).collect();
+                let table = Table {
+                    id: "command-machines",
+                    headings: &["Machines (not available yet)"],
+                    widths: &[200.0],
+                    rows: &rows,
+                    selected: None,
+                    bad: &[],
+                    height: 40.0,
+                };
+                ui.add_enabled_ui(false, |ui| table.show(ui));
+            },
+        );
+        ui.add_space(6.0);
+        controls::status_bar(
+            ui,
+            &format!(
+                "Target: the gateway, {host}{}",
+                if idle { "" } else { " - working..." }
+            ),
+            false,
+        );
     }
 
     fn history_table(&mut self, ui: &mut Ui) {
-        ui.label("History:");
         let rows: Vec<Vec<String>> = self.history.iter().map(|c| vec![c.clone()]).collect();
         let table = Table {
             id: "command-history",
@@ -155,7 +179,7 @@ impl CommandPanel {
             rows: &rows,
             selected: None,
             bad: &[],
-            height: 60.0,
+            height: 56.0,
         };
         if let Some(i) = table.show(ui) {
             self.line.clone_from(&self.history[i]);
@@ -163,16 +187,15 @@ impl CommandPanel {
     }
 
     fn output_pane(&self, ui: &mut Ui) {
-        ui.label("Output:");
         theme::sunken(ui, BLACK, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical()
                 .id_salt("command-output")
                 .stick_to_bottom(true)
-                .max_height(ui.available_height().max(60.0) - 6.0)
+                .max_height(120.0)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_min_height(60.0);
+                    ui.set_min_height(100.0);
                     for line in &self.output {
                         let text = RichText::new(&line.text)
                             .monospace()

@@ -1,14 +1,18 @@
 //! the settings window: the plain settings as yaml text, and the secrets as
 //! write-only fields. nothing is stored or applied unless a button is clicked.
 
-use eframe::egui::{self, Color32, ComboBox, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, ScrollArea, TextEdit, Ui};
 use lanlord_core::modules::{Status, MODULES};
 use lanlord_core::settings::{secret_fields, Document, SecretField, Settings};
 
+use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::services::Services;
 use crate::tasks::Job;
 use crate::theme::{self, WHITE};
+
+/// the height of the settings text box.
+const EDITOR_HEIGHT: f32 = 230.0;
 
 /// a secret value typed in the dialog, waiting for Save: (path, value).
 type Update = (String, String);
@@ -223,47 +227,29 @@ impl SettingsEditor {
         }
         let idle = !services.busy(host) && !self.working();
         let stale = !self.belongs_to(host);
-        ui.label(format!("Plain settings stored on {host}"));
         let problem = self.problem();
-        let editor_height = (ui.available_height() - 200.0).max(60.0);
-        theme::sunken(ui, WHITE, |ui| {
-            ui.set_width(ui.available_width());
-            ScrollArea::vertical()
-                .id_salt("settings-text")
-                .max_height(editor_height)
-                .show(ui, |ui| {
-                    ui.add_sized(
-                        [ui.available_width(), editor_height],
-                        TextEdit::multiline(&mut self.text)
-                            .font(egui::TextStyle::Monospace)
-                            .frame(egui::Frame::NONE)
-                            .desired_width(f32::INFINITY),
-                    );
-                });
+        controls::group(ui, &format!("Plain settings stored on {host}"), |ui| {
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ScrollArea::vertical()
+                    .id_salt("settings-text")
+                    .max_height(EDITOR_HEIGHT)
+                    .show(ui, |ui| {
+                        ui.add_sized(
+                            [ui.available_width(), EDITOR_HEIGHT],
+                            TextEdit::multiline(&mut self.text)
+                                .font(egui::TextStyle::Monospace)
+                                .frame(egui::Frame::NONE)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+            });
         });
-        self.secrets_list(ui, idle);
-        let red = Color32::from_rgb(160, 0, 0);
-        match (&problem, &self.message) {
-            (Some(problem), _) => {
-                ui.colored_label(red, problem);
-            }
-            (None, Some((true, text))) => {
-                ui.colored_label(red, text);
-            }
-            (None, Some((false, text))) => {
-                ui.label(text);
-            }
-            (None, None) => {
-                ui.label("");
-            }
-        }
-        if services.busy(host) {
-            ui.label(RichText::new("working...").italics());
-        } else if stale && self.source.is_some() {
-            ui.label("The text is from another host; Reload to switch.");
-        } else if self.legacy {
-            ui.label("Stored the old way; Save moves the secrets to their own file.");
-        }
+        ui.add_space(4.0);
+        controls::group(ui, "Secrets (write-only; values are never shown)", |ui| {
+            self.secrets_list(ui, idle)
+        });
+        ui.add_space(6.0);
         self.buttons(
             ui,
             services,
@@ -271,17 +257,32 @@ impl SettingsEditor {
             idle && problem.is_none() && !stale,
             idle,
         );
+        ui.add_space(6.0);
+        let (error, text) = match (&problem, &self.message) {
+            (Some(problem), _) => (true, problem.clone()),
+            (None, Some((error, text))) => (*error, text.clone()),
+            (None, None) if services.busy(host) => (false, "working...".to_string()),
+            (None, None) if stale && self.source.is_some() => (
+                false,
+                "The text is from another host; Reload to switch.".to_string(),
+            ),
+            (None, None) if self.legacy => (
+                false,
+                "Stored the old way; Save moves the secrets to their own file.".to_string(),
+            ),
+            (None, None) => (false, String::new()),
+        };
+        controls::status_bar(ui, &text, error);
     }
 
     fn secrets_list(&mut self, ui: &mut Ui, idle: bool) {
-        ui.label("Secrets (write-only; values are never shown):");
         let fields = self.fields();
         let mut ask = None;
         theme::sunken(ui, WHITE, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical()
                 .id_salt("settings-secrets")
-                .max_height(70.0)
+                .max_height(96.0)
                 .show(ui, |ui| {
                     if fields.is_empty() {
                         ui.label("None found in the settings.");
@@ -324,21 +325,18 @@ impl SettingsEditor {
             if theme::action(ui, "Apply", idle).clicked() {
                 self.apply(services, host, &[]);
             }
-        });
-        ui.horizontal(|ui| {
+            ui.add_space(12.0);
             let modules: Vec<_> = MODULES
                 .iter()
                 .enumerate()
                 .filter(|(_, m)| m.status == Status::Available)
                 .collect();
             let name = MODULES.get(self.module).map_or("-", |m| m.name);
-            ComboBox::from_id_salt("settings-module")
-                .selected_text(name)
-                .show_ui(ui, |ui| {
-                    for (i, module) in modules {
-                        ui.selectable_value(&mut self.module, i, module.name);
-                    }
-                });
+            controls::dropdown(ui, "settings-module", name, 120.0, |ui| {
+                for (i, module) in modules {
+                    ui.selectable_value(&mut self.module, i, module.name);
+                }
+            });
             if theme::action(ui, "Apply module", idle).clicked() {
                 let id = MODULES[self.module].id.to_string();
                 self.apply(services, host, &[id]);
