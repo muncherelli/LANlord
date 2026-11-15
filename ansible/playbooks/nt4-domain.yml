@@ -12,6 +12,7 @@
 #   build_locally: false         # true builds the image on the gateway instead of pulling the published one
 #   image: ghcr.io/you/samba     # another image name (tag is still a hash of the files)
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
+#   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
 #   machines: [ws1, ws2]         # computers to create accounts for in advance; join them without
 #                                # ticking "Create a Computer Account in the Domain"
 #   users:

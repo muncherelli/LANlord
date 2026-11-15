@@ -42,3 +42,5 @@ Windows NT 4.0 SP6a could not create its own machine account against Samba 4.22:
 
 Set `lanman_auth: true` and keep the Administrator password to 14 characters or fewer if an old client needs the LM hash. Raise `log_level` (for example `2 rpc_srv:10 passdb:10 auth:5`) to debug a join; the Samba helper logs are in `/var/log/samba` inside the container.
 
+Roaming profiles are off by default. Set `roaming_profiles: true` to share a `profiles` folder and tell NT4 to keep each domain user's profile there, so it follows the user between machines.
+

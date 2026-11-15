@@ -37,9 +37,15 @@
 
    # NT4 cannot use schannel or the strong netlogon session key, so allow what it does speak.
    # this weakens the domain on purpose: keep it on the isolated retronet only.
+{% if nt4.roaming_profiles | default(false) %}
+   # roaming profiles: nt4 keeps each user's profile in the profiles share
+   logon path = \\%N\profiles\%U
+   logon home =
+{% else %}
    # no roaming profiles or network home directories: nt4 uses a local profile and stays quiet
    logon path =
    logon home =
+{% endif %}
 
    server schannel = auto
    allow nt4 crypto = yes
@@ -49,6 +55,17 @@
    path = /var/lib/samba/netlogon
    read only = yes
    guest ok = no
+{% if nt4.roaming_profiles | default(false) %}
+
+[profiles]
+   path = /var/lib/samba/profiles
+   read only = no
+   browseable = no
+   profile acls = yes
+   csc policy = disable
+   create mask = 0600
+   directory mask = 0700
+{% endif %}
 {% else %}
 
    server role = standalone server
