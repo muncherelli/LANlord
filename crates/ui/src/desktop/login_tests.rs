@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use lanlord_core::signin::SigninError;
 
-use super::harness::*;
-use super::menu::Action;
-use super::*;
+use eframe::egui;
+
+use super::harness::{desktop, enabled, frames, press, screen, until};
+use super::menu::{Action, Row};
+use super::{Desktop, Target};
 use crate::admin_setup::AdminSetup;
 use crate::login::fake::{id, FakeAuth};
 use crate::login::Stage;
@@ -287,7 +289,7 @@ fn the_menu_offers_log_off_and_switch_server_once_signed_in() {
     assert!(desktop
         .menu_rows()
         .iter()
-        .any(|r| matches!(r, menu::Row::Item(i) if i.label() == "Log off alice...")));
+        .any(|r| matches!(r, Row::Item(i) if i.label() == "Log off alice...")));
 }
 
 #[test]

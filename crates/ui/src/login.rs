@@ -88,7 +88,7 @@ impl Message {
             id,
             title: title.into(),
             text: text.into(),
-            buttons: buttons.iter().map(|b| b.to_string()).collect(),
+            buttons: buttons.iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -433,42 +433,49 @@ impl LoginBox {
 
     fn body(&mut self, ui: &mut egui::Ui, known: &[String]) -> bool {
         let busy = self.busy() || self.overlay.is_some();
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
-            icons::draw(
-                ui.painter(),
-                rect.min + Vec2::new(4.0, 4.0),
-                icons::art("gateway"),
-                2.0,
-            );
-            ui.add_space(6.0);
-            ui.vertical(|ui| {
-                ui.set_width(ui.available_width());
-                ui.label("Type the name you use on the gateway and its host name or address.");
+        intro(ui);
+        let first = !self.focus;
+        self.known_row(ui, known);
+        let mut enter = self.name_rows(ui, first);
+        if self.stage == Stage::Password {
+            ui.add_space(4.0);
+            enter |= self.secret_row(ui, first);
+        }
+        self.focus = true;
+        ui.add_space(10.0);
+        let shut_down = self.button_row(ui, busy, enter);
+        ui.add_space(6.0);
+        controls::status_bar(ui, &self.status, self.status_is_error);
+        shut_down
+    }
+
+    /// the drop-down of servers used before; choosing one fills both boxes.
+    fn known_row(&mut self, ui: &mut egui::Ui, known: &[String]) {
+        if known.is_empty() {
+            return;
+        }
+        controls::row(ui, "Server:", |ui| {
+            controls::dropdown(ui, "logon-known", "Recent servers", 240.0, |ui| {
+                for server in known {
+                    if ui.selectable_label(false, server).clicked() {
+                        self.choose(server);
+                    }
+                }
             });
         });
-        ui.add_space(8.0);
-        let mut enter = false;
-        let first = !self.focus;
-        if !known.is_empty() {
-            controls::row(ui, "Server:", |ui| {
-                controls::dropdown(ui, "logon-known", "Recent servers", 240.0, |ui| {
-                    for server in known {
-                        if ui.selectable_label(false, server).clicked() {
-                            self.choose(server);
-                        }
-                    }
-                });
-            });
-            ui.add_space(4.0);
-        }
+        ui.add_space(4.0);
+    }
+
+    /// the user name and host name boxes; true when enter was pressed in one of them.
+    fn name_rows(&mut self, ui: &mut egui::Ui, first: bool) -> bool {
         let password_stage = self.stage == Stage::Password;
+        let mut enter = false;
         controls::row(ui, "User name:", |ui| {
             let response = controls::edit(ui, &mut self.user, 240.0);
             if first && !password_stage && self.user.is_empty() {
                 response.request_focus();
             }
-            enter |= response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            enter |= pressed_enter(ui, &response);
         });
         ui.add_space(4.0);
         controls::row(ui, "Host name:", |ui| {
@@ -476,29 +483,34 @@ impl LoginBox {
             if first && !password_stage && !self.user.is_empty() {
                 response.request_focus();
             }
-            enter |= response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            enter |= pressed_enter(ui, &response);
         });
-        if password_stage {
-            ui.add_space(4.0);
-            controls::row(ui, "Password:", |ui| {
-                let width = 240.0;
-                let response = controls::field(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut *self.password)
-                            .password(true)
-                            .desired_width(width)
-                            .frame(Frame::new())
-                            .margin(Margin::ZERO),
-                    )
-                });
-                if first {
-                    response.request_focus();
-                }
-                enter |= response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+        enter
+    }
+
+    /// the masked box for the one attempt that needs it; true when enter was pressed in it.
+    fn secret_row(&mut self, ui: &mut egui::Ui, first: bool) -> bool {
+        let mut enter = false;
+        controls::row(ui, "Password:", |ui| {
+            let response = controls::field(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut *self.password)
+                        .password(true)
+                        .desired_width(240.0)
+                        .frame(Frame::new())
+                        .margin(Margin::ZERO),
+                )
             });
-        }
-        self.focus = true;
-        ui.add_space(10.0);
+            if first {
+                response.request_focus();
+            }
+            enter = pressed_enter(ui, &response);
+        });
+        enter
+    }
+
+    /// OK, Cancel and Shut Down; true when Shut Down was pressed.
+    fn button_row(&mut self, ui: &mut egui::Ui, busy: bool, enter: bool) -> bool {
         let mut shut_down = false;
         controls::buttons(ui, |ui| {
             if theme::button(ui, "Shut Down", false).clicked() {
@@ -511,8 +523,6 @@ impl LoginBox {
                 self.submit();
             }
         });
-        ui.add_space(6.0);
-        controls::status_bar(ui, &self.status, self.status_is_error);
         shut_down
     }
 
@@ -543,6 +553,30 @@ impl LoginBox {
             },
         }
     }
+}
+
+/// the picture and the sentence at the top of the box.
+fn intro(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+        icons::draw(
+            ui.painter(),
+            rect.min + Vec2::new(4.0, 4.0),
+            icons::art("gateway"),
+            2.0,
+        );
+        ui.add_space(6.0);
+        ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            ui.label("Type the name you use on the gateway and its host name or address.");
+        });
+    });
+    ui.add_space(8.0);
+}
+
+/// enter was pressed while this box had the focus.
+fn pressed_enter(ui: &egui::Ui, response: &egui::Response) -> bool {
+    response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter))
 }
 
 /// the navy strip with the box's name.

@@ -230,25 +230,10 @@ impl AdminSetup {
             }
         });
         ui.add_space(4.0);
-        for (label, field) in [("Password:", true), ("Confirm:", false)] {
-            controls::row(ui, label, |ui| {
-                let text = if field {
-                    &mut *self.password
-                } else {
-                    &mut *self.confirm
-                };
-                controls::field(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(text)
-                            .password(true)
-                            .desired_width(260.0)
-                            .frame(Frame::new())
-                            .margin(Margin::ZERO),
-                    )
-                });
-            });
-            ui.add_space(4.0);
-        }
+        secret_box(ui, "Password:", &mut self.password);
+        ui.add_space(4.0);
+        secret_box(ui, "Confirm:", &mut self.confirm);
+        ui.add_space(4.0);
         self.focus = true;
         controls::group(ui, "SSH public key (the preferred way to sign in)", |ui| {
             controls::field(ui, |ui| {
@@ -318,6 +303,21 @@ impl AdminSetup {
             Some(_) => {}
         }
     }
+}
+
+/// a labelled masked box.
+fn secret_box(ui: &mut egui::Ui, label: &str, text: &mut String) {
+    controls::row(ui, label, |ui| {
+        controls::field(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(text)
+                    .password(true)
+                    .desired_width(260.0)
+                    .frame(Frame::new())
+                    .margin(Margin::ZERO),
+            )
+        });
+    });
 }
 
 /// a short name for a key line: its comment, or its type.
