@@ -79,8 +79,16 @@
         mode: "0750"
       loop:
         - "{{ state_dir }}"
-        - "{{ state_dir }}/lib"
         - "{{ state_dir }}/config"
+      when: nt4 is defined
+
+    # samba's directory holds the shares, so domain users must be able to pass through it; the
+    # password database stays in its own root-only folder and the parent /opt/lanlord is private
+    - name: make samba's data directory passable
+      ansible.builtin.file:
+        path: "{{ state_dir }}/lib"
+        state: directory
+        mode: "0751"
       when: nt4 is defined
 
     - name: write the samba configuration
