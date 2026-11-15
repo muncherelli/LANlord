@@ -96,6 +96,16 @@ enum AdminCommand {
     Add { user: String },
     /// remove a user from lanlord-admins; the last member stays
     Remove { user: String },
+    /// create a new administrator account (a login, in lanlord-admins and sudo); asks for its password
+    Create {
+        name: String,
+        /// a public key file to authorize for ssh, or - to read it from standard input
+        #[arg(long, value_name = "FILE")]
+        ssh_key: Option<String>,
+        /// let the new account use sudo without a password
+        #[arg(long)]
+        passwordless_sudo: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -288,6 +298,27 @@ fn admin(host: &str, action: AdminCommand) -> Result<()> {
         }
         AdminCommand::Add { user } => Action::Add(user),
         AdminCommand::Remove { user } => Action::Remove(user),
+        AdminCommand::Create {
+            name,
+            ssh_key,
+            passwordless_sudo,
+        } => {
+            let key = ssh_key
+                .as_deref()
+                .map(lanlord_core::account::read_key)
+                .transpose()?;
+            let password = new_password(&name)?;
+            let session = lanlord_core::ssh::Session::new(host)?;
+            return lanlord_core::account::create_admin(
+                &session,
+                host,
+                &name,
+                &password,
+                key.as_deref(),
+                passwordless_sudo,
+                &mut ask,
+            );
+        }
     };
     change(host, &action, &mut ask)
 }
