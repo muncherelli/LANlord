@@ -60,6 +60,8 @@ Other distributions and architectures will follow. Arch is a rolling release, so
 
 - Your settings are encrypted on your machine with [age](https://age-encryption.org). The gateway stores only ciphertext. During an apply, the plaintext exists on the gateway only briefly, in a root-only directory on a memory-backed filesystem.
 - The `lanlord` account on the gateway can run commands as root, because Ansible needs that. Treat access to it like root access.
+- Membership of the `lanlord-admins` group on the gateway is a root-level grant, because LANlord applies configuration as root. The group exists to say who may administer LANlord, and `lanlord bootstrap` adds the ssh user to it. Manage it with `lanlord admin <host> list`, `add <user>` and `remove <user>`. The planned next step is a root-owned socket daemon that accepts only members of this group, so that administering LANlord no longer needs a general sudo rule.
+- The Python virtual environment in `/opt/lanlord/venv` is owned by root, not by `lanlord`. Ansible runs from it as root, so a writable copy would let the `lanlord` account run its own code as root.
 - The Samba container speaks SMB1 and NTLMv1 so that old Windows can join. That is why it listens only on the internal network, and why a firewall rule drops those protocols on the host network.
 
 ## Development

@@ -42,7 +42,7 @@ base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tar -x -C /opt/lanlord/playbo
 {payload}
 LANLORD_PAYLOAD
 {stage}cd /opt/lanlord
-sudo -n -u lanlord env HOME=/opt/lanlord ANSIBLE_NOCOLOR=1 \
+sudo -n -u lanlord env HOME=/opt/lanlord PYTHONDONTWRITEBYTECODE=1 ANSIBLE_NOCOLOR=1 \
   ANSIBLE_PYTHON_INTERPRETER=auto_silent ANSIBLE_LOCAL_TEMP=/opt/lanlord/.ansible/tmp \
   /opt/lanlord/venv/bin/ansible-playbook -i localhost,{vars}{tags} /opt/lanlord/playbooks/site.yml
 "#,
@@ -160,6 +160,10 @@ esac"#,
         let s = script(None, &[]).unwrap();
         assert!(s.contains("base64 -d <<'LANLORD_PAYLOAD'"));
         assert!(s.contains("sudo -n -u lanlord tar -x"));
+        assert!(
+            s.contains("PYTHONDONTWRITEBYTECODE=1"),
+            "the venv is root-owned"
+        );
         assert!(s.contains("ansible-playbook -i localhost, /opt/lanlord/playbooks/site.yml"));
         assert_eq!(s.matches("LANLORD_PAYLOAD").count(), 2);
         assert!(!s.contains("settings.yml"), "no settings, no extra vars");
