@@ -393,6 +393,65 @@ mod tests {
         assert!(err.contains("not in your settings"), "{err}");
     }
 
+    #[test]
+    fn a_user_entry_that_is_not_a_mapping_is_reported() {
+        let settings = b"nt4-domain:\n  users:\n    - james\n";
+        // a bare name is not a user entry, so it is never matched; a mapping without a name is skipped
+        let out = edit(
+            settings,
+            &Change::SetPassword {
+                name: "olive".into(),
+                password: "pw".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["olive"]);
+        let scalar = b"nt4-domain:\n  users:\n    - name: james\n";
+        let granted = edit(
+            scalar,
+            &Change::SetAdmin {
+                name: "james".into(),
+                admin: true,
+            },
+        )
+        .unwrap();
+        assert!(String::from_utf8(granted).unwrap().contains("admin: true"));
+    }
+
+    #[test]
+    fn revoking_admin_from_a_plain_user_changes_nothing_else() {
+        let out = edit(
+            SETTINGS.as_bytes(),
+            &Change::SetAdmin {
+                name: "james".into(),
+                admin: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&out), ["james"]);
+        assert!(String::from_utf8(out).unwrap().contains("password: one"));
+    }
+
+    #[test]
+    fn setting_a_password_for_an_absent_user_brings_them_back_with_their_admin_flag() {
+        let settings =
+            b"nt4-domain:\n  users:\n    - name: gone\n      state: absent\n      admin: true\n";
+        let out = edit(
+            settings,
+            &Change::SetPassword {
+                name: "gone".into(),
+                password: "back".into(),
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(out.clone()).unwrap();
+        assert!(
+            !text.contains("absent") && text.contains("admin: true"),
+            "{text}"
+        );
+        assert_eq!(names(&out), ["gone"]);
+    }
+
     #[cfg(unix)]
     mod gateway {
         use super::*;
