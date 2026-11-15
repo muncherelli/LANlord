@@ -5,6 +5,11 @@
 set -eu
 mkdir -p /run/samba /var/log/samba /var/lib/samba/netlogon /var/lib/samba/private
 
+# the roaming profiles share (only used when nt4-domain.roaming_profiles is on): members of
+# domusers may create their own profile folder in it, nobody else can
+getent group domusers >/dev/null || groupadd domusers
+install -d -o root -g domusers -m 0770 /var/lib/samba/profiles
+
 for group in machines domadmins domusers domguests; do
   getent group "$group" >/dev/null || groupadd "$group"
 done
