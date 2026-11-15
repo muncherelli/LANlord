@@ -27,7 +27,6 @@ fn the_menu_draws_with_its_sections() {
     open_menu(&mut desktop, &ctx);
     for action in [
         Action::Open(Target::Settings),
-        Action::Servers,
         Action::Power(Power::Reboot),
         Action::Power(Power::PowerOff),
         Action::About,
@@ -38,43 +37,6 @@ fn the_menu_draws_with_its_sections() {
             "{action:?}"
         );
     }
-}
-
-#[test]
-fn switching_server_changes_the_target_and_the_taskbar_shows_it() {
-    let (mut desktop, ctx, _) = desktop();
-    desktop.hosts.add("me@one").unwrap();
-    desktop.hosts.add("me@two").unwrap();
-    assert_eq!(desktop.host().as_deref(), Some("me@two"));
-    open_menu(&mut desktop, &ctx);
-    choose(&mut desktop, &ctx, &Action::Servers);
-    assert!(
-        desktop.submenu && desktop.start_open,
-        "the list opens beside the menu"
-    );
-    assert_eq!(
-        desktop.submenu_rows().len(),
-        4,
-        "two servers, a rule and Add server"
-    );
-    choose(&mut desktop, &ctx, &Action::SwitchTo(0));
-    assert_eq!(desktop.host().as_deref(), Some("me@one"));
-    assert!(!desktop.start_open && !desktop.submenu);
-    frames(&mut desktop, &ctx, 2);
-}
-
-#[test]
-fn add_server_opens_the_add_host_box() {
-    let (mut desktop, ctx, _) = desktop();
-    open_menu(&mut desktop, &ctx);
-    choose(&mut desktop, &ctx, &Action::Servers);
-    assert_eq!(
-        desktop.submenu_rows().len(),
-        1,
-        "only Add server without hosts"
-    );
-    choose(&mut desktop, &ctx, &Action::AddServer);
-    assert!(desktop.add_host.is_some());
 }
 
 #[test]
@@ -146,18 +108,18 @@ fn about_shows_the_version_and_quit_closes() {
 }
 
 #[test]
-fn the_local_mode_hides_the_server_list_but_keeps_power() {
+fn the_local_mode_hides_the_logon_items_but_keeps_power() {
     let (mut desktop, ctx, fake) = desktop();
     *fake.local.lock().unwrap() = true;
     open_menu(&mut desktop, &ctx);
-    assert!(desktop.menu_item_at(screen(), &Action::Servers).is_none());
+    assert!(desktop.menu_item_at(screen(), &Action::LogOff).is_none());
+    assert!(desktop
+        .menu_item_at(screen(), &Action::SwitchServer)
+        .is_none());
     assert!(desktop
         .menu_item_at(screen(), &Action::Power(Power::Reboot))
         .is_some());
     assert_eq!(desktop.host().as_deref(), Some("local"));
-    desktop.submenu = true;
-    frames(&mut desktop, &ctx, 2);
-    assert!(desktop.menu_item_at(screen(), &Action::AddServer).is_none());
     desktop.start_open = false;
     desktop.open(Target::Hosts);
     frames(&mut desktop, &ctx, 3);

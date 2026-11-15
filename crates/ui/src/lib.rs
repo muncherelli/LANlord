@@ -1,6 +1,7 @@
 //! the native window, drawn with egui so it looks the same on every platform
 //! (and, later, in a browser).
 
+mod admin_setup;
 mod command_panel;
 mod console;
 mod controls;
@@ -11,6 +12,7 @@ mod form;
 mod gateway;
 mod hostlist;
 mod icons;
+mod login;
 mod logon_panel;
 mod nt4_panel;
 mod nt4_window;
@@ -50,6 +52,10 @@ pub fn run() -> Result<()> {
         Box::new(|cc| {
             let services = services::Services::new(Arc::new(gateway::Ssh), &cc.egui_ctx);
             let mut desktop = desktop::Desktop::new(services, hosts::config_path());
+            // the logon box comes first; LANLORD_SCREEN=desktop skips it, to look at the windows
+            if std::env::var("LANLORD_SCREEN").as_deref() != Ok("desktop") {
+                desktop.require_login(Arc::new(login::SystemAuth::new()));
+            }
             if let Ok(spec) = std::env::var("LANLORD_OPEN") {
                 desktop.open_spec(&spec);
             }

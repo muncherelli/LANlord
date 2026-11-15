@@ -53,6 +53,26 @@ fn classify(stderr: &str) -> SshError {
     }
 }
 
+/// the options that share one connection between commands, so the agent prompts once
+/// per session and a signed-in connection is reused (windows openssh has no control sockets).
+pub(crate) fn control_args() -> &'static [&'static str] {
+    #[cfg(unix)]
+    {
+        &[
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            "ControlPersist=10m",
+            "-o",
+            "ControlPath=~/.ssh/lanlord-%C",
+        ]
+    }
+    #[cfg(not(unix))]
+    {
+        &[]
+    }
+}
+
 /// quote `arg` so the remote shell sees it as one literal word.
 fn shell_quote(arg: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
@@ -103,17 +123,7 @@ impl Session {
         cmd.args(&self.program[1..]);
         // never prompt on the terminal; the gui and tui have no tty to answer
         cmd.args(["-o", "BatchMode=yes"]);
-        // share one connection so the agent prompts once per session
-        // (windows openssh has no control sockets)
-        #[cfg(unix)]
-        cmd.args([
-            "-o",
-            "ControlMaster=auto",
-            "-o",
-            "ControlPersist=10m",
-            "-o",
-            "ControlPath=~/.ssh/lanlord-%C",
-        ]);
+        cmd.args(control_args());
         cmd.arg("--").arg(&self.host);
         if !remote.is_empty() {
             let line: Vec<String> = remote.iter().map(|a| shell_quote(a)).collect();

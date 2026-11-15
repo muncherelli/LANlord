@@ -6,7 +6,6 @@ use lanlord_core::modules::MODULES;
 use lanlord_core::power::Power;
 
 use super::{Desktop, Target, MENU_BUTTON, TASKBAR};
-use crate::dialogs::TextDialog;
 use crate::form::{Form, FormAnswer};
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
@@ -18,10 +17,10 @@ const SEPARATOR: f32 = 8.0;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Open(Target),
-    /// open or close the list of servers.
-    Servers,
-    SwitchTo(usize),
-    AddServer,
+    /// back to the logon box to pick another server.
+    SwitchServer,
+    /// back to the logon box.
+    LogOff,
     Power(Power),
     About,
     Quit,
@@ -42,6 +41,11 @@ pub struct Item {
 }
 
 impl Item {
+    #[cfg(test)]
+    pub(super) fn label(&self) -> &str {
+        &self.label
+    }
+
     fn new(label: &str, action: Action) -> Self {
         Self {
             label: label.into(),
@@ -61,8 +65,8 @@ pub enum Confirm {
     About,
 }
 
-/// the main menu's rows and box, and the server list's when it is open.
-type Boxes = (Vec<Row>, Placed, Option<(Vec<Row>, Placed)>);
+/// the menu's rows and box.
+type Boxes = (Vec<Row>, Placed);
 /// a menu's box and the rectangle of each of its rows.
 type Placed = (Rect, Vec<Rect>);
 
@@ -200,11 +204,19 @@ impl Desktop {
             }));
         }
         rows.push(Row::Separator);
-        if !self.services.is_local() {
-            rows.push(Row::Item(Item {
-                arrow: true,
-                ..Item::new("Switch server", Action::Servers)
-            }));
+        if self.auth.is_some() {
+            rows.push(Row::Item(Item::new(
+                "Switch server...",
+                Action::SwitchServer,
+            )));
+            let who = self
+                .signed_in
+                .as_ref()
+                .map_or("", |s| s.identity.user.as_str());
+            rows.push(Row::Item(Item::new(
+                &format!("Log off {who}..."),
+                Action::LogOff,
+            )));
         }
         let ready = self.host().is_some_and(|h| !self.services.busy(&h));
         for (label, power) in [
@@ -222,63 +234,27 @@ impl Desktop {
         rows
     }
 
-    /// the saved servers, the current one ticked, and a way to add one.
-    pub(super) fn submenu_rows(&self) -> Vec<Row> {
-        let mut rows: Vec<Row> = self
-            .hosts
-            .hosts()
-            .iter()
-            .enumerate()
-            .map(|(i, host)| {
-                let ticked = self.hosts.selected_index() == i && self.hosts.selected().is_some();
-                Row::Item(Item {
-                    ticked,
-                    ..Item::new(host, Action::SwitchTo(i))
-                })
-            })
-            .collect();
-        if !rows.is_empty() {
-            rows.push(Row::Separator);
-        }
-        rows.push(Row::Item(Item::new("Add server...", Action::AddServer)));
-        rows
-    }
-
-    /// where the menu and, when open, the server list sit on `screen`.
+    /// where the menu sits on `screen`.
     fn menu_boxes(&self, screen: Rect) -> Boxes {
         let rows = self.menu_rows();
         let main = geometry(&rows, screen.left() + 2.0, screen.bottom() - TASKBAR, true);
-        let sub = (self.submenu && !self.services.is_local()).then(|| {
-            let sub_rows = self.submenu_rows();
-            let anchor = rows
-                .iter()
-                .position(|r| matches!(r, Row::Item(i) if i.action == Action::Servers))
-                .map_or(main.0.top(), |n| main.1[n].top());
-            let height = sub_rows.iter().map(row_height).sum::<f32>() + 14.0;
-            let bottom = (anchor + height).min(screen.bottom() - TASKBAR);
-            let sub = geometry(&sub_rows, main.0.right() - 2.0, bottom, false);
-            (sub_rows, sub)
-        });
-        (rows, main, sub)
+        (rows, main)
     }
 
     /// the centre of the menu item that does `action`, for tests.
     #[cfg(test)]
     pub(super) fn menu_item_at(&self, screen: Rect, action: &Action) -> Option<Pos2> {
-        let (rows, main, sub) = self.menu_boxes(screen);
-        let find = |rows: &[Row], rects: &[Rect]| {
-            rows.iter().zip(rects).find_map(|(row, rect)| match row {
-                Row::Item(item) if item.action == *action => Some(rect.center()),
-                _ => None,
-            })
-        };
-        find(&rows, &main.1).or_else(|| sub.and_then(|(rows, (_, rects))| find(&rows, &rects)))
+        let (rows, main) = self.menu_boxes(screen);
+        rows.iter().zip(&main.1).find_map(|(row, rect)| match row {
+            Row::Item(item) if item.action == *action => Some(rect.center()),
+            _ => None,
+        })
     }
 
     pub(super) fn start_menu(&mut self, ctx: &egui::Context) {
         let screen = ctx.content_rect();
-        let (rows, main, sub) = self.menu_boxes(screen);
-        let mut chosen = Area::new(Id::unique("start-menu"))
+        let (rows, main) = self.menu_boxes(screen);
+        let chosen = Area::new(Id::unique("start-menu"))
             .order(Order::Foreground)
             .fixed_pos(main.0.min)
             .show(ctx, |ui| {
@@ -286,53 +262,24 @@ impl Desktop {
                 paint(ui, &rows, main.0, &main.1, true)
             })
             .inner;
-        if let Some((sub_rows, (rect, rects))) = &sub {
-            let picked = Area::new(Id::unique("start-servers"))
-                .order(Order::Foreground)
-                .fixed_pos(rect.min)
-                .show(ctx, |ui| {
-                    ui.allocate_exact_size(rect.size(), Sense::hover());
-                    paint(ui, sub_rows, *rect, rects, false)
-                })
-                .inner;
-            chosen = chosen.or(picked);
-        }
         match chosen {
             Some(action) => self.do_action(ctx, action),
             None => {
                 // a click anywhere else closes the menu
                 let pos = ctx.input(|i| i.pointer.interact_pos());
-                let inside = |at: Pos2| {
-                    main.0.contains(at) || sub.as_ref().is_some_and(|s| (s.1).0.contains(at))
-                };
                 let outside = ctx.input(|i| i.pointer.any_pressed())
-                    && pos.is_some_and(|p| !inside(p) && p.y < screen.bottom() - TASKBAR);
+                    && pos.is_some_and(|p| !main.0.contains(p) && p.y < screen.bottom() - TASKBAR);
                 if outside {
                     self.start_open = false;
-                    self.submenu = false;
                 }
             }
         }
     }
 
     pub(super) fn do_action(&mut self, ctx: &egui::Context, action: Action) {
-        if action == Action::Servers {
-            self.submenu = !self.submenu;
-            return;
-        }
         match action {
             Action::Open(target) => self.open(target),
-            Action::SwitchTo(i) => self.hosts.select(i),
-            Action::AddServer => {
-                if self.add_host.is_none() {
-                    self.add_host = Some(TextDialog::new(
-                        "add-host",
-                        "Add a host",
-                        "Gateway as user@host:",
-                        false,
-                    ));
-                }
-            }
+            Action::SwitchServer | Action::LogOff => self.log_off(),
             Action::Power(power) => self.ask_power(power),
             Action::About => {
                 let text = format!(
@@ -342,10 +289,8 @@ impl Desktop {
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));
             }
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Action::Servers => {}
         }
         self.start_open = false;
-        self.submenu = false;
     }
 
     fn ask_power(&mut self, power: Power) {

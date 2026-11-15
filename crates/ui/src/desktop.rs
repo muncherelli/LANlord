@@ -3,6 +3,7 @@
 //! background through `Services`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui::{
     self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
@@ -14,6 +15,7 @@ mod menu;
 
 use menu::Confirm;
 
+use crate::admin_setup::{self, AdminSetup};
 use crate::command_panel::CommandPanel;
 use crate::console::{self, Console};
 use crate::controls;
@@ -22,6 +24,7 @@ use crate::dns_panel::DnsPanel;
 use crate::form::Form;
 use crate::hostlist::HostList;
 use crate::icons;
+use crate::login::{Auth, LoginBox, Outcome, SignedIn};
 use crate::nt4_window::Nt4Window;
 use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
@@ -84,11 +87,16 @@ pub struct Desktop {
     commands: CommandPanel,
     /// the box asking before a reboot or power off, or showing the version.
     confirm: Option<(Confirm, Form)>,
-    /// the list of servers beside the menu is open.
-    submenu: bool,
     /// a task is waiting for this password.
     password: Option<(PasswordRequest, TextDialog)>,
     add_host: Option<TextDialog>,
+    /// how to sign in; `None` when lanlord runs on the gateway itself (or in a test).
+    auth: Option<Arc<dyn Auth>>,
+    /// the logon box, shown instead of the desktop until someone is signed in.
+    login: Option<LoginBox>,
+    signed_in: Option<SignedIn>,
+    /// the screen root lands on to create the first administrator, before the desktop.
+    admin_setup: Option<AdminSetup>,
 }
 
 impl Desktop {
@@ -110,10 +118,27 @@ impl Desktop {
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             confirm: None,
-            submenu: false,
             password: None,
             add_host: None,
+            auth: None,
+            login: None,
+            signed_in: None,
+            admin_setup: None,
         }
+    }
+
+    /// start at the logon box. lanlord on the gateway itself has one server and no logon.
+    pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
+        if self.services.is_local() {
+            return;
+        }
+        let last = self.hosts.selected().map(String::from);
+        self.login = Some(LoginBox::new(
+            auth.clone(),
+            &self.services.ctx,
+            last.as_deref(),
+        ));
+        self.auth = Some(auth);
     }
 }
 
@@ -176,6 +201,14 @@ impl Desktop {
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
+        if self.login.is_some() {
+            self.show_login(ui, &ctx);
+            return;
+        }
+        if self.admin_setup.is_some() {
+            self.show_admin_setup(ui, &ctx);
+            return;
+        }
         egui::Panel::bottom("taskbar")
             .exact_size(TASKBAR)
             .frame(
@@ -199,6 +232,99 @@ impl Desktop {
             self.start_menu(&ctx);
         }
         self.dialogs(&ctx);
+    }
+
+    /// the logon box on the bare desktop colour: no icons or taskbar until someone is signed in.
+    fn show_login(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(TEAL))
+            .show(ui, |_| {});
+        let known = self.hosts.hosts().to_vec();
+        let outcome = self
+            .login
+            .as_mut()
+            .and_then(|login| login.show(ctx, &known));
+        match outcome {
+            Some(Outcome::SignedIn(signed_in)) => self.finish_login(signed_in),
+            Some(Outcome::ShutDown) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {}
+        }
+    }
+
+    /// someone signed in: the server joins the list and every action targets it. root goes to
+    /// the screen that creates the first administrator before anything else.
+    fn finish_login(&mut self, signed_in: SignedIn) {
+        self.login = None;
+        if let Err(error) = self.hosts.add(&signed_in.target) {
+            emit(Kind::Err, error);
+        }
+        self.windows.clear();
+        self.active = None;
+        self.selected = None;
+        self.start_open = false;
+        if signed_in.identity.is_root() {
+            self.admin_setup = Some(AdminSetup::new());
+        }
+        self.signed_in = Some(signed_in);
+    }
+
+    /// the create-an-administrator screen, on the bare desktop colour.
+    fn show_admin_setup(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(TEAL))
+            .show(ui, |_| {});
+        let Some(target) = self.signed_in.as_ref().map(|s| s.target.clone()) else {
+            self.admin_setup = None;
+            return;
+        };
+        let outcome = self
+            .admin_setup
+            .as_mut()
+            .and_then(|setup| setup.show(ctx, &self.services, &target));
+        match outcome {
+            Some(admin_setup::Outcome::Skipped) => self.admin_setup = None,
+            Some(admin_setup::Outcome::Created(name)) => self.admin_created(&name, &target),
+            None => {}
+        }
+        self.dialogs(ctx);
+    }
+
+    /// the administrator exists: forget the root entry and ask for a logon as the new account.
+    fn admin_created(&mut self, name: &str, root_target: &str) {
+        self.admin_setup = None;
+        if self.hosts.selected() == Some(root_target) {
+            let _ = self.hosts.remove_selected();
+        }
+        let host = root_target.split_once('@').map_or(root_target, |(_, h)| h);
+        self.return_to_login(
+            Some(format!("{name}@{host}")),
+            Some(format!("Created {name}. Log on with it.")),
+        );
+    }
+
+    /// back to the logon box, closing the connection that was kept open for this server.
+    fn log_off(&mut self) {
+        let last = self.signed_in.as_ref().map(|s| s.target.clone());
+        self.return_to_login(last, None);
+    }
+
+    /// show the logon box again with `last` filled in and `note` in its status bar.
+    fn return_to_login(&mut self, last: Option<String>, note: Option<String>) {
+        let Some(auth) = self.auth.clone() else {
+            return;
+        };
+        if let Some(target) = self.signed_in.take().map(|s| s.target) {
+            let closer = auth.clone();
+            std::thread::spawn(move || closer.sign_out(&target));
+        }
+        self.windows.clear();
+        self.active = None;
+        self.start_open = false;
+        let mut login = LoginBox::new(auth, &self.services.ctx, last.as_deref());
+        if let Some(note) = note {
+            login.note(&note);
+        }
+        self.login = Some(login);
     }
 
     /// the modal boxes: a task's password prompt and the add-host box.
@@ -306,7 +432,6 @@ impl Desktop {
             let start = self.menu_button(ui);
             if start.clicked() {
                 self.start_open = !self.start_open;
-                self.submenu = false;
             }
             self.server_chip(ui);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), Sense::hover());
@@ -591,6 +716,8 @@ impl Desktop {
 
 #[cfg(test)]
 mod harness;
+#[cfg(test)]
+mod login_tests;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]
