@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn planned_modules_do_not_apply() {
+    fn an_available_module_applies_from_its_window() {
         let (mut app, applied) = applying_app();
         app.on_key(key(KeyCode::Tab));
         for _ in 0..4 {
@@ -801,7 +801,10 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.window.unwrap().id, "remote-commands");
         app.on_key(key(KeyCode::Enter));
-        assert!(applied.borrow().is_empty());
+        assert_eq!(
+            applied.borrow().as_slice(),
+            [("a@one".to_string(), vec!["remote-commands".to_string()])]
+        );
     }
 
     #[test]

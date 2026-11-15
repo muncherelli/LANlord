@@ -16,6 +16,7 @@ pub mod nt4;
 pub mod passwords;
 pub mod paths;
 pub mod payload;
+pub mod power;
 pub mod settings;
 pub mod ssh;
 #[cfg(all(test, unix))]
