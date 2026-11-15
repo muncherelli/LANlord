@@ -45,8 +45,9 @@ const ADMINS_ID: u32 = 9998;
 
 /// shell that refuses to continue when `id` belongs to an account other than `name`.
 fn id_taken_check(kind: &str, id_name: &str, id: u32, name: &str) -> String {
+    let db = if kind == "user" { "passwd" } else { kind };
     format!(
-        r#"owner=$(getent {kind} {id} | cut -d: -f1 || true)
+        r#"owner=$(getent {db} {id} | cut -d: -f1 || true)
 if [ -n "$owner" ] && [ "$owner" != {name} ]; then
   echo "{id_name} {id} is already used by {kind} $owner" >&2; exit 1
 fi
@@ -78,7 +79,7 @@ if [ -n "$gid" ] && [ "$gid" != {admins_id} ]; then
 fi
 "#,
         id_taken_check("group", "gid", id, "lanlord"),
-        id_taken_check("passwd", "uid", id, "lanlord"),
+        id_taken_check("user", "uid", id, "lanlord"),
         id_taken_check("group", "gid", admins_id, admins),
     );
     let mut s = format!(
@@ -280,7 +281,8 @@ mod tests {
     fn passwordless_sudo_is_opt_in() {
         let off = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
         let on = script(&opts(AnsibleMode::Local, true), "admin").unwrap();
-        assert!(!off.contains("lanlord-admin"));
+        assert!(!off.contains("sudoers.d/lanlord-admin"));
+        assert!(on.contains("sudoers.d/lanlord-admin"));
         assert!(on.contains("admin ALL=(ALL) NOPASSWD: ALL"));
     }
 
