@@ -5,15 +5,23 @@
 use std::path::PathBuf;
 
 use eframe::egui::{
-    self, Align, Align2, Frame, Id, Layout, Margin, Order, Pos2, Rect, RichText, Sense, Ui, Vec2,
+    self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
 };
 use lanlord_core::log::{emit, Kind};
 use lanlord_core::modules::{Module, Status, MODULES};
 
+mod menu;
+
+use menu::Confirm;
+
+use crate::command_panel::CommandPanel;
 use crate::console::{self, Console};
 use crate::dialogs::{Answer, TextDialog};
+use crate::dns_panel::DnsPanel;
+use crate::form::Form;
 use crate::hostlist::HostList;
 use crate::icons;
+use crate::nt4_window::Nt4Window;
 use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
 use crate::tasks::PasswordRequest;
@@ -22,6 +30,9 @@ use crate::windows;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
+/// the width of the LANlord button and of the box naming the selected server.
+const MENU_BUTTON: f32 = 92.0;
+const SERVER_CHIP: f32 = 170.0;
 
 /// what an icon or a window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +78,13 @@ pub struct Desktop {
     console: Console,
     services: Services,
     settings: SettingsEditor,
+    nt4: Nt4Window,
+    dns: DnsPanel,
+    commands: CommandPanel,
+    /// the box asking before a reboot or power off, or showing the version.
+    confirm: Option<(Confirm, Form)>,
+    /// the list of servers beside the menu is open.
+    submenu: bool,
     /// a task is waiting for this password.
     password: Option<(PasswordRequest, TextDialog)>,
     add_host: Option<TextDialog>,
@@ -87,6 +105,11 @@ impl Desktop {
             console: Console::new(&services.ctx),
             services,
             settings: SettingsEditor::default(),
+            nt4: Nt4Window::default(),
+            dns: DnsPanel::default(),
+            commands: CommandPanel::default(),
+            confirm: None,
+            submenu: false,
             password: None,
             add_host: None,
         }
@@ -108,7 +131,12 @@ impl Desktop {
 
     /// the host every action targets.
     fn host(&self) -> Option<String> {
-        self.hosts.selected().map(String::from)
+        match self.hosts.selected() {
+            Some(host) => Some(host.to_string()),
+            // lanlord on the gateway itself has one server and no list
+            None if self.services.is_local() => Some("local".into()),
+            None => None,
+        }
     }
 }
 
@@ -141,6 +169,9 @@ impl Desktop {
 
         self.console.drain();
         self.settings.poll();
+        self.nt4.poll();
+        self.dns.poll();
+        self.commands.poll();
         self.show_windows(&ctx);
         if self.start_open {
             self.start_menu(&ctx);
@@ -168,6 +199,10 @@ impl Desktop {
             }
         }
         self.settings.dialog(ctx);
+        let host = self.host();
+        self.nt4.dialog(ctx, &self.services, host.as_deref());
+        self.dns.dialog(ctx);
+        self.confirmation(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
                 Some(Answer::Ok(text)) => {
@@ -246,11 +281,12 @@ impl Desktop {
     fn taskbar(&mut self, ui: &mut Ui) {
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-            let start = self.start_button(ui);
+            let start = self.menu_button(ui);
             if start.clicked() {
                 self.start_open = !self.start_open;
+                self.submenu = false;
             }
-            ui.add_space(4.0);
+            self.server_chip(ui);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), Sense::hover());
             bevel(ui.painter(), rect, false);
             ui.add_space(2.0);
@@ -309,116 +345,20 @@ impl Desktop {
         });
     }
 
-    fn start_button(&self, ui: &mut Ui) -> egui::Response {
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(70.0, 22.0), Sense::click());
-        let down = self.start_open || response.is_pointer_button_down_on();
-        ui.painter().rect_filled(rect, 0.0, GRAY);
-        bevel(ui.painter(), rect, !down);
-        let nudge = if down {
-            Vec2::new(1.0, 1.0)
-        } else {
-            Vec2::ZERO
-        };
-        let logo = Rect::from_min_size(
-            rect.left_top() + Vec2::new(6.0, 4.0) + nudge,
-            Vec2::splat(14.0),
-        );
-        ui.painter().rect_filled(logo, 0.0, NAVY);
-        ui.painter().text(
-            logo.center(),
-            Align2::CENTER_CENTER,
-            "L",
-            theme::font(),
-            WHITE,
-        );
-        ui.painter().text(
-            rect.left_center() + Vec2::new(26.0, 0.0) + nudge,
+    /// the box beside the menu button naming the server every action targets.
+    fn server_chip(&self, ui: &mut Ui) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(SERVER_CHIP, 22.0), Sense::hover());
+        bevel(ui.painter(), rect, false);
+        let text = self
+            .host()
+            .map_or_else(|| "no server".to_string(), |h| format!("Server: {h}"));
+        ui.painter().with_clip_rect(rect.shrink(2.0)).text(
+            rect.left_center() + Vec2::new(6.0, 0.0),
             Align2::LEFT_CENTER,
-            "Start",
-            egui::FontId::proportional(14.0),
+            text,
+            theme::font(),
             BLACK,
         );
-        response
-    }
-
-    fn start_menu(&mut self, ctx: &egui::Context) {
-        let screen = ctx.content_rect();
-        let width = 190.0;
-        let rows = MODULES.len() + 3;
-        let height = rows as f32 * 26.0 + 14.0;
-        let pos = Pos2::new(screen.left() + 2.0, screen.bottom() - TASKBAR - height);
-        let mut chosen: Option<Option<Target>> = None;
-        let response = egui::Area::new(Id::unique("start-menu"))
-            .order(Order::Foreground)
-            .fixed_pos(pos)
-            .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-                ui.painter().rect_filled(rect, 0.0, GRAY);
-                bevel(ui.painter(), rect, true);
-                let strip =
-                    Rect::from_min_size(rect.min + Vec2::splat(3.0), Vec2::new(22.0, height - 6.0));
-                ui.painter().rect_filled(strip, 0.0, NAVY);
-                let mut y = rect.top() + 8.0;
-                let item = |ui: &mut Ui, label: &str, art: Option<&str>, y: &mut f32| -> bool {
-                    let row = Rect::from_min_size(
-                        Pos2::new(rect.left() + 28.0, *y),
-                        Vec2::new(width - 32.0, 24.0),
-                    );
-                    let response =
-                        ui.interact(row, Id::unique(("start-item", label)), Sense::click());
-                    let hot = response.hovered();
-                    if hot {
-                        ui.painter().rect_filled(row, 0.0, NAVY);
-                    }
-                    if let Some(art) = art {
-                        icons::draw(
-                            ui.painter(),
-                            row.left_top() + Vec2::new(4.0, 4.0),
-                            icons::art(art),
-                            1.0,
-                        );
-                    }
-                    ui.painter().text(
-                        row.left_center() + Vec2::new(28.0, 0.0),
-                        Align2::LEFT_CENTER,
-                        label,
-                        theme::font(),
-                        if hot { WHITE } else { BLACK },
-                    );
-                    *y += 26.0;
-                    response.clicked()
-                };
-                for (i, module) in MODULES.iter().enumerate() {
-                    if item(ui, module.name, Some(module.id), &mut y) {
-                        chosen = Some(Some(Target::Module(i)));
-                    }
-                }
-                if item(ui, "Settings", Some("settings"), &mut y) {
-                    chosen = Some(Some(Target::Settings));
-                }
-                if item(ui, "Console", Some("console"), &mut y) {
-                    chosen = Some(Some(Target::Console));
-                }
-                if item(ui, "Shut Down...", None, &mut y) {
-                    chosen = Some(None);
-                }
-                rect
-            });
-        match chosen {
-            Some(Some(target)) => self.open(target),
-            Some(None) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            None => {
-                // a click anywhere else closes the menu
-                let outside = ctx.input(|i| i.pointer.any_pressed())
-                    && !response.response.contains_pointer()
-                    && ctx
-                        .input(|i| i.pointer.interact_pos())
-                        .is_some_and(|p| p.y < screen.bottom() - TASKBAR);
-                if outside {
-                    self.start_open = false;
-                }
-            }
-        }
     }
 }
 
@@ -433,7 +373,12 @@ impl Desktop {
             }
             let target = window.target;
             let size = match target {
-                Target::Module(_) => Vec2::new(420.0, 400.0),
+                Target::Module(i) => match MODULES[i].id {
+                    "nt4-domain" => Vec2::new(480.0, 520.0),
+                    "dns" => Vec2::new(560.0, 600.0),
+                    "remote-commands" => Vec2::new(520.0, 480.0),
+                    _ => Vec2::new(420.0, 400.0),
+                },
                 Target::Console => Vec2::new(520.0, 260.0),
                 Target::Hosts => Vec2::new(340.0, 250.0),
                 Target::Settings => Vec2::new(520.0, 520.0),
@@ -489,22 +434,27 @@ impl Desktop {
         ui.add_space(4.0);
         ui.label(module.summary);
         ui.add_space(6.0);
+        let host = self.host();
+        match module.id {
+            "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
+            "dns" => self.dns.show(ui, &self.services, host.as_deref()),
+            "remote-commands" => {
+                let machines = self.nt4.settings.machines();
+                self.commands
+                    .show(ui, &self.services, host.as_deref(), machines);
+            }
+            _ => self.plain_module(ui, module, host),
+        }
+    }
+
+    /// a module with nothing to edit yet: its example settings and an Apply button.
+    fn plain_module(&mut self, ui: &mut Ui, module: &'static Module, host: Option<String>) {
         ui.label("Settings (in your settings file):");
         theme::sunken(ui, WHITE, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(module.example).monospace());
         });
-        if module.id == "nt4-domain" {
-            ui.add_space(6.0);
-            ui.label("Logins:");
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(48.0);
-                ui.label("Loading the logins from the gateway is coming.");
-            });
-        }
         ui.add_space(8.0);
-        let host = self.host();
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
             let ready = module.status == Status::Available && !busy;
@@ -539,6 +489,10 @@ impl Desktop {
     }
 
     fn hosts_window(&mut self, ui: &mut Ui) {
+        if self.services.is_local() {
+            ui.label("This computer is the server; there are no other hosts to pick.");
+            return;
+        }
         ui.label("Gateways lanlord manages:");
         let mut picked = None;
         theme::sunken(ui, WHITE, |ui| {
@@ -587,109 +541,16 @@ impl Desktop {
 }
 
 #[cfg(test)]
+mod harness;
+#[cfg(test)]
+mod menu_tests;
+#[cfg(test)]
+mod window_tests;
+#[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
-
+    use super::harness::*;
     use super::*;
-    use crate::gateway::Fake;
     use lanlord_core::log::Kind;
-
-    const SCREEN: Vec2 = Vec2::new(960.0, 640.0);
-
-    fn desktop() -> (Desktop, egui::Context, Arc<Fake>) {
-        let ctx = egui::Context::default();
-        let fake = Arc::new(Fake::new());
-        let desktop = Desktop::new(Services::new(fake.clone(), &ctx), None);
-        (desktop, ctx, fake)
-    }
-
-    fn frame(desktop: &mut Desktop, ctx: &egui::Context, events: Vec<egui::Event>) {
-        let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
-            events,
-            ..Default::default()
-        };
-        // nothing uploads the textures here, so drop the update on purpose
-        ctx.run_ui(input, |ui| desktop.show(ui))
-            .textures_delta
-            .clear();
-    }
-
-    fn frames(desktop: &mut Desktop, ctx: &egui::Context, n: usize) {
-        for _ in 0..n {
-            frame(desktop, ctx, Vec::new());
-        }
-    }
-
-    fn click(at: Pos2) -> Vec<egui::Event> {
-        let button = |pressed| egui::Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        vec![egui::Event::PointerMoved(at), button(true), button(false)]
-    }
-
-    fn click_at(desktop: &mut Desktop, ctx: &egui::Context, at: Pos2) {
-        for event in click(at) {
-            frame(desktop, ctx, vec![event]);
-        }
-        frames(desktop, ctx, 2);
-    }
-
-    /// click the button labelled `text`; false when it is missing or disabled.
-    fn press(desktop: &mut Desktop, ctx: &egui::Context, text: &str) -> bool {
-        // draw first, so the button reflects what the tasks did meanwhile
-        frames(desktop, ctx, 2);
-        match theme::probe::find(ctx, text) {
-            Some((rect, true)) => {
-                click_at(desktop, ctx, rect.center());
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn enabled(ctx: &egui::Context, text: &str) -> Option<bool> {
-        theme::probe::find(ctx, text).map(|(_, on)| on)
-    }
-
-    fn key(key: egui::Key) -> egui::Event {
-        egui::Event::Key {
-            key,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }
-    }
-
-    fn type_text(desktop: &mut Desktop, ctx: &egui::Context, text: &str) {
-        frame(desktop, ctx, vec![egui::Event::Text(text.into())]);
-        frame(desktop, ctx, vec![key(egui::Key::Enter)]);
-        frames(desktop, ctx, 2);
-    }
-
-    /// draw frames until `done` holds.
-    fn until(desktop: &mut Desktop, ctx: &egui::Context, done: impl Fn(&Desktop) -> bool) {
-        let start = Instant::now();
-        while !done(desktop) {
-            assert!(start.elapsed() < Duration::from_secs(5), "timed out");
-            frames(desktop, ctx, 1);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn idle(host: &'static str) -> impl Fn(&Desktop) -> bool {
-        move |d| !d.services.busy(host)
-    }
-
-    fn with_host(desktop: &mut Desktop, ctx: &egui::Context) {
-        desktop.hosts.add("me@gw").unwrap();
-        frames(desktop, ctx, 2);
-    }
 
     #[test]
     fn the_empty_desktop_draws() {
@@ -729,18 +590,28 @@ mod tests {
     }
 
     #[test]
-    fn the_start_menu_opens_settings() {
+    fn the_menu_opens_settings() {
         let (mut desktop, ctx, _) = desktop();
         desktop.start_open = true;
         frames(&mut desktop, &ctx, 3);
         assert!(desktop.start_open);
-        // the settings row is third from the bottom, above Console and Shut Down
-        let rows = MODULES.len() + 3;
-        let top = SCREEN.y - TASKBAR - (rows as f32 * 26.0 + 14.0);
-        let row = top + 8.0 + (MODULES.len() as f32) * 26.0 + 12.0;
-        click_at(&mut desktop, &ctx, Pos2::new(100.0, row));
+        let at = desktop
+            .menu_item_at(screen(), &menu::Action::Open(Target::Settings))
+            .unwrap();
+        click_at(&mut desktop, &ctx, at);
         assert_eq!(desktop.active, Some(Target::Settings));
         assert!(!desktop.start_open);
+    }
+
+    #[test]
+    fn the_lanlord_button_opens_the_menu() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 2);
+        let button = Pos2::new(2.0 + MENU_BUTTON / 2.0, SCREEN.y - TASKBAR / 2.0);
+        click_at(&mut desktop, &ctx, button);
+        assert!(desktop.start_open);
+        click_at(&mut desktop, &ctx, Pos2::new(700.0, 300.0));
+        assert!(!desktop.start_open, "a click elsewhere closes it");
     }
 
     #[test]
@@ -765,7 +636,7 @@ mod tests {
         frames(&mut desktop, &ctx, 1);
         // the first window button sits just right of the start button
         let button = Pos2::new(
-            70.0 + 4.0 + 4.0 + 2.0 + 20.0 + 75.0,
+            MENU_BUTTON + SERVER_CHIP + 4.0 + 4.0 + 8.0 + 2.0 + 20.0 + 75.0,
             SCREEN.y - TASKBAR / 2.0,
         );
         for events in click(button).into_iter().map(|e| vec![e]) {
@@ -896,30 +767,13 @@ mod tests {
     }
 
     #[test]
-    fn modules_that_are_planned_or_have_no_host_cannot_apply() {
+    fn a_module_without_a_host_cannot_apply() {
         let (mut desktop, ctx, fake) = desktop();
-        let planned = MODULES
-            .iter()
-            .position(|m| m.status == Status::Planned)
-            .expect("a planned module");
-        desktop.open(Target::Module(planned));
+        desktop.open(Target::Module(0));
         frames(&mut desktop, &ctx, 2);
         assert_eq!(enabled(&ctx, "Apply"), Some(false), "no host");
-        with_host(&mut desktop, &ctx);
-        assert_eq!(enabled(&ctx, "Apply"), Some(false), "planned");
         assert!(!press(&mut desktop, &ctx, "Apply"));
         assert!(fake.calls().is_empty());
-    }
-
-    #[test]
-    fn the_nt4_window_no_longer_shows_dummy_logins() {
-        let (mut desktop, ctx, _) = desktop();
-        let nt4 = MODULES.iter().position(|m| m.id == "nt4-domain").unwrap();
-        desktop.open(Target::Module(nt4));
-        frames(&mut desktop, &ctx, 2);
-        for label in ["Add...", "Password...", "Delete"] {
-            assert!(theme::probe::find(&ctx, label).is_none(), "{label}");
-        }
     }
 
     #[test]

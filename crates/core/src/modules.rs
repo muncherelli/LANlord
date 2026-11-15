@@ -80,9 +80,9 @@ pub const MODULES: &[Module] = &[
         "remote-commands",
         "Remote Cmds",
         ["┌─────┐", "│ C:\\>│", "└─────┘"],
-        "Run commands on NT4 servers through the Resource Kit Remote Command Service.",
+        "Run commands on the gateway over ssh. Running them on NT4 machines is still being researched.",
         "remote-commands:\n  servers:\n    - name: NTSRV1\n      address: 172.16.120.10",
-        Status::Planned,
+        Status::Available,
     ),
     Module::new(
         "dns",
@@ -143,6 +143,6 @@ mod tests {
         assert_eq!(find("nt4-domain").unwrap().status, Status::Available);
         assert_eq!(find("web-proxy").unwrap().status, Status::Available);
         assert_eq!(find("dns").unwrap().status, Status::Available);
-        assert_eq!(find("remote-commands").unwrap().status, Status::Planned);
+        assert_eq!(find("remote-commands").unwrap().status, Status::Available);
     }
 }

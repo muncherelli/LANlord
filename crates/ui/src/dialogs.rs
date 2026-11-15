@@ -45,56 +45,67 @@ impl TextDialog {
 
     /// draw the dialog; `Some` once the user answered it.
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Answer> {
-        let frame = Frame::new()
-            .fill(GRAY)
-            .inner_margin(Margin::same(4))
-            .stroke(egui::Stroke::new(1.0, Color32::BLACK));
         let mut answer = None;
-        egui::Modal::new(Id::unique(self.id))
-            .frame(frame)
-            .backdrop_color(Color32::from_black_alpha(60))
-            .show(ctx, |ui| {
-                ui.set_width(300.0);
-                let (bar, _) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), 20.0),
-                    egui::Sense::hover(),
-                );
-                ui.painter().rect_filled(bar, 0.0, NAVY);
-                ui.painter().text(
-                    bar.left_center() + Vec2::new(6.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    &self.title,
-                    theme::font(),
-                    WHITE,
-                );
-                ui.add_space(8.0);
-                ui.label(&self.prompt);
-                let edit = TextEdit::singleline(&mut self.input)
-                    .password(self.masked)
-                    .desired_width(ui.available_width());
-                let edit = ui.add(edit);
-                if !self.focused {
-                    edit.request_focus();
-                    self.focused = true;
+        modal(ctx, self.id, &self.title, |ui| {
+            ui.label(&self.prompt);
+            let edit = TextEdit::singleline(&mut self.input)
+                .password(self.masked)
+                .desired_width(ui.available_width());
+            let edit = ui.add(edit);
+            if !self.focused {
+                edit.request_focus();
+                self.focused = true;
+            }
+            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            if let Some(error) = &self.error {
+                ui.colored_label(Color32::from_rgb(160, 0, 0), error);
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let ok = theme::button(ui, "OK", false);
+                let cancel = theme::button(ui, "Cancel", false);
+                self.buttons = Some((ok.rect, cancel.rect));
+                if ok.clicked() || enter {
+                    answer = Some(Answer::Ok(self.input.clone()));
+                } else if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    answer = Some(Answer::Cancel);
                 }
-                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                if let Some(error) = &self.error {
-                    ui.colored_label(Color32::from_rgb(160, 0, 0), error);
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let ok = theme::button(ui, "OK", false);
-                    let cancel = theme::button(ui, "Cancel", false);
-                    self.buttons = Some((ok.rect, cancel.rect));
-                    if ok.clicked() || enter {
-                        answer = Some(Answer::Ok(self.input.clone()));
-                    } else if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                        answer = Some(Answer::Cancel);
-                    }
-                });
             });
+        });
         answer
     }
+}
+
+/// a modal box with a navy title bar, drawn on top of everything.
+pub fn modal<R>(
+    ctx: &egui::Context,
+    id: &'static str,
+    title: &str,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let frame = Frame::new()
+        .fill(GRAY)
+        .inner_margin(Margin::same(4))
+        .stroke(egui::Stroke::new(1.0, Color32::BLACK));
+    egui::Modal::new(Id::unique(id))
+        .frame(frame)
+        .backdrop_color(Color32::from_black_alpha(60))
+        .show(ctx, |ui| {
+            ui.set_width(340.0);
+            let (bar, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
+            ui.painter().rect_filled(bar, 0.0, NAVY);
+            ui.painter().text(
+                bar.left_center() + Vec2::new(6.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                title,
+                theme::font(),
+                WHITE,
+            );
+            ui.add_space(8.0);
+            body(ui)
+        })
+        .inner
 }
 
 #[cfg(test)]

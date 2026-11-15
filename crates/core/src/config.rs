@@ -66,7 +66,7 @@ if [ -f /opt/lanlord/config/settings.age ]; then
 fi
 "#;
 
-fn admin(session: &Session) -> Result<String> {
+pub(crate) fn admin(session: &Session) -> Result<String> {
     Ok(session
         .capture(&["id".into(), "-un".into()])?
         .trim()
