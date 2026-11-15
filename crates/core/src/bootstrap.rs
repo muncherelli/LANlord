@@ -43,6 +43,31 @@ const SERVICE_ID: u32 = 9999;
 /// the gid of `lanlord-admins`, the people allowed to administer lanlord.
 const ADMINS_ID: u32 = 9998;
 
+/// how long sudo remembers the password of a `lanlord-admins` member, in minutes.
+pub(crate) const SUDO_MINUTES: u32 = 15;
+
+/// the sudoers rules for `lanlord-admins`: they may use sudo, and one password prompt is
+/// remembered for `SUDO_MINUTES` across all the ssh sessions lanlord opens (they have no tty,
+/// so the default per-tty record would never be reused).
+pub(crate) fn admins_sudoers() -> String {
+    format!(
+        "# written by lanlord\nDefaults:%{ADMINS_GROUP} timestamp_type=global\nDefaults:%{ADMINS_GROUP} timestamp_timeout={SUDO_MINUTES}\n%{ADMINS_GROUP} ALL=(ALL:ALL) ALL\n"
+    )
+}
+
+/// the shell that writes `rules` to /etc/sudoers.d/`file` after `visudo` has checked them.
+/// `rules` must contain no single quote.
+pub(crate) fn install_sudoers(file: &str, rules: &str) -> String {
+    format!(
+        r#"tmp=$(mktemp)
+printf '%s' '{rules}' > "$tmp"
+visudo -cf "$tmp" >/dev/null
+install -m 0440 "$tmp" /etc/sudoers.d/{file}
+rm -f "$tmp"
+"#
+    )
+}
+
 /// shell that refuses to continue when `id` belongs to an account other than `name`.
 fn id_taken_check(kind: &str, id_name: &str, id: u32, name: &str) -> String {
     let db = if kind == "user" { "passwd" } else { kind };
@@ -64,6 +89,9 @@ pub(crate) fn valid_user(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+/// what to tell someone who signs in as root.
+pub const ROOT_ADVICE: &str = "you are logged in as root; that is fine, but we recommend creating a privileged user account (lanlord admin HOST create NAME)";
+
 /// the posix sh script that sets up the gateway; run as root.
 pub fn script(opts: &Options, admin: &str) -> Result<String> {
     if !valid_user(admin) {
@@ -82,6 +110,13 @@ fi
         id_taken_check("user", "uid", id, "lanlord"),
         id_taken_check("group", "gid", admins_id, admins),
     );
+    // root needs no group membership or sudo rules
+    let is_root = admin == "root";
+    let join_admins = if is_root {
+        String::new()
+    } else {
+        format!("usermod -aG {admins} {admin}\n")
+    };
     let mut s = format!(
         r#"set -eu
 . /etc/os-release
@@ -106,28 +141,23 @@ getent passwd lanlord >/dev/null || useradd --uid {id} --gid {id} \
   --home-dir /opt/lanlord --no-create-home \
   --shell "$(command -v nologin || echo /usr/sbin/nologin)" lanlord
 getent group {admins} >/dev/null || groupadd --gid {admins_id} {admins}
-usermod -aG {admins} {admin}
-# root owns /opt/lanlord so lanlord cannot swap out the venv; it owns only what it writes
+{join_admins}# root owns /opt/lanlord so lanlord cannot swap out the venv; it owns only what it writes
 install -d -o root -g lanlord -m 0750 /opt/lanlord
 install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansible
 
 # lanlord runs ansible, which needs root; it has no password and no login
-tmp=$(mktemp)
-echo 'lanlord ALL=(ALL) NOPASSWD: ALL' > "$tmp"
-visudo -cf "$tmp" >/dev/null
-install -m 0440 "$tmp" /etc/sudoers.d/lanlord
-rm -f "$tmp"
-"#
+{service_sudoers}
+# the people allowed to administer lanlord may use sudo, with one remembered password prompt
+{admins_sudoers}"#,
+        service_sudoers = install_sudoers("lanlord", "lanlord ALL=(ALL) NOPASSWD: ALL\n"),
+        admins_sudoers = install_sudoers(ADMINS_GROUP, &admins_sudoers()),
     );
-    if opts.passwordless_sudo {
-        s.push_str(&format!(
-            r#"
-tmp=$(mktemp)
-echo '{admin} ALL=(ALL) NOPASSWD: ALL' > "$tmp"
-visudo -cf "$tmp" >/dev/null
-install -m 0440 "$tmp" /etc/sudoers.d/lanlord-admin
-rm -f "$tmp"
-"#
+    // the per-user rule is named so that it sorts after lanlord-admins: the last match wins
+    if opts.passwordless_sudo && !is_root {
+        s.push('\n');
+        s.push_str(&install_sudoers(
+            &format!("lanlord-nopasswd-{admin}"),
+            &format!("{admin} ALL=(ALL) NOPASSWD: ALL\n"),
         ));
     }
     if opts.ansible == AnsibleMode::Remote {
@@ -179,6 +209,9 @@ fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) 
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let script = script(opts, admin)?;
+    if admin == "root" {
+        emit(Kind::Info, ROOT_ADVICE);
+    }
     emit(
         Kind::Info,
         format!(
@@ -224,13 +257,31 @@ fn root_command(
     script: String,
     ask_password: AskPassword,
 ) -> Result<(Vec<String>, String)> {
-    // sudo -n fails when a password is needed; then ask once and feed it to sudo -S
-    let password = if session.capture(&sudo(&["-n", "true"])).is_ok() {
-        None
+    // root runs it directly
+    if admin == "root" {
+        return Ok((vec!["sh".into(), "-s".into()], script));
+    }
+    // sudo -n fails when a password is needed; then ask once and let sudo remember it
+    if session.capture(&sudo(&["-n", "true"])).is_ok() {
+        return Ok(plan(script, None));
+    }
+    let password = ask_password(&format!("sudo password for {admin}"))?;
+    if session
+        .capture_with_stdin(
+            &sudo(&["-S", "-p", "", "-v"]),
+            format!("{password}\n").as_bytes(),
+        )
+        .is_err()
+    {
+        bail!("sudo did not accept the password for {admin}");
+    }
+    // the record is shared between ssh sessions once the sudoers rules from bootstrap exist;
+    // before that (bootstrap itself) the password goes along with the command
+    if session.capture(&sudo(&["-n", "true"])).is_ok() {
+        Ok(plan(script, None))
     } else {
-        Some(ask_password(&format!("sudo password for {admin}"))?)
-    };
-    Ok(plan(script, password.as_deref()))
+        Ok(plan(script, Some(&password)))
+    }
 }
 
 #[cfg(test)]
@@ -281,8 +332,8 @@ mod tests {
     fn passwordless_sudo_is_opt_in() {
         let off = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
         let on = script(&opts(AnsibleMode::Local, true), "admin").unwrap();
-        assert!(!off.contains("sudoers.d/lanlord-admin"));
-        assert!(on.contains("sudoers.d/lanlord-admin"));
+        assert!(!off.contains("lanlord-nopasswd-"));
+        assert!(on.contains("/etc/sudoers.d/lanlord-nopasswd-admin"));
         assert!(on.contains("admin ALL=(ALL) NOPASSWD: ALL"));
     }
 
@@ -333,6 +384,34 @@ mod tests {
             );
         }
         assert!(script(&opts(AnsibleMode::Local, true), "deploy-user_1").is_ok());
+    }
+
+    #[test]
+    fn admins_remember_one_sudo_password_for_fifteen_minutes() {
+        let rules = admins_sudoers();
+        assert!(rules.contains("Defaults:%lanlord-admins timestamp_type=global\n"));
+        assert!(rules.contains("Defaults:%lanlord-admins timestamp_timeout=15\n"));
+        assert!(rules.contains("%lanlord-admins ALL=(ALL:ALL) ALL\n"));
+        let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
+        assert!(s.contains("/etc/sudoers.d/lanlord-admins"));
+        assert!(s.contains("visudo -cf"));
+        assert!(s.contains("install -m 0440 \"$tmp\" /etc/sudoers.d/lanlord-admins"));
+    }
+
+    #[test]
+    fn the_per_user_rule_sorts_after_the_group_rule() {
+        // sudoers reads /etc/sudoers.d in name order and the last match wins
+        let group = "lanlord-admins";
+        let user = format!("lanlord-nopasswd-{}", "admin");
+        assert!(user.as_str() > group);
+    }
+
+    #[test]
+    fn root_needs_no_group_or_sudo_rules() {
+        let s = script(&opts(AnsibleMode::Local, true), "root").unwrap();
+        assert!(!s.contains("usermod -aG"));
+        assert!(!s.contains("lanlord-nopasswd-"));
+        assert!(s.contains("/etc/sudoers.d/lanlord-admins"));
     }
 
     #[cfg(unix)]
@@ -429,6 +508,83 @@ mod tests {
             .unwrap_err();
             assert_eq!(err.to_string(), "cancelled");
             assert!(!record.exists());
+        }
+
+        /// a fake gateway where sudo remembers a password once `sudo -v` has been run, like the
+        /// shared timestamp from the lanlord-admins sudoers rules.
+        fn remembering(dir: &std::path::Path, user: &str, v_exit: i32) -> Session {
+            Session::fake(&format!(
+                r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo {user} ;;
+  "sudo -n true") [ -f '{d}/remembered' ] ;;
+  "sudo -S -p '' -v") cat > '{d}/password'; [ {v_exit} -eq 0 ] && touch '{d}/remembered'; exit {v_exit} ;;
+  *) printf '%s' "$last" > '{d}/command'; cat > '{d}/script' ;;
+esac"#,
+                d = dir.display()
+            ))
+        }
+
+        fn dir(name: &str) -> std::path::PathBuf {
+            let d = temp(name);
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        #[test]
+        fn the_sudo_password_is_asked_once_and_remembered_by_sudo() {
+            let d = dir("once");
+            let session = remembering(&d, "tester", 0);
+            let asked = Cell::new(0);
+            let mut ask = |_: &str| {
+                asked.set(asked.get() + 1);
+                Ok("hunter2".to_string())
+            };
+            bootstrap_with(&session, &options(), &mut ask).unwrap();
+            let script = std::fs::read_to_string(d.join("script")).unwrap();
+            assert!(
+                script.starts_with("set -eu"),
+                "the password is not in the script"
+            );
+            assert_eq!(
+                std::fs::read_to_string(d.join("password")).unwrap(),
+                "hunter2\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(d.join("command")).unwrap(),
+                "sudo -n sh -s"
+            );
+            // a second run within the window asks nothing
+            bootstrap_with(&session, &options(), &mut ask).unwrap();
+            assert_eq!(asked.get(), 1);
+            let _ = std::fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn a_wrong_sudo_password_is_reported() {
+            let d = dir("wrong");
+            let session = remembering(&d, "tester", 1);
+            let mut ask = |_: &str| Ok("nope".to_string());
+            let err = bootstrap_with(&session, &options(), &mut ask).unwrap_err();
+            assert!(
+                err.to_string().contains("did not accept the password"),
+                "{err}"
+            );
+            assert!(!d.join("script").exists());
+            let _ = std::fs::remove_dir_all(d);
+        }
+
+        #[test]
+        fn root_runs_the_script_directly_without_asking() {
+            let d = dir("root");
+            let session = remembering(&d, "root", 0);
+            let mut ask = |_: &str| anyhow::bail!("root must not be asked");
+            bootstrap_with(&session, &options(), &mut ask).unwrap();
+            assert_eq!(std::fs::read_to_string(d.join("command")).unwrap(), "sh -s");
+            let script = std::fs::read_to_string(d.join("script")).unwrap();
+            assert!(script.starts_with("set -eu") && !script.contains("usermod -aG"));
+            let _ = std::fs::remove_dir_all(d);
         }
 
         #[test]
