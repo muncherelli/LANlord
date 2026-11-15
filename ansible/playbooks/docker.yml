@@ -168,7 +168,7 @@
         mode: "0750"
       when: docker is defined
 
-    - name: keep netbios and smb off the host network
+    - name: keep netbios, smb, dns and dhcp off the host network
       ansible.builtin.copy:
         dest: /etc/lanlord/firewall.nft
         content: |
@@ -179,6 +179,12 @@
               type filter hook input priority -10; policy accept;
               iifname "{{ host_interface }}" udp dport { 137, 138 } drop
               iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
+              iifname "{{ host_interface }}" udp dport { 53, 67, 68 } drop
+              iifname "{{ host_interface }}" tcp dport 53 drop
+            }
+            chain output {
+              type filter hook output priority -10; policy accept;
+              oifname "{{ host_interface }}" udp sport 67 drop
             }
           }
         mode: "0600"

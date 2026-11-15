@@ -1,0 +1,37 @@
+# written by lanlord; changes here are overwritten
+# local names only: nothing is ever resolved outside the zone
+no-resolv
+domain-needed
+bogus-priv
+local=/{{ dns_zone }}/
+domain={{ dns_zone }}
+expand-hosts
+listen-address={{ internal_ip }}
+bind-dynamic
+interface={{ internal_interface }}
+except-interface={{ host_interface }}
+# root, so the leases file stays readable for the status page
+user=root
+dhcp-leasefile=/var/lib/misc/dnsmasq.leases
+
+{% for name in dns_names %}
+host-record={{ name }},{{ internal_ip }}
+{% endfor %}
+{% for record in dns_records %}
+host-record={{ record.name }}.{{ dns_zone }},{{ record.address }}
+{% endfor %}
+{% if dns_dhcp is defined %}
+
+# dhcp without a router: the gateway is not a router for these clients
+dhcp-authoritative
+no-dhcp-interface={{ host_interface }}
+dhcp-range={{ dns_dhcp.range[0] }},{{ dns_dhcp.range[1] }},{{ internal_netmask }},{{ dns_lease }}
+dhcp-option=3
+dhcp-option=6,{{ internal_ip }}
+dhcp-option=15,{{ dns_zone }}
+dhcp-option=44,{{ internal_ip }}
+dhcp-option=46,8
+{% for host in dns_hosts %}
+dhcp-host={{ host.mac | lower }},{{ host.address }},{{ host.name }}
+{% endfor %}
+{% endif %}

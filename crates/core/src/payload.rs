@@ -26,6 +26,18 @@ const FILES: &[(&str, &str)] = &[
         include_str!("../../../ansible/playbooks/web-proxy.yml"),
     ),
     (
+        "dns.yml",
+        include_str!("../../../ansible/playbooks/dns.yml"),
+    ),
+    (
+        "dns/dnsmasq.conf.j2",
+        include_str!("../../../ansible/playbooks/dns/dnsmasq.conf.j2"),
+    ),
+    (
+        "dns/image/Dockerfile",
+        include_str!("../../../ansible/playbooks/dns/image/Dockerfile"),
+    ),
+    (
         "web-proxy/Caddyfile.j2",
         include_str!("../../../ansible/playbooks/web-proxy/Caddyfile.j2"),
     ),
@@ -90,6 +102,9 @@ mod tests {
         let names: Vec<&str> = found.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, FILES.iter().map(|(n, _)| *n).collect::<Vec<_>>());
         assert!(names.contains(&"nt4-domain/image/Dockerfile"));
+        for name in ["dns.yml", "dns/dnsmasq.conf.j2", "dns/image/Dockerfile"] {
+            assert!(names.contains(&name), "{name} is embedded");
+        }
         assert!(found[0].1.contains("import_playbook: docker.yml"));
         let mode = tar::Archive::new(bytes.as_slice())
             .entries()

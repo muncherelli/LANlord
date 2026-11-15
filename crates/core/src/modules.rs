@@ -84,6 +84,14 @@ pub const MODULES: &[Module] = &[
         "remote-commands:\n  servers:\n    - name: NTSRV1\n      address: 172.16.120.10",
         Status::Planned,
     ),
+    Module::new(
+        "dns",
+        "DNS",
+        ["┌─────┐", "│ DNS │", "└─────┘"],
+        "dnsmasq in Docker: local-only DNS for the retronet and optional gatewayless DHCP for Windows 98, 2000, NT4 and old Linux clients.",
+        "dns:\n  zone: retronet\n  records:\n    - {name: ntsrv1, address: 172.16.120.10}\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d",
+        Status::Available,
+    ),
 ];
 
 /// look a module up by its id.
@@ -134,6 +142,7 @@ mod tests {
         assert_eq!(find("docker").unwrap().status, Status::Available);
         assert_eq!(find("nt4-domain").unwrap().status, Status::Available);
         assert_eq!(find("web-proxy").unwrap().status, Status::Available);
+        assert_eq!(find("dns").unwrap().status, Status::Available);
         assert_eq!(find("remote-commands").unwrap().status, Status::Planned);
     }
 }

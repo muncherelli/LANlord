@@ -21,8 +21,9 @@ LANlord is early software. The pieces below work today, but expect rough edges.
 | Docker | Installs Docker and drops NetBIOS and SMB on the host network. Works on LXC containers, VMs and bare metal. |
 | NT4 Domain | Samba in a container, as an NT4-style domain controller or a plain workgroup server, bound to the internal network. Includes login management. |
 | Web Proxy | Caddy in a container, proxying sites on the internal network, with plain HTTP or Caddy's own certificate authority. |
+| DNS | dnsmasq in a container: local-only DNS for the retronet and optional DHCP without a gateway option, for Windows 98, 2000, NT4 and old Linux clients. |
 
-Planned: DNS and gatewayless DHCP for the retronet, Let's Encrypt certificates through Cloudflare, a Cloudflare tunnel, running commands on NT4 servers through the Resource Kit Remote Command Service, links for remote retro machines, and the web interface with PAM login.
+Planned: Let's Encrypt certificates through Cloudflare, a Cloudflare tunnel, running commands on NT4 servers through the Resource Kit Remote Command Service, links for remote retro machines, and the web interface with PAM login.
 
 ## Quick start
 
