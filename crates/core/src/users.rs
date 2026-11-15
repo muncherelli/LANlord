@@ -18,6 +18,22 @@ pub struct User {
     pub name: String,
     /// a member of Domain Admins.
     pub admin: bool,
+    /// may write to the software share without being a domain admin.
+    pub software_admin: bool,
+}
+
+impl User {
+    /// the roles this user has, for listings.
+    pub fn roles(&self) -> Vec<&'static str> {
+        let mut roles = Vec::new();
+        if self.admin {
+            roles.push("domain admin");
+        }
+        if self.software_admin {
+            roles.push("software admin");
+        }
+        roles
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +47,11 @@ pub enum Change {
     SetAdmin {
         name: String,
         admin: bool,
+    },
+    /// let a user write to the software share without being a domain admin, or stop.
+    SetSoftwareAdmin {
+        name: String,
+        software_admin: bool,
     },
     Remove {
         name: String,
@@ -85,6 +106,7 @@ pub fn list(settings: &[u8]) -> Result<Vec<User>> {
             Some(User {
                 name: name_of(u)?.into(),
                 admin: u.get("admin").and_then(Value::as_bool) == Some(true),
+                software_admin: u.get("software_admin").and_then(Value::as_bool) == Some(true),
             })
         })
         .collect())
@@ -99,7 +121,9 @@ pub fn edit(settings: &[u8], change: &Change) -> Result<Vec<u8>> {
             }
             name
         }
-        Change::SetAdmin { name, .. } | Change::Remove { name } => name,
+        Change::SetAdmin { name, .. }
+        | Change::SetSoftwareAdmin { name, .. }
+        | Change::Remove { name } => name,
     };
     if !valid_name(name) {
         bail!("user names are lowercase letters, digits, _ . - and start with a letter: {name:?}");
@@ -132,7 +156,17 @@ pub fn edit(settings: &[u8], change: &Change) -> Result<Vec<u8>> {
                 map.remove("admin");
             }
         }
-        (Change::SetAdmin { .. }, None) => {
+        (Change::SetSoftwareAdmin { software_admin, .. }, Some(entry)) => {
+            let map = entry
+                .as_mapping_mut()
+                .ok_or_else(|| anyhow!("{name} is not a mapping"))?;
+            if *software_admin {
+                map.insert("software_admin".into(), true.into());
+            } else {
+                map.remove("software_admin");
+            }
+        }
+        (Change::SetAdmin { .. } | Change::SetSoftwareAdmin { .. }, None) => {
             bail!("{name} is not in your settings; add the user first")
         }
         (Change::Remove { .. }, existing) => {
@@ -197,7 +231,7 @@ pub fn edit_split(plain: &[u8], changes: &[Change]) -> Result<Edited> {
                 secrets.retain(|(p, _)| *p != path);
                 removed.push(path);
             }
-            Change::SetAdmin { .. } => {}
+            Change::SetAdmin { .. } | Change::SetSoftwareAdmin { .. } => {}
         }
     }
     Ok(Edited {
@@ -461,6 +495,66 @@ mod tests {
     }
 
     #[test]
+    fn software_admin_can_be_granted_and_revoked_and_shows_in_the_list() {
+        let granted = edit(
+            SETTINGS.as_bytes(),
+            &Change::SetSoftwareAdmin {
+                name: "james".into(),
+                software_admin: true,
+            },
+        )
+        .unwrap();
+        assert!(String::from_utf8(granted.clone())
+            .unwrap()
+            .contains("software_admin: true"));
+        let james = list(&granted).unwrap().remove(0);
+        assert!(james.software_admin && !james.admin);
+        assert_eq!(james.roles(), ["software admin"]);
+        let revoked = edit(
+            &granted,
+            &Change::SetSoftwareAdmin {
+                name: "james".into(),
+                software_admin: false,
+            },
+        )
+        .unwrap();
+        assert!(!String::from_utf8(revoked.clone())
+            .unwrap()
+            .contains("software_admin"));
+        assert!(list(&revoked).unwrap()[0].roles().is_empty());
+        let both = User {
+            name: "x".into(),
+            admin: true,
+            software_admin: true,
+        };
+        assert_eq!(both.roles(), ["domain admin", "software admin"]);
+    }
+
+    #[test]
+    fn software_admin_needs_a_listed_user_and_stays_plain() {
+        let err = edit(
+            SETTINGS.as_bytes(),
+            &Change::SetSoftwareAdmin {
+                name: "nobody".into(),
+                software_admin: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not in your settings"), "{err}");
+        let edited = edit_split(
+            SETTINGS.as_bytes(),
+            &[Change::SetSoftwareAdmin {
+                name: "james".into(),
+                software_admin: true,
+            }],
+        )
+        .unwrap();
+        assert!(edited.plain.contains("software_admin: true"));
+        assert!(edited.secrets.is_empty() && edited.removed.is_empty());
+    }
+
+    #[test]
     fn only_listed_users_can_be_made_admin() {
         let err = edit(
             SETTINGS.as_bytes(),
@@ -567,7 +661,8 @@ mod tests {
             users,
             [User {
                 name: "olive".into(),
-                admin: true
+                admin: true,
+                software_admin: false,
             }]
         );
     }
@@ -618,6 +713,20 @@ mod tests {
             let sealed = gw.sealed(&id).unwrap();
             assert!(sealed.contains("one") && sealed.contains("pw"), "{sealed}");
             assert!(!sealed.contains("RETRONET"), "{sealed}");
+        }
+
+        #[test]
+        fn software_admin_is_stored_plain_and_applied() {
+            let (gw, id) = (Gateway::new("users-software"), identity("users-software"));
+            gw.seed_sealed(&id, LEGACY);
+            let change = Change::SetSoftwareAdmin {
+                name: "james".into(),
+                software_admin: true,
+            };
+            let now = change_with(&gw.session, "gw", &id, &[change], &mut no_password).unwrap();
+            assert!(now[0].software_admin);
+            assert!(gw.plain().unwrap().contains("software_admin: true"));
+            assert!(gw.sealed(&id).unwrap().contains("one"), "password kept");
         }
 
         #[test]

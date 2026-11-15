@@ -75,6 +75,7 @@ fn logins_are_listed_added_with_a_generated_password_and_kept_out_of_the_plain_t
     let generated = desktop.nt4.users.form_mut().unwrap().raw(1).to_string();
     assert_eq!(generated.len(), 12);
     desktop.nt4.users.form_mut().unwrap().checks[0].1 = true;
+    desktop.nt4.users.form_mut().unwrap().checks[1].1 = true;
     assert!(press(&mut desktop, &ctx, "OK"));
     settled(&mut desktop, &ctx);
     assert_eq!(desktop.nt4.users.names(), ["james", "olive"]);
@@ -83,6 +84,7 @@ fn logins_are_listed_added_with_a_generated_password_and_kept_out_of_the_plain_t
         plain.contains("olive") && !plain.contains(&generated),
         "{plain}"
     );
+    assert!(plain.contains("software_admin: true"), "{plain}");
     assert_eq!(
         fake.secrets.lock().unwrap().clone(),
         [("nt4-domain.users[olive].password".to_string(), generated)]
@@ -91,7 +93,7 @@ fn logins_are_listed_added_with_a_generated_password_and_kept_out_of_the_plain_t
         fake.calls(),
         [
             "load me@gw",
-            "users me@gw 2",
+            "users me@gw 3",
             "apply me@gw [nt4-domain]",
             "load me@gw"
         ]
@@ -137,10 +139,22 @@ fn passwords_admin_flags_and_deletion_need_a_selection_and_go_through_the_task_r
         )
     );
 
+    assert_eq!(
+        enabled(&ctx, "Make software admin"),
+        Some(false),
+        "domain admins write to the software share already"
+    );
     assert!(press(&mut desktop, &ctx, "Remove domain admin"));
     settled(&mut desktop, &ctx);
     assert!(!stored(&fake).contains("admin: true"));
     assert!(enabled(&ctx, "Make domain admin").is_some());
+
+    assert!(press(&mut desktop, &ctx, "Make software admin"));
+    settled(&mut desktop, &ctx);
+    assert!(stored(&fake).contains("software_admin: true"));
+    assert!(press(&mut desktop, &ctx, "Remove software admin"));
+    settled(&mut desktop, &ctx);
+    assert!(!stored(&fake).contains("software_admin"));
 
     assert!(press(&mut desktop, &ctx, "Delete..."));
     assert!(

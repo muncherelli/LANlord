@@ -48,6 +48,12 @@ enum UsersCommand {
     Promote { name: String },
     /// take domain admin away from a login
     Demote { name: String },
+    /// let a login write to the software share without being a domain admin, or stop
+    Software {
+        name: String,
+        #[arg(value_enum)]
+        state: Switch,
+    },
     /// change a login's password
     Passwd { name: String },
     /// remove a login
@@ -172,7 +178,10 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
     let change = match action {
         UsersCommand::List => {
             for user in lanlord_core::users::list_on(host, &identity, &mut ask)? {
-                println!("{}", user.name);
+                match user.roles().join(", ") {
+                    roles if roles.is_empty() => println!("{}", user.name),
+                    roles => println!("{} ({roles})", user.name),
+                }
             }
             return Ok(());
         }
@@ -194,6 +203,10 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
         }
         UsersCommand::Promote { name } => Change::SetAdmin { name, admin: true },
         UsersCommand::Demote { name } => Change::SetAdmin { name, admin: false },
+        UsersCommand::Software { name, state } => Change::SetSoftwareAdmin {
+            name,
+            software_admin: matches!(state, Switch::On),
+        },
         UsersCommand::Remove { name } => Change::Remove { name },
     };
     lanlord_core::users::change(host, &identity, &change, &mut ask).map(|_| ())
