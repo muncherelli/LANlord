@@ -8,11 +8,16 @@ pub mod config;
 pub mod crypto;
 pub mod exec;
 pub mod hosts;
+pub mod leases;
 pub mod log;
 pub mod modules;
 pub mod network;
+pub mod nt4;
+pub mod passwords;
 pub mod paths;
 pub mod payload;
 pub mod settings;
 pub mod ssh;
+#[cfg(all(test, unix))]
+mod testgw;
 pub mod users;

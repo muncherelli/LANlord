@@ -411,9 +411,11 @@ mod tests {
         app.users = UsersState::Loaded(vec![
             User {
                 name: "james".into(),
+                admin: false,
             },
             User {
                 name: "olive".into(),
+                admin: false,
             },
         ]);
         let text = render(&app);

@@ -322,6 +322,43 @@ fn set_at(value: &mut Value, steps: &[Step], secret: &str) -> Result<()> {
     }
 }
 
+fn remove_at(value: &mut Value, steps: &[Step]) {
+    let Some((step, rest)) = steps.split_first() else {
+        return;
+    };
+    match step {
+        Step::Key(key) => {
+            let Some(map) = value.as_mapping_mut() else {
+                return;
+            };
+            if rest.is_empty() {
+                map.remove(key.as_str());
+            } else if let Some(child) = map.get_mut(key.as_str()) {
+                remove_at(child, rest);
+            }
+        }
+        Step::Item(name) => {
+            let Some(list) = value.as_sequence_mut() else {
+                return;
+            };
+            let Some(at) = list.iter().position(|item| name_of(item) == Some(name)) else {
+                return;
+            };
+            remove_at(&mut list[at], rest);
+            // an entry with nothing left but its name holds no secrets
+            if list[at].as_mapping().is_some_and(|map| map.len() <= 1) {
+                list.remove(at);
+            }
+        }
+    }
+}
+
+/// forget the secret at `path` in the secrets document, if it is there.
+pub fn remove_secret(secrets: &mut Value, path: &str) -> Result<()> {
+    remove_at(secrets, &parse_path(path)?);
+    Ok(())
+}
+
 /// write `secret` at `path` in the secrets document, creating what is missing.
 pub fn set_secret(secrets: &mut Value, path: &str, secret: &str) -> Result<()> {
     set_at(secrets, &parse_path(path)?, secret)
@@ -439,6 +476,19 @@ pub(crate) fn save_document_with(
     updates: &[(String, String)],
     ask: AskPassword,
 ) -> Result<()> {
+    save_changes_with(session, host, identity, plain_text, updates, &[], ask)
+}
+
+/// like `save_document_with`, and the secrets at the `removed` paths are forgotten.
+pub(crate) fn save_changes_with(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    plain_text: &str,
+    updates: &[(String, String)],
+    removed: &[String],
+    ask: AskPassword,
+) -> Result<()> {
     let leaked = secret_paths(&parse_value(plain_text.as_bytes())?);
     if !leaked.is_empty() {
         bail!(
@@ -453,6 +503,9 @@ pub(crate) fn save_document_with(
     let mut secrets = stored
         .as_ref()
         .map_or_else(|| Value::Mapping(Mapping::new()), |v| split(v).1);
+    for path in removed {
+        remove_secret(&mut secrets, path)?;
+    }
     for (path, value) in updates.iter().filter(|(_, value)| !value.is_empty()) {
         set_secret(&mut secrets, path, value)?;
     }
@@ -1291,6 +1344,35 @@ web-proxy:
     }
 
     #[test]
+    fn removing_secrets_drops_empty_entries() {
+        let mut secrets = Value::Mapping(Mapping::new());
+        set_secret(&mut secrets, "nt4-domain.admin_password", "a").unwrap();
+        set_secret(&mut secrets, "nt4-domain.users[james].password", "b").unwrap();
+        set_secret(&mut secrets, "nt4-domain.users[olive].password", "d").unwrap();
+        remove_secret(&mut secrets, "nt4-domain.users[james].password").unwrap();
+        remove_secret(&mut secrets, "nt4-domain.users[nobody].password").unwrap();
+        remove_secret(&mut secrets, "other.users[james].password").unwrap();
+        remove_secret(&mut secrets, "nt4-domain.admin_password.password").unwrap();
+        assert!(remove_secret(&mut secrets, "nt4-domain.name").is_err());
+        assert_eq!(
+            secret_paths(&secrets),
+            [
+                "nt4-domain.admin_password",
+                "nt4-domain.users[olive].password"
+            ]
+        );
+        assert_eq!(
+            secrets["nt4-domain"]["users"].as_sequence().unwrap().len(),
+            1
+        );
+        remove_secret(&mut secrets, "nt4-domain.admin_password").unwrap();
+        assert_eq!(secret_paths(&secrets).len(), 1);
+        remove_secret(&mut Value::Null, "a.password").unwrap();
+        remove_secret(&mut Value::Sequence(vec![]), "a.password").unwrap();
+        remove_secret(&mut Value::Mapping(Mapping::new()), "a[x].password").unwrap();
+    }
+
+    #[test]
     fn setting_secrets_builds_the_path() {
         let mut secrets = Value::Mapping(Mapping::new());
         set_secret(&mut secrets, "nt4-domain.admin_password", "a").unwrap();
@@ -1351,80 +1433,7 @@ web-proxy:
 #[cfg(all(test, unix))]
 mod gateway_tests {
     use super::*;
-    use crate::crypto;
-
-    fn identity(name: &str) -> age::x25519::Identity {
-        let path = std::env::temp_dir()
-            .join(format!("lanlord-settings-{}-{name}", std::process::id()))
-            .join("identity");
-        crypto::generate(&path).unwrap();
-        let identity = crypto::load(&path).unwrap();
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-        identity
-    }
-
-    fn no_password(_: &str) -> Result<String> {
-        bail!("no password expected")
-    }
-
-    /// a fake gateway that keeps the plain and the encrypted settings in a directory.
-    struct Gateway {
-        dir: std::path::PathBuf,
-        session: Session,
-    }
-
-    impl Gateway {
-        fn new(name: &str) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("lanlord-gw-{}-{name}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let payload = r#"printf '%s\n' "$input" | sed -n '/^base64 -d/,/^LANLORD_PAYLOAD$/p' | sed '1d;$d' | base64 -d"#;
-            let script = r#"D='@DIR@'
-for a; do last=$a; done
-case "$last" in
-  "id -un") echo tester ;;
-  "sudo -n true") exit 0 ;;
-  "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;
-  *)
-    input=$(cat)
-    case "$input" in
-      *"tee /opt/lanlord/config/settings.yml"*) @PAYLOAD@ > "$D/yml" ;;
-      *"tee /opt/lanlord/config/settings.age"*) @PAYLOAD@ > "$D/age" ;;
-      *"base64 < /opt/lanlord/config/settings.age"*) if [ -f "$D/age" ]; then base64 < "$D/age"; fi ;;
-    esac ;;
-esac"#
-                .replace("@DIR@", &dir.display().to_string())
-                .replace("@PAYLOAD@", payload);
-            Self {
-                dir,
-                session: Session::fake(&script),
-            }
-        }
-
-        fn plain(&self) -> Option<String> {
-            std::fs::read_to_string(self.dir.join("yml")).ok()
-        }
-
-        fn sealed(&self, id: &age::x25519::Identity) -> Option<String> {
-            let bytes = std::fs::read(self.dir.join("age")).ok()?;
-            Some(String::from_utf8(crypto::decrypt(id, &bytes).unwrap()).unwrap())
-        }
-
-        fn seed_sealed(&self, id: &age::x25519::Identity, text: &str) {
-            std::fs::write(
-                self.dir.join("age"),
-                crypto::encrypt(id, text.as_bytes()).unwrap(),
-            )
-            .unwrap();
-        }
-    }
-
-    impl Drop for Gateway {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
-    }
+    use crate::testgw::{identity, no_password, Gateway};
 
     const LEGACY: &str = "dns:\n  zone: lab\nnt4-domain:\n  admin_password: hunter2\n  users:\n    - name: james\n      password: pw1\n";
 
