@@ -7,9 +7,11 @@ use std::sync::Arc;
 use lanlord_core::log;
 use lanlord_core::update::{Runner, Source, Update};
 
-use super::harness::*;
+use eframe::egui::{self, Pos2};
+
+use super::harness::{click_at, desktop, frames, press, screen, until, SCREEN};
 use super::menu::Action;
-use super::*;
+use super::{theme, Desktop, Target, TASKBAR};
 use crate::login::fake::{id, FakeAuth};
 use crate::update_panel::Updates;
 
@@ -38,7 +40,7 @@ fn script(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 /// a desktop that is a development build: a scratch checkout whose app build script succeeds
@@ -75,6 +77,7 @@ fn choose(desktop: &mut Desktop, ctx: &egui::Context, action: &Action) {
     click_at(desktop, ctx, at);
 }
 
+#[cfg(unix)]
 fn choose_dev(desktop: &mut Desktop, ctx: &egui::Context, action: &Action) {
     frames(desktop, ctx, 2);
     let at = desktop

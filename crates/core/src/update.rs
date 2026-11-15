@@ -272,7 +272,7 @@ fn bundle_of(exe: &Path) -> Option<&Path> {
 pub fn rebuild_steps(repo: &Path, exe: &Path, pull: bool) -> Vec<Step> {
     let step = |program: &str, args: &[&str]| Step {
         program: program.into(),
-        args: args.iter().map(|a| a.to_string()).collect(),
+        args: args.iter().map(ToString::to_string).collect(),
         dir: repo.to_path_buf(),
     };
     let mut steps = Vec::new();

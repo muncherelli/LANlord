@@ -39,6 +39,9 @@ const TASKBAR: f32 = 30.0;
 /// the width of the LANlord button and of the box naming the selected server.
 const MENU_BUTTON: f32 = 92.0;
 const SERVER_CHIP: f32 = 170.0;
+/// the clock's width in the tray, and the width of one tray icon.
+const CLOCK: f32 = 72.0;
+const TRAY_ICON: f32 = 22.0;
 
 /// what an icon or a window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -601,23 +604,37 @@ impl Desktop {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let clock = chrono::Local::now().format("%-I:%M %p").to_string();
-                // the clock and the shield sit flat on the taskbar, with one etched line to their left
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(78.0, 22.0), Sense::hover());
+                // the tray: a shallow sunken panel holding the update shield and the clock, whose
+                // text is flat inside it
+                let shield = self.updates.visible();
+                let width = 6.0 + CLOCK + if shield { TRAY_ICON } else { 0.0 };
+                let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
+                controls::thin_bevel(ui, tray, false);
+                let clock_at = Rect::from_min_size(
+                    Pos2::new(tray.right() - 3.0 - CLOCK, tray.top() + 2.0),
+                    Vec2::new(CLOCK, 18.0),
+                );
                 ui.painter().text(
-                    rect.center(),
+                    clock_at.center(),
                     Align2::CENTER_CENTER,
                     clock,
                     theme::font(),
                     BLACK,
                 );
-                if self.updates.visible() && self.updates.shield(ui) {
-                    self.updates.open_dialog();
+                if shield {
+                    let icon_at = Rect::from_min_size(
+                        Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
+                        Vec2::splat(TRAY_ICON),
+                    );
+                    let clicked = ui
+                        .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
+                            self.updates.shield(ui)
+                        })
+                        .inner;
+                    if clicked {
+                        self.updates.open_dialog();
+                    }
                 }
-                let (line, _) = ui.allocate_exact_size(Vec2::new(2.0, 20.0), Sense::hover());
-                ui.painter()
-                    .vline(line.left() + 0.5, line.y_range(), (1.0, theme::SHADOW));
-                ui.painter()
-                    .vline(line.left() + 1.5, line.y_range(), (1.0, WHITE));
             });
         });
     }

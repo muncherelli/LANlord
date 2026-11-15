@@ -298,7 +298,7 @@ impl Desktop {
     }
 
     /// the centre of the Developer submenu item that does `action`, for tests.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn dev_item_at(&self, screen: Rect, action: &Action) -> Option<Pos2> {
         let (rows, main) = self.menu_boxes(screen);
         let (sub, placed) = self.dev_boxes(&rows, &main)?;
