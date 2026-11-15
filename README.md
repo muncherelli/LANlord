@@ -7,21 +7,67 @@
 
 > all your LAN are belong to you
 
-## supported platforms
+## What it is
 
-the gateway is the machine lanlord manages; the client is where you run `lanlord`.
+LANlord manages a retro-computing gateway: a Linux machine that sits between your normal network and an isolated "retronet" of vintage machines. You describe the gateway in one encrypted settings file, and LANlord applies it with Ansible. It ships as a single `lanlord` binary with a command line, a terminal UI, a native desktop window and, later, a web interface.
 
-| role | os | arch | status |
+LANlord is early software. The pieces below work today, but expect rough edges.
+
+## What works today
+
+| Module | What it does |
+|---|---|
+| Gateway | A baseline: the apply-time record and the message of the day. |
+| Docker | Installs Docker and drops NetBIOS and SMB on the host network. Works on LXC containers, VMs and bare metal. |
+| NT4 Domain | Samba in a container, as an NT4-style domain controller or a plain workgroup server, bound to the internal network. Includes login management. |
+| Web Proxy | Caddy in a container, proxying sites on the internal network, with plain HTTP or Caddy's own certificate authority. |
+
+Planned: DNS and gatewayless DHCP for the retronet, Let's Encrypt certificates through Cloudflare, a Cloudflare tunnel, running commands on NT4 servers through the Resource Kit Remote Command Service, links for remote retro machines, and the web interface with PAM login.
+
+## Quick start
+
+```sh
+lanlord keygen                              # Create the key that encrypts your settings.
+lanlord bootstrap user@gateway              # Create the lanlord account and install Ansible on the gateway.
+lanlord config push user@gateway my.yml     # Encrypt your settings and store them on the gateway.
+lanlord apply user@gateway                  # Apply everything, or add --module nt4-domain for one module.
+lanlord                                     # The terminal UI.
+lanlord gui                                 # The desktop window.
+```
+
+The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh` client, so your `~/.ssh/config`, jump hosts and SSH agent (including 1Password) all work.
+
+## Supported platforms
+
+The gateway is the machine LANlord manages. The client is where you run `lanlord`.
+
+| Role | OS | Architecture | Status |
 |---|---|---|---|
-| gateway | arch linux (rolling) | x86_64, arm64 | first target |
-| gateway | debian (stable) | x86_64, arm64 | supported |
-| client | macos | arm64, x86_64 | supported |
-| client | arch linux, manjaro, debian | x86_64, arm64 | supported |
-| client | windows 10+ | x86_64, arm64 | planned; needs the openssh client |
+| Gateway | Arch Linux (rolling) | x86_64, arm64 | First target |
+| Gateway | Debian (stable) | x86_64, arm64 | Supported |
+| Client | macOS | arm64, x86_64 | Supported |
+| Client | Arch Linux, Manjaro, Debian | x86_64, arm64 | Supported |
+| Client | Windows 10 and later | x86_64, arm64 | Planned; needs the OpenSSH client |
 
-other distros and architectures come after arch and debian. arch is a rolling release, so there is no fixed version to pin.
+Other distributions and architectures will follow. Arch is a rolling release, so there is no fixed version to pin.
 
-## where ansible runs
+## Where Ansible runs
 
-- **on the gateway (default):** `lanlord bootstrap` installs ansible under `/opt/lanlord` and the client only needs ssh, so it works on any client, windows included.
-- **locally (optional):** if ansible is installed on your machine, lanlord can run it here and reach the gateway over your own ssh, so your agent and keychain are used directly. this needs a client that can run ansible (macos, linux, or windows through wsl).
+- **Today:** on the gateway. `lanlord bootstrap` installs `ansible-core` under `/opt/lanlord`, so the client only needs SSH and works on any operating system.
+- **Planned:** locally by default when Ansible is installed on your machine, reaching the gateway over your own SSH so your agent and keychain are used directly. Running on the gateway stays available. Windows clients would need WSL for the local mode.
+
+## Security notes
+
+- Your settings are encrypted on your machine with [age](https://age-encryption.org). The gateway stores only ciphertext. During an apply, the plaintext exists on the gateway only briefly, in a root-only directory on a memory-backed filesystem.
+- The `lanlord` account on the gateway can run commands as root, because Ansible needs that. Treat access to it like root access.
+- The Samba container speaks SMB1 and NTLMv1 so that old Windows can join. That is why it listens only on the internal network, and why a firewall rule drops those protocols on the host network.
+
+## Development
+
+```sh
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The Ansible files live in [`ansible/`](ansible/README.md).
