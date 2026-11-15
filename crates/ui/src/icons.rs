@@ -172,7 +172,26 @@ const DNS: [&str; 16] = [
     "................",
 ];
 
-/// the icon for a module id, or for the built-in windows ("console", "hosts").
+const SETTINGS: [&str; 16] = [
+    "................",
+    "..kkkkkkkkk.....",
+    "..kwwwwwwwkk....",
+    "..kwnnnnnwkwk...",
+    "..kwwwwwwwkkkk..",
+    "..kwnnnnnnnnwk..",
+    "..kwwwwwwwwwwk..",
+    "..kwnnnnnnnnwk..",
+    "..kwwwwwwwwwwk..",
+    "..kwnnnnnwwwwk..",
+    "..kwwwwwwwwwwk..",
+    "..kwnnnnnnwwwk..",
+    "..kwwwwwwwwwwk..",
+    "..kkkkkkkkkkkk..",
+    "................",
+    "................",
+];
+
+/// the icon for a module id, or for the built-in windows ("console", "hosts", "settings").
 pub fn art(id: &str) -> &'static [&'static str; 16] {
     match id {
         "gateway" => &GATEWAY,
@@ -182,6 +201,7 @@ pub fn art(id: &str) -> &'static [&'static str; 16] {
         "remote-commands" => &COMMANDS,
         "dns" => &DNS,
         "console" => &CONSOLE,
+        "settings" => &SETTINGS,
         _ => &HOSTS,
     }
 }
@@ -213,6 +233,7 @@ mod tests {
             "dns",
             "console",
             "hosts",
+            "settings",
         ] {
             let icon = art(id);
             for row in icon {

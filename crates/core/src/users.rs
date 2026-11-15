@@ -111,7 +111,7 @@ pub fn edit(settings: &[u8], change: &Change) -> Result<Vec<u8>> {
 }
 
 /// remembers the first password it is given, so one change asks once.
-fn cached<'a>(ask: AskPassword<'a>) -> impl FnMut(&str) -> Result<String> + 'a {
+pub(crate) fn cached<'a>(ask: AskPassword<'a>) -> impl FnMut(&str) -> Result<String> + 'a {
     let mut saved: Option<String> = None;
     move |what| {
         if saved.is_none() {

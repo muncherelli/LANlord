@@ -10,7 +10,7 @@ use lanlord_core::ssh::Session;
 use lanlord_core::users::{self, Change, User};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::hosts;
+use lanlord_core::hosts;
 
 /// how many console lines to keep.
 const CONSOLE_LINES: usize = 2000;

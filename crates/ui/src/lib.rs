@@ -1,13 +1,23 @@
 //! the native window, drawn with egui so it looks the same on every platform
 //! (and, later, in a browser).
 
+mod console;
 mod desktop;
+mod dialogs;
+mod gateway;
+mod hostlist;
 mod icons;
+mod services;
+mod settings_editor;
+mod tasks;
 mod theme;
 mod windows;
 
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use eframe::egui;
+use lanlord_core::hosts;
 
 /// open the window and block until it is closed.
 pub fn run() -> Result<()> {
@@ -21,7 +31,13 @@ pub fn run() -> Result<()> {
     eframe::run_native(
         "LANlord",
         options,
-        Box::new(|_cc| Ok(Box::new(desktop::Desktop::default()))),
+        Box::new(|cc| {
+            let services = services::Services::new(Arc::new(gateway::Ssh), &cc.egui_ctx);
+            Ok(Box::new(desktop::Desktop::new(
+                services,
+                hosts::config_path(),
+            )))
+        }),
     )
     .map_err(|err| anyhow!("could not open the window: {err}"))
 }

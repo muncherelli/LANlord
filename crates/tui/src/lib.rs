@@ -1,7 +1,6 @@
 //! the terminal ui: a host list, a command box and a console.
 
 mod app;
-mod hosts;
 mod ui;
 
 use std::time::Duration;
@@ -11,6 +10,7 @@ use lanlord_core::apply::apply;
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::crypto;
 use lanlord_core::exec::{exec_detached, Target};
+use lanlord_core::hosts;
 use lanlord_core::log::{emit, subscribe, Kind};
 use lanlord_core::users::{self, Change};
 use ratatui::backend::Backend;

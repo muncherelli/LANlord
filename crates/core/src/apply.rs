@@ -1,10 +1,11 @@
 use anyhow::{bail, Result};
 
 use crate::bootstrap::{run_as_root, AskPassword};
-use crate::config::{self, wrap};
+use crate::config::wrap;
 use crate::log::{emit, Kind};
 use crate::modules;
 use crate::payload;
+use crate::settings;
 use crate::ssh::Session;
 
 /// the shell script that unpacks the playbooks and runs them as lanlord;
@@ -86,10 +87,7 @@ pub(crate) fn apply_with(
     }
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
-    let settings = match identity {
-        Some(identity) => config::pull_with(session, identity, ask_password)?,
-        None => None,
-    };
+    let settings = settings::merged_with(session, identity, ask_password)?;
     match &settings {
         Some(plain) => emit(
             Kind::Info,
