@@ -1,12 +1,14 @@
 //! small drawing helpers shared by the management windows.
 
-use eframe::egui::{Align2, RichText, ScrollArea, Sense, Ui, Vec2};
+use eframe::egui::{Align2, Pos2, Rect, RichText, ScrollArea, Sense, Ui, Vec2};
 use lanlord_core::settings::ValidationError;
 
+use crate::controls;
 use crate::remote::RED;
-use crate::theme::{self, BLACK, NAVY, SHADOW, WHITE};
+use crate::theme::{self, BLACK, NAVY, WHITE};
 
-const ROW: f32 = 16.0;
+const ROW: f32 = 17.0;
+const HEADING: f32 = 20.0;
 
 /// a list with column headings. `widths` are in points, the last column
 /// takes what is left. rows in `bad` are drawn red.
@@ -32,7 +34,7 @@ impl Table<'_> {
                 .max_height(self.height)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_min_height(self.height.min(ROW * self.rows.len().max(1) as f32));
+                    ui.set_min_height(self.height);
                     for (i, row) in self.rows.iter().enumerate() {
                         let flagged = self.bad.get(i).copied().unwrap_or(false);
                         let selected = self.selected == Some(i);
@@ -47,17 +49,27 @@ impl Table<'_> {
 }
 
 fn heading_row(ui: &mut Ui, headings: &[&str], widths: &[f32]) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW), Sense::hover());
-    let mut x = rect.left() + 3.0;
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), HEADING), Sense::hover());
+    let mut x = rect.left();
     for (i, heading) in headings.iter().enumerate() {
-        ui.painter().text(
-            rect.left_center() + Vec2::new(x - rect.left(), 0.0),
+        let last = i + 1 == headings.len();
+        let width = if last {
+            rect.right() - x
+        } else {
+            widths.get(i).copied().unwrap_or(0.0)
+        };
+        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(width, HEADING));
+        ui.painter().rect_filled(cell, 0.0, theme::GRAY);
+        theme::bevel(ui.painter(), cell, true);
+        ui.painter().with_clip_rect(cell.shrink(2.0)).text(
+            cell.left_center() + Vec2::new(5.0, 0.0),
             Align2::LEFT_CENTER,
             *heading,
             theme::font(),
-            SHADOW,
+            BLACK,
         );
-        x += widths.get(i).copied().unwrap_or(0.0);
+        x += width;
     }
 }
 
@@ -78,7 +90,7 @@ fn data_row(
         (false, true) => RED,
         _ => BLACK,
     };
-    let mut x = 3.0;
+    let mut x = 5.0;
     for (i, cell) in cells.iter().enumerate() {
         ui.painter().text(
             rect.left_center() + Vec2::new(x, 0.0),
@@ -122,11 +134,10 @@ pub fn bad_rows(errors: &[ValidationError], prefix: &str, count: usize) -> Vec<b
         .collect()
 }
 
-/// a label and a line edit side by side.
+/// a label in the form's label column and a line edit beside it.
 pub fn labelled_edit(ui: &mut Ui, label: &str, text: &mut String, width: f32) {
-    ui.horizontal(|ui| {
-        ui.add_sized([92.0, 18.0], eframe::egui::Label::new(label).truncate());
-        ui.add(eframe::egui::TextEdit::singleline(text).desired_width(width));
+    controls::row(ui, label, |ui| {
+        controls::edit(ui, text, width);
     });
 }
 

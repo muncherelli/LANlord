@@ -3,6 +3,7 @@
 
 mod command_panel;
 mod console;
+mod controls;
 mod desktop;
 mod dialogs;
 mod dns_panel;
@@ -39,8 +40,8 @@ pub fn run() -> Result<()> {
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
                     .map_err(|e| anyhow!("{e}"))?,
             )
-            .with_inner_size([960.0, 640.0])
-            .with_min_inner_size([640.0, 420.0]),
+            .with_inner_size([1180.0, 760.0])
+            .with_min_inner_size([800.0, 560.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -48,10 +49,11 @@ pub fn run() -> Result<()> {
         options,
         Box::new(|cc| {
             let services = services::Services::new(Arc::new(gateway::Ssh), &cc.egui_ctx);
-            Ok(Box::new(desktop::Desktop::new(
-                services,
-                hosts::config_path(),
-            )))
+            let mut desktop = desktop::Desktop::new(services, hosts::config_path());
+            if let Ok(spec) = std::env::var("LANLORD_OPEN") {
+                desktop.open_spec(&spec);
+            }
+            Ok(Box::new(desktop))
         }),
     )
     .map_err(|err| anyhow!("could not open the window: {err}"))

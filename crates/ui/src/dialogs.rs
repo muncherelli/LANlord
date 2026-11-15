@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Color32, Frame, Id, Key, Margin, Rect, TextEdit, Vec2};
 
+use crate::controls;
 use crate::theme::{self, GRAY, NAVY, WHITE};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,10 +49,16 @@ impl TextDialog {
         let mut answer = None;
         modal(ctx, self.id, &self.title, |ui| {
             ui.label(&self.prompt);
-            let edit = TextEdit::singleline(&mut self.input)
-                .password(self.masked)
-                .desired_width(ui.available_width());
-            let edit = ui.add(edit);
+            let width = ui.available_width() - 10.0;
+            let edit = controls::field(ui, |ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.input)
+                        .password(self.masked)
+                        .desired_width(width)
+                        .frame(Frame::new())
+                        .margin(Margin::ZERO),
+                )
+            });
             if !self.focused {
                 edit.request_focus();
                 self.focused = true;
@@ -83,15 +90,12 @@ pub fn modal<R>(
     title: &str,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let frame = Frame::new()
-        .fill(GRAY)
-        .inner_margin(Margin::same(4))
-        .stroke(egui::Stroke::new(1.0, Color32::BLACK));
-    egui::Modal::new(Id::unique(id))
+    let frame = Frame::new().fill(GRAY).inner_margin(Margin::same(3));
+    let shown = egui::Modal::new(Id::unique(id))
         .frame(frame)
         .backdrop_color(Color32::from_black_alpha(60))
         .show(ctx, |ui| {
-            ui.set_width(340.0);
+            ui.set_width(380.0);
             let (bar, _) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::hover());
             ui.painter().rect_filled(bar, 0.0, NAVY);
@@ -102,10 +106,15 @@ pub fn modal<R>(
                 theme::font(),
                 WHITE,
             );
-            ui.add_space(8.0);
-            body(ui)
-        })
-        .inner
+            ui.add_space(6.0);
+            Frame::new()
+                .inner_margin(Margin::symmetric(8, 2))
+                .show(ui, body)
+                .inner
+        });
+    let painter = ctx.layer_painter(shown.response.layer_id);
+    theme::bevel(&painter, shown.response.rect, true);
+    shown.inner
 }
 
 #[cfg(test)]

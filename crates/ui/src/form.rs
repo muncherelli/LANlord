@@ -3,6 +3,8 @@
 //! and can be shown while you copy it down.
 
 use eframe::egui::{self, Color32, Key, TextEdit, Ui};
+
+use crate::controls;
 use lanlord_core::passwords;
 
 use crate::dialogs::modal;
@@ -89,11 +91,17 @@ impl Form {
         let field = &mut self.fields[i];
         ui.label(&field.label);
         ui.horizontal(|ui| {
-            let room = if field.secret { 150.0 } else { 0.0 };
-            let edit = TextEdit::singleline(&mut field.value)
-                .password(field.secret && !field.shown)
-                .desired_width(ui.available_width() - room);
-            let response = ui.add(edit);
+            let room = if field.secret { 176.0 } else { 10.0 };
+            let width = ui.available_width() - room;
+            let response = controls::field(ui, |ui| {
+                ui.add(
+                    TextEdit::singleline(&mut field.value)
+                        .password(field.secret && !field.shown)
+                        .desired_width(width)
+                        .frame(egui::Frame::new())
+                        .margin(egui::Margin::ZERO),
+                )
+            });
             if focus_wanted {
                 response.request_focus();
             }
@@ -123,15 +131,15 @@ impl Form {
             }
             self.focused = true;
             for (label, value) in &mut self.checks {
-                ui.checkbox(value, label.as_str());
+                controls::check(ui, value, label.as_str());
             }
             if let Some(error) = &self.error {
                 ui.colored_label(Color32::from_rgb(160, 0, 0), error);
             }
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let ok = theme::button(ui, "OK", false);
+            controls::buttons(ui, |ui| {
                 let cancel = theme::button(ui, "Cancel", false);
+                let ok = theme::button(ui, "OK", false);
                 if ok.clicked() {
                     answer = Some(FormAnswer::Ok);
                 } else if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {

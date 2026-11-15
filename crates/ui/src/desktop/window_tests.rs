@@ -216,6 +216,8 @@ fn dns() -> (Desktop, egui::Context, Arc<Fake>) {
 fn the_dns_window_loads_makes_a_lease_static_and_saves_and_applies() {
     let (mut desktop, ctx, fake) = dns();
     assert!(desktop.dns.problems().is_empty());
+    desktop.dns.tab = 3;
+    frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Make static"), Some(false), "no row picked");
     desktop.dns.select_current(0);
     assert!(press(&mut desktop, &ctx, "Make static"));
@@ -274,6 +276,7 @@ fn problems_are_shown_and_block_saving() {
 #[test]
 fn leases_and_records_are_added_edited_and_removed() {
     let (mut desktop, ctx, _) = dns();
+    desktop.dns.tab = 1;
     assert!(press(&mut desktop, &ctx, "Add lease..."));
     fill(
         desktop.dns.form_mut(),
@@ -291,6 +294,7 @@ fn leases_and_records_are_added_edited_and_removed() {
     assert!(press(&mut desktop, &ctx, "Remove lease"));
     assert_eq!(desktop_hosts(&desktop), ["c"]);
 
+    desktop.dns.tab = 2;
     assert!(press(&mut desktop, &ctx, "Add record..."));
     assert!(press(&mut desktop, &ctx, "OK"));
     assert!(
@@ -323,6 +327,8 @@ fn dhcp_can_be_switched_off_and_a_failed_probe_is_reported() {
     until(&mut desktop, &ctx, |d| d.dns.belongs_to("me@gw"));
     frames(&mut desktop, &ctx, 2);
     assert!(desktop.dns.draft.dhcp.is_none());
+    desktop.dns.tab = 1;
+    frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Add lease..."), Some(false));
     assert_eq!(
         enabled(&ctx, "Save DNS"),
