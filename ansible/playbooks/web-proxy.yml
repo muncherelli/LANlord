@@ -13,6 +13,9 @@
 #   webui:                        # the lanlord web interface, optional
 #     host: lanlord.lan
 #     upstream: 127.0.0.1:8787
+#   status:                       # the retronet status page on the internal address, optional
+#     enabled: true               # on by default
+#     host: lanlord.retronet      # default: lanlord.<dns.zone>, or lanlord.retronet without the dns module
 - name: lanlord web proxy
   hosts: localhost
   connection: local
@@ -23,6 +26,7 @@
     image: caddy:2-alpine
     container: lanlord-caddy
     state_dir: /opt/lanlord/caddy
+    status_dir: /opt/lanlord/status
   tasks:
     # a hyphenated name cannot be written as a variable, so look it up
     - name: read the web-proxy settings
@@ -43,6 +47,13 @@
         proxy_sites: >-
           {{ (wp.sites | default([]))
              + ([wp.webui] if wp.webui is defined else []) }}
+        status_enabled: "{{ (wp.status | default({})).enabled | default(true) }}"
+        status_zone: "{{ (dns | default({})).zone | default('retronet') }}"
+      when: wp is defined
+
+    - name: work out the status page host
+      ansible.builtin.set_fact:
+        status_host: "{{ (wp.status | default({})).host | default('lanlord.' ~ status_zone) }}"
       when: wp is defined
 
     # these values end up in the caddyfile, so only plain names and addresses are accepted
@@ -56,9 +67,15 @@
           - proxy_sites | map(attribute='host') | list | length == proxy_sites | map(attribute='host') | list | unique | length
           - proxy_sites | map(attribute='host') | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$') | list | length == proxy_sites | length
           - proxy_sites | map(attribute='upstream') | select('match', '^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$') | list | length == proxy_sites | length
+          - status_enabled is boolean
+          - status_host is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+          - status_zone is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+          - not status_enabled or status_host not in (proxy_sites | map(attribute='host') | list)
+          - not status_enabled or (internal_ip | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
         fail_msg: >-
           web-proxy settings: listen is host, internal or ipv4 addresses (and the interface needs one), tls is off or internal, and every site
-          (and webui) has a unique host name like nostalgia.lan and an upstream like 172.16.120.20:80
+          (and webui) has a unique host name like nostalgia.lan and an upstream like 172.16.120.20:80,
+          and status has a boolean enabled and a host name that no site uses (the internal interface needs an address)
       when: wp is defined
 
     - name: check that docker is installed
@@ -76,6 +93,76 @@
         - "{{ state_dir }}/data"
         - "{{ state_dir }}/config"
       when: wp is defined
+
+    - name: set up the status page
+      when: wp is defined and status_enabled
+      block:
+        - name: make the status directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0750"
+          loop:
+            - "{{ status_dir }}"
+            - "{{ status_dir }}/www"
+
+        - name: install the status page generator
+          ansible.builtin.copy:
+            src: status/lanlord-status.sh
+            dest: "{{ status_dir }}/lanlord-status.sh"
+            mode: "0750"
+
+        # read by the generator as plain key=value lines
+        - name: write the status page settings
+          ansible.builtin.copy:
+            dest: "{{ status_dir }}/status.conf"
+            mode: "0640"
+            content: |
+              interface={{ internal_interface }}
+              ip={{ internal_ip }}
+              zone={{ status_zone }}
+              host={{ status_host }}
+              {% for site in proxy_sites %}
+              site={{ site.host }} {{ site.upstream }}
+              {% endfor %}
+
+        - name: install the status page units
+          ansible.builtin.copy:
+            dest: "/etc/systemd/system/{{ item.name }}"
+            mode: "0640"
+            content: "{{ item.content }}"
+          loop:
+            - name: lanlord-status.service
+              content: |
+                [Unit]
+                Description=LANlord retronet status page
+
+                [Service]
+                Type=oneshot
+                ExecStart={{ status_dir }}/lanlord-status.sh
+            - name: lanlord-status.timer
+              content: |
+                [Unit]
+                Description=Refresh the LANlord retronet status page
+
+                [Timer]
+                OnBootSec=10
+                OnUnitActiveSec=30
+                AccuracySec=1s
+
+                [Install]
+                WantedBy=timers.target
+
+        - name: write the first status page
+          ansible.builtin.command: "{{ status_dir }}/lanlord-status.sh"
+          changed_when: false
+
+        - name: start refreshing the status page
+          ansible.builtin.systemd:
+            name: lanlord-status.timer
+            enabled: true
+            state: started
+            daemon_reload: true
 
     - name: write the caddyfile
       ansible.builtin.template:
@@ -113,6 +200,7 @@
             -v {{ state_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro
             -v {{ state_dir }}/data:/data
             -v {{ state_dir }}/config:/config
+            {{ '-v ' ~ status_dir ~ '/www:/srv/status:ro' if status_enabled else '' }}
             {{ image }}
           changed_when: true
 

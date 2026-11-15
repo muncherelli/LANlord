@@ -9,6 +9,7 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 | `playbooks/docker.yml` | The Docker module. |
 | `playbooks/nt4-domain.yml` | The NT4 Domain module. The `nt4-domain/` folder holds the Samba image and `smb.conf.j2`. |
 | `playbooks/web-proxy.yml` | The Web Proxy module. The `web-proxy/` folder holds the `Caddyfile.j2`. |
+| `playbooks/status/lanlord-status.sh` | The status page generator, run every 30 seconds by a systemd timer that the Web Proxy module installs. |
 
 ## How modules work
 
