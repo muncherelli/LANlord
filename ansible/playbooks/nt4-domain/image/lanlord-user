@@ -3,6 +3,7 @@
 #   lanlord-user add NAME     create the account or set its password
 #   lanlord-user admin        set the password of the domain administrator
 #   lanlord-user delete NAME  remove the account
+#   lanlord-user machine NAME create a machine account so an nt4 computer can join without creating it
 #   lanlord-user list         list the accounts
 set -eu
 cmd=${1:-}
@@ -35,6 +36,19 @@ case "$cmd" in
     read_password
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a root >/dev/null
     echo "set the administrator password"
+    ;;
+  machine)
+    valid "$name"
+    # the unix account of a computer ends in a dollar sign; its first password is its own name
+    if ! id "${name}\$" >/dev/null 2>&1; then
+      useradd --badname -M -g machines -d /dev/null -s /usr/sbin/nologin "${name}\$"
+    fi
+    if pdbedit -L -u "${name}\$" >/dev/null 2>&1; then
+      echo "exists $name"
+    else
+      smbpasswd -a -m "$name" >/dev/null
+      echo "created machine $name"
+    fi
     ;;
   delete)
     valid "$name"
