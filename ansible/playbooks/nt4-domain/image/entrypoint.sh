@@ -5,6 +5,13 @@
 set -eu
 mkdir -p /run/samba /var/log/samba /var/lib/samba/netlogon /var/lib/samba/private
 
+# the roaming profiles share (only used when nt4-domain.roaming_profiles is on): members of
+# domusers may create their own profile folder in it, nobody else can
+getent group domusers >/dev/null || groupadd domusers
+install -d -o root -g domusers -m 0770 /var/lib/samba/profiles
+install -d -o root -g domusers -m 0750 /var/lib/samba/homes
+install -d -m 0700 /var/lib/samba/homes/root
+
 for group in machines domadmins domusers domguests; do
   getent group "$group" >/dev/null || groupadd "$group"
 done
@@ -17,6 +24,13 @@ if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
     net groupmap add rid=513 ntgroup='Domain Users' unixgroup=domusers type=d
   net groupmap list | grep -q 'Domain Guests' ||
     net groupmap add rid=514 ntgroup='Domain Guests' unixgroup=domguests type=d
+  # what a domain admin may do: join computers, back up and restore, shut down, manage users
+  domain=$(testparm -s --parameter-name=workgroup 2>/dev/null)
+  for right in SeMachineAccountPrivilege SeAddUsersPrivilege SeTakeOwnershipPrivilege \
+    SeBackupPrivilege SeRestorePrivilege SeRemoteShutdownPrivilege SePrintOperatorPrivilege \
+    SeDiskOperatorPrivilege; do
+    net sam rights grant "${domain}\\Domain Admins" "$right" >/dev/null 2>&1 || true
+  done
 fi
 printf '!root = Administrator\n' > /etc/samba/usermap
 
@@ -28,6 +42,21 @@ pdbedit -L 2>/dev/null | cut -d: -f1 | while read -r name; do
     *) useradd -M -g domusers -s /usr/sbin/nologin "$name" ;;
   esac
 done
+
+# each user's home folder, and domain admin membership remembered from earlier runs
+# (if blocks, because a failed test as the last command would end the script under set -e)
+pdbedit -L 2>/dev/null | cut -d: -f1 | while read -r name; do
+  if [[ -n $name && $name != root && $name != *'$' ]] && id "$name" >/dev/null 2>&1; then
+    install -d -o "$name" -g domusers -m 0700 "/var/lib/samba/homes/$name"
+  fi
+done
+if [[ -f /var/lib/samba/private/domadmins ]]; then
+  while read -r admin; do
+    if [[ -n $admin ]] && id "$admin" >/dev/null 2>&1; then
+      usermod -aG domadmins "$admin"
+    fi
+  done < /var/lib/samba/private/domadmins
+fi
 
 nmbd --foreground --no-process-group --debug-stdout &
 smbd --foreground --no-process-group --debug-stdout &

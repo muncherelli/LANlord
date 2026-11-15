@@ -12,9 +12,13 @@
 #   build_locally: false         # true builds the image on the gateway instead of pulling the published one
 #   image: ghcr.io/you/samba     # another image name (tag is still a hash of the files)
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
+#   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
+#   machines: [ws1, ws2]         # computers to create accounts for in advance; join them without
+#                                # ticking "Create a Computer Account in the Domain"
 #   users:
 #     - name: james
 #       password: change-me
+#       admin: true          # a domain admin (member of Domain Admins)
 #     - name: olduser
 #       state: absent
 - name: lanlord nt4 domain
@@ -56,6 +60,7 @@
           - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
           - nt4_address is match('^[0-9.]+/[0-9]{1,2}$')
           - nt4_mode == 'workgroup' or (nt4.admin_password | default('')) | length > 0
+          - (nt4.machines | default([])) | select('match', '^[A-Za-z][A-Za-z0-9-]{0,14}$') | list | length == (nt4.machines | default([])) | length
         fail_msg: >-
           nt4-domain settings: mode must be domain or workgroup; name is the domain or workgroup
           (up to 15 letters, digits, - or _); address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
@@ -74,8 +79,16 @@
         mode: "0750"
       loop:
         - "{{ state_dir }}"
-        - "{{ state_dir }}/lib"
         - "{{ state_dir }}/config"
+      when: nt4 is defined
+
+    # samba's directory holds the shares, so domain users must be able to pass through it; the
+    # password database stays in its own root-only folder and the parent /opt/lanlord is private
+    - name: make samba's data directory passable
+      ansible.builtin.file:
+        path: "{{ state_dir }}/lib"
+        state: directory
+        mode: "0751"
       when: nt4 is defined
 
     - name: write the samba configuration
@@ -149,8 +162,15 @@
       changed_when: false
       when: nt4 is defined and nt4_mode == 'domain'
 
+    - name: create machine accounts in advance
+      ansible.builtin.command: "docker exec {{ container }} lanlord-user machine {{ item | lower }}"
+      loop: "{{ nt4.machines | default([]) }}"
+      register: machine_results
+      changed_when: "'created' in machine_results.stdout"
+      when: nt4 is defined and nt4_mode == 'domain'
+
     - name: create or update the users
-      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }}"
+      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }} {{ 'admin' if item.admin | default(false) else 'user' }}"
       args:
         stdin: "{{ item.password }}"
       loop: >-

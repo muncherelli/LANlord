@@ -29,3 +29,18 @@ With a `dhcp:` section it also hands out leases, with no router option, the gate
 ## The Samba image
 
 `playbooks/nt4-domain/image/` is built by CI and published to `ghcr.io/muncherelli/lanlord-samba-nt4`. The tag is a hash of the three files in that folder, and the playbook computes the same hash on the gateway, so it always pulls the image that matches the files it was sent. If the pull fails, or `nt4-domain.build_locally` is true, it builds the same image on the gateway instead.
+
+## Joining NT4 machines
+
+The `nt4-domain` module in `domain` mode runs a Samba classic NT4-style domain controller, with the compatibility settings NT4 needs (`allow nt4 crypto`, `reject md5 clients = no`, `server schannel = auto`). They weaken the domain on purpose, so keep it on the isolated internal network.
+
+Windows NT 4.0 SP6a could not create its own machine account against Samba 4.22: the step that sets the new account's password failed with `NT_STATUS_NO_USER_SESSION_KEY`, and the client reported "The machine account for this computer either does not exist or is inaccessible". The reliable way is to create the accounts in advance:
+
+1. List the computers in your settings: `machines: [ws1, ws2]`.
+2. Apply the module. Each name gets an account whose first password is its own name in lowercase.
+3. On the NT4 machine, join the domain without ticking "Create a Computer Account in the Domain". No password prompt appears, because the account already exists.
+
+Set `lanman_auth: true` and keep the Administrator password to 14 characters or fewer if an old client needs the LM hash. Raise `log_level` (for example `2 rpc_srv:10 passdb:10 auth:5`) to debug a join; the Samba helper logs are in `/var/log/samba` inside the container.
+
+Roaming profiles are off by default. Set `roaming_profiles: true` to share a `profiles` folder and tell NT4 to keep each domain user's profile there, so it follows the user between machines.
+

@@ -23,7 +23,8 @@
 
    wins support = yes
    dns proxy = no
-   log level = 1
+   # raise this (for example '2 rpc_srv:10 passdb:10 auth:5') with nt4-domain.log_level to debug a join
+   log level = {{ nt4.log_level | default('1') }}
 {% if nt4_mode == 'domain' %}
 
    server role = classic primary domain controller
@@ -34,10 +35,46 @@
    os level = 255
    add machine script = /usr/sbin/useradd --badname -M -g machines -d /dev/null -s /usr/sbin/nologin %u
 
+   # NT4 cannot use schannel or the strong netlogon session key, so allow what it does speak.
+   # this weakens the domain on purpose: keep it on the isolated retronet only.
+{% if nt4.roaming_profiles | default(false) %}
+   # roaming profiles: nt4 keeps each user's profile in the profiles share
+   logon path = \\%N\profiles\%U
+   logon home = \\%N\%U\.win9x
+   logon drive = H:
+{% else %}
+   # no roaming profiles or network home directories: nt4 uses a local profile and stays quiet
+   logon path =
+   logon home =
+{% endif %}
+
+   server schannel = auto
+   allow nt4 crypto = yes
+   reject md5 clients = no
+
 [netlogon]
    path = /var/lib/samba/netlogon
    read only = yes
    guest ok = no
+{% if nt4.roaming_profiles | default(false) %}
+
+[homes]
+   comment = home folders; windows 95 and 98 keep their roaming profile in one
+   path = /var/lib/samba/homes/%S
+   read only = no
+   browseable = no
+   valid users = %S
+   create mask = 0600
+   directory mask = 0700
+
+[profiles]
+   path = /var/lib/samba/profiles
+   read only = no
+   browseable = no
+   csc policy = disable
+   create mask = 0600
+   directory mask = 0700
+{% endif %}
 {% else %}
 
    server role = standalone server
