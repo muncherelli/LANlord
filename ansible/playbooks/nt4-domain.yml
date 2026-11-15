@@ -13,12 +13,15 @@
 #   image: ghcr.io/you/samba     # another image name (tag is still a hash of the files)
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
 #   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
+#   software: false              # true adds a software share (S: at logon): domain users read it,
+#                                # domain admins and users with software_admin write to it
 #   machines: [ws1, ws2]         # computers to create accounts for in advance; join them without
 #                                # ticking "Create a Computer Account in the Domain"
 #   users:
 #     - name: james
 #       password: change-me
 #       admin: true          # a domain admin (member of Domain Admins)
+#       software_admin: true # may write to the software share without being a domain admin
 #     - name: olduser
 #       state: absent
 - name: lanlord nt4 domain
@@ -170,7 +173,7 @@
       when: nt4 is defined and nt4_mode == 'domain'
 
     - name: create or update the users
-      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }} {{ 'admin' if item.admin | default(false) else 'user' }}"
+      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }} {{ 'admin' if item.admin | default(false) else 'user' }}{{ ' software' if item.software_admin | default(false) else '' }}"
       args:
         stdin: "{{ item.password }}"
       loop: >-
@@ -191,6 +194,14 @@
       register: user_removed
       changed_when: "'deleted' in user_removed.stdout"
       when: nt4 is defined
+
+    # nt4 and windows 9x read this at logon; the file needs dos line endings
+    - name: write the logon script that maps S:
+      ansible.builtin.copy:
+        dest: "{{ state_dir }}/lib/netlogon/lanlord.bat"
+        mode: "0644"
+        content: "@echo off\r\nnet use S: \\\\{{ nt4_netbios_name }}\\software /persistent:no\r\n"
+      when: nt4 is defined and nt4_mode == 'domain' and (nt4.software | default(false))
 
     - name: list the accounts
       ansible.builtin.command: "docker exec {{ container }} lanlord-user list"

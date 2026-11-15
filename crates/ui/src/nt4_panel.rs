@@ -143,6 +143,7 @@ impl Nt4Panel {
                     }
                 });
             ui.checkbox(&mut self.draft.roaming_profiles, "Roaming profiles");
+            ui.checkbox(&mut self.draft.software, "Software share (S:)");
         });
         field_error(ui, &errors, "nt4-domain.mode");
         ui.horizontal(|ui| {

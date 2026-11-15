@@ -12,6 +12,11 @@ install -d -o root -g domusers -m 0770 /var/lib/samba/profiles
 install -d -o root -g domusers -m 0750 /var/lib/samba/homes
 install -d -m 0700 /var/lib/samba/homes/root
 
+# the software share (only used when nt4-domain.software is on): software admins and domain
+# admins write to it, everyone else reads
+getent group softadmins >/dev/null || groupadd softadmins
+install -d -o root -g softadmins -m 2775 /var/lib/samba/software
+
 for group in machines domadmins domusers domguests; do
   getent group "$group" >/dev/null || groupadd "$group"
 done
@@ -57,6 +62,7 @@ if [[ -f /var/lib/samba/private/domadmins ]]; then
     fi
   done < /var/lib/samba/private/domadmins
 fi
+lanlord-user sync
 
 nmbd --foreground --no-process-group --debug-stdout &
 smbd --foreground --no-process-group --debug-stdout &

@@ -48,6 +48,11 @@
    logon home =
 {% endif %}
 
+{% if nt4.software | default(false) %}
+   # maps S: to the software share when a user logs on (the script is in netlogon)
+   logon script = lanlord.bat
+{% endif %}
+
    server schannel = auto
    allow nt4 crypto = yes
    reject md5 clients = no
@@ -56,6 +61,20 @@
    path = /var/lib/samba/netlogon
    read only = yes
    guest ok = no
+{% if nt4.software | default(false) %}
+
+[software]
+   comment = software installers; domain users read, domain admins and software admins write
+   path = /var/lib/samba/software
+   read only = yes
+   valid users = @domusers @domadmins
+   write list = @domadmins @softadmins
+   force group = softadmins
+   create mask = 0664
+   force create mode = 0664
+   directory mask = 2775
+   force directory mode = 2775
+{% endif %}
 {% if nt4.roaming_profiles | default(false) %}
 
 [homes]
