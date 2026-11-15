@@ -8,6 +8,7 @@ use lanlord_core::signin::SigninError;
 use super::harness::*;
 use super::menu::Action;
 use super::*;
+use crate::admin_setup::AdminSetup;
 use crate::login::fake::{id, FakeAuth};
 use crate::login::Stage;
 
@@ -54,7 +55,7 @@ fn signing_in_shows_the_desktop_for_that_server() {
     until(&mut desktop, &ctx, logged_on);
     assert_eq!(desktop.host().as_deref(), Some("alice@gw.lan"));
     assert_eq!(auth.calls(), ["attempt alice@gw.lan - false"]);
-    assert!(desktop.root_notice.is_none(), "alice is not root");
+    assert!(desktop.admin_setup.is_none(), "alice is not root");
     desktop.open(Target::Console);
     frames(&mut desktop, &ctx, 2);
     assert_eq!(desktop.windows.len(), 1);
@@ -103,37 +104,172 @@ fn shut_down_closes_the_window() {
     );
 }
 
-#[test]
-fn root_is_told_to_make_an_administrator_account() {
-    let (mut desktop, ctx, auth) = logon();
+/// sign in as root on the fake server; the create-an-administrator screen comes up.
+fn root_screen() -> (
+    Desktop,
+    egui::Context,
+    Arc<FakeAuth>,
+    Arc<crate::gateway::Fake>,
+) {
+    let (mut desktop, ctx, fake) = desktop();
+    let auth = Arc::new(FakeAuth::default());
+    desktop.require_login(auth.clone());
+    frames(&mut desktop, &ctx, 3);
     auth.push(Ok(id("root", 0)));
     sign_in(&mut desktop, &ctx, "root", "gw");
-    until(&mut desktop, &ctx, logged_on);
+    until(&mut desktop, &ctx, |d| d.admin_setup.is_some());
+    // no agent on the test machine matters: use known keys
+    desktop.admin_setup = Some(AdminSetup::with_test_keys(&["ssh-ed25519 AAAA me@laptop"]));
     frames(&mut desktop, &ctx, 3);
-    assert!(desktop.root_notice.is_some());
-    assert!(enabled(&ctx, "Create account...").is_some());
-    // the first button explains that it is not wired yet
-    assert!(press(&mut desktop, &ctx, "Create account..."));
-    frames(&mut desktop, &ctx, 3);
-    assert!(desktop
-        .root_notice
-        .as_ref()
-        .is_some_and(|(stage, _)| *stage == RootNotice::NotWired));
-    assert!(press(&mut desktop, &ctx, "OK"));
-    frames(&mut desktop, &ctx, 2);
-    assert!(desktop.root_notice.is_none());
+    (desktop, ctx, auth, fake)
+}
+
+fn fill_admin(desktop: &mut Desktop, name: &str, password: &str, confirm: &str) {
+    let setup = desktop.admin_setup.as_mut().unwrap();
+    setup.name = name.into();
+    setup.set_passwords(password, confirm);
 }
 
 #[test]
-fn not_now_dismisses_the_root_notice() {
-    let (mut desktop, ctx, auth) = logon();
-    auth.push(Ok(id("root", 0)));
-    sign_in(&mut desktop, &ctx, "root", "gw");
-    until(&mut desktop, &ctx, logged_on);
-    frames(&mut desktop, &ctx, 3);
-    assert!(press(&mut desktop, &ctx, "Not now"));
+fn root_lands_on_the_create_administrator_screen_before_the_desktop() {
+    let (mut desktop, ctx, _, _) = root_screen();
+    assert!(desktop.login.is_none() && desktop.signed_in.is_some());
+    for button in ["Create", "Skip for now"] {
+        assert_eq!(enabled(&ctx, button), Some(true), "{button}");
+    }
+    assert!(desktop.login.is_none(), "this is not the logon box");
+    // the desktop is not drawn: its menu has nothing to open yet
+    desktop.open(Target::Console);
     frames(&mut desktop, &ctx, 2);
-    assert!(desktop.root_notice.is_none());
+    assert!(desktop.admin_setup.is_some());
+}
+
+#[test]
+fn skipping_carries_on_as_root_on_the_desktop() {
+    let (mut desktop, ctx, _, _) = root_screen();
+    assert!(press(&mut desktop, &ctx, "Skip for now"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.admin_setup.is_none());
+    assert_eq!(desktop.host().as_deref(), Some("root@gw"));
+}
+
+#[test]
+fn the_form_is_checked_before_anything_is_sent() {
+    let (mut desktop, ctx, _, fake) = root_screen();
+    assert!(press(&mut desktop, &ctx, "Create"));
+    assert_eq!(
+        desktop.admin_setup.as_ref().unwrap().status(),
+        "Type a user name for the new administrator."
+    );
+    fill_admin(&mut desktop, "alice", "", "");
+    assert!(press(&mut desktop, &ctx, "Create"));
+    assert!(desktop
+        .admin_setup
+        .as_ref()
+        .unwrap()
+        .status()
+        .contains("Type a password"));
+    fill_admin(&mut desktop, "alice", "one", "two");
+    assert!(press(&mut desktop, &ctx, "Create"));
+    assert!(desktop
+        .admin_setup
+        .as_ref()
+        .unwrap()
+        .status()
+        .contains("not the same"));
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn creating_the_administrator_asks_for_a_logon_as_that_account() {
+    let (mut desktop, ctx, auth, fake) = root_screen();
+    fill_admin(&mut desktop, " alice ", "secret", "secret");
+    desktop.admin_setup.as_mut().unwrap().key = "  ssh-ed25519 AAAA me@laptop \n".into();
+    assert!(press(&mut desktop, &ctx, "Create"));
+    until(&mut desktop, &ctx, |d| d.admin_setup.is_none());
+    assert_eq!(
+        fake.calls(),
+        ["create-admin root@gw alice key=true nopasswd=false pw=secret"]
+    );
+    // the box is back with the new account filled in, and root is forgotten
+    let login = desktop.login.as_ref().expect("back at the logon box");
+    assert_eq!((login.user.as_str(), login.host.as_str()), ("alice", "gw"));
+    assert_eq!(login.status(), "Created alice. Log on with it.");
+    assert!(desktop.signed_in.is_none());
+    assert!(desktop.hosts.hosts().is_empty(), "root@gw is not kept");
+    let start = std::time::Instant::now();
+    while !auth.calls().iter().any(|c| c == "sign_out root@gw") {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "no sign out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_key_is_optional() {
+    let (mut desktop, ctx, _, fake) = root_screen();
+    fill_admin(&mut desktop, "bob", "pw", "pw");
+    assert!(press(&mut desktop, &ctx, "Create"));
+    until(&mut desktop, &ctx, |d| d.admin_setup.is_none());
+    assert_eq!(
+        fake.calls(),
+        ["create-admin root@gw bob key=false nopasswd=false pw=pw"]
+    );
+}
+
+#[test]
+fn a_refused_account_shows_why_and_stays_on_the_screen() {
+    let (mut desktop, ctx, _, fake) = root_screen();
+    *fake.fail.lock().unwrap() = Some("the user alice already exists".into());
+    fill_admin(&mut desktop, "alice", "pw", "pw");
+    assert!(press(&mut desktop, &ctx, "Create"));
+    until(&mut desktop, &ctx, |d| {
+        d.admin_setup.as_ref().is_some_and(|s| !s.working())
+    });
+    let setup = desktop.admin_setup.as_ref().unwrap();
+    assert!(
+        setup.status().contains("already exists"),
+        "{}",
+        setup.status()
+    );
+    assert!(desktop.login.is_none());
+}
+
+#[test]
+fn passwordless_sudo_needs_the_warning_to_be_accepted() {
+    let (mut desktop, ctx, _, fake) = root_screen();
+    let tick = "Allow sudo without a password (dangerous)";
+    assert!(press(&mut desktop, &ctx, tick));
+    let setup = desktop.admin_setup.as_ref().unwrap();
+    assert!(setup.warning_open() && !setup.passwordless());
+    // declining keeps the password
+    assert!(press(&mut desktop, &ctx, "Keep the password"));
+    assert!(!desktop.admin_setup.as_ref().unwrap().warning_open());
+    assert!(!desktop.admin_setup.as_ref().unwrap().passwordless());
+    // accepting turns it on, and unticking turns it off at once
+    assert!(press(&mut desktop, &ctx, tick));
+    assert!(press(&mut desktop, &ctx, "Allow it"));
+    assert!(desktop.admin_setup.as_ref().unwrap().passwordless());
+    fill_admin(&mut desktop, "alice", "pw", "pw");
+    assert!(press(&mut desktop, &ctx, "Create"));
+    until(&mut desktop, &ctx, |d| d.admin_setup.is_none());
+    assert_eq!(
+        fake.calls(),
+        ["create-admin root@gw alice key=false nopasswd=true pw=pw"]
+    );
+}
+
+#[test]
+fn unticking_passwordless_sudo_needs_no_warning() {
+    let (mut desktop, ctx, _, _) = root_screen();
+    let tick = "Allow sudo without a password (dangerous)";
+    assert!(press(&mut desktop, &ctx, tick));
+    assert!(press(&mut desktop, &ctx, "Allow it"));
+    assert!(press(&mut desktop, &ctx, tick));
+    let setup = desktop.admin_setup.as_ref().unwrap();
+    assert!(!setup.passwordless() && !setup.warning_open());
 }
 
 #[test]

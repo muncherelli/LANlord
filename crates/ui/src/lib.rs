@@ -1,6 +1,7 @@
 //! the native window, drawn with egui so it looks the same on every platform
 //! (and, later, in a browser).
 
+mod admin_setup;
 mod command_panel;
 mod console;
 mod controls;

@@ -15,6 +15,7 @@ mod menu;
 
 use menu::Confirm;
 
+use crate::admin_setup::{self, AdminSetup};
 use crate::command_panel::CommandPanel;
 use crate::console::{self, Console};
 use crate::controls;
@@ -23,7 +24,7 @@ use crate::dns_panel::DnsPanel;
 use crate::form::Form;
 use crate::hostlist::HostList;
 use crate::icons;
-use crate::login::{Auth, LoginBox, Message, Outcome, SignedIn};
+use crate::login::{Auth, LoginBox, Outcome, SignedIn};
 use crate::nt4_window::Nt4Window;
 use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
@@ -94,15 +95,8 @@ pub struct Desktop {
     /// the logon box, shown instead of the desktop until someone is signed in.
     login: Option<LoginBox>,
     signed_in: Option<SignedIn>,
-    /// the notice after logging on as root, and the box that follows its first button.
-    root_notice: Option<(RootNotice, Message)>,
-}
-
-/// where the notice about being logged on as root stands.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RootNotice {
-    Ask,
-    NotWired,
+    /// the screen root lands on to create the first administrator, before the desktop.
+    admin_setup: Option<AdminSetup>,
 }
 
 impl Desktop {
@@ -129,7 +123,7 @@ impl Desktop {
             auth: None,
             login: None,
             signed_in: None,
-            root_notice: None,
+            admin_setup: None,
         }
     }
 
@@ -211,6 +205,10 @@ impl Desktop {
             self.show_login(ui, &ctx);
             return;
         }
+        if self.admin_setup.is_some() {
+            self.show_admin_setup(ui, &ctx);
+            return;
+        }
         egui::Panel::bottom("taskbar")
             .exact_size(TASKBAR)
             .frame(
@@ -253,7 +251,8 @@ impl Desktop {
         }
     }
 
-    /// someone signed in: the server joins the list and every action targets it.
+    /// someone signed in: the server joins the list and every action targets it. root goes to
+    /// the screen that creates the first administrator before anything else.
     fn finish_login(&mut self, signed_in: SignedIn) {
         self.login = None;
         if let Err(error) = self.hosts.add(&signed_in.target) {
@@ -264,26 +263,68 @@ impl Desktop {
         self.selected = None;
         self.start_open = false;
         if signed_in.identity.is_root() {
-            self.root_notice = Some((RootNotice::Ask, root_notice_box()));
+            self.admin_setup = Some(AdminSetup::new());
         }
         self.signed_in = Some(signed_in);
     }
 
+    /// the create-an-administrator screen, on the bare desktop colour.
+    fn show_admin_setup(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(Frame::new().fill(TEAL))
+            .show(ui, |_| {});
+        let Some(target) = self.signed_in.as_ref().map(|s| s.target.clone()) else {
+            self.admin_setup = None;
+            return;
+        };
+        let outcome = self
+            .admin_setup
+            .as_mut()
+            .and_then(|setup| setup.show(ctx, &self.services, &target));
+        match outcome {
+            Some(admin_setup::Outcome::Skipped) => self.admin_setup = None,
+            Some(admin_setup::Outcome::Created(name)) => self.admin_created(&name, &target),
+            None => {}
+        }
+        self.dialogs(ctx);
+    }
+
+    /// the administrator exists: forget the root entry and ask for a logon as the new account.
+    fn admin_created(&mut self, name: &str, root_target: &str) {
+        self.admin_setup = None;
+        if self.hosts.selected() == Some(root_target) {
+            let _ = self.hosts.remove_selected();
+        }
+        let host = root_target.split_once('@').map_or(root_target, |(_, h)| h);
+        self.return_to_login(
+            Some(format!("{name}@{host}")),
+            Some(format!("Created {name}. Log on with it.")),
+        );
+    }
+
     /// back to the logon box, closing the connection that was kept open for this server.
     fn log_off(&mut self) {
+        let last = self.signed_in.as_ref().map(|s| s.target.clone());
+        self.return_to_login(last, None);
+    }
+
+    /// show the logon box again with `last` filled in and `note` in its status bar.
+    fn return_to_login(&mut self, last: Option<String>, note: Option<String>) {
         let Some(auth) = self.auth.clone() else {
             return;
         };
-        let last = self.signed_in.take().map(|s| s.target);
-        if let Some(target) = last.clone() {
+        if let Some(target) = self.signed_in.take().map(|s| s.target) {
             let closer = auth.clone();
             std::thread::spawn(move || closer.sign_out(&target));
         }
         self.windows.clear();
         self.active = None;
         self.start_open = false;
-        self.root_notice = None;
-        self.login = Some(LoginBox::new(auth, &self.services.ctx, last.as_deref()));
+        let mut login = LoginBox::new(auth, &self.services.ctx, last.as_deref());
+        if let Some(note) = note {
+            login.note(&note);
+        }
+        self.login = Some(login);
     }
 
     /// the modal boxes: a task's password prompt and the add-host box.
@@ -310,7 +351,6 @@ impl Desktop {
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.confirmation(ctx);
-        self.root_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
                 Some(Answer::Ok(text)) => {
@@ -322,38 +362,6 @@ impl Desktop {
                 Some(Answer::Cancel) => {}
                 None => self.add_host = Some(dialog),
             }
-        }
-    }
-}
-
-fn root_notice_box() -> Message {
-    Message::new(
-        "root-notice",
-        "Logged On As Root",
-        "You are logged on as root. That is fine, but we recommend creating a privileged \
-         administrator account and using it from now on.",
-        &["Create account...", "Not now"],
-    )
-}
-
-impl Desktop {
-    /// the notice after logging on as root. creating the account is not wired to anything yet:
-    /// the one call site to fill in is the `RootNotice::Ask` arm below.
-    fn root_notice(&mut self, ctx: &egui::Context) {
-        let Some((stage, message)) = self.root_notice.take() else {
-            return;
-        };
-        match (stage, message.show(ctx)) {
-            (_, None) => self.root_notice = Some((stage, message)),
-            (RootNotice::Ask, Some(0)) => {
-                let text = "Creating the account from here is not available yet. \
-                            Until then, create one on the gateway and sign in with it.";
-                self.root_notice = Some((
-                    RootNotice::NotWired,
-                    Message::new("root-not-wired", "Create Account", text, &["OK"]),
-                ));
-            }
-            _ => {}
         }
     }
 }

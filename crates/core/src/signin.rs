@@ -219,6 +219,35 @@ impl Signin {
     }
 }
 
+/// the public keys your ssh agent holds, one `type key comment` line each; empty when there is
+/// no agent, it is locked, or it holds none. nothing is asked of the agent but its list.
+pub fn agent_keys() -> Vec<String> {
+    let out = Command::new("ssh-add")
+        .arg("-L")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match out {
+        Ok(out) if out.status.success() => parse_agent_keys(&String::from_utf8_lossy(&out.stdout)),
+        _ => Vec::new(),
+    }
+}
+
+/// the key lines in `ssh-add -L` output, skipping its messages.
+fn parse_agent_keys(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|l| {
+            ["ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-"]
+                .iter()
+                .any(|p| l.starts_with(p))
+                && l.split_whitespace().count() >= 2
+        })
+        .map(String::from)
+        .collect()
+}
+
 /// the same rules as every other ssh use, and a user is required.
 fn check_target(target: &str) -> Result<(), SigninError> {
     Session::new(target).map_err(|err| SigninError::Other(err.to_string()))?;
@@ -488,6 +517,24 @@ mod tests {
         assert_eq!(host_key(stderr).unwrap(), "ssh-ed25519 SHA256:abc123");
         assert!(host_key("nothing here").is_none());
         assert!(host_key("Server host key: lonely").is_none());
+    }
+
+    #[test]
+    fn agent_keys_are_the_key_lines_only() {
+        let output = "ssh-ed25519 AAAAC3Nza me@laptop\n\
+                      ecdsa-sha2-nistp256 AAAAE2Vj\n\
+                      The agent has no identities.\n\
+                      ssh-rsa\n\n";
+        assert_eq!(
+            parse_agent_keys(output),
+            [
+                "ssh-ed25519 AAAAC3Nza me@laptop",
+                "ecdsa-sha2-nistp256 AAAAE2Vj"
+            ]
+        );
+        assert!(parse_agent_keys("The agent has no identities.").is_empty());
+        // whatever the machine's agent says, listing never panics
+        let _ = agent_keys();
     }
 
     #[test]

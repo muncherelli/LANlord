@@ -2,6 +2,7 @@
 //! swap in a fake that never touches the network.
 
 use anyhow::{anyhow, Result};
+use lanlord_core::account;
 use lanlord_core::apply;
 use lanlord_core::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use lanlord_core::crypto::{self, Identity};
@@ -14,6 +15,14 @@ use lanlord_core::power::{self, Outcome, Power};
 use lanlord_core::settings::{self, Document, Settings};
 use lanlord_core::ssh::Session;
 use lanlord_core::users::{self, Change};
+
+/// an administrator to create; the password is wiped when this is dropped.
+pub struct NewAdmin {
+    pub name: String,
+    pub password: zeroize::Zeroizing<String>,
+    pub ssh_key: Option<String>,
+    pub passwordless_sudo: bool,
+}
 
 pub trait Gateway: Send + Sync {
     /// set the gateway up for lanlord.
@@ -38,6 +47,8 @@ pub trait Gateway: Send + Sync {
     fn change_users(&self, host: &str, changes: &[Change], ask: AskPassword) -> Result<()>;
     /// set the account of machine `name` back to its first password, so it can join again.
     fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()>;
+    /// create an administrator login, in lanlord-admins and sudo, with an optional ssh key.
+    fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()>;
     /// the dhcp leases the gateway has handed out.
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>>;
     /// the names of the logon scripts in the netlogon share.
@@ -123,6 +134,18 @@ impl Gateway for Ssh {
 
     fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
         nt4::reset_machine(&Session::new(host)?, name, ask)
+    }
+
+    fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {
+        account::create_admin(
+            &Session::new(host)?,
+            host,
+            &new.name,
+            &new.password,
+            new.ssh_key.as_deref(),
+            new.passwordless_sudo,
+            ask,
+        )
     }
 
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
@@ -301,6 +324,19 @@ mod fake {
 
         fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
             self.enter(format!("reset {host} {name}"), ask)
+        }
+
+        fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {
+            self.enter(
+                format!(
+                    "create-admin {host} {} key={} nopasswd={} pw={}",
+                    new.name,
+                    new.ssh_key.is_some(),
+                    new.passwordless_sudo,
+                    new.password.as_str()
+                ),
+                ask,
+            )
         }
 
         fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {

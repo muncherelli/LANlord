@@ -258,6 +258,11 @@ impl LoginBox {
         Ok(format!("{user}@{host}"))
     }
 
+    /// show `text` in the status bar, for example after an account was created.
+    pub fn note(&mut self, text: &str) {
+        self.say(text, false);
+    }
+
     fn say(&mut self, text: &str, error: bool) {
         self.status = text.into();
         self.status_is_error = error;
