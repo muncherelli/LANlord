@@ -1,5 +1,9 @@
-//! the native window, drawn with egui so it looks the same on every platform
-//! (and, later, in a browser).
+//! the LANlord desktop, drawn with egui so it looks the same in a native window on every
+//! platform and in a browser.
+
+// the browser build leaves out the desktop-only parts (sign-in, updates, rebuilds), so some of
+// what they share goes unused there
+#![cfg_attr(not(feature = "native"), allow(dead_code))]
 
 mod admin_setup;
 #[cfg(test)]
@@ -20,22 +24,20 @@ mod my_server;
 mod networks_window;
 mod nt4_panel;
 mod nt4_window;
+mod platform;
 mod remote;
 mod settings_editor;
 #[cfg(test)]
 mod testkit;
 mod theme;
+#[cfg(feature = "native")]
 mod update_panel;
 mod users_panel;
 mod view;
 mod widgets;
 mod windows;
 
-use std::sync::Arc;
-
-use anyhow::{anyhow, Result};
 use eframe::egui;
-use lanlord_core::{hosts, prefs, update};
 
 /// a wake handle that asks egui for a new frame.
 pub(crate) fn wake(ctx: &egui::Context) -> lanlord_app::wake::Wake {
@@ -44,7 +46,13 @@ pub(crate) fn wake(ctx: &egui::Context) -> lanlord_app::wake::Wake {
 }
 
 /// open the window and block until it is closed.
-pub fn run() -> Result<()> {
+#[cfg(feature = "native")]
+pub fn run() -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use anyhow::anyhow;
+    use lanlord_core::{hosts, prefs, update};
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("LANlord")
@@ -93,4 +101,41 @@ pub fn run() -> Result<()> {
         }),
     )
     .map_err(|err| anyhow!("could not open the window: {err}"))
+}
+
+/// start the desktop on the page's canvas. the browser build is lanlord on the gateway itself
+/// (server mode: one server, no logon box); until the web ui talks to the gateway it shows the
+/// demo server.
+#[cfg(target_arch = "wasm32")]
+pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bindgen::JsValue> {
+    use std::sync::Arc;
+
+    eframe::WebRunner::new()
+        .start(
+            canvas,
+            eframe::WebOptions::default(),
+            Box::new(|cc| {
+                let gateway = lanlord_app::gateway::Fake::new();
+                *gateway.local.lock().unwrap() = true;
+                let mut desktop = desktop::Desktop::new(Arc::new(gateway), &cc.egui_ctx, None);
+                // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop
+                if let Some(spec) = query("open") {
+                    desktop.open_spec(&spec);
+                }
+                Ok(Box::new(desktop))
+            }),
+        )
+        .await
+}
+
+/// the value of `name` in the page address's query string.
+#[cfg(target_arch = "wasm32")]
+fn query(name: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.replace("%2C", ",").replace("%40", "@"))
 }

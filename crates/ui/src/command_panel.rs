@@ -4,7 +4,7 @@
 use std::sync::mpsc::Receiver;
 
 use eframe::egui::{Frame, Key, Margin, RichText, ScrollArea, TextEdit, Ui};
-use lanlord_core::log::{self, Kind, Line};
+use lanlord_app::log::{self, Kind, Line};
 
 use crate::console;
 use crate::controls;

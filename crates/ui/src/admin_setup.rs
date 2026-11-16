@@ -3,7 +3,6 @@
 //! and has sudo, preferably signed in with an ssh key.
 
 use eframe::egui::{self, Align2, Area, Frame, Id, Margin, Order, Vec2};
-use lanlord_core::signin;
 use zeroize::Zeroizing;
 
 use crate::controls;
@@ -49,7 +48,7 @@ pub struct AdminSetup {
 
 impl AdminSetup {
     pub fn new() -> Self {
-        Self::with_keys(signin::agent_keys())
+        Self::with_keys(crate::platform::agent_keys())
     }
 
     fn with_keys(agent_keys: Vec<String>) -> Self {

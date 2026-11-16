@@ -1,7 +1,7 @@
 //! headless tests for the LANlord menu.
 
-use lanlord_core::log;
-use lanlord_core::power::Power;
+use lanlord_app::log;
+use lanlord_model::power::Power;
 
 use super::harness::*;
 use super::menu::Action;

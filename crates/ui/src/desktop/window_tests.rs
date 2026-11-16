@@ -4,8 +4,8 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use eframe::egui;
-use lanlord_core::leases::Lease;
-use lanlord_core::network::Internal;
+use lanlord_model::leases::Lease;
+use lanlord_model::network::Internal;
 
 use super::harness::*;
 use super::*;
@@ -260,7 +260,7 @@ fn problems_are_shown_and_block_saving() {
         .dns
         .draft
         .records
-        .push(lanlord_core::settings::Record {
+        .push(lanlord_model::settings::Record {
             name: "ok".into(),
             address: "10.0.0.1".into(),
         });
@@ -335,7 +335,7 @@ fn dhcp_can_be_switched_off_and_a_failed_probe_is_reported() {
         Some(true),
         "unchecked addresses still save"
     );
-    desktop.dns.draft.dhcp = Some(lanlord_core::settings::Dhcp::default());
+    desktop.dns.draft.dhcp = Some(lanlord_model::settings::Dhcp::default());
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Add lease..."), Some(true));
 }

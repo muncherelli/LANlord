@@ -2,8 +2,8 @@
 //! write-only fields. nothing is stored or applied unless a button is clicked.
 
 use eframe::egui::{self, ScrollArea, TextEdit, Ui};
-use lanlord_core::modules::{Status, MODULES};
-use lanlord_core::settings::{secret_fields, Document, SecretField, Settings};
+use lanlord_model::modules::{Status, MODULES};
+use lanlord_model::settings::{secret_fields, Document, SecretField, Settings};
 
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};

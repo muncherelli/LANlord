@@ -5,10 +5,10 @@ use std::net::Ipv4Addr;
 
 use anyhow::Result;
 use eframe::egui::{self, Ui};
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::leases::Lease;
-use lanlord_core::network::Internal;
-use lanlord_core::settings::{
+use lanlord_app::ask::AskPassword;
+use lanlord_model::leases::Lease;
+use lanlord_model::network::Internal;
+use lanlord_model::settings::{
     Dhcp, DnsSettings, Record, Settings, StaticLease, Subnet, ValidationError,
 };
 
@@ -381,7 +381,7 @@ impl DnsPanel {
         let ready = picked.is_some() && self.draft.dhcp.is_some() && self.form.is_none();
         if theme::action(ui, "Make static", ready).clicked() {
             if let Some(lease) = picked {
-                let name = if lanlord_core::settings::valid_label(&lease.name) {
+                let name = if lanlord_model::settings::valid_label(&lease.name) {
                     lease.name.clone()
                 } else {
                     String::new()

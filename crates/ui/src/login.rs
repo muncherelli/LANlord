@@ -6,7 +6,9 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Area, Color32, Frame, Id, Key, Margin, Order, Sense, Vec2};
-use lanlord_core::signin::{Attempt, Identity, Signin, SigninError};
+#[cfg(feature = "native")]
+use lanlord_core::signin::{Attempt, Signin};
+use lanlord_model::signin::{Identity, SigninError};
 use zeroize::Zeroizing;
 
 use crate::controls;
@@ -27,14 +29,17 @@ pub trait Auth: Send + Sync {
     fn sign_out(&self, target: &str);
 }
 
+#[cfg(feature = "native")]
 pub struct SystemAuth(Signin);
 
+#[cfg(feature = "native")]
 impl SystemAuth {
     pub fn new() -> Self {
         Self(Signin::system())
     }
 }
 
+#[cfg(feature = "native")]
 impl Auth for SystemAuth {
     fn attempt(
         &self,

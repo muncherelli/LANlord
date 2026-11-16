@@ -5,7 +5,6 @@
 use eframe::egui::{self, Color32, Key, TextEdit, Ui};
 
 use crate::controls;
-use lanlord_core::passwords;
 
 use crate::dialogs::modal;
 use crate::theme;
@@ -107,7 +106,7 @@ impl Form {
             }
             if field.secret {
                 if theme::action(ui, "Generate", true).clicked() {
-                    field.value = passwords::generate(passwords::DEFAULT_LEN);
+                    field.value = crate::platform::password();
                     field.shown = true;
                 }
                 let label = if field.shown { "Hide" } else { "Show" };

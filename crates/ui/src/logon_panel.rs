@@ -3,8 +3,8 @@
 
 use anyhow::Result;
 use eframe::egui::{self, CollapsingHeader, ScrollArea, TextEdit, Ui};
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::logon::{self, valid_script_name};
+use lanlord_app::ask::AskPassword;
+use lanlord_model::logon::{self, valid_script_name};
 
 use crate::controls;
 use crate::form::{Form, FormAnswer};

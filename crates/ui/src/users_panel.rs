@@ -3,8 +3,8 @@
 //! click, in the background, and applies the module.
 
 use eframe::egui::{self, Ui};
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::users::{self, Change, User};
+use lanlord_app::ask::AskPassword;
+use lanlord_model::users::{self, Change, User};
 
 use crate::form::{Form, FormAnswer};
 use crate::remote::{Remote, ShowNote};

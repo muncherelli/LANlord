@@ -3,12 +3,15 @@
 //! computer.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+// std's Instant has no clock in the browser
+use web_time::Instant;
 
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 use eframe::egui::{self, Align2, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
-use lanlord_core::clock::{self, Change, ClockState, NtpChange, Stored, Sync, ZoneNow};
+use lanlord_model::clock::{self, Change, ClockState, NtpChange, Stored, Sync, ZoneNow};
 
 use crate::controls;
 use crate::remote::{Remote, ShowNote, RED};

@@ -8,9 +8,10 @@ use std::sync::Arc;
 use eframe::egui::{
     self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
 };
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::modules::{Module, Status, MODULES};
+use lanlord_app::log::{emit, Kind};
+#[cfg(feature = "native")]
 use lanlord_core::update;
+use lanlord_model::modules::{Module, Status, MODULES};
 
 mod menu;
 
@@ -31,6 +32,7 @@ use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
 use crate::settings_editor::SettingsEditor;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
+#[cfg(feature = "native")]
 use crate::update_panel::{Choice, Updates};
 use crate::windows;
 use lanlord_app::desktop::Target;
@@ -90,6 +92,7 @@ pub struct Desktop {
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
+    #[cfg(feature = "native")]
     updates: Updates,
     /// the checkout a development build rebuilds from, and the build that is running.
     dev: Option<PathBuf>,
@@ -97,6 +100,7 @@ pub struct Desktop {
     /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// how long the new build must stay alive before this window may close.
+    #[cfg(feature = "native")]
     relaunch_grace: update::Grace,
     /// the Developer submenu is open.
     dev_open: bool,
@@ -141,10 +145,12 @@ impl Desktop {
             login: None,
             signed_in: None,
             admin_setup: None,
+            #[cfg(feature = "native")]
             updates: Updates::quiet(),
             dev: None,
             exe: None,
             rebuilding: None,
+            #[cfg(feature = "native")]
             relaunch_grace: update::Grace::default(),
             dev_open: false,
             window_title: "LANlord".into(),
@@ -152,6 +158,7 @@ impl Desktop {
     }
 
     /// look for updates in the background, and offer a rebuild when this is a development build.
+    #[cfg(feature = "native")]
     pub fn watch_updates(&mut self, updates: Updates, dev: Option<PathBuf>, exe: Option<PathBuf>) {
         self.updates = updates;
         if let (Some(repo), Some(exe)) = (&dev, &exe) {
@@ -248,7 +255,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().and(self.host());
         let title = lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
         if title != self.window_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            crate::platform::set_title(ctx, &title);
             self.window_title = title;
         }
     }
@@ -301,8 +308,11 @@ impl Desktop {
             .show(ui, |ui| self.icons(ui));
 
         self.console.drain();
-        self.updates.tick(&ctx);
-        self.poll_rebuild(&ctx);
+        #[cfg(feature = "native")]
+        {
+            self.updates.tick(&ctx);
+            self.poll_rebuild(&ctx);
+        }
         self.settings.poll();
         self.nt4.poll();
         self.dns.poll();
@@ -456,6 +466,7 @@ impl Desktop {
             self.after_purge(&host);
         }
         self.confirmation(ctx);
+        #[cfg(feature = "native")]
         self.update_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
@@ -473,6 +484,7 @@ impl Desktop {
 }
 
 // updates and rebuilding a development build
+#[cfg(feature = "native")]
 impl Desktop {
     /// the balloon and the box of the update notice, and what they ask for.
     fn update_notice(&mut self, ctx: &egui::Context) {
@@ -535,7 +547,7 @@ impl Desktop {
     }
 
     /// is a rebuild running?
-    pub(super) fn is_rebuilding(&self) -> bool {
+    pub(super) fn is_rebuilding_native(&self) -> bool {
         self.rebuilding.is_some()
     }
 
@@ -712,7 +724,7 @@ impl Desktop {
                 let clock = self.feed.text();
                 // the tray: a shallow sunken panel holding the update shield and the clock, whose
                 // text is flat inside it
-                let shield = self.updates.visible();
+                let shield = self.update_shield();
                 let width = 6.0 + CLOCK + if shield { TRAY_ICON } else { 0.0 };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
@@ -740,17 +752,49 @@ impl Desktop {
                         Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
                         Vec2::splat(TRAY_ICON),
                     );
-                    let clicked = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
-                            self.updates.shield(ui)
-                        })
-                        .inner;
-                    if clicked {
-                        self.updates.open_dialog();
+                    #[cfg(feature = "native")]
+                    {
+                        let clicked = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
+                                self.updates.shield(ui)
+                            })
+                            .inner;
+                        if clicked {
+                            self.updates.open_dialog();
+                        }
                     }
+                    #[cfg(not(feature = "native"))]
+                    let _ = icon_at;
                 }
             });
         });
+    }
+}
+
+// what the taskbar and the menu ask about updates, on builds with or without them
+impl Desktop {
+    /// is the update shield showing in the tray?
+    fn update_shield(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.updates.visible();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// is a rebuild running?
+    pub(super) fn is_rebuilding(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.is_rebuilding_native();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// are automatic updates on?
+    fn updates_enabled(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.updates.enabled();
+        #[cfg(not(feature = "native"))]
+        false
     }
 }
 
@@ -996,7 +1040,7 @@ mod window_tests;
 mod tests {
     use super::harness::*;
     use super::*;
-    use lanlord_core::log::Kind;
+    use lanlord_app::log::Kind;
 
     #[test]
     fn the_empty_desktop_draws() {
@@ -1244,7 +1288,7 @@ mod tests {
         with_host(&mut desktop, &ctx);
         desktop.open(Target::Hosts);
         frames(&mut desktop, &ctx, 2);
-        let seen = lanlord_core::log::subscribe();
+        let seen = lanlord_app::log::subscribe();
         assert!(press(&mut desktop, &ctx, "Bootstrap"));
         until(&mut desktop, &ctx, |d| d.password.is_some());
         frame(&mut desktop, &ctx, vec![key(egui::Key::Escape)]);
@@ -1416,7 +1460,7 @@ mod tests {
             (Kind::Info, "desk-test-info"),
             (Kind::Debug, "desk-test-debug"),
         ] {
-            lanlord_core::log::emit(kind, text);
+            lanlord_app::log::emit(kind, text);
         }
         until(&mut desktop, &ctx, |d| {
             d.console

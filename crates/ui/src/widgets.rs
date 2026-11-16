@@ -1,7 +1,7 @@
 //! small drawing helpers shared by the management windows.
 
 use eframe::egui::{Align2, Pos2, Rect, RichText, ScrollArea, Sense, Ui, Vec2};
-use lanlord_core::settings::ValidationError;
+use lanlord_model::settings::ValidationError;
 
 use crate::controls;
 use crate::remote::RED;

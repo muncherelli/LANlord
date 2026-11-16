@@ -2,7 +2,7 @@
 //! profiles and the administrator password (which is only ever set, never shown).
 
 use eframe::egui::{self, Ui};
-use lanlord_core::nt4::{valid_machine, Nt4Settings};
+use lanlord_model::nt4::{valid_machine, Nt4Settings};
 
 use crate::controls;
 use crate::form::{Form, FormAnswer};
@@ -22,10 +22,10 @@ pub struct Nt4Data {
 fn load(
     gateway: &dyn lanlord_app::gateway::Gateway,
     host: &str,
-    ask: lanlord_core::bootstrap::AskPassword,
+    ask: lanlord_app::ask::AskPassword,
 ) -> anyhow::Result<Nt4Data> {
     let document = gateway.load_document(host, ask)?;
-    let settings = lanlord_core::settings::Settings::parse(&document.plain)?;
+    let settings = lanlord_model::settings::Settings::parse(&document.plain)?;
     Ok(Nt4Data {
         settings: Nt4Settings::from_settings(&settings)?,
         admin_password_set: document.secrets_set.iter().any(|p| p == ADMIN_PASSWORD),
@@ -122,7 +122,7 @@ impl Nt4Panel {
             vec![]
         };
         let job = services.spawn(host, move |gateway, ask| {
-            let edit = |settings: &mut lanlord_core::settings::Settings| {
+            let edit = |settings: &mut lanlord_model::settings::Settings| {
                 draft.apply_to(settings);
                 Ok(())
             };
@@ -214,7 +214,7 @@ impl Nt4Panel {
     fn machines_list(
         &mut self,
         ui: &mut Ui,
-        errors: &[lanlord_core::settings::ValidationError],
+        errors: &[lanlord_model::settings::ValidationError],
         idle: bool,
     ) {
         let rows: Vec<Vec<String>> = self

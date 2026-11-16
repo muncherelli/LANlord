@@ -1,9 +1,34 @@
-//! what lanlord prints, collected from `lanlord_core::log` for the console window.
+//! what lanlord prints, collected from `lanlord_app::log` for the console window.
 
-use std::sync::mpsc::{self, Receiver};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 
 use eframe::egui::{Color32, Context};
-use lanlord_core::log::{self, Kind, Line};
+use lanlord_app::log::{self, Kind, Line};
+
+/// the log's lines, with a repaint for each on a desktop; the browser has no threads, so there
+/// the lines are read each frame.
+#[cfg(not(target_arch = "wasm32"))]
+fn forward(ctx: &Context) -> Receiver<Line> {
+    let (forward, incoming) = mpsc::channel();
+    let from_log = log::subscribe();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        for line in from_log {
+            if forward.send(line).is_err() {
+                break;
+            }
+            ctx.request_repaint();
+        }
+    });
+    incoming
+}
+
+#[cfg(target_arch = "wasm32")]
+fn forward(_ctx: &Context) -> Receiver<Line> {
+    log::subscribe()
+}
 
 /// how many lines to keep.
 const KEEP: usize = 2000;
@@ -16,20 +41,9 @@ pub struct Console {
 impl Console {
     /// subscribe to the log; the ui is woken whenever a line arrives.
     pub fn new(ctx: &Context) -> Self {
-        let (forward, incoming) = mpsc::channel();
-        let from_log = log::subscribe();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            for line in from_log {
-                if forward.send(line).is_err() {
-                    break;
-                }
-                ctx.request_repaint();
-            }
-        });
         Self {
             lines: Vec::new(),
-            incoming,
+            incoming: forward(ctx),
         }
     }
 
