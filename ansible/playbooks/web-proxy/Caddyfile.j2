@@ -38,6 +38,9 @@ https://{{ webui_host }}:{{ webui_port }} {
 {% elif webui_tls == 'cloudflare-origin' %}
 	tls /config/webui-origin.pem /config/webui-origin.key
 {% endif %}
+	# the browser build is a few megabytes; the web ui is for modern browsers only, so unlike
+	# the retronet sites it can always be compressed
+	encode zstd gzip
 	header {
 		# the app sends a policy with the hashes of its own loader; this is the fallback
 		?Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
