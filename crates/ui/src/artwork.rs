@@ -11,7 +11,9 @@ fn check(bytes: &[u8], width: usize, height: usize) {
         (width, height)
     );
     let (mut black, mut blue) = (0usize, 0usize);
-    for px in image.rgba.chunks_exact(4) {
+    let (pixels, rest) = image.rgba.as_chunks::<4>();
+    assert!(rest.is_empty());
+    for px in pixels {
         match (px[0], px[1], px[2], px[3]) {
             (0, 0, 0, 255) => black += 1,
             (0, 0, 128, 255) => blue += 1,
