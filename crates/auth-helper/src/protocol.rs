@@ -1,11 +1,13 @@
 //! the wire format between the web ui and the helper: one request in, one line out.
 //!
-//! the request is `user NUL password NUL`, nothing before or after it, and the caller then shuts
+//! the request is `user NUL password NUL`, optionally followed by the client's ip address and a
+//! NUL (handed to pam as the remote host), nothing before or after it, and the caller then shuts
 //! down its writing side so the helper sees the end. the answer is one line:
 //! `ok`, `denied` or `error <code>`, and the exit status says the same (0, 1, 2).
 
 use std::fmt;
 use std::io::Read;
+use std::net::IpAddr;
 
 use zeroize::{Zeroize, Zeroizing};
 
@@ -17,6 +19,8 @@ pub const MAX_REQUEST: usize = 1024;
 pub struct Request {
     pub user: String,
     pub password: Zeroizing<Vec<u8>>,
+    /// the web browser's address, when the web ui passes it on.
+    pub rhost: Option<String>,
 }
 
 // the password never reaches a log, even through a debug print
@@ -25,6 +29,7 @@ impl fmt::Debug for Request {
         f.debug_struct("Request")
             .field("user", &self.user)
             .field("password", &"<redacted>")
+            .field("rhost", &self.rhost)
             .finish()
     }
 }
@@ -85,7 +90,8 @@ pub fn read_request(input: &mut impl Read) -> Result<Request, &'static str> {
     parse(&mut buf)
 }
 
-/// split `user NUL password NUL` out of `buf`, then wipe `buf`, whatever the outcome.
+/// split `user NUL password NUL [address NUL]` out of `buf`, then wipe `buf`, whatever the
+/// outcome.
 pub fn parse(buf: &mut [u8]) -> Result<Request, &'static str> {
     let parsed = split(buf);
     buf.zeroize();
@@ -94,19 +100,33 @@ pub fn parse(buf: &mut [u8]) -> Result<Request, &'static str> {
 
 fn split(buf: &[u8]) -> Result<Request, &'static str> {
     let body = buf.strip_suffix(&[0]).ok_or("bad-request")?;
-    let at = body.iter().position(|&b| b == 0).ok_or("bad-request")?;
-    let (user, password) = (&body[..at], &body[at + 1..]);
-    // pam takes c strings, so a password cannot hold a nul; an empty one is never checked
-    if password.is_empty() || password.contains(&0) {
+    // pam takes c strings, so no field can hold a nul: splitting on them is exact
+    let fields: Vec<&[u8]> = body.split(|&b| b == 0).collect();
+    let (user, password, rhost) = match fields[..] {
+        [user, password] => (user, password, None),
+        [user, password, rhost] => (user, password, Some(rhost)),
+        _ => return Err("bad-request"),
+    };
+    // an empty password is never checked
+    if password.is_empty() {
         return Err("bad-request");
     }
     let user = std::str::from_utf8(user).map_err(|_| "bad-request")?;
     if !valid_user(user) {
         return Err("bad-request");
     }
+    let rhost = match rhost {
+        None => None,
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes).map_err(|_| "bad-request")?;
+            let address: IpAddr = text.parse().map_err(|_| "bad-request")?;
+            Some(address.to_string())
+        }
+    };
     Ok(Request {
         user: user.to_string(),
         password: Zeroizing::new(password.to_vec()),
+        rhost,
     })
 }
 
@@ -171,6 +191,23 @@ mod tests {
         bytes.extend(std::iter::repeat_n(b'x', MAX_REQUEST));
         bytes.push(0);
         assert_eq!(request(&bytes).unwrap_err(), "too-long");
+    }
+
+    #[test]
+    fn takes_the_client_address_when_given() {
+        let r = request(b"alice\0secret\x00192.0.2.7\0").unwrap();
+        assert_eq!(r.rhost.as_deref(), Some("192.0.2.7"));
+        let r = request(b"alice\0secret\x002001:db8::1\0").unwrap();
+        assert_eq!(r.rhost.as_deref(), Some("2001:db8::1"));
+        assert_eq!(request(b"alice\0secret\0").unwrap().rhost, None);
+        for bad in [
+            &b"alice\0secret\0not-an-ip\0"[..],
+            b"alice\0secret\0\0",
+            b"alice\0secret\x00192.0.2.7\0extra\0",
+            b"alice\0secret\0\xff\0",
+        ] {
+            assert_eq!(request(bad).unwrap_err(), "bad-request", "{bad:?}");
+        }
     }
 
     #[test]

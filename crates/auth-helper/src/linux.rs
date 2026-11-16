@@ -2,12 +2,14 @@
 //! systemd hands over, and the few lines that tie a run together.
 
 use std::ffi::{c_char, c_int, CString};
+use std::fs::File;
 use std::io::Write;
-use std::mem::{size_of, MaybeUninit};
+use std::mem::{size_of, ManuallyDrop, MaybeUninit};
+use std::os::fd::FromRawFd;
 use std::ptr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::check::{answer, padding, Groups, System};
+use crate::check::{answer, padding, Groups, System, JITTER};
 use crate::pam::SystemPam;
 use crate::protocol::Verdict;
 
@@ -85,9 +87,59 @@ impl System for SystemCalls {
         peer_uid(0)
     }
 
+    fn set_timeouts(&self) -> Result<(), &'static str> {
+        set_timeouts(0, IO_TIMEOUT)
+    }
+
     fn uid_of(&self, user: &str) -> Result<Option<u32>, &'static str> {
         Ok(lookup(user)?.map(|(uid, _)| uid))
     }
+}
+
+/// how long one read from or write to the caller may block.
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// make reads and writes on the socket `fd` give up after `timeout`.
+fn set_timeouts(fd: c_int, timeout: Duration) -> Result<(), &'static str> {
+    let tv = libc::timeval {
+        tv_sec: libc::time_t::try_from(timeout.as_secs()).map_err(|_| "timeouts")?,
+        tv_usec: libc::suseconds_t::from(timeout.subsec_micros() as i32),
+    };
+    for option in [libc::SO_RCVTIMEO, libc::SO_SNDTIMEO] {
+        // SAFETY: `tv` is a timeval of the size given.
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                option,
+                ptr::addr_of!(tv).cast(),
+                size_of::<libc::timeval>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            return Err("timeouts");
+        }
+    }
+    Ok(())
+}
+
+/// `fd` as a reader with no buffer of its own, so the request (and the password in it) only
+/// ever lands in the helper's own, wiped buffer. it is not closed when dropped.
+fn unbuffered(fd: c_int) -> ManuallyDrop<File> {
+    // SAFETY: the descriptor stays owned by the process; ManuallyDrop never closes it.
+    ManuallyDrop::new(unsafe { File::from_raw_fd(fd) })
+}
+
+/// up to `JITTER` of random extra delay, or none when the kernel has no randomness to give.
+fn jitter() -> Duration {
+    let mut bytes = [0u8; 2];
+    // SAFETY: `bytes` is two bytes long.
+    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+    if got != 2 {
+        return Duration::ZERO;
+    }
+    let max = u64::try_from(JITTER.as_millis()).unwrap_or(0);
+    Duration::from_millis(u64::from(u16::from_ne_bytes(bytes)) % (max + 1))
 }
 
 /// the uid on the other end of `fd` when it is a socket, `None` when it is something else.
@@ -119,17 +171,21 @@ fn peer_uid(fd: c_int) -> Result<Option<u32>, &'static str> {
     Ok(Some(unsafe { cred.assume_init() }.uid))
 }
 
-/// check one login and answer it, taking at least `FAIL_DELAY` for anything but `ok`.
+/// check one login and answer it, taking `FAIL_DELAY` and some jitter for anything but `ok`.
 pub fn run(args: &[String]) -> Verdict {
     let start = Instant::now();
+    // no core dump or ptrace by other unprivileged processes can see the password
+    // SAFETY: prctl with PR_SET_DUMPABLE takes plain integers.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
     let verdict = answer(
         args,
         &SystemCalls,
-        &mut std::io::stdin().lock(),
+        &mut *unbuffered(0),
         &SystemPam,
         &SystemGroups,
+        &mut std::io::stderr().lock(),
     );
-    std::thread::sleep(padding(verdict, start.elapsed()));
+    std::thread::sleep(padding(verdict, start.elapsed(), jitter()));
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{}", verdict.line());
     let _ = out.flush();
@@ -174,6 +230,44 @@ mod tests {
         let file = std::fs::File::open("/dev/null").unwrap();
         assert_eq!(peer_uid(file.as_raw_fd()), Ok(None));
         assert_eq!(peer_uid(-1), Err("stdin"));
+    }
+
+    #[test]
+    fn sets_both_socket_timeouts() {
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        set_timeouts(ours.as_raw_fd(), Duration::from_millis(1500)).unwrap();
+        assert_eq!(
+            ours.read_timeout().unwrap(),
+            Some(Duration::from_millis(1500))
+        );
+        assert_eq!(
+            ours.write_timeout().unwrap(),
+            Some(Duration::from_millis(1500))
+        );
+        let file = std::fs::File::open("/dev/null").unwrap();
+        assert_eq!(set_timeouts(file.as_raw_fd(), IO_TIMEOUT), Err("timeouts"));
+    }
+
+    #[test]
+    fn reads_the_request_without_buffering_past_it() {
+        use std::io::Read;
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(b"abcdef").unwrap();
+        let mut first = [0u8; 3];
+        unbuffered(reader.as_raw_fd())
+            .read_exact(&mut first)
+            .unwrap();
+        // a buffered reader would have taken all six bytes; the rest is still on the socket
+        let mut rest = [0u8; 3];
+        (&reader).read_exact(&mut rest).unwrap();
+        assert_eq!((&first, &rest), (b"abc", b"def"));
+    }
+
+    #[test]
+    fn jitter_stays_within_bounds() {
+        for _ in 0..50 {
+            assert!(jitter() <= JITTER);
+        }
     }
 
     #[test]

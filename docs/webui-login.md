@@ -9,43 +9,69 @@ to read the shadow file), so the check is done by a small separate program,
 
 ## How a login is checked
 
-1. Someone signs in to the web UI as, say, `alice`.
-2. The web UI connects to `/run/lanlord-auth/auth.sock`, writes `alice`, a NUL byte, the
-   password and another NUL byte, then closes its writing side.
+1. Someone signs in to the web UI as, say, `alice`, from a browser at 192.0.2.7.
+2. The web UI connects to `/run/lanlord-auth/auth.sock` and writes `alice`, a NUL byte, the
+   password, a NUL byte and, optionally, the browser's address followed by a NUL byte. Then it
+   closes its writing side.
 3. systemd starts one `lanlord-auth-helper` process for that connection, as root, with the
    connection as its input and output.
 4. The helper:
    - refuses unless the process on the other end runs as the web UI account (`--caller`);
-   - refuses a malformed request, or a user name that is not a plain login name;
+   - gives each read and write on the connection five seconds at most;
+   - refuses a malformed request, a user name that is not a plain login name, or an address
+     that is not an IP address;
    - runs PAM as the `lanlord` service (`/etc/pam.d/lanlord`: the distro's normal password and
-     account rules), so expired or locked accounts are refused too;
+     account rules), so expired or locked accounts are refused too, and hands PAM the browser's
+     address as the remote host;
    - when the password is right, checks that `alice` is in the `admins` group.
 5. It answers one line: `ok`, `denied` or `error <code>`.
 
-Anything other than `ok` takes at least 1.5 seconds, and an unknown user, a wrong password and a
-user outside `admins` all get the same `denied`. The password is never logged, never passed as
-an argument or in the environment, and is wiped from the helper's memory after use. The journal
-records each attempt as `web ui login for alice: denied`.
+## What it never gives away
+
+- An unknown user, a wrong password, an expired account and a user outside `admins` all get the
+  same `denied`, after the same time: every answer but `ok` takes two seconds plus a random
+  quarter of a second at most. That is the only delay; libpam's own failure delay, which only
+  follows a wrong password, is switched off so it cannot set that case apart.
+- The password is never logged, never passed as an argument or in the environment, and only
+  ever sits in the helper's own buffers, which are wiped after use: the connection is read
+  without any library buffering. The process cannot be traced or dumped by other users, and
+  systemd turns core dumps off.
+- The journal records who asked and how it went, for example
+  `web ui login for alice from 192.0.2.7: denied, right password but not in group admins
+  (gid 9998)` or `refused uid 1000: only lanlord may ask`. A name typed for an account that does
+  not exist is logged as `an unknown user`, since it may be a password typed into the wrong
+  field.
+
+## What the web UI must do
+
+The helper slows down guessing, but it is the web UI's job to stop it: it should queue login
+attempts and limit them per client address (a few per minute), and pass that address on. At most
+four helpers run at once.
 
 ## Why a socket and not sudo
 
 Only the web UI account can open the socket (it is `root:<web ui account>`, mode 0660), and the
-helper also checks the peer's uid. Nothing gains a sudo rule, the helper is not setuid, and
-systemd runs it with a read-only system, no network and no new privileges.
+helper also checks the peer's uid. Nothing gains a sudo rule and the helper is not setuid.
+systemd runs it with a read-only system, no network, a narrow set of capabilities and system
+calls, and no way to gain privileges.
 
 ## Installing
 
 The `webui-login` playbook installs it once the binary has been put at
-`/opt/lanlord/bin/lanlord-auth-helper`:
+`/opt/lanlord/bin/lanlord-auth-helper` (owned by root, writable only by root, or the playbook
+stops):
 
 - `/usr/local/libexec/lanlord-auth-helper` (root, mode 0755)
-- `/etc/pam.d/lanlord`
+- `/etc/pam.d/lanlord`, built on the distro's `common-auth` or `system-auth`
 - `lanlord-auth.socket` and `lanlord-auth@.service`
 
 To let a different account run the web UI, set `lanlord_webui_user`.
 
-To try the helper by hand on a gateway (as root, from a terminal there is no peer to check):
+To try the helper by hand on a gateway (as root, from a terminal there is no peer to check),
+without the password landing in your shell history:
 
 ```sh
-printf 'alice\0the-password\0' | sudo /usr/local/libexec/lanlord-auth-helper
+read -rs -p 'password: ' pw; echo
+printf 'alice\0%s\0' "$pw" | sudo /usr/local/libexec/lanlord-auth-helper
+unset pw
 ```

@@ -1,7 +1,7 @@
 //! pam through libpam, as the `lanlord` service. kept to the binding itself: the decision lives in
 //! check.rs.
 
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 use std::mem::size_of;
 use std::ptr;
 
@@ -20,6 +20,8 @@ const PAM_PROMPT_ECHO_ON: c_int = 2;
 const PAM_ERROR_MSG: c_int = 3;
 const PAM_TEXT_INFO: c_int = 4;
 const PAM_SILENT: c_int = 0x8000;
+const PAM_RHOST: c_int = 4;
+const PAM_FAIL_DELAY: c_int = 10;
 const PAM_DISALLOW_NULL_AUTHTOK: c_int = 0x0001;
 
 #[repr(C)]
@@ -55,6 +57,7 @@ extern "C" {
         conv: *const PamConv,
         pamh: *mut *mut c_void,
     ) -> c_int;
+    fn pam_set_item(pamh: *mut c_void, item_type: c_int, item: *const c_void) -> c_int;
     fn pam_authenticate(pamh: *mut c_void, flags: c_int) -> c_int;
     fn pam_acct_mgmt(pamh: *mut c_void, flags: c_int) -> c_int;
     fn pam_end(pamh: *mut c_void, status: c_int) -> c_int;
@@ -136,6 +139,12 @@ extern "C" fn converse(
     PAM_SUCCESS
 }
 
+/// the failure delay libpam calls instead of sleeping: it does nothing, because the helper pads
+/// every answer but `ok` to the same length itself (see `check::FAIL_DELAY`). libpam's own delay
+/// only follows a wrong password, so it would set that apart from a right password for an
+/// account that may not log in.
+extern "C" fn no_delay(_status: c_int, _usec: c_uint, _appdata: *mut c_void) {}
+
 /// what a finished pam transaction means for the login.
 fn outcome(status: c_int) -> Result<bool, &'static str> {
     match status {
@@ -150,8 +159,17 @@ fn outcome(status: c_int) -> Result<bool, &'static str> {
 pub struct SystemPam;
 
 impl Pam for SystemPam {
-    fn check(&self, user: &str, password: &[u8]) -> Result<bool, &'static str> {
+    fn check(
+        &self,
+        user: &str,
+        password: &[u8],
+        rhost: Option<&str>,
+    ) -> Result<bool, &'static str> {
         let user = CString::new(user).map_err(|_| "bad-request")?;
+        let rhost = rhost
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| "bad-request")?;
         let mut answers = Answers {
             user: &user,
             password,
@@ -160,14 +178,25 @@ impl Pam for SystemPam {
             conv: converse,
             appdata_ptr: ptr::addr_of_mut!(answers).cast(),
         };
+        let delay: extern "C" fn(c_int, c_uint, *mut c_void) = no_delay;
         let mut handle = ptr::null_mut();
         // SAFETY: every pointer outlives the pam handle, which is ended before returning.
         unsafe {
             if pam_start(SERVICE.as_ptr(), user.as_ptr(), &conv, &mut handle) != PAM_SUCCESS {
                 return Err("pam");
             }
+            let mut status = pam_set_item(handle, PAM_FAIL_DELAY, delay as *const c_void);
+            if status == PAM_SUCCESS {
+                if let Some(rhost) = &rhost {
+                    status = pam_set_item(handle, PAM_RHOST, rhost.as_ptr().cast());
+                }
+            }
+            if status != PAM_SUCCESS {
+                pam_end(handle, status);
+                return Err("pam");
+            }
             let flags = PAM_SILENT | PAM_DISALLOW_NULL_AUTHTOK;
-            let mut status = pam_authenticate(handle, flags);
+            status = pam_authenticate(handle, flags);
             if status == PAM_SUCCESS {
                 status = pam_acct_mgmt(handle, flags);
             }
@@ -263,7 +292,18 @@ mod tests {
     }
 
     #[test]
-    fn a_user_name_with_a_nul_never_reaches_pam() {
-        assert_eq!(SystemPam.check("a\0b", b"x"), Err("bad-request"));
+    fn names_or_addresses_with_a_nul_never_reach_pam() {
+        assert_eq!(SystemPam.check("a\0b", b"x", None), Err("bad-request"));
+        assert_eq!(
+            SystemPam.check("alice", b"x", Some("192.0.2.7\0")),
+            Err("bad-request")
+        );
+    }
+
+    #[test]
+    fn the_failure_delay_handed_to_libpam_returns_at_once() {
+        let start = std::time::Instant::now();
+        no_delay(7, 2_000_000, ptr::null_mut());
+        assert!(start.elapsed() < std::time::Duration::from_millis(50));
     }
 }
