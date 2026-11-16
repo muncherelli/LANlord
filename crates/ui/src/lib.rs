@@ -27,6 +27,7 @@ mod testkit;
 mod theme;
 mod update_panel;
 mod users_panel;
+mod view;
 mod widgets;
 mod windows;
 

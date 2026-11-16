@@ -367,6 +367,12 @@ mod fake {
         pub reads: Mutex<Vec<String>>,
     }
 
+    impl Default for Fake {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Fake {
         pub fn new() -> Self {
             Self {

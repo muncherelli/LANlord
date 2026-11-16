@@ -1,0 +1,128 @@
+//! draws the app's layout tree (`lanlord_app::view`) with egui, in the nt4 look, and returns
+//! the message of whatever was clicked.
+
+use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, Ui};
+use lanlord_app::view::{Dialog, Node};
+
+use crate::controls;
+use crate::dialogs;
+use crate::remote::RED;
+use crate::theme::{self, WHITE};
+use crate::widgets::Table;
+
+/// draw `nodes` top to bottom; the message of a click, if there was one.
+pub fn show<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
+    let mut sent = None;
+    for node in nodes {
+        if let Some(msg) = node_ui(ui, node) {
+            sent = Some(msg);
+        }
+    }
+    sent
+}
+
+/// draw a modal box; the message of a click inside it, if there was one.
+pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
+    dialogs::modal(ctx, dialog.id, &dialog.title, |ui| show(ui, &dialog.body))
+}
+
+fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
+    match node {
+        Node::Text(text) => {
+            ui.label(text.as_str());
+            None
+        }
+        Node::Gap(height) => {
+            ui.add_space(*height);
+            None
+        }
+        Node::Group { title, body } => controls::group(ui, title, |ui| show(ui, body)),
+        Node::Table(table) => Table {
+            id: table.id,
+            headings: &table.headings,
+            widths: &table.widths,
+            rows: &table.rows,
+            selected: table.selected,
+            bad: &[],
+            height: table.height,
+        }
+        .show(ui)
+        .map(table.select),
+        Node::Buttons(buttons) => controls::buttons(ui, |ui| {
+            let mut sent = None;
+            for button in buttons {
+                if theme::action(ui, &button.label, button.enabled).clicked() {
+                    sent = Some(button.press.clone());
+                }
+            }
+            sent
+        }),
+        Node::Field { label, value } => {
+            controls::row(ui, label, |ui| ui.label(value.as_str()));
+            None
+        }
+        Node::Status { text, error } => {
+            controls::status_bar(ui, text, *error);
+            None
+        }
+        Node::Heading(text) => {
+            ui.label(RichText::new(text.as_str()).strong());
+            None
+        }
+        Node::Button(button) => theme::action(ui, &button.label, button.enabled)
+            .clicked()
+            .then(|| button.press.clone()),
+        Node::Tabs {
+            titles,
+            current,
+            pick,
+            body,
+        } => {
+            let mut tab = *current;
+            let inside = controls::tabs(ui, titles, &mut tab, |ui, _| show(ui, body));
+            if tab == *current {
+                inside
+            } else {
+                Some(pick(tab))
+            }
+        }
+        Node::Danger(body) => {
+            Frame::new()
+                .stroke(Stroke::new(1.0, RED))
+                .inner_margin(Margin::same(3))
+                .show(ui, |ui| show(ui, body))
+                .inner
+        }
+        Node::Check {
+            label,
+            checked,
+            enabled,
+            toggle,
+        } => {
+            let mut ticked = *checked;
+            ui.add_enabled_ui(*enabled, |ui| controls::check(ui, &mut ticked, label));
+            (ticked != *checked).then(|| toggle.clone())
+        }
+        Node::Input { value, width, edit } => {
+            let mut text = value.clone();
+            controls::edit(ui, &mut text, *width);
+            (text != *value).then(|| edit(text))
+        }
+        Node::Lines { id, lines, height } => {
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ScrollArea::vertical()
+                    .id_salt(*id)
+                    .max_height(*height)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height(*height);
+                        for line in lines {
+                            ui.label(RichText::new(line.as_str()).monospace().size(11.0));
+                        }
+                    });
+            });
+            None
+        }
+    }
+}

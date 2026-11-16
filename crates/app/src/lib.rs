@@ -4,9 +4,13 @@
 //! actions.
 
 pub mod demo_clock;
+pub mod desktop;
 pub mod gateway;
 pub mod hostlist;
+pub mod menu;
+pub mod my_server;
 pub mod remote;
 pub mod services;
 pub mod tasks;
+pub mod view;
 pub mod wake;
