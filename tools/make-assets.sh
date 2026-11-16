@@ -1,0 +1,14 @@
+#!/bin/sh
+# redraws the lanlord logo, app icon and setup panel from tools/make-logo.swift (macos only:
+# it needs swiftc and iconutil). run it from the repository root: tools/make-assets.sh
+# pass a directory as the first argument to also leave the zoomed small icons there for checking.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+swiftc -O -o "$tmp/make-logo" "$root/tools/make-logo.swift"
+"$tmp/make-logo" "$root/assets" "$root/crates/ui/assets" ${1:+"$1"}
+iconutil -c icns "$root/assets/icon.iconset" -o "$root/assets/icon.icns"
+rm -rf "$root/assets/icon.iconset"
+echo "wrote assets/ and crates/ui/assets/"
