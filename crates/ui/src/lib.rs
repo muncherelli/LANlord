@@ -46,6 +46,7 @@ pub fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("LANlord")
+            .with_app_id("lanlord")
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
                     .map_err(|e| anyhow!("{e}"))?,
