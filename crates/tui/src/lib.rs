@@ -1,6 +1,7 @@
 //! the terminal ui: a host list, a command box and a console.
 
 mod app;
+pub mod paint;
 mod ui;
 
 use std::time::Duration;
