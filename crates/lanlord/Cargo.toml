@@ -16,3 +16,7 @@ lanlord-core = { path = "../core" }
 lanlord-tui = { path = "../tui" }
 lanlord-ui = { path = "../ui", optional = true }
 rpassword = "7.5.5"
+
+[target.'cfg(windows)'.dependencies]
+# writes start menu shortcuts without com
+mslnk = "0.1.8"
