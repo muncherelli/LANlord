@@ -286,7 +286,7 @@ async fn serve_socket(
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await;
-    remove_if_ours(path, ours).await;
+    remove_if_ours(path, &ours).await;
     Ok(served?)
 }
 
@@ -299,15 +299,20 @@ async fn serve_socket(
     bail!("unix sockets need a unix system; use --listen to try the server out")
 }
 
-/// which file a socket is: its device and inode.
+/// the socket this run made: its device and inode, and a second handle on it. the handle keeps
+/// the socket alive until the cleanup has looked, so its inode cannot be handed to a newer
+/// run's socket in the meantime and mistaken for ours.
 #[cfg(unix)]
-pub type SocketId = (u64, u64);
+pub struct Ours {
+    id: (u64, u64),
+    _held: std::os::unix::net::UnixListener,
+}
 
 /// make the socket's folder, clear a socket left by an earlier run and listen, readable and
 /// writable by the owner and group only (caddy reaches it through the group or as root). also
-/// says which file the new socket is, so only that one is removed later.
+/// says which socket is ours, so only that one is removed later.
 #[cfg(unix)]
-pub async fn bind_socket(path: &Path) -> Result<(tokio::net::UnixListener, SocketId)> {
+pub async fn bind_socket(path: &Path) -> Result<(tokio::net::UnixListener, Ours)> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
     if let Some(parent) = path.parent() {
@@ -322,20 +327,27 @@ pub async fn bind_socket(path: &Path) -> Result<(tokio::net::UnixListener, Socke
         Ok(_) => bail!("{} exists and is not a socket", path.display()),
         Err(_) => {}
     }
-    let listener = tokio::net::UnixListener::bind(path)
+    let listener = std::os::unix::net::UnixListener::bind(path)
         .with_context(|| format!("listening on {}", path.display()))?;
+    let held = listener.try_clone()?;
+    listener.set_nonblocking(true)?;
+    let listener = tokio::net::UnixListener::from_std(listener)?;
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660)).await?;
     let meta = tokio::fs::symlink_metadata(path).await?;
-    Ok((listener, (meta.dev(), meta.ino())))
+    let ours = Ours {
+        id: (meta.dev(), meta.ino()),
+        _held: held,
+    };
+    Ok((listener, ours))
 }
 
 /// remove the socket on the way out, unless another run has put its own socket there since.
 #[cfg(unix)]
-pub async fn remove_if_ours(path: &Path, ours: SocketId) {
+pub async fn remove_if_ours(path: &Path, ours: &Ours) {
     use std::os::unix::fs::MetadataExt;
 
     if let Ok(meta) = tokio::fs::symlink_metadata(path).await {
-        if (meta.dev(), meta.ino()) == ours {
+        if (meta.dev(), meta.ino()) == ours.id {
             let _ = tokio::fs::remove_file(path).await;
         }
     }
@@ -918,17 +930,18 @@ mod tests {
         let path = root.join("web.sock");
         let rt = runtime();
         rt.block_on(async {
-            let (first, first_id) = bind_socket(&path).await.unwrap();
+            // the first run's listener is gone, but it holds its socket until its cleanup
+            let (first, first_ours) = bind_socket(&path).await.unwrap();
             drop(first);
             // a newer run took the path over
-            let (_second, second_id) = bind_socket(&path).await.unwrap();
-            assert_ne!(first_id, second_id);
-            remove_if_ours(&path, first_id).await;
+            let (_second, second_ours) = bind_socket(&path).await.unwrap();
+            assert_ne!(first_ours.id, second_ours.id);
+            remove_if_ours(&path, &first_ours).await;
             assert!(path.exists(), "the newer run's socket stays");
-            remove_if_ours(&path, second_id).await;
+            remove_if_ours(&path, &second_ours).await;
             assert!(!path.exists());
             // nothing there is fine too
-            remove_if_ours(&path, second_id).await;
+            remove_if_ours(&path, &second_ours).await;
         });
         let _ = std::fs::remove_dir_all(root);
     }
