@@ -25,7 +25,11 @@ pub fn show<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
 
 /// draw a modal box; the message of a click inside it, if there was one.
 pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
-    dialogs::modal(ctx, dialog.id, &dialog.title, |ui| show(ui, &dialog.body))
+    dialogs::modal(ctx, dialog.id, &dialog.title, |ui| {
+        let sent = show(ui, &dialog.body);
+        let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        sent.or_else(|| escaped.then(|| dialog.escape.clone()).flatten())
+    })
 }
 
 fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
@@ -252,6 +256,33 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 }
             });
             picked.map(pick)
+        }
+        Node::Entry {
+            value,
+            room,
+            masked,
+            focus,
+            edit,
+        } => {
+            let mut text = value.clone();
+            let width = ui.available_width() - room;
+            let response = controls::field(ui, |ui| {
+                ui.add(
+                    TextEdit::singleline(&mut text)
+                        .password(*masked)
+                        .desired_width(width)
+                        .frame(egui::Frame::new())
+                        .margin(egui::Margin::ZERO),
+                )
+            });
+            if *focus {
+                response.request_focus();
+            }
+            (text != *value).then(|| edit(text))
+        }
+        Node::Warning(text) => {
+            ui.colored_label(egui::Color32::from_rgb(160, 0, 0), text.as_str());
+            None
         }
         Node::Scroll {
             id,

@@ -102,6 +102,17 @@ pub enum Node<M> {
         options: Vec<(usize, String)>,
         pick: fn(usize) -> M,
     },
+    /// a one-line text field as wide as the row less `room`; `masked` hides what is typed,
+    /// `focus` puts the cursor in it. each change sends `edit(new text)`.
+    Entry {
+        value: String,
+        room: f32,
+        masked: bool,
+        focus: bool,
+        edit: Box<dyn Fn(String) -> M>,
+    },
+    /// a line of red text, for input that was refused.
+    Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.
     Scroll {
         id: &'static str,
@@ -152,6 +163,8 @@ pub struct Dialog<M> {
     pub id: &'static str,
     pub title: String,
     pub body: Vec<Node<M>>,
+    /// what pressing Escape sends, if it closes the box.
+    pub escape: Option<M>,
 }
 
 /// the status bar for a window following a `Remote`.

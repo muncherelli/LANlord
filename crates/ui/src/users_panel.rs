@@ -6,7 +6,7 @@ use eframe::egui::{self, Ui};
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::users::{self, Change, User};
 
-use crate::form::{Form, FormAnswer};
+use crate::form::{Form, FormAnswer, ShowForm};
 use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::Table;

@@ -6,6 +6,7 @@
 pub mod console;
 pub mod demo_clock;
 pub mod desktop;
+pub mod form;
 pub mod gateway;
 pub mod hostlist;
 pub mod hosts_window;

@@ -7,7 +7,7 @@ use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::logon::{self, valid_script_name};
 
 use crate::controls;
-use crate::form::{Form, FormAnswer};
+use crate::form::{Form, FormAnswer, ShowForm};
 use crate::remote::{Remote, ShowNote};
 use crate::theme::{self, WHITE};
 use crate::widgets::Table;

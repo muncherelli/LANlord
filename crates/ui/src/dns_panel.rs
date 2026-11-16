@@ -13,7 +13,7 @@ use lanlord_core::settings::{
 };
 
 use crate::controls;
-use crate::form::{Form, FormAnswer};
+use crate::form::{Form, FormAnswer, ShowForm};
 use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::{bad_rows, field_error, labelled_edit, messages, Table};

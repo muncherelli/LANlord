@@ -302,6 +302,7 @@ impl MyServer {
             id: "purge-box",
             title: "Remove LANlord".into(),
             body,
+            escape: None,
         })
     }
 

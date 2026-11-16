@@ -5,7 +5,7 @@ use eframe::egui::{self, Ui};
 use lanlord_core::nt4::{valid_machine, Nt4Settings};
 
 use crate::controls;
-use crate::form::{Form, FormAnswer};
+use crate::form::{Form, FormAnswer, ShowForm};
 use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::{bad_rows, field_error, labelled_edit, Table};
