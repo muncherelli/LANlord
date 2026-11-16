@@ -45,20 +45,23 @@ pub fn icon_rect(area: Rect, index: usize) -> Rect {
 
 /// split `label` into at most two lines of `width`, breaking at a space when it can.
 fn wrap(label: &str, width: usize) -> Vec<String> {
-    if label.chars().count() <= width {
+    let chars: Vec<char> = label.chars().collect();
+    if chars.len() <= width {
         return vec![label.to_string()];
     }
-    let cut = label
-        .char_indices()
-        .filter(|(i, c)| *c == ' ' && *i <= width)
+    let cut = chars
+        .iter()
+        .enumerate()
+        .take(width + 1)
+        .filter(|(_, c)| **c == ' ')
         .map(|(i, _)| i)
         .next_back();
     match cut {
         Some(i) => vec![
-            label[..i].to_string(),
-            label[i + 1..].chars().take(width).collect(),
+            chars[..i].iter().collect(),
+            chars[i + 1..].iter().take(width).collect(),
         ],
-        None => vec![label.chars().take(width).collect()],
+        None => vec![chars.iter().take(width).collect()],
     }
 }
 
@@ -82,7 +85,10 @@ impl Widget for DesktopIcon<'_> {
         let x = area.x + area.width.saturating_sub(w) / 2;
         icon.render(Rect::new(x, area.y, w, h).intersection(area), buf);
         let bg = if self.selected { NAVY } else { TEAL };
-        for (i, line) in wrap(self.label, area.width as usize - 1).iter().enumerate() {
+        for (i, line) in wrap(self.label, (area.width as usize).saturating_sub(1))
+            .iter()
+            .enumerate()
+        {
             let width = line.chars().count() as u16;
             let lx = area.x + area.width.saturating_sub(width) / 2;
             let ly = area.y + h + i as u16;
@@ -101,6 +107,19 @@ mod tests {
     use ratatui::style::Color;
 
     #[test]
+    fn a_zero_width_icon_draws_nothing_and_does_not_panic() {
+        let palette = Palette::new(Depth::TrueColor);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
+        DesktopIcon {
+            art: small("dns"),
+            label: "DNS",
+            selected: false,
+            palette,
+        }
+        .render(Rect::new(0, 0, 0, 4), &mut buf);
+    }
+
+    #[test]
     fn icons_fill_columns_from_the_top_left() {
         let area = Rect::new(0, 0, 80, 24);
         assert_eq!(icon_rect(area, 0), Rect::new(1, 1, 13, 7));
@@ -114,6 +133,9 @@ mod tests {
         assert_eq!(wrap("Remote Cmds", 8), ["Remote", "Cmds"]);
         assert_eq!(wrap("DNS", 8), ["DNS"]);
         assert_eq!(wrap("Networking", 8), ["Networki"]);
+        // characters, not bytes: a multi-byte label breaks at the same place
+        assert_eq!(wrap("Résumé Été", 7), ["Résumé", "Été"]);
+        assert_eq!(wrap("ÉÉÉÉÉÉÉÉÉÉ", 4), ["ÉÉÉÉ"]);
     }
 
     #[test]

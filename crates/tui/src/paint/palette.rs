@@ -55,25 +55,46 @@ pub enum Depth {
 }
 
 impl Depth {
-    /// guess from the environment: `COLORTERM=truecolor|24bit` means truecolor, a `TERM` ending
-    /// in `256color` means 256 colours, anything else gets the 16 basic ones.
+    /// guess from the environment: `NO_COLOR` keeps to the 16 basic colours; truecolor when
+    /// `COLORTERM=truecolor|24bit`, a `TERM` ending in `-direct` or `truecolor`, or windows
+    /// terminal (`WT_SESSION`); 256 colours for a `TERM` ending in `256color`; otherwise 16.
     pub fn detect() -> Depth {
-        Depth::from_env(
-            std::env::var("COLORTERM").ok().as_deref(),
-            std::env::var("TERM").ok().as_deref(),
-        )
+        let var = |name: &str| std::env::var(name).ok();
+        Depth::from_env(&Env {
+            colorterm: var("COLORTERM").as_deref(),
+            term: var("TERM").as_deref(),
+            no_color: var("NO_COLOR").is_some_and(|v| !v.is_empty()),
+            windows_terminal: var("WT_SESSION").is_some(),
+        })
     }
 
-    fn from_env(colorterm: Option<&str>, term: Option<&str>) -> Depth {
-        let colorterm = colorterm.unwrap_or_default().to_ascii_lowercase();
-        if colorterm == "truecolor" || colorterm == "24bit" {
+    fn from_env(env: &Env) -> Depth {
+        let colorterm = env.colorterm.unwrap_or_default().to_ascii_lowercase();
+        let term = env.term.unwrap_or_default().to_ascii_lowercase();
+        if env.no_color {
+            Depth::Basic16
+        } else if colorterm == "truecolor"
+            || colorterm == "24bit"
+            || term.ends_with("-direct")
+            || term.ends_with("truecolor")
+            || env.windows_terminal
+        {
             Depth::TrueColor
-        } else if term.unwrap_or_default().ends_with("256color") {
+        } else if term.ends_with("256color") {
             Depth::Indexed256
         } else {
             Depth::Basic16
         }
     }
+}
+
+/// the environment variables the colour depth is guessed from.
+#[derive(Default)]
+struct Env<'a> {
+    colorterm: Option<&'a str>,
+    term: Option<&'a str>,
+    no_color: bool,
+    windows_terminal: bool,
 }
 
 /// turns gui colours into terminal colours for one colour depth.
@@ -127,7 +148,8 @@ fn nearest_256(rgb: Rgb) -> u8 {
     let cube = (CUBE[r as usize], CUBE[g as usize], CUBE[b as usize]);
     let cube_index = 16 + 36 * r + 6 * g + b;
     let average = ((u16::from(rgb.0) + u16::from(rgb.1) + u16::from(rgb.2)) / 3) as u8;
-    let step = (average.saturating_sub(8) / 10).min(23);
+    // the ramp runs 8, 18 .. 238: round to the nearest step
+    let step = (average.saturating_sub(3) / 10).min(23);
     let gray = 8 + 10 * step;
     if distance(rgb, (gray, gray, gray)) < distance(rgb, cube) {
         232 + step
@@ -169,17 +191,43 @@ mod tests {
 
     #[test]
     fn the_depth_comes_from_the_environment() {
+        let depth = |colorterm, term, no_color, windows_terminal| {
+            Depth::from_env(&Env {
+                colorterm,
+                term,
+                no_color,
+                windows_terminal,
+            })
+        };
         assert_eq!(
-            Depth::from_env(Some("truecolor"), Some("xterm")),
+            depth(Some("truecolor"), Some("xterm"), false, false),
             Depth::TrueColor
         );
-        assert_eq!(Depth::from_env(Some("24bit"), None), Depth::TrueColor);
+        assert_eq!(depth(Some("24bit"), None, false, false), Depth::TrueColor);
         assert_eq!(
-            Depth::from_env(None, Some("xterm-256color")),
+            depth(None, Some("xterm-direct"), false, false),
+            Depth::TrueColor
+        );
+        assert_eq!(
+            depth(None, Some("konsole-truecolor"), false, false),
+            Depth::TrueColor
+        );
+        assert_eq!(
+            depth(None, None, false, true),
+            Depth::TrueColor,
+            "windows terminal"
+        );
+        assert_eq!(
+            depth(None, Some("xterm-256color"), false, false),
             Depth::Indexed256
         );
-        assert_eq!(Depth::from_env(None, Some("linux")), Depth::Basic16);
-        assert_eq!(Depth::from_env(None, None), Depth::Basic16);
+        assert_eq!(depth(None, Some("linux"), false, false), Depth::Basic16);
+        assert_eq!(depth(None, None, false, false), Depth::Basic16);
+        // no_color wins over everything
+        assert_eq!(
+            depth(Some("truecolor"), Some("xterm-256color"), true, true),
+            Depth::Basic16
+        );
     }
 
     #[test]
@@ -208,6 +256,8 @@ mod tests {
         assert_eq!(palette.color((0, 0, 255)), Color::Indexed(21));
         // 192 gray sits closer to the ramp's 188 than to the cube's 175
         assert_eq!(palette.color(GRAY), Color::Indexed(250));
+        // the ramp rounds: 14 is nearer the ramp's 18 than its 8
+        assert_eq!(palette.color((14, 14, 14)), Color::Indexed(233));
     }
 
     #[test]

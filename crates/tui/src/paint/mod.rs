@@ -1,7 +1,12 @@
 //! drawing blocks that make the terminal look like the gui: the teal desktop with its pixel
 //! icons, bevelled gray windows with navy title bars, the taskbar, menus and the common
 //! controls, plus mouse handling. each widget takes plain data, so a renderer of the shared
-//! app layer can feed them later.
+//! app layer can feed them later. every widget clips to the buffer, so a window dragged
+//! partly off screen draws only what is visible.
+//!
+//! the glyphs used (`▔ ▁ ▏ ▕ ▀ ▄ ■ ✓ ▸ × □ •`) are one cell wide in unicode, but some are
+//! "ambiguous width": a terminal set to draw ambiguous characters wide (a common cjk setting)
+//! shifts everything after them on the row, so layouts look broken there.
 
 pub mod art;
 pub mod chrome;
@@ -39,6 +44,13 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Sty
     }
     let room = width.min(buf.area.right().saturating_sub(x));
     buf.set_stringn(x, y, text, room as usize, style);
+}
+
+/// set one cell's glyph and style, doing nothing when (`x`, `y`) is off the buffer.
+pub fn put(buf: &mut Buffer, (x, y): (u16, u16), symbol: &str, style: Style) {
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.set_symbol(symbol).set_style(style);
+    }
 }
 
 /// bold, for titles and default buttons.
