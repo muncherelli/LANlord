@@ -28,9 +28,9 @@
         path: "{{ staged | dirname }}"
         state: directory
         owner: root
-        group: root
-        # only root stages and reads the helper here
-        mode: "0700"
+        group: lanlord
+        # the lanlord account runs /opt/lanlord/bin/lanlord from here; only root may write
+        mode: "0750"
 
     - name: look for the helper binary
       ansible.builtin.stat:
@@ -88,8 +88,8 @@
             dest: /etc/pam.d/lanlord
             owner: root
             group: root
-            # only libpam in the root helper reads it
-            mode: "0600"
+            # pam rules are conventionally world-readable and hold no secrets
+            mode: "0644"
             content: |
               # written by lanlord: web ui logins check the password and the account like a login does
               {% if ansible_facts['os_family'] == 'Debian' %}
@@ -106,8 +106,8 @@
             dest: /etc/systemd/system/lanlord-auth.socket
             owner: root
             group: root
-            # only systemd (root) reads the unit
-            mode: "0600"
+            # unit files are conventionally world-readable (systemctl status) and hold no secrets
+            mode: "0644"
             content: |
               # written by lanlord
               [Unit]
@@ -132,8 +132,8 @@
             dest: /etc/systemd/system/lanlord-auth@.service
             owner: root
             group: root
-            # only systemd (root) reads the unit
-            mode: "0600"
+            # unit files are conventionally world-readable (systemctl status) and hold no secrets
+            mode: "0644"
             content: |
               # written by lanlord
               [Unit]
