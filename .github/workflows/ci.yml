@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev
           libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-          libgl1-mesa-dev
+          libgl1-mesa-dev libpam0g-dev
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -73,7 +73,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev
           libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-          libgl1-mesa-dev
+          libgl1-mesa-dev libpam0g-dev
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: cargo-llvm-cov

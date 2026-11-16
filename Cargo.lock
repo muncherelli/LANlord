@@ -2831,6 +2831,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lanlord-auth-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "zeroize",
+]
+
+[[package]]
 name = "lanlord-core"
 version = "0.1.0"
 dependencies = [

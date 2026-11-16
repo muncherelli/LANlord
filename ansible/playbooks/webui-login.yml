@@ -1,0 +1,134 @@
+# the web ui login check: lanlord-auth-helper, run as root by systemd, one process per
+# connection on /run/lanlord-auth/auth.sock. only the web ui's account may open the socket; the
+# helper checks the password with pam (service `lanlord`) and that the user is in the admins
+# group, and answers ok, denied or error. it does nothing until the helper binary has been put
+# at /opt/lanlord/bin/lanlord-auth-helper.
+#
+# the account that runs the web ui (the only one allowed to ask) defaults to lanlord:
+#   lanlord_webui_user: lanlord
+- name: lanlord web ui login
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  tags: [webui-login]
+  vars:
+    staged: /opt/lanlord/bin/lanlord-auth-helper
+    helper: /usr/local/libexec/lanlord-auth-helper
+    caller: "{{ lanlord_webui_user | default('lanlord') }}"
+  tasks:
+    - name: check the web ui account name
+      ansible.builtin.assert:
+        that:
+          - caller is match('^[a-z_][a-z0-9_-]{0,31}$')
+        fail_msg: "lanlord_webui_user needs a plain login name like lanlord"
+
+    - name: look for the helper binary
+      ansible.builtin.stat:
+        path: "{{ staged }}"
+      register: helper_binary
+
+    - name: say why nothing happens
+      ansible.builtin.debug:
+        msg: "no {{ staged }} yet, so the web ui login check is not installed"
+      when: not helper_binary.stat.exists
+
+    - name: set up the login check
+      when: helper_binary.stat.exists
+      block:
+        - name: install the helper, owned by root
+          ansible.builtin.copy:
+            src: "{{ staged }}"
+            dest: "{{ helper }}"
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"
+
+        # debian and ubuntu share their pam rules as common-*, most other distros as system-auth
+        - name: the pam rules for the lanlord service
+          ansible.builtin.copy:
+            dest: /etc/pam.d/lanlord
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # written by lanlord: web ui logins check the password and the account like a login does
+              {% if ansible_facts['os_family'] == 'Debian' %}
+              @include common-auth
+              @include common-account
+              {% else %}
+              auth     include system-auth
+              account  include system-auth
+              {% endif %}
+
+        - name: the socket only the web ui account can open
+          register: socket_unit
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/lanlord-auth.socket
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # written by lanlord
+              [Unit]
+              Description=lanlord web ui login check
+
+              [Socket]
+              ListenStream=/run/lanlord-auth/auth.sock
+              SocketUser=root
+              SocketGroup={{ caller }}
+              SocketMode=0660
+              DirectoryMode=0755
+              Accept=yes
+              MaxConnections=8
+              MaxConnectionsPerSource=4
+
+              [Install]
+              WantedBy=sockets.target
+
+        - name: the helper service, one per connection
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/lanlord-auth@.service
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              # written by lanlord
+              [Unit]
+              Description=lanlord web ui login check
+
+              [Service]
+              ExecStart={{ helper }} --caller {{ caller }}
+              StandardInput=socket
+              StandardOutput=socket
+              StandardError=journal
+              RuntimeMaxSec=30
+              NoNewPrivileges=yes
+              ProtectSystem=strict
+              ProtectHome=yes
+              PrivateTmp=yes
+              PrivateDevices=yes
+              ProtectKernelTunables=yes
+              ProtectKernelModules=yes
+              ProtectControlGroups=yes
+              RestrictAddressFamilies=AF_UNIX
+              RestrictNamespaces=yes
+              LockPersonality=yes
+              MemoryDenyWriteExecute=yes
+              SystemCallArchitectures=native
+              # failed-login counters (pam_faillock), when the distro uses them
+              ReadWritePaths=-/run/faillock -/var/run/faillock -/var/log
+
+        - name: listen for logins
+          ansible.builtin.systemd_service:
+            name: lanlord-auth.socket
+            enabled: true
+            state: started
+            daemon_reload: true
+
+        - name: pick up a changed socket
+          ansible.builtin.systemd_service:
+            name: lanlord-auth.socket
+            state: restarted
+          when: socket_unit is changed
