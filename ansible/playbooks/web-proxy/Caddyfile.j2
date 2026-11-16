@@ -1,8 +1,11 @@
 # written by lanlord; changes here are overwritten on the next apply
 {
 	admin off
-{% if proxy_tls == 'off' %}
+{% if proxy_tls == 'off' and not webui_on %}
 	auto_https off
+{% elif proxy_tls == 'off' %}
+	# the sites are plain http; only the web ui below has a certificate
+	auto_https disable_redirects
 {% endif %}
 }
 {% for site in proxy_sites %}
@@ -22,6 +25,33 @@ http://{{ status_host }}, http://{{ internal_ip }} {
 	bind {{ internal_ip }}
 	root * /srv/status
 	file_server
+}
+{% endif %}
+{% if webui_on %}
+
+# the lanlord web ui, on the normal network only and always https
+https://{{ webui_host }}:{{ webui_port }} {
+	bind {{ host_address }}
+{% if webui_tls == 'internal' %}
+	# development only: browsers do not trust caddy's own certificate authority
+	tls internal
+{% elif webui_tls == 'cloudflare-origin' %}
+	tls /config/webui-origin.pem /config/webui-origin.key
+{% endif %}
+	# the browser build is a few megabytes; the web ui is for modern browsers only, so unlike
+	# the retronet sites it can always be compressed
+	encode zstd gzip
+	header {
+		# the app sends a policy with the hashes of its own loader; this is the fallback
+		?Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+{% if webui_tls in ['letsencrypt-dns', 'cloudflare-origin'] %}
+		Strict-Transport-Security "max-age=31536000"
+{% endif %}
+		-Server
+	}
+	reverse_proxy {{ webui_upstream }}
 }
 {% endif %}
 {% if proxy_tls == 'off' %}
