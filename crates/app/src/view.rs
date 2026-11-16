@@ -47,10 +47,13 @@ pub enum Node<M> {
         enabled: bool,
         toggle: M,
     },
-    /// a one-line text field; each change sends `edit(new text)`.
+    /// a one-line text field `width` wide; `masked` hides what is typed, `focus` puts the
+    /// cursor in it. each change sends `edit(new text)`.
     Input {
         value: String,
         width: f32,
+        masked: bool,
+        focus: bool,
         edit: fn(String) -> M,
     },
     /// a scrolling box of fixed-width text lines.
@@ -95,6 +98,8 @@ pub enum Node<M> {
         id: &'static str,
         value: String,
         height: f32,
+        /// grey text shown while the box is empty.
+        hint: String,
         edit: fn(String) -> M,
     },
     /// a drop-down list showing `current`; picking an option sends `pick(its key)`.
@@ -131,6 +136,8 @@ pub enum Node<M> {
     Labelled { label: String, body: Vec<Node<M>> },
     /// a small red line under the field it is about.
     FieldError(String),
+    /// a warning sign beside a message, as in a message box.
+    Alert(String),
     /// a line of red text, for input that was refused.
     Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.

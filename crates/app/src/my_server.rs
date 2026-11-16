@@ -282,6 +282,8 @@ impl MyServer {
             Node::Input {
                 value: purge.typed.clone(),
                 width: 240.0,
+                masked: false,
+                focus: false,
                 edit: Msg::Typed,
             },
             Node::Gap(6.0),

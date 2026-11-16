@@ -214,6 +214,8 @@ impl DnsPanel {
             body: vec![Node::Input {
                 value: value.into(),
                 width: 170.0,
+                masked: false,
+                focus: false,
                 edit: msg,
             }],
         };

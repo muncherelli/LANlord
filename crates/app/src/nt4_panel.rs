@@ -178,6 +178,8 @@ impl Nt4Panel {
             body: vec![Node::Input {
                 value: self.draft.name.clone(),
                 width: 170.0,
+                masked: false,
+                focus: false,
                 edit: Msg::Name,
             }],
         }];
@@ -188,6 +190,8 @@ impl Nt4Panel {
                 Node::Input {
                     value: self.draft.netbios_name.clone(),
                     width: 170.0,
+                    masked: false,
+                    focus: false,
                     edit: Msg::ServerName,
                 },
                 Node::Text("blank: the gateway's hostname".into()),

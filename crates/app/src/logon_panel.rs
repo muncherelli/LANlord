@@ -190,6 +190,7 @@ impl LogonPanel {
                         id: "logon-editor",
                         value: self.draft.clone(),
                         height: 130.0,
+                        hint: String::new(),
                         edit: Msg::Edit,
                     },
                     Node::Gap(4.0),

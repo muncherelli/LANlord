@@ -1,7 +1,7 @@
 //! draws the app's layout tree (`lanlord_app::view`) with egui, in the nt4 look, and returns
 //! the message of whatever was clicked.
 
-use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui};
+use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui, Vec2};
 use lanlord_app::view::{Dialog, Node};
 
 use crate::console;
@@ -109,9 +109,26 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.add_enabled_ui(*enabled, |ui| controls::check(ui, &mut ticked, label));
             (ticked != *checked).then(|| toggle.clone())
         }
-        Node::Input { value, width, edit } => {
+        Node::Input {
+            value,
+            width,
+            masked,
+            focus,
+            edit,
+        } => {
             let mut text = value.clone();
-            controls::edit(ui, &mut text, *width);
+            let response = controls::field(ui, |ui| {
+                ui.add(
+                    TextEdit::singleline(&mut text)
+                        .password(*masked)
+                        .desired_width(*width)
+                        .frame(egui::Frame::new())
+                        .margin(egui::Margin::ZERO),
+                )
+            });
+            if *focus {
+                response.request_focus();
+            }
             (text != *value).then(|| edit(text))
         }
         Node::Lines { id, lines, height } => {
@@ -199,7 +216,9 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 icons::draw(ui.painter(), ui.cursor().min, icons::art(icon), 1.0);
                 ui.add_space(40.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(title.as_str()).size(16.0).strong());
+                    if !title.is_empty() {
+                        ui.label(RichText::new(title.as_str()).size(16.0).strong());
+                    }
                     for line in lines {
                         ui.label(line.as_str());
                     }
@@ -223,6 +242,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             id,
             value,
             height,
+            hint,
             edit,
         } => {
             let mut text = value.clone();
@@ -235,6 +255,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                         ui.add_sized(
                             [ui.available_width(), *height],
                             TextEdit::multiline(&mut text)
+                                .hint_text(hint.as_str())
                                 .font(egui::TextStyle::Monospace)
                                 .frame(egui::Frame::NONE)
                                 .desired_width(f32::INFINITY),
@@ -304,6 +325,18 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.label(RichText::new(text.as_str()).color(RED).small());
             None
         }
+        Node::Alert(text) => {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+                warning_sign(ui, rect);
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(text.as_str());
+                });
+            });
+            None
+        }
         Node::Warning(text) => {
             ui.colored_label(egui::Color32::from_rgb(160, 0, 0), text.as_str());
             None
@@ -321,4 +354,27 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 .inner
         }),
     }
+}
+
+/// the yellow warning triangle of a message box.
+fn warning_sign(ui: &egui::Ui, rect: egui::Rect) {
+    let c = rect.center();
+    let points = vec![
+        c + Vec2::new(0.0, -14.0),
+        c + Vec2::new(15.0, 13.0),
+        c + Vec2::new(-15.0, 13.0),
+    ];
+    let yellow = egui::Color32::from_rgb(255, 255, 0);
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        yellow,
+        egui::Stroke::new(1.5, BLACK),
+    ));
+    ui.painter().text(
+        c + Vec2::new(0.0, 4.0),
+        egui::Align2::CENTER_CENTER,
+        "!",
+        egui::FontId::proportional(16.0),
+        BLACK,
+    );
 }

@@ -282,6 +282,7 @@ impl SettingsWindow {
                     id: "settings-text",
                     value: self.text.clone(),
                     height: EDITOR_HEIGHT,
+                    hint: String::new(),
                     edit: Msg::Edit,
                 }],
             },
