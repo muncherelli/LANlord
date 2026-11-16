@@ -152,19 +152,17 @@
             {{ image }}:{{ image_hash.stdout }} --test
           changed_when: false
 
-        - name: remove the old container
-          ansible.builtin.command: "docker rm -f {{ container }}"
-          changed_when: true
-          failed_when: false
-
-        - name: start the container on the host network
-          ansible.builtin.command: >-
-            docker run -d --name {{ container }} --network host --restart unless-stopped
-            --cap-add NET_ADMIN --cap-add NET_RAW
-            -v {{ state_dir }}/dnsmasq.conf:/etc/dnsmasq.conf:ro
-            -v {{ state_dir }}/dnsmasq.leases:/var/lib/misc/dnsmasq.leases
-            {{ image }}:{{ image_hash.stdout }}
-          changed_when: true
+        - name: replace the container, keeping the old one until the new one is healthy
+          ansible.builtin.include_tasks: replace-container.yml
+          vars:
+            rc_name: "{{ container }}"
+            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true"
+            rc_run: >-
+              docker run -d --name {{ container }} --network host --restart unless-stopped
+              --cap-add NET_ADMIN --cap-add NET_RAW
+              -v {{ state_dir }}/dnsmasq.conf:/etc/dnsmasq.conf:ro
+              -v {{ state_dir }}/dnsmasq.leases:/var/lib/misc/dnsmasq.leases
+              {{ image }}:{{ image_hash.stdout }}
 
     - name: wait for dnsmasq to run
       ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }}"
