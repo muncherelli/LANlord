@@ -538,16 +538,42 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
     lines
 }
 
-/// one operation in, one reply out, both as json; what the web ui backend calls.
+/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the op
+/// without asking for confirmation: the front end that sent it already did.
 fn op(host: &str) -> Result<()> {
-    let mut input = String::new();
+    // the op may carry passwords
+    let mut input = zeroize::Zeroizing::new(String::new());
     std::io::stdin().read_to_string(&mut input)?;
-    let response = respond(&input, |op| execute(host, op, &mut ask));
-    println!("{}", serde_json::to_string(&response)?);
-    if matches!(response, Response::Error(_)) {
+    let answered = answer(
+        &input,
+        |op| execute(host, op, &mut ask),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )?;
+    if !answered {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// answer `input` with exactly one json line on `out`. whatever the server printed while the op
+/// ran goes to `err`, so `out` stays readable by a program. false when the answer is an error.
+fn answer(
+    input: &str,
+    run: impl FnOnce(&Op) -> Result<Reply>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<bool> {
+    use lanlord_core::log::{self, Kind};
+    let printed = log::subscribe();
+    let response = respond(input, run);
+    for line in printed.try_iter() {
+        if line.kind != Kind::Debug {
+            writeln!(err, "{}", line.text)?;
+        }
+    }
+    writeln!(out, "{}", serde_json::to_string(&response)?)?;
+    Ok(!matches!(response, Response::Error(_)))
 }
 
 /// read `input` as an operation and answer it with `run`.
@@ -843,6 +869,35 @@ mod tests {
         assert!(matches!(garbage, Response::Error(e) if e.starts_with("not an operation")));
         let json = serde_json::to_string(&ok).unwrap();
         assert!(json.starts_with(r#"{"ok":"#), "{json}");
+    }
+
+    #[test]
+    fn op_writes_exactly_one_json_line_whatever_the_server_prints() {
+        use lanlord_core::log::{emit, Kind};
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let answered = answer(
+            r#"{"op":"run","command":["uptime"]}"#,
+            |_| {
+                emit(Kind::Out, "op-test: up 3 days");
+                emit(Kind::Err, "op-test: a warning");
+                Ok(Reply::ExitCode(0))
+            },
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        assert!(answered);
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.lines().count(), 1, "{out:?}");
+        let reply: Response = serde_json::from_str(out.trim_end()).unwrap();
+        assert_eq!(reply, Response::Ok(Reply::ExitCode(0)));
+        let err = String::from_utf8(err).unwrap();
+        assert!(err.contains("op-test: up 3 days") && err.contains("op-test: a warning"));
+
+        let mut out = Vec::new();
+        let answered = answer("{}", |_| unreachable!(), &mut out, &mut Vec::new()).unwrap();
+        assert!(!answered);
+        assert!(String::from_utf8(out).unwrap().starts_with(r#"{"error":"#));
     }
 
     #[test]

@@ -72,7 +72,11 @@ pub(crate) fn execute_with(
         Op::Probe => Reply::Internal(network::probe(session)?),
         Op::ChangeUsers { changes } => {
             let changes: Vec<users::Change> = changes.iter().map(Into::into).collect();
-            users::change_with(session, host, &key()?, &changes, ask)?;
+            let changed =
+                key().and_then(|key| users::change_with(session, host, &key, &changes, ask));
+            // the plain copies of the passwords go before anything else can fail
+            zeroize_changes(changes);
+            changed?;
             Reply::Done
         }
         Op::ResetMachine { name } => {
@@ -133,6 +137,16 @@ pub(crate) fn execute_with(
         }
         Op::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
     })
+}
+
+/// wipe the plain passwords in user changes once they have been handed on.
+fn zeroize_changes(mut changes: Vec<users::Change>) {
+    use zeroize::Zeroize;
+    for change in &mut changes {
+        if let users::Change::SetPassword { password, .. } = change {
+            password.zeroize();
+        }
+    }
 }
 
 /// wipe the plain copies of secrets once they have been handed on.
