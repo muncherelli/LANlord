@@ -113,8 +113,7 @@ func jewel(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ r: CGFloat, _ light: 
 
 // MARK: the emblem: a flat server tower dressed as a lord, in the spirit of nt and backoffice branding
 
-/// which emblem to draw: "a" has the staff on the right, leaning on a fold of the robe; "b" has it on the left,
-/// standing a little out with the robe draped over it.
+/// which emblem to draw: "a" has the staff leaning against the right side of the tower, "b" against the left.
 var emblemStyle = "a"
 /// how dark the little ground shadow under the tower is; lighter on a white page.
 var shadowAlpha: CGFloat = 0.28
@@ -176,38 +175,35 @@ func emblem(_ ctx: CGContext, _ ox: CGFloat, _ oy: CGFloat, _ size: CGFloat, thi
     ctx.scaleBy(x: size / 1000, y: size / 1000)
     ctx.translateBy(x: 500, y: 540)
     ctx.scaleBy(x: 1.17, y: 1.17)
-    ctx.translateBy(x: emblemStyle == "b" ? -446 : -492, y: -548)
+    ctx.translateBy(x: emblemStyle == "b" ? -432 : -513, y: -548)
     gentleman(ctx, burgundy, shadow: true)
     ctx.restoreGState()
 }
 
-/// the lord's staff, stood against the tower: a thin shaft with a gold ball on top and a small gold ferrule.
+/// the lord's staff: a separate slim object standing on the ground and leaning a few degrees against the
+/// tower, its gold ball resting on the edge of the tower, with a soft contact shadow under its foot.
 func staff(_ ctx: CGContext) {
-    let top: (CGFloat, CGFloat) = emblemStyle == "b" ? (306, 352) : (612, 352)
-    let foot: (CGFloat, CGFloat) = emblemStyle == "b" ? (306, 926) : (640, 926)
-    stroke(ctx, segment(top.0, top.1 + 14, foot.0, foot.1 - 22), 0xB98A52, 10)
-    stroke(ctx, segment(top.0 - 3, top.1 + 14, foot.0 - 3, foot.1 - 22), 0xFFFFFF, 2, alpha: 0.35)
-    stroke(ctx, segment(foot.0, foot.1 - 26, foot.0, foot.1), gold, 10)
+    let top: (CGFloat, CGFloat) = emblemStyle == "b" ? (326, 376) : (606, 376)
+    let foot: (CGFloat, CGFloat) = emblemStyle == "b" ? (268, 926) : (676, 926)
+    ctx.setFillColor(rgb(0x000000, shadowAlpha))
+    ctx.fillEllipse(in: CGRect(x: foot.0 - 28, y: 920, width: 56, height: 14))
+    let dx = foot.0 - top.0
+    let dy = foot.1 - top.1
+    let len = (dx * dx + dy * dy).squareRoot()
+    let ux = dx / len
+    let uy = dy / len
+    stroke(ctx, segment(top.0 + ux * 14, top.1 + uy * 14, foot.0 - ux * 24, foot.1 - uy * 24), 0xB98A52, 10)
+    stroke(ctx, segment(top.0 + ux * 14 - 3, top.1 + uy * 14, foot.0 - ux * 24 - 3, foot.1 - uy * 24), 0xFFFFFF, 2, alpha: 0.35)
+    stroke(ctx, segment(foot.0 - ux * 26, foot.1 - uy * 26, foot.0, foot.1), gold, 10)
     flat(ctx, circle(top.0, top.1, 20), gold)
     flat(ctx, circle(top.0 - 6, top.1 - 7, 6), 0xF4DC86)
-}
-
-/// a fold of the robe draped over the staff, so it is held and not just standing there.
-func staffFold(_ ctx: CGContext, _ robe: Cloth) {
-    if emblemStyle == "b" {
-        flat(ctx, poly([(346, 420), (300, 430), (284, 472), (302, 528), (346, 542)]), robe.front)
-        flat(ctx, poly([(346, 434), (318, 442), (310, 518), (346, 534)]), robe.side)
-    } else {
-        flat(ctx, poly([(585, 418), (624, 428), (634, 470), (616, 522), (585, 540)]), robe.front)
-        flat(ctx, poly([(585, 432), (610, 442), (602, 516), (585, 528)]), robe.side)
-    }
 }
 
 /// a tall top hat tipped a little to one side: a wide brim, a satin band and a lit left edge.
 func topHat(_ ctx: CGContext) {
     ctx.saveGState()
     ctx.translateBy(x: 470, y: 346)
-    ctx.rotate(by: -12 * .pi / 180)
+    ctx.rotate(by: (emblemStyle == "b" ? 12 : -12) * .pi / 180)
     ctx.translateBy(x: -470, y: -346)
     flat(ctx, ellipse(470, 340, 134, 24), 0x1A1A26)
     flat(ctx, poly([(393, 342), (399, 152), (541, 152), (547, 342)]), 0x262634)
@@ -227,7 +223,6 @@ func gentleman(_ ctx: CGContext, _ robe: Cloth, shadow: Bool) {
     flat(ctx, poly([(355, 360), (515, 360), (515, 920), (355, 920)]), 0xD7DBE8)
     flat(ctx, poly([(515, 360), (585, 324), (585, 884), (515, 920)]), robe.side)
     flat(ctx, poly([(355, 360), (425, 324), (585, 324), (515, 360)]), robe.top)
-    staff(ctx)
     // the bays down the open middle, where the robe falls away
     for i in 0..<3 {
         let y = 600 + CGFloat(i) * 52
@@ -241,11 +236,11 @@ func gentleman(_ ctx: CGContext, _ robe: Cloth, shadow: Bool) {
     flat(ctx, poly([(346, 352), (474, 350), (446, 470), (420, 640), (398, 790), (382, 916), (346, 916)]), robe.front)
     flat(ctx, poly([(366, 364), (398, 362), (390, 560), (376, 912), (356, 912)]), robe.side)
     flat(ctx, poly([(515, 358), (490, 356), (494, 560), (500, 720), (498, 916), (515, 916)]), robe.front)
-    staffFold(ctx, robe)
     // gold on the collar edge only
     stroke(ctx, segment(474, 350, 446, 470), gold, 5)
     // one lit edge
     stroke(ctx, segment(346, 352, 425, 324), 0xFFFFFF, 5, alpha: 0.8)
+    staff(ctx)
     topHat(ctx)
 }
 
@@ -542,10 +537,13 @@ func pixelIcon32() -> CGContext {
     for (x, y) in [(4, 6), (27, 9), (5, 24), (28, 21), (3, 15)] { p[x, y] = 0xFFFFFF }
     p.rect(11, 29, 12, 1, 0x00004A)
     // the staff: a thin line the height of the tower with a gold ball and a gold foot
-    let sx = emblemStyle == "b" ? 7 : 25
-    p.rect(sx, 10, 1, 18, 0xB98A52)
-    p.rect(sx - 1, 8, 3, 2, gold)
-    p[sx, 28] = gold
+    let left = emblemStyle == "b"
+    for y in 10...28 {
+        let k = (y - 10) * 4 / 18
+        p[left ? 9 - k : 23 + k, y] = 0xB98A52
+    }
+    p.rect(left ? 9 : 22, 9, 2, 2, gold)
+    p[left ? 5 : 27, 28] = gold
     p.rect(12, 11, 7, 18, towerFront)
     for (x, t, height) in [(19, 11, 18), (20, 10, 18), (21, 10, 17)] { p.rect(x, t, 1, height, c.side) }
     p.rect(19, 12, 2, 14, c.front)
@@ -564,12 +562,12 @@ func pixelIcon32() -> CGContext {
     }
     // a tall top hat tipped to the left
     p.rect(10, 8, 13, 1, hatBrim)
-    p.rect(9, 7, 3, 1, hatBrim)
+    p.rect(left ? 20 : 9, 7, 3, 1, hatBrim)
     for (y, shift) in [(1, -2), (2, -2), (3, -1), (4, -1), (5, 0), (6, 0)] {
-        p.rect(12 + shift, y, 8, 1, y == 1 ? 0x383849 : hatBlack)
+        p.rect(12 + (left ? -shift : shift), y, 8, 1, y == 1 ? 0x383849 : hatBlack)
     }
     p.rect(11, 6, 9, 1, gold)
-    for y in 2..<6 { p[11 + (y < 3 ? -2 : (y < 5 ? -1 : 0)), y] = 0xB8C2F0 }
+    for y in 2..<6 { p[(left ? 19 : 11) + (y < 3 ? -2 : (y < 5 ? -1 : 0)) * (left ? -1 : 1), y] = 0xB8C2F0 }
     return p.image()
 }
 
@@ -578,10 +576,8 @@ func pixelIcon16() -> CGContext {
     var p = Pix(16, 16)
     tileBase(&p)
     p.rect(5, 14, 7, 1, 0x00004A)
-    // the staff: one line the height of the tower with a gold dot on top
-    let sx = emblemStyle == "b" ? 2 : 14
-    p.rect(sx, 7, 1, 7, 0xB98A52)
-    p[sx, 6] = gold
+    // the staff is left out at this size: it only muddies the silhouette
+    let left = emblemStyle == "b"
     p.rect(5, 7, 6, 7, towerFront)
     p.rect(11, 7, 2, 7, c.side)
     p.rect(5, 6, 8, 1, c.top)
@@ -594,12 +590,12 @@ func pixelIcon16() -> CGContext {
     }
     // the hat, tipped to the left
     p.rect(3, 5, 9, 1, hatBrim)
-    p.rect(4, 4, 2, 1, hatBrim)
-    p.rect(5, 1, 6, 1, 0x383849)
-    p.rect(4, 2, 6, 1, hatBlack)
-    p.rect(4, 3, 6, 1, gold)
-    p.rect(6, 4, 4, 1, hatBlack)
-    p[4, 2] = 0xB8C2F0
+    p.rect(left ? 9 : 4, 4, 2, 1, hatBrim)
+    p.rect(left ? 5 : 5, 1, 6, 1, 0x383849)
+    p.rect(left ? 6 : 4, 2, 6, 1, hatBlack)
+    p.rect(left ? 6 : 4, 3, 6, 1, gold)
+    p.rect(left ? 5 : 6, 4, 4, 1, hatBlack)
+    p[left ? 6 : 4, 2] = 0xB8C2F0
     return p.image()
 }
 
@@ -631,7 +627,7 @@ func ico(_ images: [(Int, Data)]) -> Data {
     return d
 }
 
-emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "b"
+emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "a"
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "assets"
 let ui = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "crates/ui/assets"
 
@@ -675,7 +671,7 @@ if CommandLine.arguments.count > 3 {
 }
 if CommandLine.arguments.count > 4 {
     let dir = CommandLine.arguments[4]
-    for (style, name) in [("a", "j-staff-a"), ("b", "j-staff-b")] {
+    for (style, name) in [("a", "k-lean-a"), ("b", "k-lean-b")] {
         emblemStyle = style
         save(banner(1, light: false), "\(dir)/\(name).png")
     }
