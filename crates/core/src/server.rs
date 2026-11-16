@@ -297,6 +297,7 @@ mod tests {
     }
 
     /// what the os snippet prints for these two os-release files (either may be missing).
+    #[cfg(unix)]
     fn os_of(name: &str, etc: Option<&str>, usr: Option<&str>) -> String {
         let dir = std::env::temp_dir().join(format!("lanlord-os-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -318,10 +319,13 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    #[cfg(unix)]
     const ARCH: &str =
         "NAME=\"Arch Linux\"\nPRETTY_NAME=\"Arch Linux\"\nID=arch\nBUILD_ID=rolling\n";
-    const DEBIAN: &str = "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n";
+    #[cfg(unix)]
+    const DEBIAN: &str ="PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nID=debian\n";
 
+    #[cfg(unix)]
     #[test]
     fn the_distribution_comes_from_the_servers_own_os_release() {
         assert_eq!(os_of("arch", Some(ARCH), None), "os=Arch Linux");
