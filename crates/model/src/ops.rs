@@ -167,6 +167,21 @@ pub enum Reply {
         lines: Vec<String>,
         stored: Stored,
     },
+    /// the server needs the sudo password: a front end that cannot answer a prompt while an op
+    /// runs (the web ui) asks the person and sends the same op again in a [`Request`] carrying
+    /// it. the terminal and the desktop answer the prompt directly and never see this.
+    NeedsPassword {
+        prompt: String,
+    },
+}
+
+/// an op as the web ui sends it: the op, and the sudo password once the server has asked for
+/// it with [`Reply::NeedsPassword`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    pub op: Op,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<Secret>,
 }
 
 /// a reply, or why there is none; what `lanlord op` prints.
@@ -356,12 +371,32 @@ mod tests {
                 lines: vec!["ok".into()],
                 stored: Stored::NoKey,
             },
+            Reply::NeedsPassword {
+                prompt: "[sudo] password for admin:".into(),
+            },
         ];
         for reply in &replies {
             round_trip(reply);
         }
         round_trip(&Response::Ok(Reply::Done));
         round_trip(&Response::Error("no key yet".into()));
+    }
+
+    #[test]
+    fn a_request_carries_the_password_only_when_asked_for() {
+        let first = Request {
+            op: Op::Leases,
+            password: None,
+        };
+        let json = serde_json::to_string(&first).unwrap();
+        assert!(!json.contains("password"), "{json}");
+        round_trip(&first);
+        let retry = Request {
+            op: Op::Leases,
+            password: Some(Secret::new("s3cret")),
+        };
+        round_trip(&retry);
+        assert!(!format!("{retry:?}").contains("s3cret"));
     }
 
     #[test]
