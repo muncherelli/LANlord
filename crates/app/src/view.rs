@@ -8,6 +8,7 @@
 //!
 //! windows move to this tree one by one; the variants grow with them.
 
+use chrono::NaiveDate;
 pub use lanlord_core::log::Kind;
 use lanlord_core::settings::ValidationError;
 use zeroize::Zeroizing;
@@ -139,6 +140,34 @@ pub enum Node<M> {
     FieldError(String),
     /// a warning sign beside a message, as in a message box.
     Alert(String),
+    /// a value with an up and a down button; a press sends `step(1)` or `step(-1)`.
+    Spin {
+        id: &'static str,
+        text: String,
+        width: f32,
+        enabled: bool,
+        step: fn(i32) -> M,
+    },
+    /// a month as a grid of days from Sunday, `selected` marked and `today` outlined;
+    /// clicking a day sends `pick(day)`.
+    Calendar {
+        id: &'static str,
+        year: i32,
+        month: u32,
+        selected: NaiveDate,
+        today: NaiveDate,
+        enabled: bool,
+        pick: fn(NaiveDate) -> M,
+    },
+    /// shows a time of day: egui draws an analogue face `size` across, the tui may print it.
+    ClockFace {
+        hour: u32,
+        minute: u32,
+        second: u32,
+        size: f32,
+    },
+    /// columns side by side, tops aligned; a column may ask for a width.
+    Columns(Vec<(Option<f32>, Vec<Node<M>>)>),
     /// a small inline icon, by icon id.
     Icon(&'static str),
     /// a line of red text, for input that was refused.

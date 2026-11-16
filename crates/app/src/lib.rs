@@ -4,6 +4,7 @@
 //! actions.
 
 pub mod admin_setup;
+pub mod clock_window;
 pub mod command_panel;
 pub mod console;
 pub mod demo_clock;
