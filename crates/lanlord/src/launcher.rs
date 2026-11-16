@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -310,28 +311,52 @@ pub fn install(dry_run: bool, force: bool) -> Result<()> {
     let exe = std::env::current_exe().context("finding the running program")?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let os = Os::current();
-    let env = Env::current();
-    let files = plan(os, &env, &exe)?;
-    let manifest = manifest_path(&env)?;
+    let written = install_in(
+        os,
+        &Env::current(),
+        &exe,
+        dry_run,
+        force,
+        &mut std::io::stdout(),
+    )?;
+    if os == Os::Linux && !written.is_empty() {
+        run_quietly(&cache_commands(&written));
+    }
+    Ok(())
+}
+
+/// install for `os` into the places `env` names, saying what happens on `out`; returns the
+/// files written (none on a dry run).
+pub fn install_in(
+    os: Os,
+    env: &Env,
+    exe: &Path,
+    dry_run: bool,
+    force: bool,
+    out: &mut dyn Write,
+) -> Result<Vec<Planned>> {
+    let files = plan(os, env, exe)?;
+    let manifest = manifest_path(env)?;
     if dry_run {
         let known = Manifest::load(&manifest)?;
         for f in &files {
             if f.path.exists() && !known.files.contains(&f.path) && !force {
-                println!("would stop at {} (already there, not made by install-launcher; --force replaces it)", f.path.display());
+                writeln!(
+                    out,
+                    "would stop at {} (already there, not made by install-launcher; --force replaces it)",
+                    f.path.display()
+                )?;
             } else {
-                println!("would write {}", f.path.display());
+                writeln!(out, "would write {}", f.path.display())?;
             }
         }
-        return Ok(());
+        return Ok(Vec::new());
     }
     install_files(&files, &manifest, force)?;
-    if os == Os::Linux {
-        refresh_linux_caches(&files);
-    }
     for f in &files {
-        println!("wrote {}", f.path.display());
+        writeln!(out, "wrote {}", f.path.display())?;
     }
-    Ok(())
+    Ok(files)
 }
 
 /// write `files`, refusing to replace any that the manifest at `manifest` doesn't list.
@@ -390,7 +415,8 @@ fn write(f: &Planned) -> Result<()> {
 #[cfg(unix)]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    // the launcher only ever runs as the user who installed it: owner only, nothing for others
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
         .with_context(|| format!("making {} executable", path.display()))
 }
 
@@ -418,8 +444,8 @@ fn write_shortcut(path: &Path, _target: &Path, _args: &str, _icon: &Path) -> Res
     )
 }
 
-/// best effort: tell the desktop about the new entry and icons; missing tools are fine.
-fn refresh_linux_caches(files: &[Planned]) {
+/// the commands that tell the desktop about new or removed entries and icons.
+fn cache_commands(files: &[Planned]) -> Vec<(&'static str, Vec<OsString>)> {
     let dir_of = |name: &str| {
         files
             .iter()
@@ -441,7 +467,12 @@ fn refresh_linux_caches(files: &[Planned]) {
     }
     runs.push(("kbuildsycoca6", vec![]));
     runs.push(("kbuildsycoca5", vec![]));
-    for (program, args) in runs {
+    runs
+}
+
+/// best effort: run each command, ignoring tools that aren't installed.
+fn run_quietly(commands: &[(&str, Vec<OsString>)]) {
+    for (program, args) in commands {
         let _ = std::process::Command::new(program)
             .args(args)
             .stdout(std::process::Stdio::null())
@@ -452,26 +483,36 @@ fn refresh_linux_caches(files: &[Planned]) {
 
 /// `lanlord uninstall-launcher`.
 pub fn uninstall(dry_run: bool) -> Result<()> {
-    let env = Env::current();
-    let manifest = manifest_path(&env)?;
+    let removed = uninstall_in(&Env::current(), dry_run, &mut std::io::stdout())?;
+    if Os::current() == Os::Linux && !removed.is_empty() {
+        run_quietly(&cache_commands(&[]));
+    }
+    Ok(())
+}
+
+/// remove what install-launcher wrote under `env`, saying what happens on `out`; returns the
+/// files removed (none on a dry run).
+pub fn uninstall_in(env: &Env, dry_run: bool, out: &mut dyn Write) -> Result<Vec<PathBuf>> {
+    let manifest = manifest_path(env)?;
     let known = Manifest::load(&manifest)?;
     if known.files.is_empty() {
-        println!("install-launcher hasn't put anything here; nothing to remove");
-        return Ok(());
+        writeln!(
+            out,
+            "install-launcher hasn't put anything here; nothing to remove"
+        )?;
+        return Ok(Vec::new());
     }
     if dry_run {
         for f in &known.files {
-            println!("would remove {}", f.display());
+            writeln!(out, "would remove {}", f.display())?;
         }
-        return Ok(());
+        return Ok(Vec::new());
     }
-    for removed in uninstall_files(&manifest)? {
-        println!("removed {}", removed.display());
+    let removed = uninstall_files(&manifest)?;
+    for f in &removed {
+        writeln!(out, "removed {}", f.display())?;
     }
-    if Os::current() == Os::Linux {
-        refresh_linux_caches(&[]);
-    }
-    Ok(())
+    Ok(removed)
 }
 
 /// remove what the manifest at `manifest` lists, then the manifest; returns the files removed.
@@ -697,7 +738,11 @@ mod tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(mode & 0o111, 0o111);
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "runs for its owner, nothing for anyone else"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -708,5 +753,185 @@ mod tests {
         let manifest = manifest_path(&env).unwrap();
         assert!(Manifest::load(&manifest).unwrap().files.is_empty());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn text(out: Vec<u8>) -> String {
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn a_dry_run_writes_nothing_and_says_what_would_stop_it() {
+        let root = scratch("dry");
+        let env = env_in(&root);
+        let entry = root.join("home/.local/share/applications/lanlord.desktop");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, "hand made").unwrap();
+        let exe = Path::new("/opt/lanlord");
+        let mut out = Vec::new();
+        let written = install_in(Os::Linux, &env, exe, true, false, &mut out).unwrap();
+        assert!(written.is_empty());
+        let said = text(out);
+        assert!(
+            said.contains(&format!("would stop at {}", entry.display())),
+            "{said}"
+        );
+        assert!(said.contains("would write"), "{said}");
+        assert!(!manifest_path(&env).unwrap().exists());
+        // with --force the same file is just written
+        let mut out = Vec::new();
+        install_in(Os::Linux, &env, exe, true, true, &mut out).unwrap();
+        assert!(!text(out).contains("would stop"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn install_and_uninstall_report_each_file() {
+        let root = scratch("report");
+        let env = env_in(&root);
+        let mut out = Vec::new();
+        let written = install_in(
+            Os::Linux,
+            &env,
+            Path::new("/opt/lanlord"),
+            false,
+            false,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(written.len(), 4);
+        assert_eq!(text(out).matches("wrote ").count(), 4);
+
+        let mut out = Vec::new();
+        assert!(uninstall_in(&env, true, &mut out).unwrap().is_empty());
+        assert_eq!(text(out).matches("would remove ").count(), 4);
+        assert!(
+            written.iter().all(|f| f.path.exists()),
+            "a dry run removes nothing"
+        );
+
+        let mut out = Vec::new();
+        assert_eq!(uninstall_in(&env, false, &mut out).unwrap().len(), 4);
+        assert_eq!(text(out).matches("removed ").count(), 4);
+
+        let mut out = Vec::new();
+        assert!(uninstall_in(&env, false, &mut out).unwrap().is_empty());
+        assert!(text(out).contains("nothing to remove"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn without_a_config_dir_there_is_no_manifest() {
+        let env = Env {
+            config_dir: None,
+            ..env_in(Path::new("/r"))
+        };
+        assert!(manifest_path(&env).is_err());
+        assert!(uninstall_in(&env, false, &mut Vec::new()).is_err());
+        assert!(install_in(
+            Os::Linux,
+            &env,
+            Path::new("/x"),
+            true,
+            false,
+            &mut Vec::new()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn an_unreadable_manifest_is_an_error() {
+        let root = scratch("badmanifest");
+        let env = env_in(&root);
+        // a folder where the manifest file should be
+        std::fs::create_dir_all(manifest_path(&env).unwrap()).unwrap();
+        assert!(Manifest::load(&manifest_path(&env).unwrap()).is_err());
+        assert!(uninstall_in(&env, false, &mut Vec::new()).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn uninstall_stops_when_a_listed_file_cannot_be_removed() {
+        let root = scratch("stuck");
+        let manifest = root.join("launcher-files");
+        // a non-empty folder where a listed file should be can't be removed as a file
+        let stuck = root.join("stuck");
+        std::fs::create_dir_all(stuck.join("inside")).unwrap();
+        std::fs::write(&manifest, format!("f {}\n", stuck.display())).unwrap();
+        let err = uninstall_files(&manifest).unwrap_err().to_string();
+        assert!(err.contains("removing"), "{err}");
+        assert!(
+            manifest.exists(),
+            "the manifest stays so a retry knows what is left"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn files_already_gone_are_skipped_on_uninstall() {
+        let root = scratch("gone");
+        let manifest = root.join("launcher-files");
+        std::fs::write(
+            &manifest,
+            format!("f {}\n", root.join("never-there").display()),
+        )
+        .unwrap();
+        assert!(uninstall_files(&manifest).unwrap().is_empty());
+        assert!(!manifest.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_manifest_ignores_lines_it_does_not_know() {
+        let m = Manifest::parse("f /a\nnonsense\nx /b\nd /c\n");
+        assert_eq!(m.files.len(), 1);
+        assert_eq!(m.dirs.len(), 1);
+    }
+
+    #[test]
+    fn the_desktop_caches_are_refreshed_for_the_folders_written() {
+        let env = env_in(Path::new("/r"));
+        let files = plan(Os::Linux, &env, Path::new("/opt/lanlord")).unwrap();
+        let commands = cache_commands(&files);
+        let share = Path::new("/r/home/.local/share");
+        assert_eq!(
+            commands[0],
+            (
+                "update-desktop-database",
+                vec![share.join("applications").into()]
+            )
+        );
+        assert_eq!(
+            commands[1],
+            (
+                "gtk-update-icon-cache",
+                vec!["-q".into(), "-t".into(), share.join("icons/hicolor").into()]
+            )
+        );
+        assert_eq!(
+            cache_commands(&[]).len(),
+            2,
+            "only the kde rebuilds without files"
+        );
+        // a tool that isn't installed is no error
+        run_quietly(&[("lanlord-no-such-tool", vec![])]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn windows_shortcuts_are_only_made_on_windows() {
+        let root = scratch("lnk");
+        let env = env_in(&root);
+        let files = plan(Os::Windows, &env, Path::new("/opt/lanlord.exe")).unwrap();
+        let err = install_files(&files, &manifest_path(&env).unwrap(), false).unwrap_err();
+        assert!(err.to_string().contains("only be made on windows"), "{err}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_running_platform_and_environment_are_found() {
+        if cfg!(target_os = "linux") {
+            assert_eq!(Os::current(), Os::Linux);
+        }
+        assert_eq!(Env::current().config_dir, lanlord_core::paths::config_dir());
     }
 }
