@@ -2,7 +2,7 @@
 //! the message of whatever was clicked.
 
 use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui, Vec2};
-use lanlord_app::view::{Dialog, Node};
+use lanlord_app::view::{Dialog, Node, Size};
 
 use crate::console;
 use crate::controls;
@@ -111,30 +111,34 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         }
         Node::Input {
             value,
-            width,
-            masked,
+            size,
+            focus,
+            hint,
+            edit,
+            enter,
+        } => {
+            let mut text = value.clone();
+            let pressed = line_edit(ui, &mut text, *size, false, hint, *focus);
+            match enter {
+                // Enter carries the final text, so keys typed with it are kept
+                Some(enter) if pressed => Some(enter(text)),
+                _ => (text != *value).then(|| edit(text)),
+            }
+        }
+        Node::Secret {
+            value,
+            size,
+            shown,
             focus,
             edit,
             enter,
         } => {
             let mut text = value.clone();
-            let response = controls::field(ui, |ui| {
-                ui.add(
-                    TextEdit::singleline(&mut text)
-                        .password(*masked)
-                        .desired_width(*width)
-                        .frame(egui::Frame::new())
-                        .margin(egui::Margin::ZERO),
-                )
-            });
-            if *focus {
-                response.request_focus();
+            let pressed = line_edit(ui, &mut text, *size, !shown, "", *focus);
+            match enter {
+                Some(enter) if pressed => Some(enter(text)),
+                _ => (*text != **value).then(|| edit(text)),
             }
-            let pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if pressed && enter.is_some() {
-                return enter.clone();
-            }
-            (text != *value).then(|| edit(text))
         }
         Node::Lines { id, lines, height } => {
             theme::sunken(ui, WHITE, |ui| {
@@ -289,36 +293,6 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             });
             picked.map(pick)
         }
-        Node::Entry {
-            value,
-            room,
-            masked,
-            focus,
-            hint,
-            edit,
-            enter,
-        } => {
-            let mut text = value.clone();
-            let width = ui.available_width() - room;
-            let response = controls::field(ui, |ui| {
-                ui.add(
-                    TextEdit::singleline(&mut text)
-                        .password(*masked)
-                        .hint_text(hint.as_str())
-                        .desired_width(width)
-                        .frame(egui::Frame::new())
-                        .margin(egui::Margin::ZERO),
-                )
-            });
-            if *focus {
-                response.request_focus();
-            }
-            let pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if pressed && enter.is_some() {
-                return enter.clone();
-            }
-            (text != *value).then(|| edit(text))
-        }
         Node::Fold { id, title, body } => egui::CollapsingHeader::new(title.as_str())
             .id_salt(*id)
             .show(ui, |ui| show(ui, body))
@@ -382,4 +356,33 @@ fn warning_sign(ui: &egui::Ui, rect: egui::Rect) {
         egui::FontId::proportional(16.0),
         BLACK,
     );
+}
+
+/// a one-line edit box; true when Enter was pressed in it.
+fn line_edit(
+    ui: &mut Ui,
+    text: &mut String,
+    size: Size,
+    masked: bool,
+    hint: &str,
+    focus: bool,
+) -> bool {
+    let width = match size {
+        Size::Points(width) => width,
+        Size::FillLess(room) => ui.available_width() - room,
+    };
+    let response = controls::field(ui, |ui| {
+        ui.add(
+            TextEdit::singleline(text)
+                .password(masked)
+                .hint_text(hint)
+                .desired_width(width)
+                .frame(egui::Frame::new())
+                .margin(egui::Margin::ZERO),
+        )
+    });
+    if focus {
+        response.request_focus();
+    }
+    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }

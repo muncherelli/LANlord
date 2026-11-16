@@ -6,7 +6,7 @@ use lanlord_core::nt4::{valid_machine, Nt4Settings};
 use crate::form::{Form, FormAnswer, FormMsg};
 use crate::remote::Remote;
 use crate::services::{update_settings, Services};
-use crate::view::{self, Button, Dialog, Node, Table};
+use crate::view::{self, Button, Dialog, Node, Size, Table};
 
 const ADMIN_PASSWORD: &str = "nt4-domain.admin_password";
 const MODULE: &str = "nt4-domain";
@@ -177,10 +177,10 @@ impl Nt4Panel {
             label: "Domain name".into(),
             body: vec![Node::Input {
                 value: self.draft.name.clone(),
-                width: 170.0,
-                masked: false,
+                size: Size::Points(170.0),
+                hint: String::new(),
                 focus: false,
-                edit: Msg::Name,
+                edit: Box::new(Msg::Name),
                 enter: None,
             }],
         }];
@@ -190,10 +190,10 @@ impl Nt4Panel {
             body: vec![
                 Node::Input {
                     value: self.draft.netbios_name.clone(),
-                    width: 170.0,
-                    masked: false,
+                    size: Size::Points(170.0),
+                    hint: String::new(),
                     focus: false,
-                    edit: Msg::ServerName,
+                    edit: Box::new(Msg::ServerName),
                     enter: None,
                 },
                 Node::Text("blank: the gateway's hostname".into()),

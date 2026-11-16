@@ -9,7 +9,7 @@ use crate::gateway::NewAdmin;
 use crate::message::MessageBox;
 use crate::services::Services;
 use crate::tasks::Job;
-use crate::view::{Button, Dialog, Node};
+use crate::view::{Button, Dialog, Node, Size};
 
 /// what the screen decided.
 #[derive(Debug, PartialEq, Eq)]
@@ -33,8 +33,8 @@ Allow passwordless sudo anyway?";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
     Name(String),
-    Password(String),
-    Confirm(String),
+    Password(Zeroizing<String>),
+    Confirm(Zeroizing<String>),
     Key(String),
     /// the key at this index of the agent's keys.
     AgentKey(usize),
@@ -182,17 +182,20 @@ impl AdminSetup {
         let busy = self.job.is_some() || self.warning.is_some();
         let first = !self.focus;
         self.focus = true;
-        let secret = |label: &str, value: &str, edit: fn(String) -> Msg| Node::Labelled {
-            label: label.into(),
-            body: vec![Node::Input {
-                value: value.into(),
-                width: 260.0,
-                masked: true,
-                focus: false,
-                edit,
-                enter: None,
-            }],
-        };
+        let secret =
+            |label: &str, value: &Zeroizing<String>, edit: fn(Zeroizing<String>) -> Msg| {
+                Node::Labelled {
+                    label: label.into(),
+                    body: vec![Node::Secret {
+                        value: value.clone(),
+                        size: Size::Points(260.0),
+                        shown: false,
+                        focus: false,
+                        edit: Box::new(edit),
+                        enter: None,
+                    }],
+                }
+            };
         let mut key = vec![Node::TextArea {
             id: "admin-key",
             value: self.key.clone(),
@@ -234,10 +237,10 @@ impl AdminSetup {
                 label: "Username:".into(),
                 body: vec![Node::Input {
                     value: self.name.clone(),
-                    width: 260.0,
-                    masked: false,
+                    size: Size::Points(260.0),
+                    hint: String::new(),
                     focus: first,
-                    edit: Msg::Name,
+                    edit: Box::new(Msg::Name),
                     enter: None,
                 }],
             },
@@ -274,8 +277,8 @@ impl AdminSetup {
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) -> Option<Outcome> {
         match msg {
             Msg::Name(text) => self.name = text,
-            Msg::Password(text) => self.password = Zeroizing::new(text),
-            Msg::Confirm(text) => self.confirm = Zeroizing::new(text),
+            Msg::Password(text) => self.password = text,
+            Msg::Confirm(text) => self.confirm = text,
             Msg::Key(text) => self.key = text,
             Msg::AgentKey(i) => {
                 if let Some(key) = self.agent_keys.get(i) {

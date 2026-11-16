@@ -9,7 +9,7 @@ use lanlord_core::signin::{Attempt, Identity, Signin, SigninError};
 use zeroize::Zeroizing;
 
 use crate::message::MessageBox;
-use crate::view::{Button, Dialog, Node};
+use crate::view::{Button, Dialog, Node, Size};
 use crate::wake::Wake;
 
 /// how the logon box reaches a server; the real one uses the system ssh, tests use a fake.
@@ -87,7 +87,11 @@ pub enum Msg {
     Recent(usize),
     User(String),
     Host(String),
-    Password(String),
+    Password(Zeroizing<String>),
+    /// Enter in a box, with the box's final text.
+    SubmitUser(String),
+    SubmitHost(String),
+    SubmitPassword(Zeroizing<String>),
     ShutDown,
     Cancel,
     Ok,
@@ -365,7 +369,6 @@ impl LoginBox {
         let first = !self.focus;
         self.focus = true;
         let password_stage = self.stage == Stage::Password;
-        let submit = (!busy).then_some(Msg::Ok);
         let mut nodes = vec![
             Node::Header {
                 icon: "gateway",
@@ -389,24 +392,28 @@ impl LoginBox {
             });
             nodes.push(Node::Gap(4.0));
         }
-        let field =
-            |label: &str, value: &str, focus: bool, edit: fn(String) -> Msg| Node::Labelled {
-                label: label.into(),
-                body: vec![Node::Input {
-                    value: value.into(),
-                    width: 240.0,
-                    masked: false,
-                    focus,
-                    edit,
-                    enter: submit.clone(),
-                }],
-            };
+        let field = |label: &str,
+                     value: &str,
+                     focus: bool,
+                     edit: fn(String) -> Msg,
+                     enter: fn(String) -> Msg| Node::Labelled {
+            label: label.into(),
+            body: vec![Node::Input {
+                value: value.into(),
+                size: Size::Points(240.0),
+                focus,
+                hint: String::new(),
+                edit: Box::new(edit),
+                enter: (!busy).then(|| Box::new(enter) as Box<dyn Fn(String) -> Msg>),
+            }],
+        };
         let empty = self.user.is_empty();
         nodes.push(field(
             "Username:",
             &self.user,
             first && !password_stage && empty,
             Msg::User,
+            Msg::SubmitUser,
         ));
         nodes.push(Node::Gap(4.0));
         nodes.push(field(
@@ -414,18 +421,21 @@ impl LoginBox {
             &self.host,
             first && !password_stage && !empty,
             Msg::Host,
+            Msg::SubmitHost,
         ));
         if password_stage {
             nodes.push(Node::Gap(4.0));
             nodes.push(Node::Labelled {
                 label: "Password:".into(),
-                body: vec![Node::Input {
-                    value: self.password.to_string(),
-                    width: 240.0,
-                    masked: true,
+                body: vec![Node::Secret {
+                    value: self.password.clone(),
+                    size: Size::Points(240.0),
+                    shown: false,
                     focus: first,
-                    edit: Msg::Password,
-                    enter: submit.clone(),
+                    edit: Box::new(Msg::Password),
+                    enter: (!busy).then(|| {
+                        Box::new(Msg::SubmitPassword) as Box<dyn Fn(Zeroizing<String>) -> Msg>
+                    }),
                 }],
             });
         }
@@ -455,7 +465,19 @@ impl LoginBox {
             }
             Msg::User(text) => self.user = text,
             Msg::Host(text) => self.host = text,
-            Msg::Password(text) => self.password = Zeroizing::new(text),
+            Msg::Password(text) => self.password = text,
+            Msg::SubmitUser(text) => {
+                self.user = text;
+                self.submit();
+            }
+            Msg::SubmitHost(text) => {
+                self.host = text;
+                self.submit();
+            }
+            Msg::SubmitPassword(text) => {
+                self.password = text;
+                self.submit();
+            }
             Msg::ShutDown => return Some(Outcome::ShutDown),
             Msg::Cancel => self.cancel(),
             Msg::Ok => self.submit(),

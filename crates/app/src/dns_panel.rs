@@ -15,7 +15,7 @@ use crate::form::{Form, FormAnswer, FormMsg};
 use crate::gateway::Gateway;
 use crate::remote::Remote;
 use crate::services::{update_settings, Services};
-use crate::view::{self, Button, Dialog, Node, Table};
+use crate::view::{self, Button, Dialog, Node, Size, Table};
 
 const MODULE: &str = "dns";
 
@@ -213,10 +213,10 @@ impl DnsPanel {
             label: label.into(),
             body: vec![Node::Input {
                 value: value.into(),
-                width: 170.0,
-                masked: false,
+                size: Size::Points(170.0),
+                hint: String::new(),
                 focus: false,
-                edit: msg,
+                edit: Box::new(msg),
                 enter: None,
             }],
         };
