@@ -336,6 +336,20 @@ impl Selection {
         self.enabled.contains_key(id)
     }
 
+    /// the choice the old way only, from the top-level module sections; what a front end can
+    /// still show when the `components` section cannot be read.
+    pub fn from_sections(settings: &Settings) -> Self {
+        let networks = networks_from_settings(settings);
+        let mut enabled = legacy(settings, &networks);
+        for choice in enabled.values_mut() {
+            normalise(choice, &networks);
+        }
+        for component in catalogue().iter().filter(|c| c.required) {
+            enabled.entry(component.id().to_string()).or_default();
+        }
+        Self { enabled }
+    }
+
     /// the choice in `settings` (see the module docs for the old way of reading it).
     pub fn from_settings(settings: &Settings) -> anyhow::Result<Self> {
         let networks = networks_from_settings(settings);
@@ -390,6 +404,20 @@ impl Selection {
                         Value::Bool(false),
                     )]));
                 }
+            }
+        }
+        // a component that is only on through its old top-level section needs a written
+        // `enabled: false`, or the old way of reading would switch it back on
+        for component in catalogue() {
+            let id = component.id();
+            if !self.is_enabled(id) && settings.section(id).is_some() && !entries.contains_key(id) {
+                entries.insert(
+                    Value::String(id.into()),
+                    Value::Mapping(Mapping::from_iter([(
+                        Value::from("enabled"),
+                        Value::Bool(false),
+                    )])),
+                );
             }
         }
         for (id, choice) in &self.enabled {
@@ -521,6 +549,16 @@ impl Selection {
                         fail(format!("{at}.address"), problem);
                         continue;
                     }
+                } else if choice.mechanism != Mechanism::HostBind {
+                    fail(
+                        format!("{at}.address"),
+                        format!(
+                            "{} runs as {:?} and needs an address of its own on {}",
+                            component.name(),
+                            choice.mechanism,
+                            network.name
+                        ),
+                    );
                 } else if component.needs_own_address {
                     fail(
                         format!("{at}.address"),
@@ -707,13 +745,20 @@ fn listen(
                 else {
                     continue;
                 };
-                let network = networks
+                // an address in a known network joins it there; any other one was an address of
+                // the gateway's own outside interface
+                match networks
                     .iter()
-                    .find(|n| n.subnet.is_some_and(|s| s.contains(address)))
-                    .map_or_else(|| lan.to_string(), |n| n.id.clone());
-                Attachment {
-                    network,
-                    address: Some(address),
+                    .find(|n| !n.external && n.subnet.is_some_and(|s| s.contains(address)))
+                {
+                    Some(network) => Attachment {
+                        network: network.id.clone(),
+                        address: Some(address),
+                    },
+                    None => Attachment {
+                        network: external.into(),
+                        address: None,
+                    },
                 }
             }
         };
@@ -1204,6 +1249,57 @@ mod tests {
             selection.enabled["web-proxy"].attach,
             vec![at("wan", None), at("retronet", None)]
         );
+    }
+
+    #[test]
+    fn clearing_a_component_on_through_its_old_section_keeps_it_off() {
+        let mut settings = Settings::parse("docker: {}\ndns: {}\n").unwrap();
+        let mut selection = Selection::from_settings(&settings).unwrap();
+        assert!(selection.is_enabled("dns"));
+        selection.enabled.remove("dns");
+        selection.apply_to(&mut settings);
+        let back = Selection::from_settings(&Settings::parse(&settings.text()).unwrap()).unwrap();
+        assert!(!back.is_enabled("dns"), "{}", settings.text());
+        assert!(back.is_enabled("docker"));
+        assert!(settings.section("dns").is_some(), "the old section stays");
+    }
+
+    #[test]
+    fn a_listen_address_outside_every_lan_is_the_gateways_outside_address() {
+        let settings = Settings::parse(
+            "docker:\n  internal_address: 192.0.2.1/24\nweb-proxy:\n  listen: [203.0.113.7, internal]\n",
+        )
+        .unwrap();
+        let networks = networks_from_settings(&settings);
+        let selection = Selection::from_settings(&settings).unwrap();
+        assert_eq!(
+            selection.enabled["web-proxy"].attach,
+            vec![at(EXTERNAL_NETWORK, None), at(LEGACY_NETWORK, None)]
+        );
+        assert!(selection.validate(&networks).is_empty());
+    }
+
+    #[test]
+    fn a_namespaced_component_needs_its_own_address() {
+        let mut selection = with(&[("dns", vec![at("lab", None)])]);
+        selection.enabled.get_mut("dns").unwrap().mechanism = Mechanism::Ipvlan;
+        assert!(messages(&selection)
+            .iter()
+            .any(|m| m.contains("needs an address of its own")));
+        selection.enabled.get_mut("dns").unwrap().attach = vec![at("lab", Some([192, 0, 3, 9]))];
+        assert!(
+            messages(&selection).is_empty(),
+            "{:?}",
+            messages(&selection)
+        );
+    }
+
+    #[test]
+    fn the_old_sections_still_read_when_the_new_one_is_broken() {
+        let settings = Settings::parse("docker: {}\ndns: {}\ncomponents: 7\n").unwrap();
+        assert!(Selection::from_settings(&settings).is_err());
+        let fallback = Selection::from_sections(&settings);
+        assert!(fallback.is_enabled("dns") && fallback.is_enabled("gateway"));
     }
 
     #[test]

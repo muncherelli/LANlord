@@ -60,6 +60,9 @@ pub struct Components {
     /// what is switched on now; `None` until the settings were read.
     current: Option<Selection>,
     networks: Vec<Network>,
+    /// why the `components` section could not be read; the desktop then falls back to the old
+    /// top-level module sections and the wizard only says so.
+    error: Option<String>,
     /// the wizard's working copy, made when the window opens.
     draft: Option<Selection>,
     /// what was typed into the address fields, by (component, network).
@@ -114,7 +117,16 @@ impl Components {
     /// take over freshly read (or saved) settings.
     pub fn take_settings(&mut self, settings: &Settings) {
         self.networks = networks_from_settings(settings);
-        self.current = Selection::from_settings(settings).ok();
+        match Selection::from_settings(settings) {
+            Ok(selection) => {
+                self.current = Some(selection);
+                self.error = None;
+            }
+            Err(error) => {
+                self.current = Some(Selection::from_sections(settings));
+                self.error = Some(error.to_string());
+            }
+        }
     }
 
     /// pick up finished reads and saves; read `host` when the window shows another server.
@@ -332,6 +344,11 @@ impl Components {
         let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
             let mut settings = gateway.load_settings(&target, ask)?;
+            // the networks may have changed since the window read them
+            let problems = selection.validate(&networks_from_settings(&settings));
+            if let Some(problem) = problems.first() {
+                anyhow::bail!("the server's settings changed: {problem}");
+            }
             selection.apply_to(&mut settings);
             gateway.save_settings(&target, &settings, ask)?;
             Ok(settings)
@@ -351,6 +368,27 @@ impl Components {
             return vec![
                 Node::Text("Reading the server's components...".into()),
                 view::status(&self.settings),
+            ];
+        }
+        if let Some(error) = &self.error {
+            return vec![
+                Node::banner(
+                    "LANlord Components",
+                    "The server's component settings cannot be read.",
+                    "settings",
+                ),
+                Node::Gap(4.0),
+                Node::Text(
+                    "Fix the components section in the Settings window, then open this \
+                     window again."
+                        .into(),
+                ),
+                Node::Gap(6.0),
+                Node::Buttons(vec![Button::new("Cancel", true, Msg::Cancel)]),
+                Node::Status {
+                    text: error.clone(),
+                    error: true,
+                },
             ];
         }
         let mut page = match self.step {
@@ -794,6 +832,40 @@ mod tests {
             window.draft().is_enabled("docker"),
             "ticking the proxy brings docker"
         );
+    }
+
+    #[test]
+    fn a_broken_components_section_is_shown_and_the_old_sections_still_count() {
+        let (mut window, services, _) = ready();
+        window.take_settings(&Settings::parse("docker: {}\ndns: {}\ncomponents: 7\n").unwrap());
+        assert!(window.current().unwrap().is_enabled("dns"));
+        let page = window.view(true);
+        assert!(page
+            .iter()
+            .any(|n| matches!(n, Node::Status { error: true, .. })));
+        window.update(Msg::Cancel, &services, "gw");
+        assert!(window.take_done());
+    }
+
+    #[test]
+    fn finish_checks_the_settings_it_saves_into() {
+        let (mut window, services, fake) = ready();
+        window.update(Msg::Toggle(row("web-proxy")), &services, "gw");
+        // meanwhile the server lost its retro lan
+        *fake.stored.lock().unwrap() =
+            "networks:\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ndocker: {}\n".into();
+        window.update(Msg::Finish, &services, "gw");
+        for _ in 0..200 {
+            window.refresh(&services, "gw");
+            if !window.saving.busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (error, text) = window.saving.note.clone().unwrap();
+        assert!(error && text.contains("changed"), "{text}");
+        assert!(!fake.stored.lock().unwrap().contains("components:"));
+        assert!(!window.take_done());
     }
 
     #[test]
