@@ -111,113 +111,143 @@ func jewel(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ r: CGFloat, _ light: 
     ctx.fillEllipse(in: CGRect(x: x - r * 0.5, y: y - r * 0.62, width: r * 0.5, height: r * 0.3))
 }
 
-// MARK: the emblem: a crown on a crt that shows a small network
+// MARK: the emblem: flat, quiet and geometric, in the spirit of nt and backoffice branding
+
+/// which emblem to draw: 1 is a ring of network nodes, 2 is a server tower.
+var emblemStyle = 2
+/// how dark the little ground shadow under the tower is; lighter on a white page.
+var shadowAlpha: CGFloat = 0.28
+
+func poly(_ pts: [(CGFloat, CGFloat)]) -> CGPath {
+    let p = CGMutablePath()
+    p.move(to: CGPoint(x: pts[0].0, y: pts[0].1))
+    for q in pts.dropFirst() { p.addLine(to: CGPoint(x: q.0, y: q.1)) }
+    p.closeSubpath()
+    return p
+}
+
+func flat(_ ctx: CGContext, _ path: CGPath, _ color: UInt32) {
+    ctx.addPath(path)
+    ctx.setFillColor(rgb(color))
+    ctx.fillPath()
+}
+
+/// a small flat crown whose base is centred on (cx, base) and whose width is `w`.
+func crown(_ ctx: CGContext, _ cx: CGFloat, _ base: CGFloat, _ w: CGFloat) {
+    let h = w * 0.62
+    let l = cx - w / 2
+    let r = cx + w / 2
+    let body = poly([
+        (l, base), (l - w * 0.02, base - h * 0.78), (cx - w * 0.2, base - h * 0.42), (cx, base - h),
+        (cx + w * 0.2, base - h * 0.42), (r + w * 0.02, base - h * 0.78), (r, base),
+    ])
+    flat(ctx, body, 0xF0B800)
+    flat(ctx, CGPath(rect: CGRect(x: l, y: base - h * 0.2, width: w, height: h * 0.2), transform: nil), 0xC48F00)
+}
 
 /// draws into a 1000 x 1000 box whose top left is (ox, oy), scaled to `size` pixels.
 func emblem(_ ctx: CGContext, _ ox: CGFloat, _ oy: CGFloat, _ size: CGFloat, thick: CGFloat = 1) {
     ctx.saveGState()
     ctx.translateBy(x: ox, y: oy)
     ctx.scaleBy(x: size / 1000, y: size / 1000)
-    let ink = rgb(0x14131C)
-    let w = 16 * thick
-
-    // soft shadow on the ground
-    ctx.saveGState()
-    ctx.setShadow(offset: .zero, blur: 40, color: rgb(0x000000, 0.55))
-    ctx.setFillColor(rgb(0x000000, 0.45))
-    ctx.fillEllipse(in: CGRect(x: 230, y: 940, width: 540, height: 38))
+    if emblemStyle == 1 { ring(ctx) } else { tower(ctx) }
     ctx.restoreGState()
+}
 
-    // stand
-    let neck = CGPath(rect: CGRect(x: 405, y: 880, width: 190, height: 56), transform: nil)
-    fill(ctx, neck, gradient([(0, 0xB9B5A4), (1, 0x6E6A5A)]), CGPoint(x: 405, y: 0), CGPoint(x: 595, y: 0))
-    outline(ctx, neck, ink, w)
-    let base = round(CGRect(x: 290, y: 925, width: 420, height: 56), 22)
-    fill(ctx, base, gradient([(0, 0xEDE9DA), (0.5, 0xC2BEAC), (1, 0x7D7967)]), CGPoint(x: 290, y: 925), CGPoint(x: 560, y: 990))
-    outline(ctx, base, ink, w)
-    line(ctx, [(320, 940), (680, 940)], rgb(0xFFFFFF, 0.7), 6 * thick)
-
-    // the monitor body
-    let body = round(CGRect(x: 130, y: 410, width: 740, height: 490), 54)
-    fill(ctx, body, gradient([(0, 0xF6F3E7), (0.4, 0xD3CEBC), (1, 0x8A8674)]), CGPoint(x: 130, y: 410), CGPoint(x: 870, y: 900))
-    outline(ctx, body, ink, w)
-    line(ctx, [(176, 446), (824, 446)], rgb(0xFFFFFF, 0.9), 8 * thick)
-    line(ctx, [(160, 480), (160, 840)], rgb(0xFFFFFF, 0.75), 8 * thick)
-    line(ctx, [(840, 480), (840, 850)], rgb(0x3E3B30, 0.35), 8 * thick)
-    line(ctx, [(190, 880), (810, 880)], rgb(0x3E3B30, 0.35), 8 * thick)
-
-    // the sunken screen frame and the glass
-    let well = round(CGRect(x: 205, y: 480, width: 590, height: 340), 34)
-    fill(ctx, well, gradient([(0, 0x55525A), (1, 0xB8B6BC)]), CGPoint(x: 205, y: 480), CGPoint(x: 795, y: 820))
-    outline(ctx, well, ink, 8 * thick)
-    let glass = round(CGRect(x: 232, y: 506, width: 536, height: 288), 24)
-    fill(ctx, glass, gradient([(0, 0x2342C8), (0.45, 0x081660), (1, 0x00001E)]), CGPoint(x: 232, y: 506), CGPoint(x: 768, y: 794))
-    outline(ctx, glass, rgb(0x000012), 7 * thick)
-
-    // a small network on the glass
+/// concept 1: a ring of three connected nodes under a small crown.
+func ring(_ ctx: CGContext) {
+    let cx: CGFloat = 500
+    let cy: CGFloat = 590
+    let outer: CGFloat = 340
+    let inner: CGFloat = 276
+    let band = CGMutablePath()
+    band.addEllipse(in: CGRect(x: cx - outer, y: cy - outer, width: 2 * outer, height: 2 * outer))
+    band.addEllipse(in: CGRect(x: cx - inner, y: cy - inner, width: 2 * inner, height: 2 * inner))
     ctx.saveGState()
-    ctx.addPath(glass)
-    ctx.clip()
-    let nodes: [(CGFloat, CGFloat)] = [(400, 610), (610, 600), (505, 735)]
-    ctx.setShadow(offset: .zero, blur: 22, color: rgb(0x58FF8C, 0.9))
-    for (a, b) in [(0, 1), (0, 2), (1, 2)] {
-        line(ctx, [nodes[a], nodes[b]], rgb(0x6CFF9A), 11 * thick)
-    }
-    for (x, y) in nodes {
-        jewel(ctx, x, y, 40, 0xFFFFFF, 0x4CE887, 0x0B6B33, 0x003B17, 6 * thick)
-    }
-    ctx.restoreGState()
-    // a reflection across the glass
-    ctx.saveGState()
-    ctx.addPath(glass)
-    ctx.clip()
-    ctx.move(to: CGPoint(x: 240, y: 512))
-    ctx.addLine(to: CGPoint(x: 600, y: 512))
-    ctx.addLine(to: CGPoint(x: 240, y: 700))
+    ctx.addPath(band)
+    ctx.clip(using: .evenOdd)
+    ctx.setFillColor(rgb(0x2F4BD0))
+    ctx.fill(CGRect(x: 0, y: 0, width: 1000, height: 1000))
+    // the half in shade: flat, cut by a straight diagonal
+    ctx.setFillColor(rgb(0x1B2D98))
+    ctx.move(to: CGPoint(x: 1000, y: cy - 500))
+    ctx.addLine(to: CGPoint(x: 1000, y: 1000))
+    ctx.addLine(to: CGPoint(x: 0, y: 1000))
+    ctx.addLine(to: CGPoint(x: 0, y: cy + 500))
     ctx.closePath()
-    ctx.setFillColor(rgb(0xFFFFFF, 0.14))
     ctx.fillPath()
     ctx.restoreGState()
-    // power light and a vent
-    jewel(ctx, 780, 862, 12, 0xC8FFD6, 0x38D060, 0x0A5A22, 0x06280F, 3 * thick)
-    for i in 0..<4 {
-        line(ctx, [(300 + CGFloat(i) * 30, 850), (300 + CGFloat(i) * 30, 872)], rgb(0x3E3B30, 0.55), 7 * thick)
-    }
-
-    // the crown
-    let crown = CGMutablePath()
-    crown.move(to: CGPoint(x: 262, y: 452))
-    crown.addLine(to: CGPoint(x: 232, y: 196))
-    crown.addLine(to: CGPoint(x: 384, y: 336))
-    crown.addLine(to: CGPoint(x: 500, y: 138))
-    crown.addLine(to: CGPoint(x: 616, y: 336))
-    crown.addLine(to: CGPoint(x: 768, y: 196))
-    crown.addLine(to: CGPoint(x: 738, y: 452))
-    crown.closeSubpath()
+    // one thin lit edge on the top left of the ring
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 26, color: rgb(0x000000, 0.5))
-    ctx.addPath(crown)
-    ctx.setFillColor(rgb(0xC98A00))
-    ctx.fillPath()
-    ctx.restoreGState()
-    fill(ctx, crown, gradient([(0, 0xFFF7B8), (0.3, 0xF9C81C), (0.65, 0xD48E00), (1, 0x7E4B00)]), CGPoint(x: 232, y: 130), CGPoint(x: 770, y: 460))
-    outline(ctx, crown, rgb(0x3A2100), 20 * thick)
-    // lit edges along the left of each point
-    line(ctx, [(258, 244), (372, 338)], rgb(0xFFFFFF, 0.8), 9 * thick)
-    line(ctx, [(486, 190), (396, 330)], rgb(0xFFFFFF, 0.7), 9 * thick)
-    line(ctx, [(628, 340), (514, 190)], rgb(0x6A3F00, 0.35), 9 * thick)
-    for (x, y) in [(232, 188), (500, 128), (768, 188)] {
-        jewel(ctx, CGFloat(x), CGFloat(y), 36, 0xFFFFFF, 0xFFD43A, 0xB06E00, 0x3A2100, 12 * thick)
+    ctx.setStrokeColor(rgb(0x8EA4FF))
+    ctx.setLineWidth(7)
+    ctx.setLineCap(.butt)
+    for i in 0...40 {
+        let a = CGFloat.pi * (1.02 + 0.46 * CGFloat(i) / 40)
+        let pt = CGPoint(x: cx + (outer - 4) * cos(a), y: cy + (outer - 4) * sin(a))
+        if i == 0 { ctx.move(to: pt) } else { ctx.addLine(to: pt) }
     }
-    // the band and its stones
-    let band = round(CGRect(x: 258, y: 372, width: 484, height: 92), 24)
-    fill(ctx, band, gradient([(0, 0xFFE46A), (0.45, 0xE9A400), (1, 0x8A5400)]), CGPoint(x: 258, y: 372), CGPoint(x: 258, y: 464))
-    outline(ctx, band, rgb(0x3A2100), 16 * thick)
-    line(ctx, [(286, 386), (714, 386)], rgb(0xFFFFFF, 0.75), 7 * thick)
-    jewel(ctx, 380, 424, 24, 0xDCE6FF, 0x3C6CFF, 0x0A2490, 0x061450, 8 * thick)
-    jewel(ctx, 500, 424, 30, 0xFFD6D6, 0xF03030, 0x8A0A0A, 0x400000, 9 * thick)
-    jewel(ctx, 620, 424, 24, 0xDCE6FF, 0x3C6CFF, 0x0A2490, 0x061450, 8 * thick)
+    ctx.strokePath()
     ctx.restoreGState()
+    // the three nodes and the links between them
+    let r: CGFloat = 178
+    let pts = (0..<3).map { i -> (CGFloat, CGFloat) in
+        let a = -CGFloat.pi / 2 + CGFloat(i) * 2 * .pi / 3
+        return (cx + r * cos(a), cy + r * sin(a) + 14)
+    }
+    let tri = poly(pts)
+    ctx.addPath(tri)
+    ctx.setStrokeColor(rgb(0xE6EBFF))
+    ctx.setLineWidth(15)
+    ctx.setLineJoin(.round)
+    ctx.strokePath()
+    for (x, y) in pts {
+        flat(ctx, circle(x, y, 50), 0xFFFFFF)
+        flat(ctx, circle(x, y, 22), 0x2F4BD0)
+    }
+    crown(ctx, cx, cy - outer + 14, 230)
+}
+
+/// concept 2: a server tower, drawn as three flat faces, with a small crown on top.
+func tower(_ ctx: CGContext) {
+    ctx.translateBy(x: 500, y: 540)
+    ctx.scaleBy(x: 1.12, y: 1.12)
+    ctx.translateBy(x: -500, y: -540)
+    // a little ground shadow, flat and faint
+    ctx.setFillColor(rgb(0x000000, shadowAlpha))
+    ctx.fillEllipse(in: CGRect(x: 250, y: 880, width: 560, height: 70))
+    // the three faces
+    flat(ctx, poly([(300, 330), (560, 330), (560, 900), (300, 900)]), 0xD7DBE8)
+    flat(ctx, poly([(560, 330), (700, 268), (700, 838), (560, 900)]), 0x8791B3)
+    flat(ctx, poly([(300, 330), (440, 268), (700, 268), (560, 330)]), 0xF0F2FA)
+    // the drive bays on the front, and a grille at the foot
+    for i in 0..<4 {
+        let y = 384 + CGFloat(i) * 92
+        flat(ctx, CGPath(rect: CGRect(x: 338, y: y, width: 184, height: 54), transform: nil), 0x1F2A6B)
+        flat(ctx, circle(362, y + 27, 9), 0x3FD07A)
+        flat(ctx, CGPath(rect: CGRect(x: 386, y: y + 22, width: 116, height: 10), transform: nil), 0x39458F)
+    }
+    for i in 0..<3 {
+        flat(ctx, CGPath(rect: CGRect(x: 338, y: 770 + CGFloat(i) * 30, width: 184, height: 9), transform: nil), 0xA9B0C8)
+    }
+    // vents on the side face
+    for i in 0..<6 {
+        let x = 580 + CGFloat(i) * 20
+        let top = 330 - (x - 560) * (62.0 / 140.0) + 40
+        ctx.setStrokeColor(rgb(0x6B769C))
+        ctx.setLineWidth(7)
+        ctx.move(to: CGPoint(x: x, y: top))
+        ctx.addLine(to: CGPoint(x: x, y: top + 380))
+        ctx.strokePath()
+    }
+    // one thin lit edge on the top left
+    ctx.setStrokeColor(rgb(0xFFFFFF, 0.85))
+    ctx.setLineWidth(6)
+    ctx.setLineCap(.butt)
+    ctx.move(to: CGPoint(x: 300, y: 330))
+    ctx.addLine(to: CGPoint(x: 440, y: 268))
+    ctx.strokePath()
+    crown(ctx, 478, 306, 236)
 }
 
 // MARK: backgrounds
@@ -305,31 +335,27 @@ func place(_ p: CGPath, _ x: CGFloat, _ baseline: CGFloat) -> CGPath {
     return p.copy(using: &t)!
 }
 
-/// the wordmark: soft shadow, a lit top left edge, a vertical gradient and a thin dark edge.
+/// the wordmark: a clean title with a faint lit edge and a soft, low shadow.
 func wordmark(_ ctx: CGContext, _ text: CGPath, light: Bool, size: CGFloat, finish: Int = 0) {
     let box = text.boundingBox
+    let px = size / 188
     ctx.saveGState()
     ctx.setShadow(
-        offset: CGSize(width: size * 0.03, height: size * 0.04), blur: size * 0.06,
-        color: rgb(light ? 0x000040 : 0x000000, light ? 0.35 : 0.8))
+        offset: CGSize(width: 0, height: 3 * px), blur: 9 * px, color: rgb(light ? 0x000040 : 0x000000, light ? 0.18 : 0.4))
     ctx.addPath(text)
-    ctx.setFillColor(rgb(light ? 0x1C2A9A : 0x000000))
+    ctx.setFillColor(rgb(light ? 0x1C2A9A : 0x00002A))
     ctx.fillPath()
     ctx.restoreGState()
-    // a bright edge up and to the left, then the gradient face over it
-    var up = CGAffineTransform(translationX: -size * 0.012, y: -size * 0.012)
+    // a faint 1 pixel lit edge up and to the left
+    var up = CGAffineTransform(translationX: -1.2 * px, y: -1.2 * px)
     ctx.addPath(text.copy(using: &up)!)
-    ctx.setFillColor(rgb(0xFFFFFF, light ? 0.9 : 0.95))
+    ctx.setFillColor(rgb(0xFFFFFF, light ? 0.55 : 0.45))
     ctx.fillPath()
     var face = light
         ? gradient([(0, 0x4A5CE8), (0.5, 0x0A1A8C), (1, 0x00004A)])
         : gradient([(0, 0xFFFFFF), (0.45, 0xD2E0FF), (1, 0x6F8FE0)])
     if !light && finish == 1 { face = gradient([(0, 0xFFF6B0), (0.45, 0xF4BE12), (1, 0x8A5300)]) }
-    if !light && finish == 2 {
-        face = gradient([(0, 0xFFFFFF), (0.46, 0xB4BEDA), (0.5, 0x3C4670), (1, 0xC6D0EC)])
-    }
     fill(ctx, text, face, CGPoint(x: 0, y: box.minY), CGPoint(x: 0, y: box.maxY))
-    outline(ctx, text, rgb(light ? 0x00002E : 0x00003A, 0.85), size * 0.012)
 }
 
 // MARK: the banner
@@ -344,7 +370,9 @@ func banner(_ scale: CGFloat, light: Bool, finish: Int = 0) -> CGContext {
             ctx, w, h, count: 70, scale: scale, seed: 7,
             avoid: CGRect(x: 420 * scale, y: 70 * scale, width: 800 * scale, height: 290 * scale))
     }
+    shadowAlpha = light ? 0.10 : 0.28
     emblem(ctx, 52 * scale, 30 * scale, 340 * scale)
+    shadowAlpha = 0.28
     let size = 188 * scale
     let word = place(wordPath("LANlord", size: size), 430 * scale, 238 * scale)
     wordmark(ctx, word, light: light, size: size, finish: finish)
@@ -470,66 +498,74 @@ struct Pix {
     }
 }
 
-let gold = (hi: UInt32(0xFFF8A8), mid: UInt32(0xF6BE10), lo: UInt32(0xB06E00), ink: UInt32(0x3A2100))
-let beige = (hi: UInt32(0xFFFFFF), mid: UInt32(0xCFCAB8), lo: UInt32(0x85816F), ink: UInt32(0x15141C))
+let navyTile: [UInt32] = [0x00007A, 0x4B58E0, 0x000024, 0x1B28B4, 0x00004A]
+
+func tileBase(_ p: inout Pix) {
+    let n = p.w
+    p.rect(0, 0, n, n, navyTile[0])
+    p.rect(0, 0, n, 1, navyTile[1])
+    p.rect(0, 0, 1, n, navyTile[1])
+    p.rect(0, n - 1, n, 1, navyTile[2])
+    p.rect(n - 1, 0, 1, n, navyTile[2])
+    if n > 16 {
+        p.rect(1, 1, n - 2, 1, navyTile[3])
+        p.rect(1, n - 2, n - 2, 1, navyTile[4])
+    }
+}
+
+let towerFront: UInt32 = 0xD7DBE8
+let towerSide: UInt32 = 0x8791B3
+let towerTop: UInt32 = 0xF0F2FA
+let bay: UInt32 = 0x1F2A6B
+let led: UInt32 = 0x3FD07A
+let goldFlat: UInt32 = 0xF0B800
+let goldBand: UInt32 = 0xC48F00
 
 func pixelIcon32() -> CGContext {
     var p = Pix(32, 32)
-    // the navy tile with a raised bevel
-    p.rect(0, 0, 32, 32, 0x00007A)
-    p.rect(0, 0, 32, 1, 0x4B58E0)
-    p.rect(0, 0, 1, 32, 0x4B58E0)
-    p.rect(0, 31, 32, 1, 0x000024)
-    p.rect(31, 0, 1, 32, 0x000024)
-    p.rect(1, 1, 30, 1, 0x1B28B4)
-    p.rect(1, 30, 30, 1, 0x00004A)
-    for (x, y) in [(4, 5), (27, 8), (5, 26), (28, 22), (2, 15)] { p[x, y] = 0xFFFFFF }
-    // the stand and the monitor
-    p.rect(13, 27, 6, 1, 0x7D7967)
-    p.rect(9, 28, 14, 2, beige.ink)
-    p.rect(10, 28, 12, 1, 0xC2BEAC)
-    p.rect(10, 29, 12, 1, 0x7D7967)
-    p.shape([(5, 14), (27, 14), (27, 27), (5, 27)], hi: beige.hi, mid: beige.mid, lo: beige.lo, ink: beige.ink)
-    p.rect(8, 17, 16, 8, 0x15141C)
-    p.rect(9, 18, 14, 6, 0x0A1A78)
-    p.rect(9, 18, 14, 1, 0x2A44C8)
-    // the network on the glass
-    let wire: UInt32 = 0x2FB05A
-    p.rect(13, 19, 6, 1, wire)
-    p[13, 20] = wire
-    p[14, 21] = wire
-    p[18, 20] = wire
-    p[17, 21] = wire
-    for (x, y) in [(11, 19), (19, 19), (15, 21)] {
-        p.rect(x, y, 2, 2, 0x6CFF9C)
-        p[x, y] = 0xFFFFFF
+    tileBase(&p)
+    for (x, y) in [(4, 6), (27, 9), (5, 24), (28, 21), (3, 15)] { p[x, y] = 0xFFFFFF }
+    // a faint ground shadow
+    p.rect(9, 28, 15, 1, 0x00004A)
+    // the tower: front, side and top faces
+    p.rect(9, 11, 11, 17, towerFront)
+    for (x, top, height) in [(20, 10, 18), (21, 9, 18), (22, 9, 17), (23, 8, 17)] {
+        p.rect(x, top, 1, height, towerSide)
     }
-    p[24, 26] = 0x38D060
-    // the crown
-    p.shape(
-        [(6, 15), (5, 3), (11, 8), (16, 1), (21, 8), (27, 3), (26, 15)], hi: gold.hi, mid: gold.mid, lo: gold.lo,
-        ink: gold.ink)
-    p.rect(8, 11, 16, 1, gold.lo)
-    p.rect(11, 12, 2, 1, 0x3C6CFF)
-    p.rect(15, 12, 2, 1, 0xF03030)
-    p.rect(19, 12, 2, 1, 0x3C6CFF)
+    for (x, y, width) in [(9, 10, 12), (10, 9, 13), (12, 8, 12)] { p.rect(x, y, width, 1, towerTop) }
+    // three drive bays with a light each, and a grille
+    for y in [13, 17, 21] {
+        p.rect(11, y, 8, 2, bay)
+        p[11, y] = led
+        p.rect(13, y + 1, 5, 1, 0x39458F)
+    }
+    p.rect(11, 25, 8, 1, 0xA9B0C8)
+    p.rect(11, 26, 8, 1, 0xA9B0C8)
+    p.rect(9, 10, 11, 1, 0xFFFFFF)
+    // the crown on top
+    for x in [11, 16, 21] { p[x, 3] = goldFlat }
+    for x in [11, 12, 15, 16, 17, 20, 21] { p[x, 4] = goldFlat }
+    for x in [11, 12, 13, 15, 16, 17, 19, 20, 21] { p[x, 5] = goldFlat }
+    p.rect(11, 6, 11, 1, goldFlat)
+    p.rect(11, 7, 11, 1, goldBand)
     return p.image()
 }
 
 func pixelIcon16() -> CGContext {
     var p = Pix(16, 16)
-    p.rect(0, 0, 16, 16, 0x00007A)
-    p.rect(0, 0, 16, 1, 0x4B58E0)
-    p.rect(0, 0, 1, 16, 0x4B58E0)
-    p.rect(0, 15, 16, 1, 0x000024)
-    p.rect(15, 0, 1, 16, 0x000024)
-    p.rect(6, 14, 4, 1, beige.ink)
-    p.shape([(3, 7), (13, 7), (13, 14), (3, 14)], hi: beige.hi, mid: beige.mid, lo: beige.lo, ink: beige.ink)
-    p.rect(5, 9, 6, 3, 0x0A1A78)
-    p.rect(6, 10, 1, 1, 0x5CFF8C)
-    p.rect(9, 10, 1, 1, 0x5CFF8C)
-    p.shape([(3, 8), (2, 2), (6, 5), (8, 1), (10, 5), (14, 2), (13, 8)], hi: gold.hi, mid: gold.mid, lo: gold.lo, ink: 0x6A3C00)
-    p[8, 6] = 0xF03030
+    tileBase(&p)
+    p.rect(5, 14, 7, 1, 0x00004A)
+    p.rect(5, 5, 5, 9, towerFront)
+    p.rect(10, 5, 2, 9, towerSide)
+    p.rect(5, 4, 7, 1, towerTop)
+    for y in [6, 8, 10] {
+        p.rect(6, y, 3, 1, bay)
+        p[6, y] = led
+    }
+    p.rect(6, 12, 3, 1, 0xA9B0C8)
+    for x in [6, 8, 10] { p[x, 1] = goldFlat }
+    p.rect(6, 2, 5, 1, goldFlat)
+    p.rect(6, 3, 5, 1, goldBand)
     return p.image()
 }
 
@@ -561,6 +597,7 @@ func ico(_ images: [(Int, Data)]) -> Data {
     return d
 }
 
+emblemStyle = Int(ProcessInfo.processInfo.environment["EMBLEM"] ?? "2") ?? 2
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "assets"
 let ui = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "crates/ui/assets"
 
@@ -604,8 +641,9 @@ if CommandLine.arguments.count > 3 {
 }
 if CommandLine.arguments.count > 4 {
     let dir = CommandLine.arguments[4]
-    save(banner(1, light: false, finish: 0), "\(dir)/a-white-blue.png")
-    save(banner(1, light: false, finish: 1), "\(dir)/b-gold.png")
-    save(banner(1, light: false, finish: 2), "\(dir)/c-chrome.png")
+    emblemStyle = 1
+    save(banner(1, light: false), "\(dir)/d-flat-1.png")
+    emblemStyle = 2
+    save(banner(1, light: false), "\(dir)/d-flat-2.png")
 }
 print("wrote the logo and icons to \(out)")
