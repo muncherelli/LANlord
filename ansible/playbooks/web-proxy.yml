@@ -195,20 +195,18 @@
     - name: replace the container when it is new, stopped or has a new caddyfile
       when: wp is defined and (running.stdout != 'true' or caddyfile is changed)
       block:
-        - name: remove the old container
-          ansible.builtin.command: "docker rm -f {{ container }}"
-          changed_when: true
-          failed_when: false
-
-        - name: start caddy on the host network
-          ansible.builtin.command: >-
-            docker run -d --name {{ container }} --network host --restart unless-stopped
-            -v {{ state_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro
-            -v {{ state_dir }}/data:/data
-            -v {{ state_dir }}/config:/config
-            {{ '-v ' ~ status_dir ~ '/www:/srv/status:ro' if status_enabled else '' }}
-            {{ image }}
-          changed_when: true
+        - name: replace the container, keeping the old one until the new one is healthy
+          ansible.builtin.include_tasks: replace-container.yml
+          vars:
+            rc_name: "{{ container }}"
+            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true"
+            rc_run: >-
+              docker run -d --name {{ container }} --network host --restart unless-stopped
+              -v {{ state_dir }}/Caddyfile:/etc/caddy/Caddyfile:ro
+              -v {{ state_dir }}/data:/data
+              -v {{ state_dir }}/config:/config
+              {{ '-v ' ~ status_dir ~ '/www:/srv/status:ro' if status_enabled else '' }}
+              {{ image }}
 
     - name: wait for caddy to be up
       ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }}"

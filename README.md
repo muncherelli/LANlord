@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.png" alt="LANlord" width="320"></p>
+<p align="center"><img src="assets/icon-512.png" alt="LANlord" width="160"></p>
 
 # LANlord
 
