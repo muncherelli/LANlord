@@ -5,13 +5,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lanlord_app::command_panel::CommandPanel;
 use lanlord_app::console::Console;
 use lanlord_app::desktop::{self, Target};
+use lanlord_app::dns_panel::DnsPanel;
 use lanlord_app::form::{Form, FormAnswer};
 use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
+use lanlord_app::logon_panel::LogonPanel;
 use lanlord_app::menu::{self, Action, Row};
 use lanlord_app::my_server::MyServer;
+use lanlord_app::nt4_panel::Nt4Panel;
 use lanlord_app::services::Services;
 use lanlord_app::settings_window::SettingsWindow;
 use lanlord_app::tasks::PasswordRequest;
@@ -105,7 +109,7 @@ enum Pass<'b> {
 struct Answer {
     regions: Vec<Region>,
     want_focus: Option<String>,
-    field: Option<(String, bool)>,
+    field: Option<view::FieldValue>,
     list: Option<(Option<usize>, usize)>,
     tab: Option<(usize, usize)>,
     choice: Option<(Vec<(usize, String)>, String)>,
@@ -121,14 +125,28 @@ fn drive<M: Clone>(
     state: &ViewState,
     palette: Palette,
 ) -> (Answer, Option<M>) {
+    drive_at(nodes, pass, state, palette, &[])
+}
+
+/// like `drive`, for a tree whose regions carry `prefix` in front of their paths, so that two
+/// trees can share one window (a tab strip and the page under it). an action or a question
+/// about a path without the prefix is not for this tree.
+fn drive_at<M: Clone>(
+    nodes: &[Node<M>],
+    pass: &mut Pass,
+    state: &ViewState,
+    palette: Palette,
+    prefix: &[usize],
+) -> (Answer, Option<M>) {
     let mut answer = Answer::default();
+    let own = |path: &[usize]| path.strip_prefix(prefix).map(<[usize]>::to_vec);
     match pass {
         Pass::Draw { area, buf, active } => {
             let area = *area;
             let mut painter = Painter::new(palette, state, *active);
             let total = painter.height(nodes, area.width, Some(area.height));
             if total <= area.height {
-                painter.draw(nodes, area, buf, &[]);
+                painter.draw(nodes, area, buf, prefix);
             } else {
                 // a body taller than its window scrolls with the wheel
                 let offset = state
@@ -140,7 +158,7 @@ fn drive<M: Clone>(
                 let mut tall = Buffer::empty(Rect::new(0, 0, area.width, total));
                 let whole = tall.area;
                 fill(&mut tall, whole, palette, GRAY);
-                painter.draw(nodes, whole, &mut tall, &[]);
+                painter.draw(nodes, whole, &mut tall, prefix);
                 view::blit(&tall, offset, area, buf);
                 painter
                     .regions
@@ -151,18 +169,18 @@ fn drive<M: Clone>(
                 }
                 painter.regions.push(Region {
                     rect: area,
-                    path: Vec::new(),
+                    path: prefix.to_vec(),
                     part: Part::Scroll,
                     focusable: false,
                     key: "#body".into(),
                 });
             }
-            answer.want_focus = view::wants_focus(nodes, &painter.regions);
+            answer.want_focus = view::wants_focus(nodes, &painter.regions, prefix);
             answer.regions = painter.regions;
             (answer, None)
         }
         Pass::Act { path, input } => {
-            let msg = view::act(nodes, path, input.clone());
+            let msg = own(path).and_then(|path| view::act(nodes, &path, input.clone()));
             (answer, msg)
         }
         Pass::Measure { width } => {
@@ -170,11 +188,13 @@ fn drive<M: Clone>(
             (answer, None)
         }
         Pass::Query { path } => {
-            answer.field = view::field_value(nodes, path);
-            answer.list = view::list_state(nodes, path);
-            answer.tab = view::tab_state(nodes, path);
-            answer.choice = view::choice_state(nodes, path);
-            answer.enters = view::field_enters(nodes, path);
+            if let Some(path) = own(path) {
+                answer.field = view::field_value(nodes, &path);
+                answer.list = view::list_state(nodes, &path);
+                answer.tab = view::tab_state(nodes, &path);
+                answer.choice = view::choice_state(nodes, &path);
+                answer.enters = view::field_enters(nodes, &path);
+            }
             (answer, None)
         }
     }
@@ -193,6 +213,12 @@ pub struct Shell {
     my_server: MyServer,
     settings: SettingsWindow,
     users: UsersPanel,
+    nt4: Nt4Panel,
+    logon: LogonPanel,
+    dns: DnsPanel,
+    commands: CommandPanel,
+    /// the open tab of the NT4 Domain window: Settings, Logins or Logon scripts.
+    nt4_tab: usize,
     icons: Vec<Target>,
     selected: Option<usize>,
     /// bottom to top; the last visible one has the keyboard.
@@ -225,6 +251,11 @@ impl Shell {
             my_server: MyServer::default(),
             settings: SettingsWindow::default(),
             users: UsersPanel::default(),
+            nt4: Nt4Panel::default(),
+            logon: LogonPanel::default(),
+            dns: DnsPanel::default(),
+            commands: CommandPanel::default(),
+            nt4_tab: 0,
             icons: desktop::icons(),
             selected: None,
             windows: Vec::new(),
@@ -400,6 +431,10 @@ impl Shell {
         self.console.drain();
         self.settings.poll();
         self.users.poll();
+        self.nt4.poll();
+        self.logon.poll();
+        self.dns.poll();
+        self.commands.poll();
         self.my_server.refresh_purge();
         if let Some(host) = self.my_server.take_purged() {
             let _ = host;
@@ -468,23 +503,29 @@ impl Shell {
             Target::Module(i) => {
                 let module = &MODULES[i];
                 match module.id {
-                    "nt4-domain" => {
+                    "nt4-domain" => self.nt4_window(module, pass, &state),
+                    "dns" => {
                         let mut nodes = module_window::header(module);
-                        nodes.extend(self.users.view(&self.services, host.as_deref()));
-                        nodes.push(Node::Text(
-                            "The domain settings and logon scripts are not in the text view yet."
-                                .into(),
-                        ));
+                        nodes.extend(self.dns.view(&self.services, host.as_deref()));
                         let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
                         if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
-                            self.users.update(msg, &self.services, host);
+                            self.dns.update(msg, &self.services, host);
                         }
                         answer
                     }
-                    "dns" | "remote-commands" => {
-                        let mut nodes = module_window::header::<()>(module);
-                        nodes.extend(not_yet());
-                        drive(&nodes, &mut pass, &state, palette).0
+                    "remote-commands" => {
+                        let mut nodes = module_window::header(module);
+                        let machines = self.nt4.machines().to_vec();
+                        nodes.extend(self.commands.view(
+                            &self.services,
+                            host.as_deref(),
+                            &machines,
+                        ));
+                        let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                        if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                            self.commands.update(msg, &self.services, host);
+                        }
+                        answer
                     }
                     _ => {
                         let mut nodes = module_window::header(module);
@@ -512,6 +553,141 @@ impl Shell {
         answer
     }
 
+    /// the NT4 Domain window: its header and tab strip, and the open tab's page under them.
+    /// the page's regions carry `PAGE` in front of their paths.
+    fn nt4_window(
+        &mut self,
+        module: &'static lanlord_core::modules::Module,
+        mut pass: Pass,
+        state: &ViewState,
+    ) -> Answer {
+        const PAGE: usize = 9;
+        let palette = self.palette;
+        let host = self.host();
+        let mut top: Vec<Node<usize>> = module_window::header(module);
+        top.push(Node::Tabs {
+            titles: vec!["Settings", "Logins", "Logon scripts"],
+            current: self.nt4_tab,
+            pick: |tab| tab,
+            body: Vec::new(),
+        });
+        // where the strip ends and the page starts
+        let (mut top_pass, mut page_pass) = match &mut pass {
+            Pass::Draw { area, buf, active } => {
+                let painter = Painter::new(palette, state, *active);
+                let strip = painter.height(&top[..top.len() - 1], area.width, None) + 1;
+                let strip = strip.min(area.height);
+                let page = Rect::new(area.x, area.y + strip, area.width, area.height - strip);
+                let face = page.intersection(buf.area);
+                if face.height >= 3 {
+                    crate::paint::chrome::Bevel {
+                        sunken: false,
+                        palette,
+                    }
+                    .render(face, buf);
+                }
+                let inner = Rect::new(
+                    page.x + 2,
+                    page.y + 1,
+                    page.width.saturating_sub(4),
+                    page.height.saturating_sub(2),
+                );
+                let top_area = Rect::new(area.x, area.y, area.width, strip);
+                let active = *active;
+                // two draws into one buffer, one after the other
+                let mut regions = {
+                    let mut p = Pass::Draw {
+                        area: top_area,
+                        buf,
+                        active,
+                    };
+                    drive(&top, &mut p, state, palette).0.regions
+                };
+                let page_answer = {
+                    let mut p = Pass::Draw {
+                        area: inner,
+                        buf,
+                        active,
+                    };
+                    self.nt4_page(&mut p, state, host.as_deref(), &[PAGE])
+                };
+                regions.extend(page_answer.regions);
+                return Answer {
+                    regions,
+                    want_focus: page_answer.want_focus,
+                    ..Answer::default()
+                };
+            }
+            Pass::Act { path, input } => (
+                Pass::Act {
+                    path: path.clone(),
+                    input: input.clone(),
+                },
+                Pass::Act {
+                    path: path.clone(),
+                    input: input.clone(),
+                },
+            ),
+            Pass::Query { path } => (
+                Pass::Query { path: path.clone() },
+                Pass::Query { path: path.clone() },
+            ),
+            Pass::Measure { width } => (
+                Pass::Measure { width: *width },
+                Pass::Measure { width: *width },
+            ),
+        };
+        let on_page = match &page_pass {
+            Pass::Act { path, .. } | Pass::Query { path } => path.first() == Some(&PAGE),
+            _ => false,
+        };
+        if on_page {
+            return self.nt4_page(&mut page_pass, state, host.as_deref(), &[PAGE]);
+        }
+        let (answer, tab) = drive(&top, &mut top_pass, state, palette);
+        if let Some(tab) = tab {
+            self.nt4_tab = tab;
+        }
+        answer
+    }
+
+    /// the open tab of the NT4 Domain window, run through `pass`.
+    fn nt4_page(
+        &mut self,
+        pass: &mut Pass,
+        state: &ViewState,
+        host: Option<&str>,
+        prefix: &[usize],
+    ) -> Answer {
+        let palette = self.palette;
+        match self.nt4_tab {
+            0 => {
+                let nodes = self.nt4.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.nt4.update(msg, &self.services, host);
+                }
+                answer
+            }
+            1 => {
+                let nodes = self.users.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.users.update(msg, &self.services, host);
+                }
+                answer
+            }
+            _ => {
+                let nodes = self.logon.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.logon.update(msg, &self.services, host);
+                }
+                answer
+            }
+        }
+    }
+
     /// the box on top of everything, if there is one: the desktop's own, then a window's.
     fn dialog_id(&mut self) -> Option<&'static str> {
         if let Some(modal) = &self.modal {
@@ -524,6 +700,15 @@ impl Shell {
             });
         }
         if let Some(dialog) = self.users.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.nt4.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.logon.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.dns.dialog() {
             return Some(dialog.id);
         }
         self.my_server.dialog(&self.services).map(|d| d.id)
@@ -568,6 +753,28 @@ impl Shell {
                 let host = self.host();
                 self.users
                     .update_dialog(msg, &self.services, host.as_deref());
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.nt4.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                let host = self.host();
+                self.nt4.update_dialog(msg, &self.services, host.as_deref());
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.logon.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                self.logon.update_dialog(msg);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.dns.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                self.dns.update_dialog(msg);
             }
             (title, answer)
         } else {
@@ -1146,6 +1353,24 @@ impl Shell {
         self.send(owner, region.path, input);
     }
 
+    /// Enter in a box's field with nothing of its own presses the box's default button: the
+    /// last one of its bottom row, which the gui draws leftmost (OK before Cancel).
+    fn press_default(&mut self, owner: Owner, regions: &[Region]) {
+        if owner != Owner::Dialog {
+            return;
+        }
+        let default = regions
+            .iter()
+            .filter_map(|r| match r.part {
+                Part::Press(n) => Some((r.rect.y, n, r.path.clone())),
+                _ => None,
+            })
+            .max_by_key(|(y, n, _)| (*y, *n));
+        if let Some((_, n, path)) = default {
+            self.send(owner, path, Input::Press(n));
+        }
+    }
+
     /// open or close a fold, which only the front end remembers.
     fn toggle_fold(&mut self, owner: Owner, key: &str) {
         let open = &mut self.view_mut(owner).open;
@@ -1394,50 +1619,42 @@ impl Shell {
                         path: region.path.clone(),
                     },
                 );
-                let Some((mut value, multi)) = answer.field else {
-                    return;
-                };
-                match code {
-                    KeyCode::Char(c) if !ctrl => value.push(c),
-                    KeyCode::Backspace => {
-                        value.pop();
-                    }
-                    KeyCode::Enter if multi => value.push('\n'),
-                    KeyCode::Enter if answer.enters => {
-                        self.send(owner, region.path, Input::Enter);
-                        return;
-                    }
-                    KeyCode::Enter => {
-                        // Enter in a box's one-line field presses its default button: the last
-                        // one of its bottom row, which the gui draws leftmost (OK before Cancel)
-                        if owner == Owner::Dialog {
-                            let default = regions
-                                .iter()
-                                .filter(|r| matches!(r.part, Part::Press(_)))
-                                .max_by_key(|r| {
-                                    (
-                                        r.rect.y,
-                                        match r.part {
-                                            Part::Press(n) => n,
-                                            _ => 0,
-                                        },
-                                    )
-                                })
-                                .cloned();
-                            if let Some(Region {
-                                path,
-                                part: Part::Press(n),
-                                ..
-                            }) = default
-                            {
-                                self.send(owner, path, Input::Press(n));
-                            }
+                let enters = answer.enters;
+                let input = match answer.field {
+                    Some(view::FieldValue::Secret(mut value)) => match code {
+                        KeyCode::Char(c) if !ctrl => {
+                            value.push(c);
+                            Input::SecretText(value)
                         }
-                        return;
-                    }
-                    _ => return,
-                }
-                self.send(owner, region.path, Input::Text(value));
+                        KeyCode::Backspace => {
+                            value.pop();
+                            Input::SecretText(value)
+                        }
+                        KeyCode::Enter if enters => Input::SecretEnter(value),
+                        KeyCode::Enter => return self.press_default(owner, &regions),
+                        _ => return,
+                    },
+                    Some(view::FieldValue::Plain { mut text, multi }) => match code {
+                        KeyCode::Char(c) if !ctrl => {
+                            text.push(c);
+                            Input::Text(text)
+                        }
+                        KeyCode::Backspace => {
+                            text.pop();
+                            Input::Text(text)
+                        }
+                        KeyCode::Enter if multi => {
+                            text.push('\n');
+                            Input::Text(text)
+                        }
+                        // Enter carries the final text, like the gui
+                        KeyCode::Enter if enters => Input::Enter(text),
+                        KeyCode::Enter => return self.press_default(owner, &regions),
+                        _ => return,
+                    },
+                    None => return,
+                };
+                self.send(owner, region.path, input);
             }
             _ => {}
         }

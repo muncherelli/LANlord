@@ -305,3 +305,31 @@ fn my_server_draws_from_the_shared_tree() {
         "{text}"
     );
 }
+
+fn module(id: &str) -> Target {
+    Target::Module(MODULES.iter().position(|m| m.id == id).unwrap())
+}
+
+#[test]
+fn the_nt4_window_switches_tabs_and_dns_and_commands_draw_from_their_trees() {
+    let mut shell = demo();
+    frame(&mut shell);
+    let nt4 = module("nt4-domain");
+    shell.open(nt4);
+    let text = frame(&mut shell);
+    assert!(
+        text.contains("Logins") && text.contains("Logon scripts"),
+        "{text}"
+    );
+    let logins = button(&shell, Owner::Window(nt4), |r| r.part == Part::Tab(1));
+    click(&mut shell, middle(logins));
+    assert_eq!(shell.nt4_tab, 1);
+    for id in ["dns", "remote-commands"] {
+        shell.open(module(id));
+        let text = frame(&mut shell);
+        assert!(
+            !text.contains("not available in the text view"),
+            "{id}:\n{text}"
+        );
+    }
+}

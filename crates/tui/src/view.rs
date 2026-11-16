@@ -5,15 +5,17 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lanlord_app::view::{Button, Kind, Node};
+use lanlord_app::view::{Button, Kind, Node, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
+use zeroize::Zeroizing;
 
 use crate::paint::chrome::{row_button, Bevel};
 use crate::paint::controls::{self, Checkbox, TextField};
 use crate::paint::desktop::GlyphTile;
+use crate::paint::glyphs::chip;
 use crate::paint::palette::{Palette, Rgb, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use crate::paint::{bold, fill, style, text};
 
@@ -122,8 +124,9 @@ impl ViewState {
     }
 }
 
-/// what the user did to a node, ready to become the window's message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// what the user did to a node, ready to become the window's message. a secret's text only
+/// ever travels zeroized.
+#[derive(Clone)]
 pub enum Input {
     Press(usize),
     Toggle,
@@ -132,8 +135,18 @@ pub enum Input {
     Pick(usize),
     /// the field's whole new text.
     Text(String),
-    /// Enter in a one-line field.
-    Enter,
+    /// Enter in a one-line field, with its final text.
+    Enter(String),
+    /// a secret field's whole new text.
+    SecretText(Zeroizing<String>),
+    /// Enter in a secret field, with its final text.
+    SecretEnter(Zeroizing<String>),
+}
+
+/// what a field holds now.
+pub enum FieldValue {
+    Plain { text: String, multi: bool },
+    Secret(Zeroizing<String>),
 }
 
 /// the node at `path`, going down through groups, tabs, rows and scroll boxes.
@@ -186,30 +199,53 @@ pub fn act<M: Clone>(nodes: &[Node<M>], path: &[usize], input: Input) -> Option<
         {
             Some(pick(key))
         }
-        (Node::Input { value, edit, .. }, Input::Text(text))
-        | (Node::TextArea { value, edit, .. }, Input::Text(text)) => {
+        (Node::Input { value, edit, .. }, Input::Text(text)) => {
             (text != *value).then(|| edit(text))
         }
-        (Node::Entry { value, edit, .. }, Input::Text(text)) => {
+        (Node::TextArea { value, edit, .. }, Input::Text(text)) => {
             (text != *value).then(|| edit(text))
         }
-        (Node::Entry { enter, .. }, Input::Enter) => enter.clone(),
+        (
+            Node::Input {
+                enter: Some(enter), ..
+            },
+            Input::Enter(text),
+        ) => Some(enter(text)),
+        (Node::Secret { value, edit, .. }, Input::SecretText(text)) => {
+            (*text != **value).then(|| edit(text))
+        }
+        (
+            Node::Secret {
+                enter: Some(enter), ..
+            },
+            Input::SecretEnter(text),
+        ) => Some(enter(text)),
         _ => None,
     }
 }
 
-/// the text a field holds now, and whether it takes several lines.
-pub fn field_value<M>(nodes: &[Node<M>], path: &[usize]) -> Option<(String, bool)> {
+/// the text a field holds now.
+pub fn field_value<M>(nodes: &[Node<M>], path: &[usize]) -> Option<FieldValue> {
     match find(nodes, path)? {
-        Node::Input { value, .. } | Node::Entry { value, .. } => Some((value.clone(), false)),
-        Node::TextArea { value, .. } => Some((value.clone(), true)),
+        Node::Input { value, .. } => Some(FieldValue::Plain {
+            text: value.clone(),
+            multi: false,
+        }),
+        Node::TextArea { value, .. } => Some(FieldValue::Plain {
+            text: value.clone(),
+            multi: true,
+        }),
+        Node::Secret { value, .. } => Some(FieldValue::Secret(value.clone())),
         _ => None,
     }
 }
 
 /// a one-line field sends something of its own when Enter is pressed in it.
 pub fn field_enters<M>(nodes: &[Node<M>], path: &[usize]) -> bool {
-    matches!(find(nodes, path), Some(Node::Entry { enter: Some(_), .. }))
+    matches!(
+        find(nodes, path),
+        Some(Node::Input { enter: Some(_), .. } | Node::Secret { enter: Some(_), .. })
+    )
 }
 
 /// the selected row of a list or table and how many rows it has.
@@ -246,12 +282,20 @@ pub fn choice_state<M>(
     }
 }
 
-/// the first field that asks for the cursor (`Entry { focus: true }`), as a region key.
-pub fn wants_focus<M>(nodes: &[Node<M>], regions: &[Region]) -> Option<String> {
+/// the first field that asks for the cursor (`focus: true`), as a region key.
+pub fn wants_focus<M>(nodes: &[Node<M>], regions: &[Region], prefix: &[usize]) -> Option<String> {
     regions
         .iter()
         .filter(|r| r.part == Part::Field)
-        .find(|r| matches!(find(nodes, &r.path), Some(Node::Entry { focus: true, .. })))
+        .find(|r| {
+            let Some(path) = r.path.strip_prefix(prefix) else {
+                return false;
+            };
+            matches!(
+                find(nodes, path),
+                Some(Node::Input { focus: true, .. } | Node::Secret { focus: true, .. })
+            )
+        })
         .map(|r| r.key.clone())
 }
 
@@ -380,6 +424,7 @@ impl<'a> Painter<'a> {
             }
             Node::Disabled(body) => inner(body, width),
             Node::Labelled { body, .. } => inner(body, width.saturating_sub(LABEL)).max(1),
+            Node::Alert(text) => wrap(text, width.saturating_sub(5)).len() as u16,
             _ => 1,
         }
     }
@@ -555,22 +600,43 @@ impl<'a> Painter<'a> {
                     self.push(rect, path, Part::Toggle, true);
                 }
             }
-            Node::Input { value, width, .. } => {
-                let rect = Rect::new(area.x, area.y, cols(*width).min(area.width), 1);
-                self.field(value, false, rect, buf, path);
-            }
-            Node::Entry {
-                value,
-                masked,
-                hint,
-                ..
+            Node::Input {
+                value, size, hint, ..
             } => {
-                self.field(value, *masked, area, buf, path);
-                if value.is_empty() && !self.focused(path, Part::Field) && area.width > 2 {
-                    let room = area.width - 2;
-                    text(buf, area.x + 1, area.y, room, hint, self.st(SHADOW, WHITE));
+                let rect = Rect::new(area.x, area.y, size_cells(size, area.width), 1);
+                self.field(value, false, rect, buf, path);
+                if value.is_empty() && !self.focused(path, Part::Field) && rect.width > 2 {
+                    let style = self.st(SHADOW, WHITE);
+                    text(buf, rect.x + 1, rect.y, rect.width - 2, hint, style);
                 }
             }
+            Node::Secret {
+                value, size, shown, ..
+            } => {
+                let rect = Rect::new(area.x, area.y, size_cells(size, area.width), 1);
+                self.field(value, !shown, rect, buf, path);
+            }
+            Node::Alert(t) => {
+                // the message box's warning sign: a black "!" on yellow
+                let sign = Rect::new(area.x, area.y, 3, 1).intersection(buf.area);
+                if !sign.is_empty() {
+                    fill(buf, sign, p, YELLOW);
+                    text(
+                        buf,
+                        sign.x + 1,
+                        sign.y,
+                        1,
+                        "!",
+                        bold(self.st(BLACK, YELLOW)),
+                    );
+                }
+                let room = area.width.saturating_sub(5);
+                for (n, line) in wrap(t, room).iter().enumerate() {
+                    let y = area.y + n as u16;
+                    text(buf, area.x + 5, y, room, line, self.st(BLACK, GRAY));
+                }
+            }
+            Node::Icon(id) => chip(buf, area.x, area.y, id, p),
             Node::FieldError(t) => {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
@@ -831,9 +897,19 @@ impl<'a> Painter<'a> {
                     );
                 }
             }
-            Node::TextArea { value, .. } => {
+            Node::TextArea { value, hint, .. } => {
                 let inner = self.sunken(area, buf, WHITE);
                 let focused = self.focused(path, Part::Field);
+                if value.is_empty() && !focused {
+                    text(
+                        buf,
+                        inner.x,
+                        inner.y,
+                        inner.width,
+                        hint,
+                        self.st(SHADOW, WHITE),
+                    );
+                }
                 let lines: Vec<&str> = value.split('\n').collect();
                 let first = lines.len().saturating_sub(usize::from(inner.height.max(1)));
                 for (n, line) in lines.iter().enumerate().skip(first) {
@@ -945,7 +1021,15 @@ impl<'a> Painter<'a> {
                     Some(bs.iter().map(|b| button_width(&b.label) + 1).sum())
                 }
                 Node::Check { label, .. } => Some(label.chars().count() as u16 + 4),
-                Node::Input { width, .. } => Some(cols(*width)),
+                Node::Input {
+                    size: Size::Points(w),
+                    ..
+                }
+                | Node::Secret {
+                    size: Size::Points(w),
+                    ..
+                } => Some(cols(*w)),
+                Node::Icon(_) => Some(1),
                 Node::Choice { current, width, .. } => {
                     Some(cols(*width).max(current.chars().count() as u16 + 4))
                 }
@@ -1049,6 +1133,17 @@ impl<'a> Painter<'a> {
         }
     }
 }
+
+/// how wide a field of `size` is in a row `room` cells wide.
+fn size_cells(size: &Size, room: u16) -> u16 {
+    match size {
+        Size::Points(width) => cols(*width).min(room),
+        Size::FillLess(less) => room.saturating_sub(cols(*less)).max(4).min(room),
+    }
+}
+
+/// the yellow of the warning sign.
+const YELLOW: Rgb = (255, 255, 0);
 
 /// the width of the label column in a form row, like the gui's.
 const LABEL: u16 = 18;
@@ -1186,6 +1281,9 @@ mod tests {
         Pick(usize),
         Tick,
         Typed(String),
+        Entered(String),
+        Secret(String),
+        SecretDone(String),
         Tab(usize),
     }
 
@@ -1211,14 +1309,13 @@ mod tests {
                         enabled: true,
                         toggle: Msg::Tick,
                     },
-                    Node::Entry {
+                    Node::Input {
                         value: "demo".into(),
-                        room: 0.0,
-                        masked: false,
+                        size: Size::FillLess(0.0),
                         focus: true,
                         hint: String::new(),
                         edit: Box::new(Msg::Typed),
-                        enter: Some(Msg::Ok),
+                        enter: Some(Box::new(Msg::Entered)),
                     },
                 ],
             },
@@ -1292,9 +1389,12 @@ mod tests {
     fn typing_into_a_field_sends_the_new_text() {
         let nodes = sample();
         let (_, regions) = paint(&nodes, &ViewState::default());
-        let field = wants_focus(&nodes, &regions).expect("the entry asks for the cursor");
+        let field = wants_focus(&nodes, &regions, &[]).expect("the entry asks for the cursor");
         let region = regions.iter().find(|r| r.key == field).unwrap();
-        let (value, multi) = field_value(&nodes, &region.path).unwrap();
+        let Some(FieldValue::Plain { text: value, multi }) = field_value(&nodes, &region.path)
+        else {
+            panic!("a plain field");
+        };
         assert!(!multi);
         assert_eq!(
             act(&nodes, &region.path, Input::Text(format!("{value}!"))),
@@ -1361,7 +1461,72 @@ mod tests {
         state.open.insert(fold_key(&[0]));
         let (buf, _) = paint(&nodes, &state);
         assert!(lines(&buf).join("\n").contains("hidden detail"));
-        assert_eq!(act(&sample(), &[1, 2], Input::Enter), Some(Msg::Ok));
+        assert_eq!(
+            act(&sample(), &[1, 2], Input::Enter("demo!".into())),
+            Some(Msg::Entered("demo!".into())),
+            "Enter carries the final text, typed in the same frame"
+        );
+    }
+
+    fn secret(shown: bool) -> Vec<Node<Msg>> {
+        vec![Node::Secret {
+            value: Zeroizing::new("hunter2".into()),
+            size: Size::Points(140.0),
+            shown,
+            focus: true,
+            edit: Box::new(|text| Msg::Secret(text.to_string())),
+            enter: Some(Box::new(|text| Msg::SecretDone(text.to_string()))),
+        }]
+    }
+
+    #[test]
+    fn a_secret_is_masked_until_shown_and_its_text_stays_zeroized() {
+        let (buf, regions) = paint(&secret(false), &ViewState::default());
+        let text = lines(&buf).join("\n");
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(
+            text.contains('•') || text.contains('*') || text.contains('●'),
+            "{text}"
+        );
+        let (buf, _) = paint(&secret(true), &ViewState::default());
+        assert!(lines(&buf).join("\n").contains("hunter2"));
+        // the field asks for the cursor and hands back a zeroized copy of what it holds
+        let nodes = secret(false);
+        assert!(wants_focus(&nodes, &regions, &[]).is_some());
+        let Some(FieldValue::Secret(mut value)) = field_value(&nodes, &[0]) else {
+            panic!("a secret field");
+        };
+        value.push('!');
+        assert_eq!(
+            act(&nodes, &[0], Input::SecretText(value.clone())),
+            Some(Msg::Secret("hunter2!".into()))
+        );
+        assert_eq!(
+            act(&nodes, &[0], Input::SecretEnter(value)),
+            Some(Msg::SecretDone("hunter2!".into())),
+            "Enter carries the text typed in the same frame"
+        );
+    }
+
+    #[test]
+    fn an_alert_shows_its_sign_and_a_field_error_its_line() {
+        let nodes: Vec<Node<Msg>> = vec![
+            Node::Alert("The gateway will restart.".into()),
+            Node::FieldError("not an address".into()),
+            Node::Icon("console"),
+        ];
+        let (buf, _) = paint(&nodes, &ViewState::default());
+        let text = lines(&buf).join("\n");
+        assert!(text.contains(" ! ") || text.contains("!"), "{text}");
+        assert!(text.contains("The gateway will restart."), "{text}");
+        assert!(text.contains("not an address"), "{text}");
+        // the error line is red
+        let y = lines(&buf)
+            .iter()
+            .position(|l| l.contains("not an address"))
+            .unwrap() as u16;
+        let x = lines(&buf)[y as usize].find("not").unwrap() as u16;
+        assert_eq!(buf[(x, y)].fg, Palette::default().color(RED));
     }
 
     #[test]

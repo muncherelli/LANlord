@@ -10,6 +10,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 lanlord-app = { path = "../app" }
 lanlord-core = { path = "../core" }
 ratatui = "0.30.2"
+zeroize = "1"
 
 [dev-dependencies]
 lanlord-app = { path = "../app", features = ["fake"] }

@@ -2882,6 +2882,7 @@ dependencies = [
  "lanlord-app",
  "lanlord-core",
  "ratatui",
+ "zeroize",
 ]
 
 [[package]]
