@@ -42,8 +42,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build -p lanlord --no-default-features --locked
+      # the gateway build, with the web server
+      - run: cargo clippy -p lanlord --no-default-features --features webui --all-targets --locked -- -D warnings
+      - run: cargo test -p lanlord --no-default-features --features webui --locked
 
   wasm:
     name: model builds for the browser
@@ -98,7 +103,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: run tests with coverage
-        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --features lanlord/webui --locked --lcov --output-path lcov.info
       - name: coverage summary
         run: cargo llvm-cov report --summary-only
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
