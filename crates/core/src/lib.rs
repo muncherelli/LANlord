@@ -7,6 +7,7 @@ pub mod apply;
 pub mod bootstrap;
 pub mod config;
 pub mod crypto;
+pub mod env;
 pub mod exec;
 pub mod hosts;
 pub mod leases;

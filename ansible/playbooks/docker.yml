@@ -25,6 +25,37 @@
         fail_msg: "docker settings: interface names and the address need a plain value like eth1 and 172.16.120.2/22"
       when: docker is defined
 
+    # docker needs the proxmox features nesting and keyctl when it runs in an lxc container;
+    # say so before installing anything. only a definite "no" counts: a check that cannot tell
+    # prints nothing. lanlord's own check (lanlord check) uses the same tests.
+    - name: check that this machine can run docker
+      ansible.builtin.shell: |
+        container=$(systemd-detect-virt --container 2>/dev/null </dev/null)
+        if [ "$container" != lxc ]; then exit 0; fi
+        if command -v unshare >/dev/null 2>&1; then
+          err=$(unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1 </dev/null) || \
+            case "$err" in *"not permitted"*|*"ermission denied"*) echo nesting ;; esac
+        fi
+        first=$(sed -n 1p /proc/self/uid_map | tr -s ' \t' ' ' | sed 's/^ //')
+        if [ "$first" != "0 0 4294967295" ] && command -v keyctl >/dev/null 2>&1; then
+          err=$(keyctl describe @u 2>&1 </dev/null) || \
+            case "$err" in *"not permitted"*|*"not implemented"*|*"ermission denied"*) echo keyctl ;; esac
+        fi
+      register: lxc_missing
+      changed_when: false
+      when: docker is defined
+
+    - name: stop when an lxc container lacks nesting or keyctl
+      ansible.builtin.assert:
+        that: lxc_missing.stdout | trim == ''
+        fail_msg: >-
+          this server cannot run docker yet: this lxc container is missing
+          {{ lxc_missing.stdout_lines | join(' and ') }}.
+          fix: on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1`
+          (replace <CTID> with this container's number) and restart the container with
+          `pct reboot <CTID>`; lanlord cannot do this from inside the container
+      when: docker is defined
+
     - name: work out the host and internal network interfaces
       ansible.builtin.include_tasks: network.yml
       when: docker is defined

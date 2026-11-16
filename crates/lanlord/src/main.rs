@@ -159,6 +159,8 @@ enum Command {
         #[command(subcommand)]
         action: LogonCommand,
     },
+    /// say what kind of machine a server is and whether it can run docker and the modules
+    Check { host: String },
     /// remove lanlord from a server: containers, files, service account and sudo rules
     Purge {
         host: String,
@@ -416,6 +418,15 @@ fn main() -> Result<()> {
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
+        Some(Command::Check { host }) => {
+            let session = lanlord_core::ssh::Session::new(&host)?;
+            let env = lanlord_core::env::probe(&session, &mut ask)?;
+            print!("{}", env.render());
+            if env.has_errors() {
+                bail!("this server cannot run docker yet; see the fixes above");
+            }
+            Ok(())
+        }
         Some(Command::Purge {
             host,
             remove_admins,
