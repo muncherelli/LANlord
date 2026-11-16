@@ -90,16 +90,27 @@ fn data_row(
         (false, true) => RED,
         _ => BLACK,
     };
-    let mut x = 5.0;
+    let mut x = 0.0;
     for (i, cell) in cells.iter().enumerate() {
-        ui.painter().text(
-            rect.left_center() + Vec2::new(x, 0.0),
+        let width = widths.get(i).copied().unwrap_or(0.0);
+        // a cell never paints past its own column, however long its text is
+        let right = if i + 1 == cells.len() {
+            rect.right()
+        } else {
+            rect.left() + x + width
+        };
+        let column = Rect::from_min_max(
+            Pos2::new(rect.left() + x, rect.top()),
+            Pos2::new(right, rect.bottom()),
+        );
+        ui.painter().with_clip_rect(column).text(
+            rect.left_center() + Vec2::new(x + 5.0, 0.0),
             Align2::LEFT_CENTER,
             cell,
             theme::font(),
             colour,
         );
-        x += widths.get(i).copied().unwrap_or(0.0);
+        x += width;
     }
     response
 }

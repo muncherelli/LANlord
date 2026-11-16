@@ -12,6 +12,8 @@ use lanlord_core::logon;
 use lanlord_core::network::{self, Internal};
 use lanlord_core::nt4;
 use lanlord_core::power::{self, Outcome, Power};
+use lanlord_core::purge::{self, PurgeOptions};
+use lanlord_core::server::{self, ServerFacts};
 use lanlord_core::settings::{self, Document, Settings};
 use lanlord_core::ssh::Session;
 use lanlord_core::users::{self, Change};
@@ -63,6 +65,17 @@ pub trait Gateway: Send + Sync {
     fn run(&self, host: &str, command: &[String]) -> Result<i32>;
     /// reboot or power off the gateway.
     fn power(&self, host: &str, power: Power, ask: AskPassword) -> Result<Outcome>;
+    /// what the server is: its system, uptime and interfaces (read-only, no sudo).
+    fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts>;
+    /// everything a purge would remove, as lines; nothing is changed.
+    fn purge_preview(
+        &self,
+        host: &str,
+        remove_admins: bool,
+        ask: AskPassword,
+    ) -> Result<Vec<String>>;
+    /// remove lanlord from the server; the lines say what was removed.
+    fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>>;
     /// true when lanlord runs on the gateway itself: there is one server and no host list.
     fn is_local(&self) -> bool {
         false
@@ -111,6 +124,12 @@ impl Gateway for Ssh {
     }
 
     fn load_document(&self, host: &str, ask: AskPassword) -> Result<Document> {
+        if demo() {
+            return Ok(Document {
+                plain: DEMO_SETTINGS.to_string(),
+                ..Document::default()
+            });
+        }
         settings::load_document(host, &key()?, ask)
     }
 
@@ -149,6 +168,9 @@ impl Gateway for Ssh {
     }
 
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
+        if demo() {
+            return Ok(leases::parse(DEMO_LEASES));
+        }
         leases::read_on(host, ask)
     }
 
@@ -176,6 +198,68 @@ impl Gateway for Ssh {
     fn power(&self, host: &str, action: Power, ask: AskPassword) -> Result<Outcome> {
         power::run(host, action, ask)
     }
+
+    fn server_facts(&self, host: &str, _ask: AskPassword) -> Result<ServerFacts> {
+        if demo() {
+            return Ok(server::demo());
+        }
+        server::read(&Session::new(host)?)
+    }
+
+    fn purge_preview(
+        &self,
+        host: &str,
+        remove_admins: bool,
+        ask: AskPassword,
+    ) -> Result<Vec<String>> {
+        if demo() {
+            return Ok(demo_purge());
+        }
+        purge::preview(&Session::new(host)?, PurgeOptions { remove_admins }, ask)
+    }
+
+    fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>> {
+        if demo() {
+            return Err(anyhow!("demo mode: nothing is removed"));
+        }
+        purge::purge(
+            &Session::new(host)?,
+            host,
+            PurgeOptions { remove_admins },
+            ask,
+        )
+    }
+}
+
+/// `LANLORD_FAKE_SERVER=1` answers the server windows with made-up facts, so they can be tried
+/// without a server; a purge never runs in it.
+fn demo() -> bool {
+    std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1")
+}
+
+const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.123.1, 172.16.123.254]\n    lease: 7d\n";
+
+const DEMO_LEASES: &str = "1795000000 bc:24:11:2f:2f:2e 172.16.123.5 ws1 *\n1795000000 bc:24:11:bd:f8:1c 172.16.123.6 ws2 *\n1795000000 bc:24:11:00:aa:01 172.16.123.7 nt4test *\n";
+
+fn demo_purge() -> Vec<String> {
+    [
+        "data: 12 KB in /opt/lanlord/config",
+        "data: 5120 KB in /opt/lanlord/nt4/lib/profiles",
+        "note: settings.age is the only copy of the stored secrets",
+        "remove container lanlord-nt4",
+        "remove container lanlord-dns",
+        "remove image ghcr.io/muncherelli/lanlord-samba-nt4:3f2a9c1d7e44",
+        "remove unit lanlord-firewall.service",
+        "remove the firewall table inet lanlord",
+        "remove /opt/lanlord",
+        "remove the service account lanlord",
+        "remove the group admins",
+        "remove the sudo rules admins",
+        "kept: the docker engine, /etc/motd and the accounts of people",
+        "dry run: nothing was changed",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 #[cfg(test)]
@@ -211,6 +295,10 @@ mod fake {
         pub local: Mutex<bool>,
         /// what `power` reports.
         pub outcome: Mutex<Outcome>,
+        /// what the server facts say; the demo server when not set.
+        pub facts: Mutex<Option<ServerFacts>>,
+        /// the lines a purge preview and a purge answer with.
+        pub purge_lines: Mutex<Vec<String>>,
     }
 
     impl Fake {
@@ -229,6 +317,8 @@ mod fake {
                 exit: Mutex::new(0),
                 local: Mutex::new(false),
                 outcome: Mutex::new(Outcome::Dropped),
+                facts: Mutex::new(None),
+                purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
             }
         }
 
@@ -378,6 +468,27 @@ mod fake {
 
         fn is_local(&self) -> bool {
             *self.local.lock().unwrap()
+        }
+
+        fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts> {
+            self.enter(format!("facts {host}"), ask)?;
+            let facts = self.facts.lock().unwrap().clone();
+            Ok(facts.unwrap_or_else(server::demo))
+        }
+
+        fn purge_preview(
+            &self,
+            host: &str,
+            remove_admins: bool,
+            ask: AskPassword,
+        ) -> Result<Vec<String>> {
+            self.enter(format!("purge-preview {host} admins={remove_admins}"), ask)?;
+            Ok(self.purge_lines.lock().unwrap().clone())
+        }
+
+        fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>> {
+            self.enter(format!("purge {host} admins={remove_admins}"), ask)?;
+            Ok(self.purge_lines.lock().unwrap().clone())
         }
 
         fn run(&self, host: &str, command: &[String]) -> Result<i32> {
