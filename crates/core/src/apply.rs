@@ -87,9 +87,14 @@ pub(crate) fn apply_with(
     }
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
-    // refuse early on a machine that definitely cannot run docker, with the fix
-    crate::env::gate(session, admin, &tags, ask_password)?;
     let settings = settings::merged_with(session, identity, ask_password)?;
+    // refuse on a machine that definitely cannot run docker, with the fix, but only for the
+    // docker modules this apply touches: with none named, the ones the settings configure
+    let text = settings
+        .as_deref()
+        .and_then(|b| std::str::from_utf8(b).ok());
+    let docker_modules = crate::env::docker_modules_in(&tags, text);
+    crate::env::gate(session, admin, &docker_modules, ask_password)?;
     match &settings {
         Some(plain) => emit(
             Kind::Info,

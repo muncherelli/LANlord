@@ -60,7 +60,7 @@ impl Container {
         match value.map(|v| v.trim()) {
             None | Some("") | Some("unknown") => Container::Unknown,
             Some("none") => Container::None,
-            Some("lxc") | Some("lxc-libvirt") => Container::Lxc,
+            Some("lxc") => Container::Lxc,
             Some("docker") => Container::Docker,
             Some("podman") => Container::Podman,
             Some(other) => Container::Other(other.to_string()),
@@ -205,9 +205,7 @@ fi
 say privilege "$privilege"
 
 nesting=unknown
-if [ "$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)" = 0 ]; then
-  nesting=no
-elif have unshare; then
+if have unshare; then
   err=$(unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1 </dev/null)
   if [ $? -eq 0 ]; then
     nesting=yes
@@ -226,7 +224,7 @@ if have keyctl; then
     keyctl=yes
   else
     case "$err" in
-      *"not permitted"*|*"not implemented"*|*"ermission denied"*) keyctl=no ;;
+      *"not implemented"*) keyctl=no ;;
       *"not available"*|*"No such"*) keyctl=yes ;;
     esac
   fi
@@ -242,7 +240,7 @@ else:
     e = ctypes.get_errno()
     if ret >= 0 or e == errno.ENOKEY:
         print("yes")
-    elif e in (errno.EPERM, errno.ENOSYS, errno.EACCES):
+    elif e == errno.ENOSYS:
         print("no")
     else:
         print("unknown")
@@ -618,20 +616,41 @@ pub fn blocking(env: &Environment, modules: &[&str]) -> Option<String> {
     Some(msg)
 }
 
-/// the modules to check for an apply: an empty list means everything.
-pub(crate) fn needs_docker(modules: &[&str]) -> bool {
-    modules.is_empty() || modules.iter().any(|m| DOCKER_MODULES.contains(m))
+/// the docker modules an apply touches: the ones named, or with none named the ones the merged
+/// settings configure. a module without a section is not applied (docker.yml does nothing
+/// without a `docker` section either), so it asks nothing of this machine.
+pub(crate) fn docker_modules_in(named: &[&str], settings: Option<&str>) -> Vec<&'static str> {
+    let parsed =
+        settings.and_then(|text| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text).ok());
+    let configured = |module: &str| {
+        parsed
+            .as_ref()
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .is_some_and(|map| map.contains_key(module))
+    };
+    DOCKER_MODULES
+        .iter()
+        .copied()
+        .filter(|module| {
+            if named.is_empty() {
+                configured(module)
+            } else {
+                named.contains(module)
+            }
+        })
+        .collect()
 }
 
-/// refuse a docker-dependent apply on a machine that definitely cannot run docker. a probe
-/// that fails or cannot tell never blocks; it is only noted in the log.
+/// refuse an apply of these docker modules on a machine that definitely cannot run docker; an
+/// empty list checks nothing. a probe that fails or cannot tell never blocks; it is only noted
+/// in the log.
 pub(crate) fn gate(
     session: &Session,
     admin: &str,
     modules: &[&str],
     ask_password: AskPassword,
 ) -> Result<()> {
-    if !needs_docker(modules) {
+    if modules.is_empty() {
         return Ok(());
     }
     let env = match probe_as(session, admin, ask_password) {
@@ -644,19 +663,14 @@ pub(crate) fn gate(
             return Ok(());
         }
     };
-    let names: Vec<&str> = if modules.is_empty() {
-        DOCKER_MODULES.to_vec()
-    } else {
-        modules.to_vec()
-    };
-    for module in &names {
+    for module in modules {
         for p in env.problems_for(module) {
             if p.level == Level::Warning {
                 emit(Kind::Info, format!("warning: {} ({})", p.text, p.fix));
             }
         }
     }
-    match blocking(&env, &names) {
+    match blocking(&env, modules) {
         Some(msg) => bail!(msg),
         None => Ok(()),
     }
@@ -842,11 +856,58 @@ mod tests {
     }
 
     #[test]
-    fn needs_docker_means_everything_when_no_module_is_named() {
-        assert!(needs_docker(&[]));
-        assert!(needs_docker(&["gateway", "dns"]));
-        assert!(!needs_docker(&["gateway"]));
-        assert!(!needs_docker(&["remote-commands"]));
+    fn named_modules_are_checked_when_they_use_docker() {
+        assert_eq!(docker_modules_in(&["gateway", "dns"], None), ["dns"]);
+        assert!(docker_modules_in(&["gateway"], None).is_empty());
+        assert!(docker_modules_in(&["remote-commands"], Some("docker: {}\n")).is_empty());
+        // naming a module checks it even when the settings do not configure it
+        assert_eq!(
+            docker_modules_in(&["web-proxy"], Some("gateway: {}\n")),
+            ["web-proxy"]
+        );
+    }
+
+    #[test]
+    fn with_no_module_named_only_the_configured_docker_modules_are_checked() {
+        let settings = "gateway: {}\ndocker: {}\ndns:\n  zone: lab\n";
+        assert_eq!(docker_modules_in(&[], Some(settings)), ["docker", "dns"]);
+        // a fresh server has no docker settings: nothing runs in docker, nothing to check
+        assert!(docker_modules_in(&[], None).is_empty());
+        assert!(docker_modules_in(&[], Some("gateway: {}\n")).is_empty());
+        // settings that are not a mapping or not yaml check nothing; the apply says why later
+        assert!(docker_modules_in(&[], Some("- docker\n")).is_empty());
+        assert!(docker_modules_in(&[], Some("docker: [unclosed")).is_empty());
+    }
+
+    #[test]
+    fn the_probe_script_trusts_only_an_actual_attempt_for_nesting() {
+        // a zero user-namespace limit is not proof: unshare decides
+        assert!(!PROBE_SCRIPT.contains("max_user_namespaces"));
+    }
+
+    #[test]
+    fn an_lxc_libvirt_container_is_not_lxc() {
+        let env = Environment::parse("container=lxc-libvirt\n");
+        assert_eq!(env.container, Container::Other("lxc-libvirt".into()));
+        assert_eq!(
+            Environment::parse("container=lxc\n").container,
+            Container::Lxc
+        );
+    }
+
+    #[test]
+    fn the_keyctl_tests_agree_between_the_probe_and_the_playbook() {
+        // only a kernel that does not implement the call counts as a no
+        assert!(PROBE_SCRIPT.contains(r#"*"not implemented"*) keyctl=no ;;"#));
+        assert!(PROBE_SCRIPT.contains("elif e == errno.ENOSYS:"));
+        assert!(!PROBE_SCRIPT.contains("errno.EPERM, errno.ENOSYS"));
+        let playbook = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../ansible/playbooks/docker.yml"),
+        )
+        .unwrap();
+        assert!(playbook.contains(r#"*"not implemented"*) echo keyctl ;; esac"#));
+        assert!(!playbook.contains(r#"*"not permitted"*|*"not implemented"*"#));
     }
 
     #[test]
@@ -946,6 +1007,64 @@ esac"#
             assert!(!env.kernel.is_empty());
         }
 
+        /// run the probe here with a `keyctl` that answers like `body`, and return what it found.
+        fn keyctl_found(name: &str, body: &str) -> Tri {
+            let dir =
+                std::env::temp_dir().join(format!("lanlord-env-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // written beside, then installed, so no parallel test's fork can hold it open for writing
+            let src = dir.join(".keyctl.src");
+            std::fs::write(&src, format!("#!/bin/sh\n{body}\n")).unwrap();
+            let status = std::process::Command::new("install")
+                .args(["-m", "0755"])
+                .arg(&src)
+                .arg(dir.join("keyctl"))
+                .status()
+                .unwrap();
+            assert!(status.success());
+            let path = format!(
+                "{}:{}",
+                dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            );
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(probe_script())
+                .env("PATH", path)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            Environment::parse(&String::from_utf8_lossy(&out.stdout)).keyctl
+        }
+
+        #[test]
+        fn keyctl_is_a_no_only_when_the_call_is_not_implemented() {
+            assert_eq!(
+                keyctl_found(
+                    "nosys",
+                    "echo 'keyctl_describe: Function not implemented' >&2; exit 1"
+                ),
+                Tri::No
+            );
+            // not allowed is not the same as not there: the container may still manage
+            assert_eq!(
+                keyctl_found(
+                    "eperm",
+                    "echo 'keyctl_describe: Operation not permitted' >&2; exit 1"
+                ),
+                Tri::Unknown
+            );
+            assert_eq!(
+                keyctl_found(
+                    "eacces",
+                    "echo 'keyctl_describe: Permission denied' >&2; exit 1"
+                ),
+                Tri::Unknown
+            );
+            assert_eq!(keyctl_found("ok", "exit 0"), Tri::Yes);
+        }
+
         #[test]
         fn probing_reads_the_answer_through_the_root_plumbing() {
             let env = probe(&server(UNPRIVILEGED_LXC), &mut no_password).unwrap();
@@ -958,10 +1077,16 @@ esac"#
             let blocked = server("container=lxc\nprivilege=unprivileged\nnesting=no\nkeyctl=yes\n");
             let err = gate(&blocked, "tester", &["docker"], &mut no_password).unwrap_err();
             assert!(err.to_string().contains("nesting"), "{err}");
-            // everything is checked when no module is named
-            assert!(gate(&blocked, "tester", &[], &mut no_password).is_err());
+            // with no module named, the configured docker modules are checked ...
+            let configured = docker_modules_in(&[], Some("docker: {}\n"));
+            assert!(gate(&blocked, "tester", &configured, &mut no_password).is_err());
+            // ... and a fresh server with no docker settings is not refused: nothing would run
+            let fresh = docker_modules_in(&[], None);
+            assert!(gate(&blocked, "tester", &fresh, &mut no_password).is_ok());
+            assert!(gate(&blocked, "tester", &[], &mut no_password).is_ok());
             // a module that does not use docker is not checked
-            assert!(gate(&blocked, "tester", &["gateway"], &mut no_password).is_ok());
+            let named = docker_modules_in(&["gateway"], Some("docker: {}\n"));
+            assert!(gate(&blocked, "tester", &named, &mut no_password).is_ok());
             let unsure =
                 server("container=lxc\nprivilege=unprivileged\nnesting=unknown\nkeyctl=unknown\n");
             assert!(gate(&unsure, "tester", &["docker"], &mut no_password).is_ok());

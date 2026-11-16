@@ -39,7 +39,7 @@
         first=$(sed -n 1p /proc/self/uid_map | tr -s ' \t' ' ' | sed 's/^ //')
         if [ "$first" != "0 0 4294967295" ] && command -v keyctl >/dev/null 2>&1; then
           err=$(keyctl describe @u 2>&1 </dev/null) || \
-            case "$err" in *"not permitted"*|*"not implemented"*|*"ermission denied"*) echo keyctl ;; esac
+            case "$err" in *"not implemented"*) echo keyctl ;; esac
         fi
       register: lxc_missing
       changed_when: false
