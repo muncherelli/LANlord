@@ -7,6 +7,7 @@ pub mod leases;
 pub mod log;
 pub mod logon;
 pub mod modules;
+pub mod netstatus;
 pub mod network;
 pub mod networks;
 pub mod nt4;

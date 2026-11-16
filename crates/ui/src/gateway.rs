@@ -10,6 +10,7 @@ use lanlord_core::crypto::{self, Identity};
 use lanlord_core::exec::{self, Target};
 use lanlord_core::leases::{self, Lease};
 use lanlord_core::logon;
+use lanlord_core::netstatus::{self, InterfaceStatus};
 use lanlord_core::network::{self, Internal};
 use lanlord_core::nt4;
 use lanlord_core::power::{self, Outcome, Power};
@@ -70,6 +71,8 @@ pub trait Gateway: Send + Sync {
     fn power(&self, host: &str, power: Power, ask: AskPassword) -> Result<Outcome>;
     /// what the server is: its system, uptime and interfaces (read-only, no sudo).
     fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts>;
+    /// the status of each network connection (read-only, no sudo).
+    fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>>;
     /// everything a purge would remove, as lines; nothing is changed.
     fn purge_preview(
         &self,
@@ -223,6 +226,13 @@ impl Gateway for Ssh {
             return Ok(server::demo());
         }
         server::read(&Session::new(host)?)
+    }
+
+    fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {
+        if demo() {
+            return Ok(netstatus::demo());
+        }
+        netstatus::read(&Session::new(host)?)
     }
 
     fn purge_preview(
@@ -563,6 +573,14 @@ mod fake {
             self.enter(format!("facts {host}"), ask)?;
             let facts = self.facts.lock().unwrap().clone();
             Ok(facts.unwrap_or_else(server::demo))
+        }
+
+        fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("network-status {host}"));
+            Ok(netstatus::demo())
         }
 
         fn purge_preview(

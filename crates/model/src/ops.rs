@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use crate::leases::Lease;
+use crate::netstatus::InterfaceStatus;
 use crate::network::Internal;
 use crate::power::{Outcome, Power};
 use crate::secret::Secret;
@@ -63,6 +64,8 @@ pub enum Op {
     Power { power: Power },
     /// what the server is: its system, uptime and interfaces.
     ServerFacts,
+    /// the status of each network connection, like Windows' connection Status box.
+    NetworkStatus,
     /// everything a purge would remove; nothing is changed.
     PurgePreview { remove_admins: bool },
     /// remove lanlord from the server.
@@ -158,6 +161,7 @@ pub enum Reply {
     ExitCode(i32),
     Outcome(Outcome),
     Facts(ServerFacts),
+    Interfaces(Vec<InterfaceStatus>),
     /// what the server said, one line each.
     Lines(Vec<String>),
     Clock(ClockState),
@@ -258,6 +262,7 @@ mod tests {
                 power: Power::Reboot,
             },
             Op::ServerFacts,
+            Op::NetworkStatus,
             Op::PurgePreview {
                 remove_admins: true,
             },
@@ -287,7 +292,7 @@ mod tests {
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 23);
+        assert_eq!(ops.len(), 24);
         for op in &ops {
             round_trip(op);
         }
@@ -336,6 +341,7 @@ mod tests {
             Reply::ExitCode(3),
             Reply::Outcome(Outcome::Dropped),
             Reply::Facts(facts),
+            Reply::Interfaces(crate::netstatus::demo()),
             Reply::Lines(vec!["done".into()]),
             Reply::Clock(ClockState {
                 timezone: "UTC".into(),

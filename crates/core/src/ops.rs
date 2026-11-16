@@ -8,8 +8,9 @@ pub use lanlord_model::ops::*;
 use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
+use crate::server;
 use crate::ssh::Session;
-use crate::{account, apply, clock, crypto, leases, logon, network, nt4, power, purge, server};
+use crate::{account, apply, clock, crypto, leases, logon, netstatus, network, nt4, power, purge};
 use crate::{settings, users};
 
 /// the message when there is no key to decrypt the secrets with.
@@ -91,6 +92,7 @@ pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
         }
         Op::Power { power } => Reply::Outcome(power::run(host, *power, ask)?),
         Op::ServerFacts => Reply::Facts(server::read(&session()?)?),
+        Op::NetworkStatus => Reply::Interfaces(netstatus::read(&session()?)?),
         Op::PurgePreview { remove_admins } => Reply::Lines(purge::preview(
             &session()?,
             PurgeOptions {

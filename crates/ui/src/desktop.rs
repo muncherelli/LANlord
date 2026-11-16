@@ -816,7 +816,7 @@ fn window_size(target: Target) -> Vec2 {
             _ => Vec2::new(480.0, 320.0),
         },
         Target::MyServer => Vec2::new(440.0, 480.0),
-        Target::Networks => Vec2::new(760.0, 340.0),
+        Target::Networks => Vec2::new(560.0, 440.0),
         Target::Console => Vec2::new(600.0, 300.0),
         Target::Hosts => Vec2::new(380.0, 280.0),
         Target::Settings => Vec2::new(600.0, 520.0),

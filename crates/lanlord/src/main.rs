@@ -213,6 +213,14 @@ enum Command {
     },
     /// show what a server is: its system, uptime, memory and network interfaces
     Facts { host: String },
+    /// show the status of each network connection on a server: link, speed, addresses,
+    /// gateway, dns, the dhcp lease and traffic
+    Networks {
+        host: String,
+        /// print the status as json
+        #[arg(long)]
+        json: bool,
+    },
     /// read one operation as json on stdin, run it and print the reply as json
     #[command(hide = true)]
     Op { host: String },
@@ -450,6 +458,47 @@ fn leases(host: &str) -> Result<()> {
     Ok(())
 }
 
+fn networks(host: &str, json: bool) -> Result<()> {
+    let Reply::Interfaces(all) = execute(host, &Op::NetworkStatus, &mut ask)? else {
+        bail!("the server answered something other than its network status");
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&all)?);
+        return Ok(());
+    }
+    let utc = |secs: i64| format!("{} UTC", lanlord_core::clock::local_text(secs, 0));
+    for (i, iface) in all.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let role = if iface.default_route {
+            " (external network)"
+        } else {
+            ""
+        };
+        println!("{}{role}", iface.name);
+        println!("  {:<22}{}", "status:", iface.connection.text());
+        println!("  {:<22}{}", "speed:", iface.speed());
+        println!(
+            "  {:<22}{} bytes, {} packets",
+            "sent:", iface.counters.sent_bytes, iface.counters.sent_packets
+        );
+        println!(
+            "  {:<22}{} bytes, {} packets",
+            "received:", iface.counters.received_bytes, iface.counters.received_packets
+        );
+        for (label, value) in iface.details(utc) {
+            let label = if label.is_empty() {
+                String::new()
+            } else {
+                format!("{}:", label.to_lowercase())
+            };
+            println!("  {label:<22}{value}");
+        }
+    }
+    Ok(())
+}
+
 fn power(host: &str, action: PowerChoice, confirm: Option<String>) -> Result<()> {
     use lanlord_core::power::{Outcome, Power};
     let (power, verb) = match action {
@@ -629,6 +678,7 @@ fn main() -> Result<()> {
             confirm,
         }) => power(&host, action, confirm),
         Some(Command::Facts { host }) => facts(&host),
+        Some(Command::Networks { host, json }) => networks(&host, json),
         Some(Command::Op { host }) => op(&host),
         Some(Command::Software { host, state }) => {
             let identity = crypto::load(&identity_path()?)?;
@@ -687,6 +737,10 @@ mod tests {
     fn leases_and_facts_take_a_host() {
         assert!(matches!(parse(&["leases", "gw"]), Command::Leases { host } if host == "gw"));
         assert!(matches!(parse(&["facts", "gw"]), Command::Facts { host } if host == "gw"));
+        assert!(matches!(
+            parse(&["networks", "gw", "--json"]),
+            Command::Networks { host, json: true } if host == "gw"
+        ));
     }
 
     #[test]
