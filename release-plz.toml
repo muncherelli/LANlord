@@ -44,3 +44,8 @@ git_tag_enable = false
 name = "lanlord-web"
 git_release_enable = false
 git_tag_enable = false
+
+[[package]]
+name = "lanlord-auth-helper"
+git_release_enable = false
+git_tag_enable = false

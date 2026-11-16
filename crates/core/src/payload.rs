@@ -22,6 +22,7 @@ const FILES: &[(&str, &str)] = &[
     playbook!("web-proxy.yml"),
     playbook!("dns.yml"),
     playbook!("replace-container.yml"),
+    playbook!("webui-login.yml"),
     playbook!("dns/dnsmasq.conf.j2"),
     playbook!("dns/image/Dockerfile"),
     playbook!("web-proxy/Caddyfile.j2"),
