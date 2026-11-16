@@ -2,9 +2,11 @@
 //! (and, later, in a browser).
 
 mod admin_setup;
+mod clock_panel;
 mod command_panel;
 mod console;
 mod controls;
+mod demo_clock;
 mod desktop;
 mod dialogs;
 mod dns_panel;
