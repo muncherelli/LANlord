@@ -2,6 +2,8 @@
 //! (and, later, in a browser).
 
 mod admin_setup;
+#[cfg(test)]
+mod artwork;
 mod command_panel;
 mod console;
 mod controls;
