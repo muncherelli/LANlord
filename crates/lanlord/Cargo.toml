@@ -9,19 +9,30 @@ default = ["gui"]
 # the native window; build without it for headless servers
 gui = ["dep:lanlord-ui"]
 # the web server that runs on a gateway; off for the desktop build
-webui = ["dep:axum", "dep:tokio", "dep:tower", "dep:tower-http"]
+webui = [
+    "dep:axum",
+    "dep:base64",
+    "dep:percent-encoding",
+    "dep:sha2",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+]
 
 [dependencies]
 anyhow.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
+base64 = { version = "0.22", optional = true }
 clap.workspace = true
 lanlord-core = { path = "../core" }
 lanlord-tui = { path = "../tui" }
 lanlord-ui = { path = "../ui", optional = true }
+percent-encoding = { version = "2", optional = true }
 rpassword = "7.5.5"
-tokio = { version = "1", default-features = false, features = ["rt", "net", "signal", "macros", "fs"], optional = true }
+sha2 = { version = "0.10", optional = true }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "signal", "macros", "fs", "time"], optional = true }
 tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
-tower-http = { version = "0.6", default-features = false, features = ["fs"], optional = true }
+tower-http = { version = "0.6", default-features = false, features = ["fs", "timeout"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["rt", "io-util", "net", "macros"] }

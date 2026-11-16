@@ -5,16 +5,20 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use axum::extract::Request;
-use axum::http::{header, StatusCode};
+use axum::extract::{DefaultBodyLimit, Request};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
+use base64::Engine as _;
 use lanlord_core::log::{self, Kind};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::services::ServeFile;
+use tower_http::timeout::TimeoutLayer;
 
 /// how `lanlord webui` was asked to run.
 pub struct Options {
@@ -23,6 +27,26 @@ pub struct Options {
     pub listen: Option<SocketAddr>,
     /// the browser build; `web` next to the binary's folder when not given
     pub static_dir: Option<PathBuf>,
+}
+
+/// the largest operation the browser may send.
+const OP_LIMIT: usize = 64 * 1024;
+
+/// how long a request may take before it is answered with a timeout.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// the content security policy, with the hashes of the inline scripts a page may run (the build's
+/// loader). caddy sets the same headers for anything that arrives without them.
+fn csp(script_hashes: &[String]) -> String {
+    let hashes: String = script_hashes
+        .iter()
+        .map(|h| format!(" 'sha256-{h}'"))
+        .collect();
+    format!(
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'{hashes}; \
+         style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; \
+         frame-ancestors 'none'"
+    )
 }
 
 /// the folder the browser build is read from: the one given, or `../web` from the binary, so
@@ -36,38 +60,80 @@ pub fn static_dir(given: Option<PathBuf>) -> Option<PathBuf> {
 
 /// the routes: the browser build (or a placeholder page), a health check and the operations
 /// endpoint. the build is looked for on every request, so installing or replacing it needs no
-/// restart.
+/// restart. every response carries the security headers.
 pub fn router(static_dir: Option<&Path>) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/api/op", post(op))
+        .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
         .fallback(move |request: Request| web(dir.clone(), request))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ))
+        .layer(axum::middleware::map_response(secure))
+}
+
+/// add the security headers a response does not set itself.
+async fn secure(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        if let Ok(value) = HeaderValue::from_str(&csp(&[])) {
+            headers.insert(header::CONTENT_SECURITY_POLICY, value);
+        }
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
 }
 
 /// a file from the build. a path that names a file (`.wasm`, `.js`, `.css`...) is that file or a
-/// 404; any other path is an address inside the app, so it gets the app's index.html (or the
-/// placeholder page while there is no build).
+/// 404; any other path is an address inside the app, so it gets the app's page (or the
+/// placeholder page while there is no build). dot files and anything outside the build, through
+/// `..` or a link, are a 404.
 async fn web(dir: Option<PathBuf>, request: Request) -> Response {
-    let asset = is_asset(request.uri().path());
-    let built = match dir {
-        Some(dir) if is_build(&dir).await => dir,
-        _ if asset => return StatusCode::NOT_FOUND.into_response(),
-        _ => return placeholder().await.into_response(),
+    let Some(path) = decoded(request.uri().path()) else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-    let files = ServeDir::new(&built);
-    let served = if asset {
-        files.oneshot(request).await
-    } else {
-        files
-            .fallback(ServeFile::new(built.join("index.html")))
-            .oneshot(request)
-            .await
+    if path.split('/').any(|segment| segment.starts_with('.')) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let asset = is_asset(&path) && path != "/index.html";
+    let build = match dir {
+        Some(dir) => built(&dir).await,
+        None => None,
     };
-    match served {
+    let Some((root, index)) = build else {
+        if asset {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        return placeholder().await.into_response();
+    };
+    if !asset {
+        return page(&index).await;
+    }
+    let Some(file) = inside(&root, &path).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match ServeFile::new(file).oneshot(request).await {
         Ok(response) => response.into_response(),
         Err(never) => match never {},
     }
+}
+
+/// `path` with its %-escapes undone, or none when that is not text or hides a backslash.
+fn decoded(path: &str) -> Option<String> {
+    let text = percent_encoding::percent_decode_str(path)
+        .decode_utf8()
+        .ok()?
+        .into_owned();
+    (!text.contains('\\') && !text.contains('\0')).then_some(text)
 }
 
 /// whether the last part of `path` looks like a file name, with an extension.
@@ -78,9 +144,74 @@ fn is_asset(path: &str) -> bool {
         .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty())
 }
 
-/// the operations endpoint. todo: hand the typed operation (json) to the operations executor
-/// that `lanlord op` runs, once it exists; never a command line.
-async fn op() -> Response {
+/// the build's real folder and its index.html, when `dir` holds a build whose index.html is
+/// really inside it.
+async fn built(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let root = tokio::fs::canonicalize(dir).await.ok()?;
+    let index = tokio::fs::canonicalize(root.join("index.html"))
+        .await
+        .ok()?;
+    let is_file = tokio::fs::metadata(&index).await.is_ok_and(|m| m.is_file());
+    (is_file && index.starts_with(&root)).then_some((root, index))
+}
+
+/// the real file `path` names inside the build `root`, or none when it is missing or a link
+/// leads out of the build.
+async fn inside(root: &Path, path: &str) -> Option<PathBuf> {
+    let file = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .fold(root.to_path_buf(), |file, segment| file.join(segment));
+    let real = tokio::fs::canonicalize(file).await.ok()?;
+    real.starts_with(root).then_some(real)
+}
+
+/// the app's page, with a policy that lets exactly its own inline scripts run.
+async fn page(index: &Path) -> Response {
+    match tokio::fs::read_to_string(index).await {
+        Ok(html) => {
+            let policy = csp(&inline_script_hashes(&html));
+            let mut response = Html(html).into_response();
+            if let Ok(value) = HeaderValue::from_str(&policy) {
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_SECURITY_POLICY, value);
+            }
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            response
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// the sha-256 (base64) of every inline `<script>` in `html`, the way a browser hashes them for
+/// the content security policy. scripts loaded with `src=` are left out.
+fn inline_script_hashes(html: &str) -> Vec<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut hashes = Vec::new();
+    let mut from = 0;
+    while let Some(start) = lower[from..].find("<script").map(|i| from + i) {
+        let Some(open_end) = lower[start..].find('>').map(|i| start + i + 1) else {
+            break;
+        };
+        let Some(close) = lower[open_end..].find("</script").map(|i| open_end + i) else {
+            break;
+        };
+        if !lower[start..open_end].contains("src=") {
+            let digest = Sha256::digest(&html.as_bytes()[open_end..close]);
+            hashes.push(base64::engine::general_purpose::STANDARD.encode(digest));
+        }
+        from = close;
+    }
+    hashes
+}
+
+/// the operations endpoint. todo: hand the typed operation (json, at most `OP_LIMIT` bytes) to the
+/// operations executor that `lanlord op` runs, once it exists; never a command line. the body is
+/// read already so the size limit applies.
+async fn op(_operation: axum::body::Bytes) -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
         [(header::CONTENT_TYPE, "application/json")],
@@ -111,18 +242,19 @@ pub async fn serve(
     options: Options,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let dir = match static_dir(options.static_dir) {
-        Some(d) if is_build(&d).await => Some(d),
-        _ => None,
+    let dir = static_dir(options.static_dir);
+    let found = match &dir {
+        Some(d) => built(d).await.is_some(),
+        None => false,
     };
     match &dir {
-        Some(d) => log::emit(
+        Some(d) if found => log::emit(
             Kind::Debug,
             format!("serving the web ui from {}", d.display()),
         ),
-        None => log::emit(
+        _ => log::emit(
             Kind::Info,
-            "no web ui build found; serving a placeholder page",
+            "no web ui build found yet; serving a placeholder page until there is one",
         ),
     }
     let app = router(dir.as_deref());
@@ -140,20 +272,13 @@ pub async fn serve(
     }
 }
 
-/// whether `dir` holds a browser build.
-async fn is_build(dir: &Path) -> bool {
-    tokio::fs::metadata(dir.join("index.html"))
-        .await
-        .is_ok_and(|m| m.is_file())
-}
-
 #[cfg(unix)]
 async fn serve_socket(
     path: &Path,
     app: Router,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let listener = bind_socket(path).await?;
+    let (listener, ours) = bind_socket(path).await?;
     log::emit(
         Kind::Info,
         format!("web ui listening on {}", path.display()),
@@ -161,7 +286,7 @@ async fn serve_socket(
     let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await;
-    let _ = tokio::fs::remove_file(path).await;
+    remove_if_ours(path, ours).await;
     Ok(served?)
 }
 
@@ -174,11 +299,16 @@ async fn serve_socket(
     bail!("unix sockets need a unix system; use --listen to try the server out")
 }
 
-/// make the socket's folder, clear a socket left by an earlier run and listen, readable and
-/// writable by the owner and group only (caddy reaches it through the group or as root).
+/// which file a socket is: its device and inode.
 #[cfg(unix)]
-pub async fn bind_socket(path: &Path) -> Result<tokio::net::UnixListener> {
-    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+pub type SocketId = (u64, u64);
+
+/// make the socket's folder, clear a socket left by an earlier run and listen, readable and
+/// writable by the owner and group only (caddy reaches it through the group or as root). also
+/// says which file the new socket is, so only that one is removed later.
+#[cfg(unix)]
+pub async fn bind_socket(path: &Path) -> Result<(tokio::net::UnixListener, SocketId)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -195,7 +325,20 @@ pub async fn bind_socket(path: &Path) -> Result<tokio::net::UnixListener> {
     let listener = tokio::net::UnixListener::bind(path)
         .with_context(|| format!("listening on {}", path.display()))?;
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660)).await?;
-    Ok(listener)
+    let meta = tokio::fs::symlink_metadata(path).await?;
+    Ok((listener, (meta.dev(), meta.ino())))
+}
+
+/// remove the socket on the way out, unless another run has put its own socket there since.
+#[cfg(unix)]
+pub async fn remove_if_ours(path: &Path, ours: SocketId) {
+    use std::os::unix::fs::MetadataExt;
+
+    if let Ok(meta) = tokio::fs::symlink_metadata(path).await {
+        if (meta.dev(), meta.ino()) == ours {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
 }
 
 /// resolves when the service is asked to stop: ctrl-c, or systemd's sigterm.
@@ -399,7 +542,7 @@ mod tests {
         let path = root.join("run/lanlord/web.sock");
         let rt = runtime();
         rt.block_on(async {
-            let first = bind_socket(&path).await.unwrap();
+            let first = bind_socket(&path).await.unwrap().0;
             drop(first);
             // the first run's socket file is still there; a second run takes its place
             assert!(tokio::fs::symlink_metadata(&path)
@@ -407,7 +550,7 @@ mod tests {
                 .unwrap()
                 .file_type()
                 .is_socket());
-            let _second = bind_socket(&path).await.unwrap();
+            let _second = bind_socket(&path).await.unwrap().0;
             let mode = tokio::fs::metadata(&path)
                 .await
                 .unwrap()
@@ -440,7 +583,7 @@ mod tests {
         let path = root.join("web.sock");
         let rt = runtime();
         let reply = rt.block_on(async {
-            let listener = bind_socket(&path).await.unwrap();
+            let listener = bind_socket(&path).await.unwrap().0;
             let server = tokio::spawn(async move { axum::serve(listener, router(None)).await });
             let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
             stream
@@ -595,6 +738,198 @@ mod tests {
             ))
             .unwrap_err();
         assert!(err.to_string().contains("making"), "{err}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    async fn headers(
+        app: Router,
+        method: &str,
+        uri: &str,
+        body: Body,
+    ) -> (StatusCode, axum::http::HeaderMap) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        (response.status(), response.headers().clone())
+    }
+
+    fn assert_secure(headers: &axum::http::HeaderMap, what: &str) {
+        let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(
+            csp.starts_with("default-src 'self'; script-src 'self' 'wasm-unsafe-eval'"),
+            "{what}: {csp}"
+        );
+        assert!(csp.contains("frame-ancestors 'none'"), "{what}: {csp}");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff", "{what}");
+        assert_eq!(headers[header::REFERRER_POLICY], "no-referrer", "{what}");
+        assert!(!headers.contains_key(header::SERVER), "{what}");
+    }
+
+    #[test]
+    fn every_response_carries_the_security_headers() {
+        let dir = scratch("headers");
+        std::fs::write(dir.join("index.html"), "<title>app</title>").unwrap();
+        std::fs::write(dir.join("lanlord.js"), "export {};").unwrap();
+        let rt = runtime();
+        for (app, method, uri) in [
+            (router(None), "GET", "/"),
+            (router(None), "GET", "/healthz"),
+            (router(None), "POST", "/api/op"),
+            (router(None), "GET", "/missing.js"),
+            (router(Some(&dir)), "GET", "/"),
+            (router(Some(&dir)), "GET", "/lanlord.js"),
+        ] {
+            let (_, h) = rt.block_on(headers(app, method, uri, Body::empty()));
+            assert_secure(&h, uri);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_page_lets_exactly_its_own_inline_scripts_run() {
+        let loader = "import init from '/lanlord-1a2b.js'; await init('/lanlord-1a2b_bg.wasm');";
+        let dir = scratch("csp");
+        std::fs::write(
+            dir.join("index.html"),
+            format!(
+                "<html><head><script type=\"module\">{loader}</script>\
+                 <SCRIPT src=\"/other.js\"></SCRIPT></head><body></body></html>"
+            ),
+        )
+        .unwrap();
+        let expected = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(loader));
+        let rt = runtime();
+        for uri in ["/", "/index.html", "/windows/dns"] {
+            let (status, h) = rt.block_on(headers(router(Some(&dir)), "GET", uri, Body::empty()));
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            assert_secure(&h, uri);
+            let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+            assert!(
+                csp.contains(&format!("'sha256-{expected}'")),
+                "{uri}: {csp}"
+            );
+            assert_eq!(
+                csp.matches("'sha256-").count(),
+                1,
+                "only the inline one: {csp}"
+            );
+        }
+        assert_eq!(
+            inline_script_hashes("<p>no scripts</p>"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            inline_script_hashes("<script>unclosed"),
+            Vec::<String>::new()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dot_files_are_never_served() {
+        let dir = scratch("dots");
+        std::fs::write(dir.join("index.html"), "<title>app</title>").unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join(".git/config"), "secret").unwrap();
+        std::fs::write(dir.join(".env"), "secret").unwrap();
+        let rt = runtime();
+        for app_dir in [Some(dir.as_path()), None] {
+            for uri in [
+                "/.git/config",
+                "/%2egit/config",
+                "/.env",
+                "/pkg/.hidden.js",
+                "/.well-known",
+                "/a/%2E%2E/index.html",
+            ] {
+                let (status, _) = rt.block_on(headers(router(app_dir), "GET", uri, Body::empty()));
+                assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+            }
+        }
+        // escapes that are not text, or hide a backslash
+        for uri in ["/%ff.js", "/a%5c..%5cindex.html"] {
+            let (status, _) = rt.block_on(headers(router(Some(&dir)), "GET", uri, Body::empty()));
+            assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_build_are_refused() {
+        use std::os::unix::fs::symlink;
+
+        let root = scratch("links");
+        let build = root.join("web");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(root.join("secret.txt"), "secret").unwrap();
+        std::fs::write(build.join("index.html"), "<title>app</title>").unwrap();
+        std::fs::write(build.join("lanlord.js"), "export {};").unwrap();
+        symlink(root.join("secret.txt"), build.join("leak.txt")).unwrap();
+        symlink(build.join("lanlord.js"), build.join("alias.js")).unwrap();
+        let rt = runtime();
+
+        let (status, _, _) = rt.block_on(call(router(Some(&build)), "GET", "/leak.txt"));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, body) = rt.block_on(call(router(Some(&build)), "GET", "/alias.js"));
+        assert_eq!(status, StatusCode::OK, "a link inside the build is fine");
+        assert_eq!(body, b"export {};");
+
+        // an index.html that leads out of the build is no build at all
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        symlink(root.join("secret.txt"), other.join("index.html")).unwrap();
+        let (_, _, body) = rt.block_on(call(router(Some(&other)), "GET", "/"));
+        assert!(String::from_utf8(body).unwrap().contains("not built yet"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_operation_is_at_most_64_kib() {
+        let rt = runtime();
+        let (status, h) = rt.block_on(headers(
+            router(None),
+            "POST",
+            "/api/op",
+            Body::from(vec![b'x'; OP_LIMIT + 1]),
+        ));
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_secure(&h, "too large");
+        let (status, _) = rt.block_on(headers(
+            router(None),
+            "POST",
+            "/api/op",
+            Body::from(vec![b'x'; 100]),
+        ));
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_our_own_socket_is_removed_on_the_way_out() {
+        let root = scratch("ours");
+        let path = root.join("web.sock");
+        let rt = runtime();
+        rt.block_on(async {
+            let (first, first_id) = bind_socket(&path).await.unwrap();
+            drop(first);
+            // a newer run took the path over
+            let (_second, second_id) = bind_socket(&path).await.unwrap();
+            assert_ne!(first_id, second_id);
+            remove_if_ours(&path, first_id).await;
+            assert!(path.exists(), "the newer run's socket stays");
+            remove_if_ours(&path, second_id).await;
+            assert!(!path.exists());
+            // nothing there is fine too
+            remove_if_ours(&path, second_id).await;
+        });
         let _ = std::fs::remove_dir_all(root);
     }
 }

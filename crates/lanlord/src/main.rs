@@ -136,7 +136,7 @@ enum Command {
     /// run the web server on a gateway (caddy serves it over https on port 8443)
     Webui {
         /// the unix socket to listen on
-        #[arg(long, value_name = "PATH", default_value = "/run/lanlord/web.sock")]
+        #[arg(long, value_name = "PATH", default_value = "/run/lanlord-web/web.sock")]
         socket: PathBuf,
         /// listen on this tcp address instead of the socket, to try the server out
         #[arg(long, value_name = "ADDRESS")]
@@ -553,5 +553,23 @@ fn main() -> Result<()> {
         Some(Command::InstallLauncher | Command::UninstallLauncher) => {
             bail!("launcher setup is not implemented yet")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_web_server_has_its_own_runtime_folder() {
+        // /run/lanlord holds the decrypted settings during an apply; the web server's socket
+        // folder is mounted into the proxy, so it must be a different one
+        let Some(Command::Webui { socket, .. }) =
+            Cli::try_parse_from(["lanlord", "webui"]).unwrap().command
+        else {
+            panic!("webui parses");
+        };
+        assert_eq!(socket, PathBuf::from("/run/lanlord-web/web.sock"));
+        assert!(!socket.starts_with("/run/lanlord/"));
     }
 }
