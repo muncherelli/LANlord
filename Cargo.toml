@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/lanlord", "crates/ui", "crates/tui"]
+members = ["crates/model", "crates/core", "crates/lanlord", "crates/ui", "crates/tui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,3 +10,4 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+lanlord-model = { path = "crates/model", version = "0.1.0" }

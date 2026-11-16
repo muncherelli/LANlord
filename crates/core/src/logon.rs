@@ -8,39 +8,8 @@ use crate::admins::ADMINS_GID;
 use crate::bootstrap::{capture_as_root, run_as_root, AskPassword};
 use crate::config::{admin, wrap};
 use crate::ssh::Session;
-use crate::users::valid_name;
 
-/// the netlogon share on the gateway, which only root can reach.
-const DIR: &str = "/opt/lanlord/nt4/lib/netlogon";
-
-/// the script that runs for everyone.
-pub const COMMON: &str = "logon";
-
-/// the generated script that calls the others; it is rewritten on every apply.
-pub const GENERATED: &str = "lanlord";
-
-/// a script is a few lines of batch; anything bigger is a mistake.
-pub const MAX_BYTES: usize = 64 * 1024;
-
-/// `logon` or the name of a login; the generated script is not editable.
-pub fn valid_script_name(name: &str) -> bool {
-    name != GENERATED && valid_name(name)
-}
-
-/// dos line endings, as nt4 and windows 9x expect; a missing final newline is added.
-pub fn to_dos(text: &str) -> String {
-    let unix = text.replace("\r\n", "\n");
-    let mut dos = unix.replace('\n', "\r\n");
-    if !dos.is_empty() && !dos.ends_with("\r\n") {
-        dos.push_str("\r\n");
-    }
-    dos
-}
-
-/// unix line endings, for editing.
-pub fn to_unix(text: &str) -> String {
-    text.replace("\r\n", "\n")
-}
+pub use lanlord_model::logon::*;
 
 /// the scripts in the share, without `.bat` and without the generated one.
 const LIST_SCRIPT: &str = r#"set -eu
@@ -54,6 +23,9 @@ if [ -d "$dir" ]; then
   done
 fi
 "#;
+
+/// the netlogon share on the gateway, which only root can reach.
+const DIR: &str = "/opt/lanlord/nt4/lib/netlogon";
 
 /// prints `present` and then the script, or nothing when there is none.
 fn read_script(name: &str) -> String {

@@ -2839,8 +2839,19 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "getrandom 0.3.4",
+ "lanlord-model",
  "serde_yaml_ng",
  "tar",
+]
+
+[[package]]
+name = "lanlord-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_yaml_ng",
 ]
 
 [[package]]

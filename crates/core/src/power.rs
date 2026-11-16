@@ -6,37 +6,7 @@ use crate::bootstrap::{run_as_root, AskPassword};
 use crate::config;
 use crate::ssh::Session;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Power {
-    Reboot,
-    PowerOff,
-}
-
-impl Power {
-    fn script(self) -> &'static str {
-        match self {
-            Self::Reboot => "systemctl reboot\n",
-            Self::PowerOff => "systemctl poweroff\n",
-        }
-    }
-
-    /// what is happening, for messages.
-    pub fn doing(self) -> &'static str {
-        match self {
-            Self::Reboot => "rebooting",
-            Self::PowerOff => "shutting down",
-        }
-    }
-}
-
-/// what happened to the command.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// the command returned normally.
-    Done,
-    /// the connection dropped while it ran, which is what a machine going down looks like.
-    Dropped,
-}
+pub use lanlord_model::power::*;
 
 /// reboot or power off `host`; sudo's password is asked for when needed.
 pub fn run(host: &str, power: Power, ask_password: AskPassword) -> Result<Outcome> {
