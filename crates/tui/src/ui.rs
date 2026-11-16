@@ -410,7 +410,7 @@ mod tests {
         assert!(render(&app).contains("press n to add one"));
         app.users = UsersState::Loaded(vec![
             User {
-                name: "james".into(),
+                name: "dana".into(),
                 admin: false,
                 software_admin: false,
             },
@@ -421,7 +421,7 @@ mod tests {
             },
         ]);
         let text = render(&app);
-        assert!(text.contains("Logins:") && text.contains("james") && text.contains("olive"));
+        assert!(text.contains("Logins:") && text.contains("dana") && text.contains("olive"));
         assert!(text.contains("n new") && text.contains("d delete"));
     }
 

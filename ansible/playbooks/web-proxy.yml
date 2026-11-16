@@ -11,7 +11,7 @@
 #     - host: nostalgia.lan       # the name clients ask for
 #       upstream: 172.16.120.20:80
 #   webui:                        # the lanlord web interface, optional
-#     host: lanlord.lan
+#     host: gateway.example.lan
 #     upstream: 127.0.0.1:8787
 #   status:                       # the retronet status page on the internal address, optional
 #     enabled: true               # on by default

@@ -116,7 +116,7 @@ mod tests {
     use super::*;
     use crate::server::demo;
 
-    const SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.123.1, 172.16.123.254]\n    lease: 7d\n";
+    const SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
 
     #[test]
     fn the_external_and_the_lanlord_network_come_from_the_interfaces_and_settings() {
@@ -131,7 +131,7 @@ mod tests {
                 external.address.as_str(),
                 external.mtu
             ),
-            ("eth0", "10.10.0.97/22", 1500)
+            ("eth0", "192.0.2.10/24", 1500)
         );
         assert_eq!(lanlord.role, Role::Lanlord);
         assert_eq!(
@@ -144,7 +144,7 @@ mod tests {
         );
         assert_eq!(
             lanlord.dhcp.as_deref(),
-            Some("172.16.123.1 - 172.16.123.254")
+            Some("172.16.120.100 - 172.16.120.200")
         );
         assert_eq!(lanlord.leases, Some(3));
         assert!(external.dhcp.is_none() && external.leases.is_none());
@@ -180,7 +180,10 @@ mod tests {
         let rows = rows(&demo().interfaces, &settings, Some(2));
         let details = rows[1].details();
         assert_eq!(details[1], ("Kind".into(), "LANlord network".into()));
-        assert!(details.contains(&("DHCP range".into(), "172.16.123.1 - 172.16.123.254".into())));
+        assert!(details.contains(&(
+            "DHCP range".into(),
+            "172.16.120.100 - 172.16.120.200".into()
+        )));
         assert!(details.contains(&("Clients with a lease".into(), "2".into())));
         assert_eq!(rows[0].details()[1].1, "External network");
     }

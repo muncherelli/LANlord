@@ -179,7 +179,7 @@ pub fn merge(plain: &Value, secrets: &Value) -> Value {
 }
 
 /// the paths of every secret value in `value`, like
-/// `nt4-domain.admin_password` or `nt4-domain.users[james].password`.
+/// `nt4-domain.admin_password` or `nt4-domain.users[dana].password`.
 pub fn secret_paths(value: &Value) -> Vec<String> {
     let mut found = Vec::new();
     collect_secret_paths(value, "", &mut found);
@@ -1241,7 +1241,7 @@ nt4-domain:
   name: RETRONET
   admin_password: hunter2
   users:
-    - name: james
+    - name: dana
       password: pw1
       shell: sh
     - name: olive
@@ -1257,7 +1257,7 @@ web-proxy:
             secret_paths(&secrets),
             [
                 "nt4-domain.admin_password",
-                "nt4-domain.users[james].password",
+                "nt4-domain.users[dana].password",
                 "web-proxy.token"
             ]
         );
@@ -1268,7 +1268,7 @@ web-proxy:
         // the secrets list is tagged with names so it can be matched again
         assert_eq!(
             secrets["nt4-domain"]["users"][0]["name"],
-            Value::String("james".into())
+            Value::String("dana".into())
         );
     }
 
@@ -1312,11 +1312,11 @@ web-proxy:
 
     #[test]
     fn secret_fields_list_what_the_settings_call_for() {
-        let plain = "nt4-domain:\n  users: [{name: james}, {name: olive}]\nother:\n  users: [{name: x}]\n  k: 1\nnum: 3\n";
+        let plain = "nt4-domain:\n  users: [{name: dana}, {name: olive}]\nother:\n  users: [{name: x}]\n  k: 1\nnum: 3\n";
         let fields = secret_fields(
             plain,
             &[
-                "nt4-domain.users[james].password".to_string(),
+                "nt4-domain.users[dana].password".to_string(),
                 "web-proxy.token".to_string(),
             ],
         );
@@ -1325,7 +1325,7 @@ web-proxy:
             summary,
             [
                 ("nt4-domain.admin_password", false),
-                ("nt4-domain.users[james].password", true),
+                ("nt4-domain.users[dana].password", true),
                 ("nt4-domain.users[olive].password", false),
                 ("other.users[x].password", false),
                 ("web-proxy.token", true),
@@ -1347,11 +1347,11 @@ web-proxy:
     fn removing_secrets_drops_empty_entries() {
         let mut secrets = Value::Mapping(Mapping::new());
         set_secret(&mut secrets, "nt4-domain.admin_password", "a").unwrap();
-        set_secret(&mut secrets, "nt4-domain.users[james].password", "b").unwrap();
+        set_secret(&mut secrets, "nt4-domain.users[dana].password", "b").unwrap();
         set_secret(&mut secrets, "nt4-domain.users[olive].password", "d").unwrap();
-        remove_secret(&mut secrets, "nt4-domain.users[james].password").unwrap();
+        remove_secret(&mut secrets, "nt4-domain.users[dana].password").unwrap();
         remove_secret(&mut secrets, "nt4-domain.users[nobody].password").unwrap();
-        remove_secret(&mut secrets, "other.users[james].password").unwrap();
+        remove_secret(&mut secrets, "other.users[dana].password").unwrap();
         remove_secret(&mut secrets, "nt4-domain.admin_password.password").unwrap();
         assert!(remove_secret(&mut secrets, "nt4-domain.name").is_err());
         assert_eq!(
@@ -1376,14 +1376,14 @@ web-proxy:
     fn setting_secrets_builds_the_path() {
         let mut secrets = Value::Mapping(Mapping::new());
         set_secret(&mut secrets, "nt4-domain.admin_password", "a").unwrap();
-        set_secret(&mut secrets, "nt4-domain.users[james].password", "b").unwrap();
-        set_secret(&mut secrets, "nt4-domain.users[james].password", "c").unwrap();
+        set_secret(&mut secrets, "nt4-domain.users[dana].password", "b").unwrap();
+        set_secret(&mut secrets, "nt4-domain.users[dana].password", "c").unwrap();
         set_secret(&mut secrets, "nt4-domain.users[olive].password", "d").unwrap();
         assert_eq!(
             secret_paths(&secrets),
             [
                 "nt4-domain.admin_password",
-                "nt4-domain.users[james].password",
+                "nt4-domain.users[dana].password",
                 "nt4-domain.users[olive].password"
             ]
         );
@@ -1403,7 +1403,7 @@ web-proxy:
         for bad in [
             "",
             "nt4-domain.name",
-            "users[james]",
+            "users[dana]",
             "a.users[].password",
             "a.b[c",
         ] {
@@ -1435,7 +1435,7 @@ mod gateway_tests {
     use super::*;
     use crate::testgw::{identity, no_password, Gateway};
 
-    const LEGACY: &str = "dns:\n  zone: lab\nnt4-domain:\n  admin_password: hunter2\n  users:\n    - name: james\n      password: pw1\n";
+    const LEGACY: &str = "dns:\n  zone: lab\nnt4-domain:\n  admin_password: hunter2\n  users:\n    - name: dana\n      password: pw1\n";
 
     #[test]
     fn an_empty_gateway_loads_as_nothing() {
@@ -1456,7 +1456,7 @@ mod gateway_tests {
             doc.secrets_set,
             [
                 "nt4-domain.admin_password",
-                "nt4-domain.users[james].password"
+                "nt4-domain.users[dana].password"
             ]
         );
         // with no secrets in it, the text comes back untouched, comments and all
@@ -1473,7 +1473,7 @@ mod gateway_tests {
     fn the_first_save_migrates_to_the_two_stores() {
         let (gw, id) = (Gateway::new("migrate"), identity("migrate"));
         gw.seed_sealed(&id, LEGACY);
-        let text = "# plain now\ndns:\n  zone: lab2\nnt4-domain:\n  users:\n    - name: james\n";
+        let text = "# plain now\ndns:\n  zone: lab2\nnt4-domain:\n  users:\n    - name: dana\n";
         save_document_with(&gw.session, "gw", &id, text, &[], &mut no_password).unwrap();
         assert_eq!(gw.plain().as_deref(), Some(text), "exactly what was typed");
         let sealed = gw.sealed(&id).unwrap();
@@ -1496,7 +1496,7 @@ mod gateway_tests {
             .unwrap()
             .unwrap();
         assert_eq!(before, LEGACY.as_bytes(), "legacy is used as it is");
-        let text = "dns:\n  zone: lab2\nnt4-domain:\n  users:\n    - name: james\n";
+        let text = "dns:\n  zone: lab2\nnt4-domain:\n  users:\n    - name: dana\n";
         save_document_with(&gw.session, "gw", &id, text, &[], &mut no_password).unwrap();
         let merged = merged_with(&gw.session, Some(&id), &mut no_password)
             .unwrap()

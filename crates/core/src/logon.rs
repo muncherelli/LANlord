@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn only_logon_and_login_names_are_scripts() {
-        for good in ["logon", "muncherelli", "a-b_c.d1"] {
+        for good in ["logon", "dana", "a-b_c.d1"] {
             assert!(valid_script_name(good), "{good}");
         }
         for bad in [
@@ -188,10 +188,10 @@ mod tests {
 
     #[test]
     fn the_write_script_carries_the_content_only_as_base64() {
-        let script = write_script("muncherelli", &to_dos("net use X: \\\\A\\b; rm -rf /\n"));
+        let script = write_script("dana", &to_dos("net use X: \\\\A\\b; rm -rf /\n"));
         assert!(!script.contains("rm -rf"), "{script}");
         assert_eq!(payload(&script), b"net use X: \\\\A\\b; rm -rf /\r\n");
-        assert!(script.contains("mv \"$tmp\" \"$dir/muncherelli.bat\""));
+        assert!(script.contains("mv \"$tmp\" \"$dir/dana.bat\""));
         assert!(script.contains("chown 0:9998"));
         assert!(script.contains("chmod 0664"));
     }
@@ -241,14 +241,14 @@ esac"#,
             let share = Share::new("round", true);
             write(
                 &share.session,
-                "muncherelli",
+                "dana",
                 "@echo off\nnet use P: \\\\A\\b\n",
                 &mut no_password,
             )
             .unwrap();
-            let raw = std::fs::read(share.dir.join("muncherelli.bat")).unwrap();
+            let raw = std::fs::read(share.dir.join("dana.bat")).unwrap();
             assert_eq!(raw, b"@echo off\r\nnet use P: \\\\A\\b\r\n");
-            let text = read(&share.session, "muncherelli", &mut no_password)
+            let text = read(&share.session, "dana", &mut no_password)
                 .unwrap()
                 .unwrap();
             assert_eq!(text, "@echo off\nnet use P: \\\\A\\b\n");

@@ -184,7 +184,7 @@ mod tests {
             let root = dir.join("root");
             for file in [
                 "opt/lanlord/config/settings.age",
-                "opt/lanlord/nt4/lib/profiles/james/ntuser.dat",
+                "opt/lanlord/nt4/lib/profiles/dana/ntuser.dat",
                 "etc/lanlord/firewall.nft",
                 "etc/systemd/system/lanlord-firewall.service",
                 "etc/systemd/system/lanlord-status.timer",

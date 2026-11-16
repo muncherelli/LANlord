@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn secrets_are_listed_set_through_a_dialog_and_saved_write_only() {
-        let (mut editor, services, fake) = setup("nt4-domain:\n  users: [{name: james}]\n");
+        let (mut editor, services, fake) = setup("nt4-domain:\n  users: [{name: dana}]\n");
         fake.secrets
             .lock()
             .unwrap()
@@ -476,22 +476,22 @@ mod tests {
         assert_eq!(fields.len(), 2);
         assert!(fields[0].set && !fields[1].set);
 
-        editor.set_update("nt4-domain.users[james].password".into(), "pw".into());
-        assert!(editor.pending_update("nt4-domain.users[james].password"));
+        editor.set_update("nt4-domain.users[dana].password".into(), "pw".into());
+        assert!(editor.pending_update("nt4-domain.users[dana].password"));
         assert!(editor.dirty());
-        editor.set_update("nt4-domain.users[james].password".into(), String::new());
+        editor.set_update("nt4-domain.users[dana].password".into(), String::new());
         assert!(
-            !editor.pending_update("nt4-domain.users[james].password"),
+            !editor.pending_update("nt4-domain.users[dana].password"),
             "blank cancels"
         );
-        editor.set_update("nt4-domain.users[james].password".into(), "pw".into());
+        editor.set_update("nt4-domain.users[dana].password".into(), "pw".into());
         editor.set_update("nt4-domain.admin_password".into(), String::new());
 
         editor.save(&services, "a@b");
         settle(&mut editor);
         let stored = fake.secrets.lock().unwrap().clone();
         assert!(stored.contains(&(
-            "nt4-domain.users[james].password".to_string(),
+            "nt4-domain.users[dana].password".to_string(),
             "pw".to_string()
         )));
         assert!(stored.contains(&("nt4-domain.admin_password".to_string(), "old".to_string())));

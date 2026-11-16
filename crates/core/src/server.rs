@@ -12,7 +12,7 @@ pub struct Iface {
     pub mtu: u32,
     /// the kernel's state: UP, DOWN or UNKNOWN (loopback and some virtual links).
     pub state: String,
-    /// the ipv4 addresses with their prefix, like `10.10.0.97/22`.
+    /// the ipv4 addresses with their prefix, like `192.0.2.10/24`.
     pub addresses: Vec<String>,
     /// the default route leaves through this interface.
     pub default_route: bool,
@@ -211,7 +211,7 @@ pub fn demo() -> ServerFacts {
     parse(DEMO).expect("the demo facts parse")
 }
 
-const DEMO: &str = "hostname=testlord\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpus=4\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether bc:24:11:aa:bb:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether bc:24:11:aa:bb:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 10.10.0.97/22 metric 1024 brd 10.10.3.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 10.10.0.1 dev eth0 proto dhcp src 10.10.0.97 metric 1024\n";
+const DEMO: &str = "hostname=demo\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpus=4\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 192.0.2.10/24 metric 1024 brd 192.0.2.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 1024\n";
 
 #[cfg(test)]
 mod tests {
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn the_demo_facts_describe_a_server() {
         let facts = demo();
-        assert_eq!(facts.hostname, "testlord");
+        assert_eq!(facts.hostname, "demo");
         assert!(facts.is_root && facts.lanlord_installed);
         assert_eq!(
             (facts.cpus, facts.mem_total_mb, facts.mem_available_mb),
@@ -234,7 +234,7 @@ mod tests {
             (eth0.mtu, eth0.link(), eth0.default_route),
             (1500, "Connected", true)
         );
-        assert_eq!(eth0.addresses, ["10.10.0.97/22"]);
+        assert_eq!(eth0.addresses, ["192.0.2.10/24"]);
         let eth1 = &facts.interfaces[2];
         assert_eq!((eth1.mtu, eth1.default_route), (1450, false));
         assert!(facts.interfaces[0].loopback() && facts.interfaces[0].link() == "Unknown");
