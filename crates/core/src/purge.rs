@@ -106,6 +106,7 @@ if [ "$REMOVE_ADMINS" = 1 ]; then
   done
 fi
 if getent passwd lanlord >/dev/null 2>&1; then act "remove the service account lanlord" userdel lanlord; fi
+if getent group lanlord-web >/dev/null 2>&1; then act "remove the group lanlord-web" groupdel lanlord-web; fi
 if getent group lanlord >/dev/null 2>&1; then act "remove the group lanlord" groupdel lanlord; fi
 if getent group @ADMINS@ >/dev/null 2>&1; then act "remove the group @ADMINS@" groupdel @ADMINS@; fi
 
@@ -228,6 +229,7 @@ echo "nft $*" >> LOG"#,
   "group admins") echo "admins:x:9998:root,alice" ;;
   "passwd lanlord") echo "lanlord:x:9999:9999::/opt/lanlord:/bin/false" ;;
   "group lanlord") echo "lanlord:x:9999:" ;;
+  "group lanlord-web") echo "lanlord-web:x:9990:" ;;
   *) exit 2 ;;
 esac"#,
                 ),
@@ -370,6 +372,7 @@ esac"#,
             "docker image rm ghcr.io/x/lanlord-samba-nt4:abc",
             "nft delete table inet lanlord",
             "userdel lanlord",
+            "groupdel lanlord-web",
             "groupdel lanlord",
             "groupdel admins",
             "systemctl daemon-reload",
@@ -436,6 +439,7 @@ esac"#,
                 "/opt/lanlord",
                 "/run/lanlord",
                 "lanlord",
+                "lanlord-web",
                 ADMINS_GROUP,
             ]
             .map(str::to_string),

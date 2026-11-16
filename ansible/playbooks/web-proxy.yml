@@ -16,6 +16,8 @@
 #     host: gateway.example.lan   # the name you browse to (default: the normal network address)
 #     port: 8443                  # the default
 #     upstream: unix//run/lanlord/web.sock   # the default: lanlord webui, run by systemd
+#     proxy_user: root            # the account the proxy runs as: root for this module's caddy container
+#                                 # (the default), or e.g. caddy for a caddy installed from a package
 #   status:                       # the retronet status page on the internal address, optional
 #     enabled: true               # on by default
 #     host: lanlord.retronet      # default: lanlord.<dns.zone>, or lanlord.retronet without the dns module
@@ -71,6 +73,7 @@
         webui_host: "{{ webui_cfg.host | default(host_address) }}"
         webui_port: "{{ webui_cfg.port | default(8443) }}"
         webui_upstream: "{{ webui_cfg.upstream | default('unix//run/lanlord/web.sock') }}"
+        webui_proxy_user: "{{ webui_cfg.proxy_user | default('root') }}"
       when: wp is defined
 
     - name: decide whether the web ui is served
@@ -111,10 +114,12 @@
           - (webui_port | int) not in [80, 443]
           - webui_upstream is match('^unix///run/lanlord/[A-Za-z0-9._-]+\.sock$') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$')
           - (host_address | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+          - webui_proxy_user is match('^[a-z_][a-z0-9_-]{0,31}$')
         fail_msg: >-
           web-proxy webui settings: tls is letsencrypt-dns, cloudflare-origin, internal (development only) or off, host is a plain name
           like gateway.example.lan that no site uses, port is a number other than 80 and 443 (8443 by default), upstream is
-          unix//run/lanlord/<name>.sock or an address like 127.0.0.1:8080, and the normal network interface needs an address
+          unix//run/lanlord/<name>.sock or an address like 127.0.0.1:8080, proxy_user is an account name like caddy,
+          and the normal network interface needs an address
       when: wp is defined and wp.webui is defined
 
     # caddy's cloudflare dns plugin is not in the stock image yet
@@ -233,12 +238,35 @@
             state: started
             daemon_reload: true
 
-    # lanlord webui runs as the unprivileged lanlord account and listens on a socket in
-    # /run/lanlord; caddy (root in its container) reaches it through that folder, mounted below.
-    # the folder survives restarts so the container's mount never points at a removed folder.
+    # lanlord webui runs as the unprivileged lanlord account with lanlord-web as its group, so
+    # its socket folder /run/lanlord and the socket belong to lanlord-web. the proxy reaches the
+    # socket as root (this module's caddy container, which gets the folder mounted below) or as a
+    # member of lanlord-web (proxy_user, e.g. a caddy installed from a package). lanlord-web gives
+    # nothing else: the lanlord group, which can read /opt/lanlord, stays private. the folder
+    # survives restarts so the container's mount never points at a removed folder.
     - name: run lanlord webui
       when: wp is defined and webui_on and webui_socket != ''
       block:
+        - name: make the web ui socket group
+          ansible.builtin.group:
+            name: lanlord-web
+            gid: 9990
+            system: true
+
+        - name: let the proxy account reach the socket
+          ansible.builtin.user:
+            name: "{{ webui_proxy_user }}"
+            groups: lanlord-web
+            append: true
+            create_home: false
+          when: webui_proxy_user != 'root'
+          register: proxy_member
+
+        - name: say that the proxy needs a restart
+          ansible.builtin.debug:
+            msg: "{{ webui_proxy_user }} is now in lanlord-web; restart its proxy so it picks up the group"
+          when: proxy_member is changed
+
         - name: look for the lanlord binary
           ansible.builtin.stat:
             path: /opt/lanlord/bin/lanlord
@@ -255,7 +283,8 @@
 
               [Service]
               User=lanlord
-              Group=lanlord
+              Group=lanlord-web
+              SupplementaryGroups=lanlord
               ExecStart=/opt/lanlord/bin/lanlord webui --socket {{ webui_socket }}
               RuntimeDirectory=lanlord
               RuntimeDirectoryMode=0750

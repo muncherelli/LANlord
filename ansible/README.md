@@ -63,7 +63,12 @@ The software share is off by default too. Set `software: true` to add a `softwar
 
 ## The web UI
 
-The web UI runs only on the gateway. `lanlord webui` listens on the unix socket `/run/lanlord/web.sock` (no TCP port) as the unprivileged `lanlord` account, through the `lanlord-webui` systemd service that the Web Proxy module installs. It serves the browser build from `/opt/lanlord/web` (the `web` folder beside the binary's `bin` folder, or `--static DIR`) and a placeholder page until that build exists. Caddy answers on port 8443 of the normal network address only, never the retronet, and proxies to the socket. The socket's folder is mounted into the Caddy container and survives service restarts.
+The web UI runs only on the gateway. `lanlord webui` listens on the unix socket `/run/lanlord/web.sock` (no TCP port) as the unprivileged `lanlord` account, through the `lanlord-webui` systemd service that the Web Proxy module installs. It serves the browser build from `/opt/lanlord/web` (the `web` folder beside the binary's `bin` folder, or `--static DIR`), looking for it on every request, so a new build needs no restart. Until a build is there it shows a placeholder page, and a missing file such as a `.wasm` or `.js` is always a 404, never a page. Caddy answers on port 8443 of the normal network address only, never the retronet, and proxies to the socket.
+
+The socket and its folder belong to the `lanlord-web` group (gid 9990), which gives access to nothing else. The proxy reaches the socket in one of two ways:
+
+- this module's Caddy container runs as root and gets `/run/lanlord` mounted (the folder survives service restarts, so the mount stays valid). This is the default, `proxy_user: root`.
+- a Caddy installed from a package runs as its own account. Set `proxy_user: caddy` (or whatever account it runs as) and the module adds that account to `lanlord-web`; restart that Caddy afterwards so it picks up the group.
 
 ```yaml
 web-proxy:
@@ -71,6 +76,7 @@ web-proxy:
     tls: internal               # letsencrypt-dns, cloudflare-origin, or internal (test gateways only)
     host: gateway.example.lan   # default: the normal network address
     port: 8443                  # the default
+    proxy_user: root            # the default; caddy for a packaged caddy
 ```
 
 The web UI is HTTPS only, and it stays off until `tls` names a certificate method:
