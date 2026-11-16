@@ -87,6 +87,8 @@ pub(crate) fn apply_with(
     }
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
+    // refuse early on a machine that definitely cannot run docker, with the fix
+    crate::env::gate(session, admin, &tags, ask_password)?;
     let settings = settings::merged_with(session, identity, ask_password)?;
     match &settings {
         Some(plain) => emit(

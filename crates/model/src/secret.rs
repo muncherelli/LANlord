@@ -1,9 +1,9 @@
 //! a password or other secret on its way to a server.
 //!
 //! it is wiped from memory when dropped and never shows in debug output. it (de)serializes as a
-//! plain string, because an operation carrying it only travels between a front end and lanlord
-//! on the same machine: today on the stdin of `lanlord op`, later over an authenticated local
-//! socket. it is never logged or stored.
+//! plain string, because it only travels where the connection itself is protected: in the https
+//! request body the web ui posts to `/api/op`, and from there over the gateway's local socket or
+//! the stdin of `lanlord op`. it is never logged or stored.
 //!
 //! `lanlord op` runs what it is given as is: purge, power and run ask for no confirmation there,
 //! by design, because the front end that sent the op already asked.
