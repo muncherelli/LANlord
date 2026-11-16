@@ -77,6 +77,7 @@ pub fn modal<R>(
 mod tests {
     use super::*;
     use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
+    use zeroize::Zeroizing;
 
     fn frame(dialog: &mut TextDialog, ctx: &egui::Context, events: Vec<Event>) -> Option<Answer> {
         let input = RawInput {
@@ -128,7 +129,7 @@ mod tests {
         assert_eq!(dialog.prompt(), "Say it");
         assert!(frame(&mut dialog, &ctx, vec![Event::Text("pw".into())]).is_none());
         let answer = frame(&mut dialog, &ctx, vec![key(Key::Enter)]);
-        assert_eq!(answer, Some(Answer::Ok("pw".into())));
+        assert_eq!(answer, Some(Answer::Ok(Zeroizing::new("pw".into()))));
     }
 
     #[test]
@@ -139,7 +140,7 @@ mod tests {
             &ctx,
             vec![Event::Text("pass".into()), key(Key::Enter)],
         );
-        assert_eq!(answer, Some(Answer::Ok("pass".into())));
+        assert_eq!(answer, Some(Answer::Ok(Zeroizing::new("pass".into()))));
     }
 
     #[test]
@@ -166,7 +167,7 @@ mod tests {
         for events in click(ok.center()).into_iter().map(|e| vec![e]) {
             answers.push(frame(&mut dialog, &ctx, events));
         }
-        assert!(answers.contains(&Some(Answer::Ok("x".into()))));
+        assert!(answers.contains(&Some(Answer::Ok(Zeroizing::new("x".into())))));
     }
 
     #[test]
