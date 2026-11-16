@@ -316,6 +316,11 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             });
             None
         }
+        Node::Icon(id) => {
+            let (art, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+            icons::draw(ui.painter(), art.min, icons::small(id), 1.0);
+            None
+        }
         Node::Warning(text) => {
             ui.colored_label(egui::Color32::from_rgb(160, 0, 0), text.as_str());
             None

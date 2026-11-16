@@ -139,6 +139,8 @@ pub enum Node<M> {
     FieldError(String),
     /// a warning sign beside a message, as in a message box.
     Alert(String),
+    /// a small inline icon, by icon id.
+    Icon(&'static str),
     /// a line of red text, for input that was refused.
     Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.
