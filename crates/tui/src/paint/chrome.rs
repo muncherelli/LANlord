@@ -11,7 +11,7 @@ use ratatui::widgets::Widget;
 
 use super::art::badge;
 use super::palette::{Palette, Rgb, BLACK, GRAY, NAVY, SHADOW, WHITE};
-use super::{bold, fill, style, text};
+use super::{bold, fill, put, style, text};
 
 /// a gray box with a 3d edge one cell wide.
 pub struct Bevel {
@@ -49,29 +49,36 @@ impl Widget for Bevel {
         };
         let edge = |rgb: Rgb| style(palette, rgb, GRAY);
         for x in left + 1..right {
-            buf[(x, top)]
-                .set_symbol(glyphs[0])
-                .set_style(edge(colours[0]));
-            buf[(x, bottom)]
-                .set_symbol(glyphs[1])
-                .set_style(edge(colours[1]));
+            put(buf, (x, top), glyphs[0], edge(colours[0]));
+            put(buf, (x, bottom), glyphs[1], edge(colours[1]));
         }
         for y in top + 1..bottom {
-            buf[(left, y)]
-                .set_symbol(glyphs[2])
-                .set_style(edge(colours[2]));
-            buf[(right, y)]
-                .set_symbol(glyphs[3])
-                .set_style(edge(colours[3]));
+            put(buf, (left, y), glyphs[2], edge(colours[2]));
+            put(buf, (right, y), glyphs[3], edge(colours[3]));
         }
         if !self.sunken {
             // the corners carry the line of the edge that owns them in the gui
-            buf[(left, top)].set_symbol("▔").set_style(edge(WHITE));
-            buf[(right, top)].set_symbol("▕").set_style(edge(SHADOW));
-            buf[(left, bottom)].set_symbol("▏").set_style(edge(WHITE));
-            buf[(right, bottom)].set_symbol("▁").set_style(edge(SHADOW));
+            put(buf, (left, top), "▔", edge(WHITE));
+            put(buf, (right, top), "▕", edge(SHADOW));
+            put(buf, (left, bottom), "▏", edge(WHITE));
+            put(buf, (right, bottom), "▁", edge(SHADOW));
         }
     }
+}
+
+/// where a window of `rect`'s size lands when moved to (`x`, `y`): kept inside `bounds`, so
+/// its title bar can always be grabbed again.
+pub fn place(rect: Rect, x: i32, y: i32, bounds: Rect) -> Rect {
+    let width = rect.width.min(bounds.width);
+    let height = rect.height.min(bounds.height);
+    let max_x = i32::from(bounds.right() - width);
+    let max_y = i32::from(bounds.bottom() - height);
+    Rect::new(
+        x.clamp(i32::from(bounds.x), max_x) as u16,
+        y.clamp(i32::from(bounds.y), max_y) as u16,
+        width,
+        height,
+    )
 }
 
 /// where the parts of a window frame are, for drawing the body and hit testing.
@@ -159,9 +166,7 @@ impl Widget for WindowFrame<'_> {
             if rect.x > x && rect.width == 2 {
                 text(buf, rect.x, rect.y, 1, glyph, face);
                 // a dark right edge makes each title button read as raised
-                buf[(rect.x + 1, rect.y)]
-                    .set_symbol("▕")
-                    .set_style(style(palette, BLACK, GRAY));
+                put(buf, (rect.x + 1, rect.y), "▕", style(palette, BLACK, GRAY));
             }
         }
     }
@@ -243,12 +248,13 @@ fn row_edges(buf: &mut Buffer, rect: Rect, sunken: bool, palette: Palette) {
     } else {
         (WHITE, BLACK)
     };
-    buf[(rect.x, rect.y)]
-        .set_symbol("▏")
-        .set_style(style(palette, first, GRAY));
-    buf[(rect.right() - 1, rect.y)]
-        .set_symbol("▕")
-        .set_style(style(palette, last, GRAY));
+    put(buf, (rect.x, rect.y), "▏", style(palette, first, GRAY));
+    put(
+        buf,
+        (rect.right() - 1, rect.y),
+        "▕",
+        style(palette, last, GRAY),
+    );
 }
 
 /// a one-row raised button (sunk when pressed) with an optional icon badge.
@@ -389,7 +395,7 @@ impl Widget for Menu<'_> {
                 MenuRow::Separator => {
                     let line = style(palette, SHADOW, GRAY);
                     for x in rect.left() + 1..rect.right().saturating_sub(1) {
-                        buf[(x, rect.y)].set_symbol("─").set_style(line);
+                        put(buf, (x, rect.y), "─", line);
                     }
                 }
                 MenuRow::Item {
@@ -438,6 +444,63 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::new(Depth::TrueColor)
+    }
+
+    #[test]
+    fn a_dragged_window_stays_on_the_desktop() {
+        let desk = Rect::new(0, 0, 80, 23);
+        let window = Rect::new(10, 5, 44, 18);
+        assert_eq!(place(window, 70, 20, desk), Rect::new(36, 5, 44, 18));
+        assert_eq!(place(window, -9, -3, desk), Rect::new(0, 0, 44, 18));
+        assert_eq!(place(window, 20, 2, desk), Rect::new(20, 2, 44, 18));
+        // a window bigger than the desktop is cut to fit
+        assert_eq!(
+            place(window, 5, 5, Rect::new(0, 0, 30, 10)),
+            Rect::new(0, 0, 30, 10)
+        );
+    }
+
+    #[test]
+    fn every_widget_clips_to_the_buffer() {
+        // areas that run past the right and bottom edge of a small buffer must not panic
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 4));
+        let off = Rect::new(6, 2, 30, 12);
+        WindowFrame {
+            title: "Console",
+            icon: Some(small("console")),
+            active: true,
+            palette: palette(),
+        }
+        .render(off, &mut buf);
+        let rows = [MenuRow::item("Quit"), MenuRow::Separator];
+        Menu {
+            rows: &rows,
+            selected: None,
+            palette: palette(),
+        }
+        .render(off, &mut buf);
+        Taskbar {
+            menu_label: "LANlord",
+            menu_icon: Some(small("lanlord")),
+            menu_open: true,
+            buttons: &[TaskButton {
+                icon: None,
+                label: "Console",
+                pressed: true,
+            }],
+            clock: "10:55 AM",
+            palette: palette(),
+        }
+        .render(Rect::new(4, 3, 60, 1), &mut buf);
+        row_button(
+            &mut buf,
+            Rect::new(8, 1, 12, 1),
+            None,
+            "OK",
+            false,
+            palette(),
+        );
+        assert_eq!(buf[(6, 2)].symbol(), "▔", "the visible corner is drawn");
     }
 
     #[test]

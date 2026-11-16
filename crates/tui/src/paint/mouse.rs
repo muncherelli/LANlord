@@ -20,6 +20,40 @@ pub fn disable(out: &mut impl Write) -> io::Result<()> {
     execute!(out, DisableMouseCapture)
 }
 
+/// mouse reporting that switches itself off when dropped, and on a panic before the previous
+/// panic hook (ratatui's terminal restore) runs, so a crash never leaves the shell reporting
+/// mouse moves as text.
+#[derive(Debug)]
+pub struct Capture {
+    _private: (),
+}
+
+impl Capture {
+    pub fn start() -> io::Result<Capture> {
+        install_panic_hook();
+        enable(&mut io::stdout())?;
+        Ok(Capture { _private: () })
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let _ = disable(&mut io::stdout());
+    }
+}
+
+/// chain a panic hook that switches mouse reporting off first; installed once.
+pub fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable(&mut io::stdout());
+            previous(info);
+        }));
+    });
+}
+
 /// how close together two clicks must be to count as a double-click, like the desktop default.
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 

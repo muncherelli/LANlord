@@ -4,14 +4,13 @@
 //!
 //! run: cargo run -p lanlord-tui --example paint_demo
 
-use std::io::stdout;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use lanlord_tui::paint::art::small;
-use lanlord_tui::paint::chrome::{Menu, MenuRow, TaskButton, Taskbar, WindowFrame};
+use lanlord_tui::paint::chrome::{place, Menu, MenuRow, TaskButton, Taskbar, WindowFrame};
 use lanlord_tui::paint::controls::{Button, Checkbox, List, TextField};
 use lanlord_tui::paint::desktop::{icon_rect, Desktop, DesktopIcon};
-use lanlord_tui::paint::mouse::{self, Gesture, HitMap, Mouse};
+use lanlord_tui::paint::mouse::{Capture, Gesture, HitMap, Mouse};
 use lanlord_tui::paint::palette::Palette;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Position, Rect};
@@ -83,6 +82,8 @@ struct Demo {
     hovered_row: Option<usize>,
     dragging: Option<(usize, i32, i32)>,
     hits: HitMap<Hit>,
+    // the desktop area of the last frame, windows are kept inside it
+    desk: Rect,
     quit: bool,
     // the text field and checkbox in the my server window
     field: String,
@@ -113,6 +114,7 @@ impl Demo {
         let buf = frame.buffer_mut();
         self.hits.clear();
         let desk = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
+        self.desk = desk;
         Desktop { palette }.render(desk, buf);
         self.hits.push(Hit::Desktop, desk);
         for (i, (id, label)) in ICONS.iter().enumerate() {
@@ -142,14 +144,17 @@ impl Demo {
             self.hits.push(Hit::Title(i), layout.title_bar);
             self.hits.push(Hit::Close(i), layout.close);
             let body = layout.body;
-            if body.height >= 14 {
+            if body.height >= 14 && body.width >= 30 {
                 TextField {
                     text: &self.field,
                     password: false,
                     focused: i == top,
                     palette,
                 }
-                .render(Rect::new(body.x + 2, body.y + 1, body.width - 4, 3), buf);
+                .render(
+                    Rect::new(body.x + 2, body.y + 1, body.width.saturating_sub(4), 3),
+                    buf,
+                );
                 Checkbox {
                     label: "Automatic updates",
                     checked: self.checked,
@@ -170,7 +175,10 @@ impl Demo {
                     enabled: true,
                     palette,
                 }
-                .render(Rect::new(body.right() - 24, body.y + 13, 10, 1), buf);
+                .render(
+                    Rect::new(body.right().saturating_sub(24), body.y + 13, 10, 1),
+                    buf,
+                );
                 Button {
                     label: "Cancel",
                     pressed: false,
@@ -178,7 +186,10 @@ impl Demo {
                     enabled: true,
                     palette,
                 }
-                .render(Rect::new(body.right() - 13, body.y + 13, 10, 1), buf);
+                .render(
+                    Rect::new(body.right().saturating_sub(13), body.y + 13, 10, 1),
+                    buf,
+                );
             }
         }
         let bar = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
@@ -235,9 +246,9 @@ impl Demo {
             }
             Gesture::Drag { to, .. } => {
                 if let Some((i, dx, dy)) = self.dragging {
-                    let r = &mut self.windows[i].rect;
-                    r.x = (i32::from(to.x) - dx).max(0) as u16;
-                    r.y = (i32::from(to.y) - dy).max(0) as u16;
+                    let r = self.windows[i].rect;
+                    self.windows[i].rect =
+                        place(r, i32::from(to.x) - dx, i32::from(to.y) - dy, self.desk);
                 }
             }
             Gesture::DragEnd { .. } => {
@@ -285,7 +296,8 @@ fn clock() -> String {
 
 fn main() -> std::io::Result<()> {
     let mut terminal = ratatui::init();
-    mouse::enable(&mut stdout())?;
+    // switches mouse reporting off when dropped or on a panic, before ratatui's restore
+    let capture = Capture::start();
     let mut demo = Demo {
         palette: Palette::detect(),
         selected: None,
@@ -294,6 +306,7 @@ fn main() -> std::io::Result<()> {
         hovered_row: None,
         dragging: None,
         hits: HitMap::new(),
+        desk: Rect::default(),
         quit: false,
         field: "demo@gateway".into(),
         checked: true,
@@ -327,7 +340,7 @@ fn main() -> std::io::Result<()> {
         }
         Ok(())
     })();
-    mouse::disable(&mut stdout())?;
+    drop(capture);
     ratatui::restore();
     result
 }

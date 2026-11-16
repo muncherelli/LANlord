@@ -9,7 +9,7 @@ use ratatui::widgets::Widget;
 
 use super::chrome::{row_button, Bevel};
 use super::palette::{Palette, BLACK, GRAY, NAVY, SHADOW, WHITE};
-use super::{bold, fill, style, text};
+use super::{bold, fill, put, style, text};
 
 /// a push button; `default` draws the label bold, `pressed` sinks it.
 pub struct Button<'a> {
@@ -97,12 +97,13 @@ fn sunken_edge(buf: &mut Buffer, area: Rect, palette: Palette) {
         }
         .render(area, buf);
     } else if area.width >= 2 && area.height >= 1 {
-        buf[(area.x, area.y)]
-            .set_symbol("▕")
-            .set_style(style(palette, SHADOW, GRAY));
-        buf[(area.right() - 1, area.y)]
-            .set_symbol("▏")
-            .set_style(style(palette, WHITE, GRAY));
+        put(buf, (area.x, area.y), "▕", style(palette, SHADOW, GRAY));
+        put(
+            buf,
+            (area.right() - 1, area.y),
+            "▏",
+            style(palette, WHITE, GRAY),
+        );
     }
 }
 
@@ -133,7 +134,7 @@ impl Widget for TextField<'_> {
         if self.focused {
             let x = field.x + 1 + visible.chars().count() as u16;
             if x < field.right() {
-                buf[(x, field.y)].set_symbol("▏").set_style(face);
+                put(buf, (x, field.y), "▏", face);
             }
         }
     }
@@ -153,13 +154,14 @@ impl Widget for Checkbox<'_> {
             return;
         }
         let palette = self.palette;
-        buf[(area.x, area.y)]
-            .set_symbol("▕")
-            .set_style(style(palette, SHADOW, GRAY));
+        put(buf, (area.x, area.y), "▕", style(palette, SHADOW, GRAY));
         let mark = if self.checked { "✓" } else { " " };
-        buf[(area.x + 1, area.y)]
-            .set_symbol(mark)
-            .set_style(bold(style(palette, BLACK, WHITE)));
+        put(
+            buf,
+            (area.x + 1, area.y),
+            mark,
+            bold(style(palette, BLACK, WHITE)),
+        );
         let mut label = style(palette, BLACK, GRAY);
         if self.focused {
             label = label.add_modifier(Modifier::UNDERLINED);
@@ -242,6 +244,47 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::new(Depth::TrueColor)
+    }
+
+    #[test]
+    fn controls_clip_to_the_buffer() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 3));
+        let off = Rect::new(4, 1, 20, 5);
+        TextField {
+            text: "abc",
+            password: false,
+            focused: true,
+            palette: palette(),
+        }
+        .render(off, &mut buf);
+        TextField {
+            text: "abc",
+            password: true,
+            focused: true,
+            palette: palette(),
+        }
+        .render(Rect::new(5, 2, 9, 1), &mut buf);
+        Checkbox {
+            label: "Enabled",
+            checked: true,
+            focused: true,
+            palette: palette(),
+        }
+        .render(Rect::new(5, 2, 12, 1), &mut buf);
+        List {
+            rows: &["a", "b"],
+            selected: Some(1),
+            palette: palette(),
+        }
+        .render(off, &mut buf);
+        Button {
+            label: "OK",
+            pressed: true,
+            default: true,
+            enabled: true,
+            palette: palette(),
+        }
+        .render(off, &mut buf);
     }
 
     #[test]
