@@ -88,6 +88,9 @@ pub(crate) fn apply_with(
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let settings = settings::merged_with(session, identity, ask_password)?;
+    // refuse early on a machine that definitely cannot run docker, with the fix; the settings
+    // say which modules a plain apply runs
+    crate::env::gate(session, admin, &tags, settings.as_deref(), ask_password)?;
     match &settings {
         Some(plain) => emit(
             Kind::Info,

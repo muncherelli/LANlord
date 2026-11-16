@@ -17,14 +17,43 @@ pub enum Environment {
         hypervisor: String,
     },
     Container {
-        /// the container technology, such as `lxc`.
+        /// the container technology, such as `lxc` (`lxc-libvirt` is a different thing).
         technology: String,
-        privileged: bool,
+        privilege: Privilege,
         /// proxmox wrote its markers into the container's files.
         proxmox: bool,
     },
     Unknown,
 }
+
+/// whether root in a container is root on the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Privilege {
+    /// the uid map is the identity over the whole range.
+    Privileged,
+    /// the container's ids are shifted into a range of unprivileged ids on the host.
+    Unprivileged,
+    Unknown,
+}
+
+/// what the machine calls itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct System {
+    pub hostname: String,
+    pub distro: String,
+    pub distro_version: String,
+    pub init: String,
+}
+
+/// the proxmox fix for docker in an unprivileged lxc container.
+pub const PROXMOX_FEATURES_FIX: &str = "on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1` (replace <CTID> with this container's number) and restart the container with `pct reboot <CTID>`; lanlord cannot do this from inside the container";
+
+/// the proxmox fix for a missing /dev/net/tun in a container.
+pub const PROXMOX_TUN_FIX: &str = "on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun` (replace <CTID> with this container's number) and restart the container with `pct reboot <CTID>`";
+
+/// the modules that run in docker (or install it) and so need what docker needs.
+pub const DOCKER_MODULES: &[&str] = &["docker", "nt4-domain", "web-proxy", "dns"];
 
 impl Environment {
     /// a short description, such as "unprivileged lxc container on proxmox".
@@ -34,16 +63,16 @@ impl Environment {
             Self::Vm { hypervisor } => format!("virtual machine ({hypervisor})"),
             Self::Container {
                 technology,
-                privileged,
+                privilege,
                 proxmox,
             } => {
-                let kind = if *privileged {
-                    "privileged"
-                } else {
-                    "unprivileged"
+                let kind = match privilege {
+                    Privilege::Privileged => "privileged ",
+                    Privilege::Unprivileged => "unprivileged ",
+                    Privilege::Unknown => "",
                 };
                 let on = if *proxmox { " on proxmox" } else { "" };
-                format!("{kind} {technology} container{on}")
+                format!("{kind}{technology} container{on}")
             }
             Self::Unknown => "unknown".into(),
         }
@@ -51,6 +80,21 @@ impl Environment {
 
     fn container(&self) -> bool {
         matches!(self, Self::Container { .. })
+    }
+
+    /// is this an lxc container (not lxc-libvirt, which is something else).
+    pub fn is_lxc(&self) -> bool {
+        matches!(self, Self::Container { technology, .. } if technology == "lxc")
+    }
+
+    /// does docker inside this container need the keyctl feature: only when the container's ids
+    /// are shifted, or when it can't be told.
+    pub fn needs_keyctl(&self) -> bool {
+        matches!(
+            self,
+            Self::Container { technology, privilege, .. }
+                if technology == "lxc" && *privilege != Privilege::Privileged
+        )
     }
 
     fn proxmox(&self) -> bool {
@@ -94,6 +138,7 @@ pub struct Check {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub environment: Environment,
+    pub system: System,
     pub kernel: String,
     pub checks: Vec<Check>,
 }
@@ -136,10 +181,51 @@ impl Report {
         checks.push(tun_check(&environment, get("tun")));
         checks.push(forward_check(get("ip_forward")));
         checks.push(nft_check(get("nft")));
-        checks.push(docker_check(&environment, &get));
-        if environment.container() {
-            checks.push(nesting_check(get("lxc_nesting")));
+        if environment.is_lxc() {
+            checks.push(feature_check(
+                "lxc-nesting",
+                "container nesting",
+                "containers can run inside this one (docker needs this)",
+                "the nesting feature of this lxc container is off, and docker needs it",
+                "can't tell whether the nesting feature of this lxc container is on, and docker \
+                 needs it",
+                get("nesting"),
+                true,
+            ));
+            let needed = environment.needs_keyctl();
+            checks.push(feature_check(
+                "lxc-keyctl",
+                "container keyctl",
+                if needed {
+                    "the keyctl system call is allowed (docker needs this)"
+                } else {
+                    "the keyctl system call is allowed (not needed in a privileged container)"
+                },
+                "the keyctl feature of this lxc container is off, and docker needs it",
+                "can't tell whether the keyctl feature of this lxc container is on, and docker \
+                 needs it",
+                get("keyctl"),
+                needed,
+            ));
         }
+        if let Environment::Container { technology, .. } = &environment {
+            if technology == "docker" || technology == "podman" {
+                checks.push(Check {
+                    id: "nested-container".into(),
+                    title: "container manager".into(),
+                    status: Status::Warn,
+                    detail: format!(
+                        "this server is itself a {technology} container; running docker inside it \
+                         needs extra privileges"
+                    ),
+                    fix: Some(
+                        "use a virtual machine or an lxc container for the lanlord server".into(),
+                    ),
+                });
+            }
+        }
+        checks.push(fuse_check(get("fuse")));
+        checks.push(docker_check(&get));
         checks.push(manager_check(&environment, &get));
         checks.push(vde_check(get("vde_switch"), get("vde_plug")));
         if environment.proxmox() {
@@ -157,8 +243,15 @@ impl Report {
                 ),
             });
         }
+        let system = System {
+            hostname: get("hostname").to_string(),
+            distro: get("distro").to_string(),
+            distro_version: get("distro_version").to_string(),
+            init: get("init").to_string(),
+        };
         Self {
             environment,
+            system,
             kernel: get("kernel").to_string(),
             checks,
         }
@@ -184,10 +277,10 @@ fn environment<'a>(get: &dyn Fn(&str) -> &'a str) -> Environment {
     let container = get("virt_container");
     let vm = get("virt_vm");
     let proxmox = get("pve_marker") == "1";
-    if !container.is_empty() && container != "none" {
+    if !container.is_empty() && container != "none" && container != "unknown" {
         return Environment::Container {
             technology: container.to_string(),
-            privileged: privileged(get("uid_map")),
+            privilege: privilege(get("uid_map")),
             proxmox,
         };
     }
@@ -202,10 +295,14 @@ fn environment<'a>(get: &dyn Fn(&str) -> &'a str) -> Environment {
     Environment::Unknown
 }
 
-/// a privileged container maps uid 0 to the host's uid 0 over the whole range.
-fn privileged(uid_map: &str) -> bool {
+/// a privileged container maps every id to itself; any other first line is a shifted range.
+fn privilege(uid_map: &str) -> Privilege {
     let fields: Vec<&str> = uid_map.split_whitespace().collect();
-    matches!(fields.as_slice(), ["0", "0", ..])
+    match fields.as_slice() {
+        [] => Privilege::Unknown,
+        ["0", "0", "4294967295"] => Privilege::Privileged,
+        _ => Privilege::Unprivileged,
+    }
 }
 
 /// how to load a kernel module, depending on whose kernel it is.
@@ -272,8 +369,7 @@ fn link_check(
 }
 
 fn tun_check(env: &Environment, said: &str) -> Check {
-    let pass_through =
-        "on the host: pct set <ctid> --dev0 /dev/net/tun, then restart the container";
+    let pass_through = PROXMOX_TUN_FIX;
     let (status, detail, fix) = match said {
         "ok" => (Status::Ok, "/dev/net/tun opens".to_string(), None),
         "missing" if env.container() => (
@@ -291,8 +387,9 @@ fn tun_check(env: &Environment, said: &str) -> Check {
             let error = other.strip_prefix("err:").unwrap_or(other);
             let fix = if env.container() {
                 Some(format!(
-                    "{pass_through} (a privileged container may also need \
-                     lxc.cgroup2.devices.allow: c 10:200 rwm)"
+                    "{pass_through} (a privileged container may also need the lines \
+                     `lxc.cgroup2.devices.allow: c 10:200 rwm` and `lxc.mount.entry: /dev/net/tun \
+                     dev/net/tun none bind,create=file` in /etc/pve/lxc/<CTID>.conf)"
                 ))
             } else {
                 None
@@ -368,26 +465,13 @@ fn nft_check(said: &str) -> Check {
     }
 }
 
-fn docker_check<'a>(env: &Environment, get: &dyn Fn(&str) -> &'a str) -> Check {
-    let docker = get("docker");
+/// docker's state. whether the machine lets docker run at all is the container checks' job;
+/// this one is about what docker does to lanlord's networks once it runs.
+fn docker_check<'a>(get: &dyn Fn(&str) -> &'a str) -> Check {
     let backend = get("docker_backend");
     let policy = get("forward_policy");
-    let active = get("docker_active");
-    let nesting = get("lxc_nesting");
-    let (status, detail, fix) = if docker != "present" {
-        (
-            Status::Unknown,
-            "docker isn't installed yet; lanlord's docker module installs it".to_string(),
-            None,
-        )
-    } else if env.container() && active != "active" && nesting != "1" {
-        (
-            Status::Fail,
-            format!("docker is {active} and the container has no nesting"),
-            Some("on the host: pct set <ctid> --features nesting=1,keyctl=1".to_string()),
-        )
-    } else if policy == "DROP" {
-        (
+    let (status, detail, fix) = match (get("docker_installed"), get("docker_running")) {
+        ("yes", "yes") if policy == "DROP" => (
             Status::Fail,
             "docker set the iptables FORWARD policy to DROP, which silently drops forwarded \
              traffic that lanlord's own rules accept"
@@ -397,32 +481,44 @@ fn docker_check<'a>(env: &Environment, get: &dyn Fn(&str) -> &'a str) -> Check {
                  restart docker"
                     .to_string(),
             ),
-        )
-    } else if backend == "nftables" {
-        (
+        ),
+        ("yes", "yes") if backend == "nftables" => (
             Status::Warn,
             "docker uses its experimental nftables backend; it doesn't turn ip forwarding on, so \
              lanlord sets it in sysctl.d"
                 .to_string(),
             None,
-        )
-    } else if active != "active" {
-        (
+        ),
+        ("yes", "yes") => {
+            let mut detail = format!("docker {} is running", or_unknown(get("docker_version")));
+            if !get("docker_storage").is_empty() {
+                detail.push_str(&format!(" (storage driver {}", get("docker_storage")));
+                detail.push_str(&format!(
+                    ", {} firewall backend)",
+                    if backend.is_empty() {
+                        "iptables"
+                    } else {
+                        backend
+                    }
+                ));
+            }
+            (Status::Ok, detail, None)
+        }
+        ("yes", "no") => (
             Status::Warn,
-            format!("docker is installed but {active}"),
+            "docker is installed but not running".to_string(),
             None,
-        )
-    } else {
-        let backend = if backend.is_empty() {
-            "iptables"
-        } else {
-            backend
-        };
-        (
-            Status::Ok,
-            format!("docker runs with the {backend} backend"),
+        ),
+        ("no", _) => (
+            Status::Unknown,
+            "docker isn't installed yet; lanlord's docker module installs it".to_string(),
             None,
-        )
+        ),
+        _ => (
+            Status::Unknown,
+            "couldn't tell about docker".to_string(),
+            None,
+        ),
     };
     Check {
         id: "docker".into(),
@@ -433,24 +529,65 @@ fn docker_check<'a>(env: &Environment, get: &dyn Fn(&str) -> &'a str) -> Check {
     }
 }
 
-fn nesting_check(said: &str) -> Check {
-    let (status, detail, fix) = if said == "1" {
-        (Status::Ok, "the container has nesting".to_string(), None)
+fn or_unknown(s: &str) -> &str {
+    if s.is_empty() {
+        "unknown"
     } else {
-        (
-            Status::Warn,
-            "the container has no nesting; docker needs it (with keyctl in an unprivileged \
-             container)"
-                .to_string(),
-            Some("on the host: pct set <ctid> --features nesting=1,keyctl=1".to_string()),
-        )
+        s
+    }
+}
+
+/// a proxmox container feature that docker needs, such as nesting or keyctl. only a definite no
+/// fails; a probe that couldn't tell is unknown. `needed` is false when this machine doesn't
+/// need the feature at all, which is always fine.
+fn feature_check(
+    id: &str,
+    title: &str,
+    yes: &str,
+    no: &str,
+    unknown: &str,
+    said: &str,
+    needed: bool,
+) -> Check {
+    let (status, detail, fix) = match said {
+        _ if !needed => (Status::Ok, yes.to_string(), None),
+        "yes" => (Status::Ok, yes.to_string(), None),
+        "no" => (
+            Status::Fail,
+            no.to_string(),
+            Some(PROXMOX_FEATURES_FIX.to_string()),
+        ),
+        _ => (
+            Status::Unknown,
+            unknown.to_string(),
+            Some(PROXMOX_FEATURES_FIX.to_string()),
+        ),
     };
     Check {
-        id: "lxc-nesting".into(),
-        title: "container nesting".into(),
+        id: id.into(),
+        title: title.into(),
         status,
         detail,
         fix,
+    }
+}
+
+/// /dev/fuse: some storage drivers inside containers use it; nothing in lanlord needs it yet.
+fn fuse_check(said: &str) -> Check {
+    let (status, detail) = match said {
+        "yes" => (Status::Ok, "/dev/fuse is there"),
+        "no" => (
+            Status::Unknown,
+            "/dev/fuse is missing; nothing needs it yet",
+        ),
+        _ => (Status::Unknown, "not tried"),
+    };
+    Check {
+        id: "fuse".into(),
+        title: "fuse".into(),
+        status,
+        detail: detail.into(),
+        fix: None,
     }
 }
 
@@ -523,10 +660,16 @@ mod tests {
     use super::*;
 
     const UNPRIVILEGED_PROXMOX: &str = "kernel=6.8.12-4-pve
+hostname=gateway
+init=systemd
+distro=debian
+distro_version=13
 virt_container=lxc
 virt_vm=none
 uid_map=0 100000 65536
 pve_marker=1
+nesting=no
+keyctl=no
 link_bridge=ok
 link_dummy=ok
 link_vlan=err:RTNETLINK answers: Operation not supported
@@ -537,10 +680,11 @@ link_vxlan=err:Error: Unknown device type.
 link_gretap=err:Error: Unknown device type.
 link_wireguard=ok
 tun=missing
+fuse=no
 ip_forward=0
 nft=ok
-docker=missing
-lxc_nesting=0
+docker_installed=no
+docker_running=no
 netmgr=networkd
 pve_interfaces=0
 pve_ignore=0
@@ -553,6 +697,8 @@ virt_container=lxc
 virt_vm=none
 uid_map=0 0 4294967295
 pve_marker=1
+nesting=yes
+keyctl=no
 link_bridge=ok
 link_dummy=ok
 link_vlan=ok
@@ -563,13 +709,15 @@ link_vxlan=ok
 link_gretap=ok
 link_wireguard=ok
 tun=err:Operation not permitted
+fuse=yes
 ip_forward=1
 nft=ok
-docker=present
-docker_active=active
+docker_installed=yes
+docker_running=yes
+docker_version=29.1.2
+docker_storage=overlayfs
 docker_backend=iptables
 forward_policy=DROP
-lxc_nesting=1
 netmgr=ifupdown
 pve_interfaces=1
 pve_ignore=0
@@ -582,6 +730,8 @@ virt_container=none
 virt_vm=kvm
 uid_map=0 0 4294967295
 pve_marker=0
+nesting=yes
+keyctl=yes
 link_bridge=ok
 link_dummy=ok
 link_vlan=ok
@@ -592,12 +742,14 @@ link_vxlan=ok
 link_gretap=ok
 link_wireguard=ok
 tun=ok
+fuse=yes
 ip_forward=1
 nft=ok
-docker=present
-docker_active=active
+docker_installed=yes
+docker_running=yes
+docker_version=29.1.2
+docker_storage=overlayfs
 docker_backend=nftables
-forward_policy=
 netmgr=networkmanager
 vde_switch=2.3.3
 vde_plug=missing
@@ -608,6 +760,8 @@ virt_container=none
 virt_vm=none
 uid_map=0 0 4294967295
 pve_marker=0
+nesting=yes
+keyctl=yes
 link_bridge=ok
 link_dummy=err:RTNETLINK answers: Operation not permitted
 link_vlan=skipped
@@ -618,12 +772,11 @@ link_vxlan=ok
 link_gretap=ok
 link_wireguard=ok
 tun=ok
+fuse=yes
 ip_forward=1
 nft=missing
-docker=present
-docker_active=active
-docker_backend=iptables
-forward_policy=ACCEPT
+docker_installed=yes
+docker_running=no
 netmgr=none
 vde_switch=missing
 vde_plug=missing
@@ -637,6 +790,21 @@ vde_plug=missing
             .unwrap_or_else(|| panic!("no check {id}"))
     }
 
+    fn has(report: &Report, id: &str) -> bool {
+        report.checks.iter().any(|c| c.id == id)
+    }
+
+    /// a copy of the unprivileged sample with some keys changed.
+    fn with(replace: &[(&str, &str)]) -> Report {
+        let mut lines: Vec<String> = UNPRIVILEGED_PROXMOX.lines().map(str::to_string).collect();
+        for (key, value) in replace {
+            let prefix = format!("{key}=");
+            lines.retain(|l| !l.starts_with(&prefix));
+            lines.push(format!("{key}={value}"));
+        }
+        Report::parse(&lines.join("\n"))
+    }
+
     #[test]
     fn an_unprivileged_proxmox_container_is_told_what_to_change_on_the_host() {
         let report = Report::parse(UNPRIVILEGED_PROXMOX);
@@ -644,7 +812,7 @@ vde_plug=missing
             report.environment,
             Environment::Container {
                 technology: "lxc".into(),
-                privileged: false,
+                privilege: Privilege::Unprivileged,
                 proxmox: true
             }
         );
@@ -653,6 +821,15 @@ vde_plug=missing
             "unprivileged lxc container on proxmox"
         );
         assert_eq!(report.kernel, "6.8.12-4-pve");
+        assert_eq!(
+            report.system,
+            System {
+                hostname: "gateway".into(),
+                distro: "debian".into(),
+                distro_version: "13".into(),
+                init: "systemd".into()
+            }
+        );
         let vlan = check(&report, "link-vlan");
         assert_eq!(vlan.status, Status::Fail);
         assert!(vlan
@@ -670,19 +847,18 @@ vde_plug=missing
             .contains("ip_gre"));
         assert_eq!(check(&report, "link-bridge").status, Status::Ok);
         let tun = check(&report, "tun");
-        assert_eq!(
-            tun.fix.as_deref(),
-            Some("on the host: pct set <ctid> --dev0 /dev/net/tun, then restart the container")
-        );
+        assert_eq!(tun.fix.as_deref(), Some(PROXMOX_TUN_FIX));
+        assert!(PROXMOX_TUN_FIX.contains("pct set <CTID> --dev0 /dev/net/tun"));
         assert_eq!(check(&report, "ip-forward").status, Status::Warn);
         assert_eq!(check(&report, "docker").status, Status::Unknown);
-        let nesting = check(&report, "lxc-nesting");
-        assert_eq!(
-            nesting.fix.as_deref(),
-            Some("on the host: pct set <ctid> --features nesting=1,keyctl=1")
-        );
+        for id in ["lxc-nesting", "lxc-keyctl"] {
+            let c = check(&report, id);
+            assert_eq!(c.status, Status::Fail, "{id}");
+            assert_eq!(c.fix.as_deref(), Some(PROXMOX_FEATURES_FIX), "{id}");
+        }
         assert_eq!(check(&report, "network-manager").status, Status::Ok);
         assert_eq!(check(&report, "vde").status, Status::Warn);
+        assert_eq!(check(&report, "fuse").status, Status::Unknown);
         assert!(check(&report, "proxmox-macfilter")
             .fix
             .as_deref()
@@ -692,16 +868,24 @@ vde_plug=missing
     }
 
     #[test]
-    fn a_privileged_container_with_dockers_drop_policy_gets_the_daemon_fix() {
+    fn a_privileged_container_needs_no_keyctl_and_gets_the_daemon_fix_for_dockers_drop_policy() {
         let report = Report::parse(PRIVILEGED);
         assert!(matches!(
             report.environment,
             Environment::Container {
-                privileged: true,
+                privilege: Privilege::Privileged,
                 proxmox: true,
                 ..
             }
         ));
+        let keyctl = check(&report, "lxc-keyctl");
+        assert_eq!(
+            keyctl.status,
+            Status::Ok,
+            "a privileged container needs none"
+        );
+        assert!(keyctl.detail.contains("not needed"));
+        assert_eq!(check(&report, "lxc-nesting").status, Status::Ok);
         let docker = check(&report, "docker");
         assert_eq!(docker.status, Status::Fail);
         assert!(docker
@@ -718,11 +902,68 @@ vde_plug=missing
             manager.fix.as_deref(),
             Some("touch /etc/network/.pve-ignore.interfaces")
         );
-        assert_eq!(check(&report, "lxc-nesting").status, Status::Ok);
+        assert_eq!(check(&report, "fuse").status, Status::Ok);
         assert_eq!(
             check(&report, "vde").detail,
             "vde_switch 2.3.3, vde_plug 4.0.1"
         );
+    }
+
+    #[test]
+    fn only_a_definite_no_fails_and_a_probe_that_could_not_tell_is_unknown() {
+        let report = with(&[("nesting", "unknown"), ("keyctl", "unknown")]);
+        for id in ["lxc-nesting", "lxc-keyctl"] {
+            let c = check(&report, id);
+            assert_eq!(c.status, Status::Unknown, "{id}");
+            assert!(c.detail.starts_with("can't tell"), "{id}: {}", c.detail);
+            assert!(c.fix.is_some());
+        }
+        let report = with(&[("nesting", "yes"), ("keyctl", "yes")]);
+        assert_eq!(check(&report, "lxc-nesting").status, Status::Ok);
+        assert_eq!(check(&report, "lxc-keyctl").status, Status::Ok);
+        // a missing key is not a no either
+        let report = Report::parse("virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\n");
+        assert_eq!(check(&report, "lxc-nesting").status, Status::Unknown);
+    }
+
+    #[test]
+    fn keyctl_is_needed_unless_the_container_is_known_to_be_privileged() {
+        // an unreadable uid map can't prove the container is privileged
+        let report = with(&[("uid_map", ""), ("keyctl", "no")]);
+        assert_eq!(
+            report.environment,
+            Environment::Container {
+                technology: "lxc".into(),
+                privilege: Privilege::Unknown,
+                proxmox: true
+            }
+        );
+        assert!(report.environment.needs_keyctl());
+        assert_eq!(check(&report, "lxc-keyctl").status, Status::Fail);
+        assert_eq!(report.environment.describe(), "lxc container on proxmox");
+        let report = with(&[("uid_map", "0 0 4294967295"), ("keyctl", "no")]);
+        assert!(!report.environment.needs_keyctl());
+        assert_eq!(check(&report, "lxc-keyctl").status, Status::Ok);
+    }
+
+    #[test]
+    fn lxc_libvirt_and_other_managers_get_no_proxmox_container_checks() {
+        let report = with(&[("virt_container", "lxc-libvirt")]);
+        assert!(!report.environment.is_lxc());
+        assert!(!has(&report, "lxc-nesting") && !has(&report, "lxc-keyctl"));
+        assert_eq!(
+            report.environment.describe(),
+            "unprivileged lxc-libvirt container on proxmox"
+        );
+        let report = with(&[("virt_container", "docker")]);
+        let nested = check(&report, "nested-container");
+        assert_eq!(nested.status, Status::Warn);
+        assert!(nested.detail.contains("docker container"));
+        assert!(!has(&report, "lxc-nesting"));
+        let report = with(&[("virt_container", "podman")]);
+        assert!(has(&report, "nested-container"));
+        let report = with(&[("virt_container", "systemd-nspawn")]);
+        assert!(!has(&report, "nested-container") && !has(&report, "lxc-nesting"));
     }
 
     #[test]
@@ -734,15 +975,9 @@ vde_plug=missing
                 hypervisor: "kvm".into()
             }
         );
-        assert!(report
-            .checks
-            .iter()
-            .all(|c| c.id != "lxc-nesting" && c.id != "proxmox-macfilter"));
-        assert_eq!(
-            check(&report, "docker").status,
-            Status::Warn,
-            "nftables backend"
-        );
+        assert!(!has(&report, "lxc-nesting") && !has(&report, "proxmox-macfilter"));
+        let docker = check(&report, "docker");
+        assert_eq!(docker.status, Status::Warn, "nftables backend");
         assert_eq!(check(&report, "tun").status, Status::Ok);
         let vde = check(&report, "vde");
         assert_eq!(vde.status, Status::Warn);
@@ -753,6 +988,7 @@ vde_plug=missing
     fn bare_metal_reports_blocked_and_untried_links() {
         let report = Report::parse(BARE_METAL);
         assert_eq!(report.environment, Environment::BareMetal);
+        assert_eq!(report.environment.describe(), "bare metal");
         let dummy = check(&report, "link-dummy");
         assert_eq!(dummy.status, Status::Warn);
         assert!(dummy.detail.contains("not allowed"));
@@ -761,8 +997,26 @@ vde_plug=missing
         let nft = check(&report, "nftables");
         assert_eq!(nft.status, Status::Fail);
         assert!(nft.fix.as_deref().unwrap().contains("nftables"));
-        assert_eq!(check(&report, "docker").status, Status::Ok);
+        let docker = check(&report, "docker");
+        assert_eq!(docker.status, Status::Warn);
+        assert_eq!(docker.detail, "docker is installed but not running");
         assert_eq!(check(&report, "network-manager").status, Status::Warn);
+    }
+
+    #[test]
+    fn a_running_docker_says_which_version_and_backend() {
+        let report = Report::parse(&UNPRIVILEGED_PROXMOX.replace(
+            "docker_installed=no\ndocker_running=no",
+            "docker_installed=yes\ndocker_running=yes\ndocker_version=29.1.2\ndocker_storage=overlayfs",
+        ));
+        let docker = check(&report, "docker");
+        assert_eq!(docker.status, Status::Ok);
+        assert_eq!(
+            docker.detail,
+            "docker 29.1.2 is running (storage driver overlayfs, iptables firewall backend)"
+        );
+        let report = with(&[("docker_installed", "")]);
+        assert_eq!(check(&report, "docker").status, Status::Unknown);
     }
 
     #[test]
@@ -771,7 +1025,7 @@ vde_plug=missing
         assert!(bare.starts_with("modprobe 8021q"));
         let container = Environment::Container {
             technology: "lxc".into(),
-            privileged: false,
+            privilege: Privilege::Unprivileged,
             proxmox: false,
         };
         assert!(load_module(&container, "8021q").starts_with("on the host:"));
@@ -805,13 +1059,10 @@ vde_plug=missing
         assert!(failed.detail.contains("File exists"));
         let nft = nft_check("err:Operation not permitted");
         assert_eq!(nft.status, Status::Fail);
-        let docker = docker_check(&Environment::BareMetal, &|k| match k {
-            "docker" => "present",
-            "docker_active" => "failed",
-            _ => "",
-        });
-        assert_eq!(docker.status, Status::Warn);
         assert!(Status::Unknown.glyph() != Status::Ok.glyph());
+        // an unknown container manager is not a container
+        let report = Report::parse("virt_container=unknown\nvirt_vm=none\n");
+        assert_eq!(report.environment, Environment::Unknown);
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod clock;
 pub mod config;
 pub mod crypto;
 pub mod doctor;
+pub mod env;
 pub mod exec;
 pub mod hosts;
 pub mod leases;

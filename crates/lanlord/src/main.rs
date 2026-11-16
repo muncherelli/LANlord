@@ -1,11 +1,16 @@
+mod launcher;
+#[cfg(feature = "webui")]
+mod webui;
+
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
-use lanlord_core::ops::{execute, Op, Reply, Response};
+use lanlord_core::ops::{execute, Op, Reply, Request, Response};
 use lanlord_core::users::Change;
 use lanlord_core::{crypto, paths};
 
@@ -137,8 +142,18 @@ enum AdminCommand {
 enum Command {
     /// open the native window
     Gui,
-    /// run the web server
-    Webui,
+    /// run the web server on a gateway (caddy serves it over https on port 8443)
+    Webui {
+        /// the unix socket to listen on
+        #[arg(long, value_name = "PATH", default_value = "/run/lanlord-web/web.sock")]
+        socket: PathBuf,
+        /// listen on this tcp address instead of the socket, to try the server out
+        #[arg(long, value_name = "ADDRESS")]
+        listen: Option<std::net::SocketAddr>,
+        /// the browser build to serve (default: the web folder beside the binary's folder)
+        #[arg(long = "static", value_name = "DIR")]
+        static_dir: Option<PathBuf>,
+    },
     /// install the gateway payload on a host
     Bootstrap {
         host: String,
@@ -213,7 +228,8 @@ enum Command {
     },
     /// show what a server is: its system, uptime, memory and network interfaces
     Facts { host: String },
-    /// check what a gateway can do for lanlord's networks, and how to fix what it can't
+    /// check what a server can do for lanlord (docker, networks, tunnels) and how to fix the rest
+    #[command(alias = "check")]
     Doctor {
         host: String,
         /// print the report as json
@@ -241,9 +257,20 @@ enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// add LANlord to the start menu (windows), applications (macos) or the app menu (linux)
-    InstallLauncher,
+    InstallLauncher {
+        /// show what would be written without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// replace launcher files that install-launcher didn't write
+        #[arg(long)]
+        force: bool,
+    },
     /// remove the launcher added by install-launcher
-    UninstallLauncher,
+    UninstallLauncher {
+        /// show what would be removed without removing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// ask for a password on the terminal.
@@ -515,15 +542,26 @@ fn doctor(host: &str, json: bool) -> Result<()> {
             println!("{line}");
         }
     }
+    if report.worst() == lanlord_core::doctor::Status::Fail {
+        bail!("this server has problems that need fixing; see the fixes above");
+    }
     Ok(())
 }
 
-/// the doctor report as text: where the gateway runs, then one line per check with its fix
+/// the doctor report as text: what the machine is, then one line per check with its fix
 /// indented under it.
 fn doctor_lines(report: &lanlord_core::doctor::Report) -> Vec<String> {
+    let system = &report.system;
     let mut lines = vec![
+        format!("machine:  {}", or_dash(&system.hostname)),
         format!("runs on:  {}", report.environment.describe()),
-        format!("kernel:   {}", report.kernel),
+        format!(
+            "system:   {} {}, kernel {}, init {}",
+            or_dash(&system.distro),
+            system.distro_version,
+            or_dash(&report.kernel),
+            or_dash(&system.init)
+        ),
         String::new(),
     ];
     let width = report
@@ -544,6 +582,14 @@ fn doctor_lines(report: &lanlord_core::doctor::Report) -> Vec<String> {
         }
     }
     lines
+}
+
+fn or_dash(text: &str) -> &str {
+    if text.is_empty() {
+        "-"
+    } else {
+        text
+    }
 }
 
 /// the server's facts as labelled lines.
@@ -587,24 +633,73 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
     lines
 }
 
-/// one operation in, one reply out, both as json; what the web ui backend calls.
+/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the op
+/// without asking for confirmation (the front end that sent it already did) and never prompts on
+/// the terminal: a sudo password comes in the request, or the reply asks for one.
 fn op(host: &str) -> Result<()> {
-    let mut input = String::new();
+    // the op may carry passwords
+    let mut input = zeroize::Zeroizing::new(String::new());
     std::io::stdin().read_to_string(&mut input)?;
-    let response = respond(&input, |op| execute(host, op, &mut ask));
-    println!("{}", serde_json::to_string(&response)?);
-    if matches!(response, Response::Error(_)) {
+    let answered = answer(
+        &input,
+        |op, ask| execute(host, op, ask),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )?;
+    if !answered {
         std::process::exit(1);
     }
     Ok(())
 }
 
-/// read `input` as an operation and answer it with `run`.
-fn respond(input: &str, run: impl FnOnce(&Op) -> Result<Reply>) -> Response {
-    match serde_json::from_str::<Op>(input) {
-        Ok(op) => run(&op).into(),
-        Err(e) => Response::Error(format!("not an operation: {e}")),
+/// answer `input` with exactly one json line on `out`. whatever the server printed while the op
+/// ran goes to `err`, so `out` stays readable by a program. false when the answer is an error.
+fn answer(
+    input: &str,
+    run: impl FnOnce(&Op, AskPassword) -> Result<Reply>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<bool> {
+    use lanlord_core::log::{self, Kind};
+    let printed = log::subscribe();
+    let response = respond(input, run);
+    for line in printed.try_iter() {
+        if line.kind != Kind::Debug {
+            writeln!(err, "{}", line.text)?;
+        }
     }
+    writeln!(out, "{}", serde_json::to_string(&response)?)?;
+    Ok(!matches!(response, Response::Error(_)))
+}
+
+/// read `input` as a request (or a bare op) and answer it with `run`. sudo prompts are answered
+/// with the request's password; without one the reply asks for it instead.
+fn respond(input: &str, run: impl FnOnce(&Op, AskPassword) -> Result<Reply>) -> Response {
+    let request = match read_request(input) {
+        Ok(request) => request,
+        Err(e) => return Response::Error(format!("not an operation: {e}")),
+    };
+    let mut asked = None;
+    let result = {
+        let mut ask = |prompt: &str| match &request.password {
+            Some(password) => Ok(password.expose().to_string()),
+            None => {
+                asked.get_or_insert_with(|| prompt.to_string());
+                bail!("the sudo password is needed")
+            }
+        };
+        run(&request.op, &mut ask)
+    };
+    match asked {
+        Some(prompt) => Response::Ok(Reply::NeedsPassword { prompt }),
+        None => result.into(),
+    }
+}
+
+/// a request, or a bare op as older callers send it.
+fn read_request(input: &str) -> serde_json::Result<Request> {
+    serde_json::from_str::<Request>(input)
+        .or_else(|_| serde_json::from_str::<Op>(input).map(|op| Request { op, password: None }))
 }
 
 fn admin(host: &str, action: AdminCommand) -> Result<()> {
@@ -671,7 +766,20 @@ fn main() -> Result<()> {
         Some(Command::Gui) => lanlord_ui::run(),
         #[cfg(not(feature = "gui"))]
         Some(Command::Gui) => bail!("this build has no gui; install the desktop build"),
-        Some(Command::Webui) => bail!("webui is not implemented yet"),
+        #[cfg(feature = "webui")]
+        Some(Command::Webui {
+            socket,
+            listen,
+            static_dir,
+        }) => webui::run(webui::Options {
+            socket,
+            listen,
+            static_dir,
+        }),
+        #[cfg(not(feature = "webui"))]
+        Some(Command::Webui { .. }) => {
+            bail!("this build has no web server; build lanlord with --features webui")
+        }
         Some(Command::Bootstrap {
             host,
             ansible,
@@ -745,9 +853,8 @@ fn main() -> Result<()> {
             };
             std::process::exit(exec(&target, &command)?);
         }
-        Some(Command::InstallLauncher | Command::UninstallLauncher) => {
-            bail!("launcher setup is not implemented yet")
-        }
+        Some(Command::InstallLauncher { dry_run, force }) => launcher::install(dry_run, force),
+        Some(Command::UninstallLauncher { dry_run }) => launcher::uninstall(dry_run),
     }
 }
 
@@ -768,6 +875,10 @@ mod tests {
     fn leases_and_facts_take_a_host() {
         assert!(matches!(parse(&["leases", "gw"]), Command::Leases { host } if host == "gw"));
         assert!(matches!(parse(&["facts", "gw"]), Command::Facts { host } if host == "gw"));
+    }
+
+    #[test]
+    fn doctor_takes_a_host_and_check_is_its_old_name() {
         assert!(
             matches!(parse(&["doctor", "gw"]), Command::Doctor { host, json: false } if host == "gw")
         );
@@ -775,6 +886,7 @@ mod tests {
             parse(&["doctor", "gw", "--json"]),
             Command::Doctor { json: true, .. }
         ));
+        assert!(matches!(parse(&["check", "gw"]), Command::Doctor { host, .. } if host == "gw"));
     }
 
     #[test]
@@ -834,11 +946,12 @@ mod tests {
     #[test]
     fn the_doctor_report_shows_each_check_with_its_fix_under_it() {
         let report = lanlord_core::doctor::Report::parse(
-            "kernel=6.1.0\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nlink_bridge=ok\ntun=missing\n",
+            "kernel=6.1.0\nhostname=gw\ndistro=debian\ndistro_version=13\ninit=systemd\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nlink_bridge=ok\ntun=missing\n",
         );
         let lines = doctor_lines(&report);
-        assert_eq!(lines[0], "runs on:  unprivileged lxc container on proxmox");
-        assert_eq!(lines[1], "kernel:   6.1.0");
+        assert_eq!(lines[0], "machine:  gw");
+        assert_eq!(lines[1], "runs on:  unprivileged lxc container on proxmox");
+        assert_eq!(lines[2], "system:   debian 13, kernel 6.1.0, init systemd");
         assert!(
             lines.iter().any(|l| l.starts_with("[+] bridges")),
             "{lines:?}"
@@ -849,7 +962,8 @@ mod tests {
             .unwrap();
         assert!(lines[tun + 1]
             .trim_start()
-            .starts_with("fix: on the host: pct set <ctid> --dev0 /dev/net/tun"));
+            .starts_with("fix: on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun`"));
+        assert_eq!(or_dash(""), "-");
     }
 
     #[test]
@@ -910,17 +1024,98 @@ mod tests {
 
     #[test]
     fn op_answers_json_with_a_reply_or_an_error() {
-        let ok = respond(r#"{"op":"leases"}"#, |op| {
+        let ok = respond(r#"{"op":"leases"}"#, |op, _| {
             assert_eq!(op, &Op::Leases);
             Ok(Reply::Leases(vec![]))
         });
         assert_eq!(ok, Response::Ok(Reply::Leases(vec![])));
-        let failed = respond(r#"{"op":"server_facts"}"#, |_| bail!("no route to host"));
+        let failed = respond(r#"{"op":"server_facts"}"#, |_, _| bail!("no route to host"));
         assert_eq!(failed, Response::Error("no route to host".into()));
-        let garbage = respond("not json", |_| unreachable!("never runs"));
+        let garbage = respond("not json", |_, _| unreachable!("never runs"));
         assert!(matches!(garbage, Response::Error(e) if e.starts_with("not an operation")));
         let json = serde_json::to_string(&ok).unwrap();
         assert!(json.starts_with(r#"{"ok":"#), "{json}");
+    }
+
+    #[test]
+    fn a_request_answers_sudo_with_its_password() {
+        let input = r#"{"op":{"op":"leases"},"password":"s3cret"}"#;
+        let response = respond(input, |op, ask| {
+            assert_eq!(op, &Op::Leases);
+            assert_eq!(ask("[sudo] password for admin:")?, "s3cret");
+            assert_eq!(ask("[sudo] password for admin:")?, "s3cret", "asked again");
+            Ok(Reply::Leases(vec![]))
+        });
+        assert_eq!(response, Response::Ok(Reply::Leases(vec![])));
+    }
+
+    #[test]
+    fn without_a_password_the_reply_asks_for_one() {
+        for input in [
+            r#"{"op":{"op":"leases"}}"#,
+            r#"{"op":{"op":"leases"},"password":null}"#,
+            r#"{"op":"leases"}"#,
+        ] {
+            let response = respond(input, |_, ask| {
+                // the op fails once its prompt is refused, whatever it says
+                ask("[sudo] password for admin:")?;
+                unreachable!("there is no password to give")
+            });
+            assert_eq!(
+                response,
+                Response::Ok(Reply::NeedsPassword {
+                    prompt: "[sudo] password for admin:".into()
+                }),
+                "{input}"
+            );
+        }
+        // an op that never asks runs as before
+        let response = respond(r#"{"op":{"op":"probe"}}"#, |_, _| Ok(Reply::Done));
+        assert_eq!(response, Response::Ok(Reply::Done));
+    }
+
+    #[test]
+    fn the_first_prompt_is_the_one_shown() {
+        let response = respond(r#"{"op":{"op":"leases"}}"#, |_, ask| {
+            let _ = ask("first:");
+            let _ = ask("second:");
+            bail!("refused")
+        });
+        assert_eq!(
+            response,
+            Response::Ok(Reply::NeedsPassword {
+                prompt: "first:".into()
+            })
+        );
+    }
+
+    #[test]
+    fn op_writes_exactly_one_json_line_whatever_the_server_prints() {
+        use lanlord_core::log::{emit, Kind};
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let answered = answer(
+            r#"{"op":"run","command":["uptime"]}"#,
+            |_, _| {
+                emit(Kind::Out, "op-test: up 3 days");
+                emit(Kind::Err, "op-test: a warning");
+                Ok(Reply::ExitCode(0))
+            },
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        assert!(answered);
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.lines().count(), 1, "{out:?}");
+        let reply: Response = serde_json::from_str(out.trim_end()).unwrap();
+        assert_eq!(reply, Response::Ok(Reply::ExitCode(0)));
+        let err = String::from_utf8(err).unwrap();
+        assert!(err.contains("op-test: up 3 days") && err.contains("op-test: a warning"));
+
+        let mut out = Vec::new();
+        let answered = answer("{}", |_, _| unreachable!(), &mut out, &mut Vec::new()).unwrap();
+        assert!(!answered);
+        assert!(String::from_utf8(out).unwrap().starts_with(r#"{"error":"#));
     }
 
     #[test]
@@ -937,5 +1132,18 @@ mod tests {
             !help.lines().any(|l| l.trim_start().starts_with("op ")),
             "{help}"
         );
+    }
+
+    #[test]
+    fn the_web_server_has_its_own_runtime_folder() {
+        // /run/lanlord holds the decrypted settings during an apply; the web server's socket
+        // folder is mounted into the proxy, so it must be a different one
+        let Some(Command::Webui { socket, .. }) =
+            Cli::try_parse_from(["lanlord", "webui"]).unwrap().command
+        else {
+            panic!("webui parses");
+        };
+        assert_eq!(socket, PathBuf::from("/run/lanlord-web/web.sock"));
+        assert!(!socket.starts_with("/run/lanlord/"));
     }
 }
