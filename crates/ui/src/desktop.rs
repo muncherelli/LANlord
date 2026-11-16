@@ -5,11 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{
-    self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
-};
+use eframe::egui::{self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, Sense, Ui, Vec2};
 use lanlord_core::log::{emit, Kind};
-use lanlord_core::modules::{Module, Status, MODULES};
+use lanlord_core::modules::{Module, MODULES};
 use lanlord_core::update;
 
 mod menu;
@@ -19,7 +17,6 @@ use menu::Confirm;
 use crate::admin_setup::{self, AdminSetup};
 use crate::clock_panel::{ClockFeed, ClockPanel};
 use crate::command_panel::CommandPanel;
-use crate::console::{self, Console};
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
@@ -32,12 +29,15 @@ use crate::nt4_window::Nt4Window;
 use crate::settings_editor::SettingsEditor;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
 use crate::update_panel::{Choice, Updates};
+use crate::view;
 use crate::windows;
+use lanlord_app::console::Console;
 use lanlord_app::desktop::Target;
 use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::services::Services;
 use lanlord_app::tasks::PasswordRequest;
+use lanlord_app::{hosts_window, module_window};
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
@@ -121,7 +121,7 @@ impl Desktop {
             active: None,
             start_open: false,
             hosts: HostList::new(hosts_path),
-            console: Console::new(ctx),
+            console: Console::new(crate::wake(ctx)),
             ctx: ctx.clone(),
             services,
             settings: SettingsEditor::default(),
@@ -851,23 +851,7 @@ impl Desktop {
     }
 
     fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
-        ui.horizontal(|ui| {
-            icons::draw(ui.painter(), ui.cursor().min, icons::art(module.id), 1.0);
-            ui.add_space(40.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(module.name).size(16.0).strong());
-                let status = match module.status {
-                    Status::Available => "available",
-                    Status::Planned => "planned - not built yet",
-                };
-                ui.label(format!("Status: {status}"));
-            });
-        });
-        ui.add_space(2.0);
-        ui.label(module.summary);
-        ui.add_space(4.0);
-        controls::separator(ui);
-        ui.add_space(4.0);
+        view::show::<()>(ui, &module_window::header(module));
         let host = self.host();
         match module.id {
             "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
@@ -877,104 +861,33 @@ impl Desktop {
                 self.commands
                     .show(ui, &self.services, host.as_deref(), machines);
             }
-            _ => self.plain_module(ui, module, host),
-        }
-    }
-
-    /// a module with nothing to edit yet: its example settings and an Apply button.
-    fn plain_module(&mut self, ui: &mut Ui, module: &'static Module, host: Option<String>) {
-        controls::group(ui, "Settings (in your settings file)", |ui| {
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(module.example).monospace());
-            });
-        });
-        ui.add_space(6.0);
-        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-        let ready = module.status == Status::Available && !busy;
-        controls::buttons(ui, |ui| {
-            let apply = theme::action(ui, "Apply", ready && host.is_some());
-            if let (true, Some(host)) = (apply.clicked(), &host) {
-                self.services.apply(host, vec![module.id.to_string()]);
+            _ => {
+                let nodes = module_window::plain(module, &self.services, host.as_deref());
+                if let Some(msg) = view::show(ui, &nodes) {
+                    module_window::update(msg, module, &self.services, host.as_deref());
+                }
             }
-        });
-        let status = match (&host, busy) {
-            (None, _) => "No host selected".to_string(),
-            (Some(host), true) => format!("Host: {host} - working..."),
-            (Some(host), false) => format!("Host: {host}"),
-        };
-        controls::status_bar(ui, &status, false);
+        }
     }
 
     fn console_window(&mut self, ui: &mut Ui) {
-        let height = controls::fill_height(ui);
-        theme::sunken(ui, BLACK, |ui| {
-            ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .max_height(height)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.set_min_height(height);
-                    for line in self.console.lines() {
-                        let text = RichText::new(&line.text)
-                            .monospace()
-                            .color(console::colour(line.kind));
-                        ui.label(text);
-                    }
-                });
-        });
+        view::show::<()>(ui, &self.console.view());
     }
 
     fn hosts_window(&mut self, ui: &mut Ui) {
-        if self.services.is_local() {
-            ui.label("This computer is the server; there are no other hosts to pick.");
+        let nodes = hosts_window::view(&self.hosts, &self.services, self.services.is_local());
+        let Some(msg) = view::show(ui, &nodes) else {
             return;
+        };
+        let ask = hosts_window::update(msg, &mut self.hosts, &self.services);
+        if ask == Some(hosts_window::Ask::AddHost) && self.add_host.is_none() {
+            self.add_host = Some(TextDialog::new(
+                "add-host",
+                "Add a host",
+                "Gateway as user@host:",
+                false,
+            ));
         }
-        let mut picked = None;
-        controls::group(ui, "Gateways lanlord manages", |ui| {
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(100.0);
-                if self.hosts.hosts().is_empty() {
-                    ui.label("No gateways yet. Click Add... and type user@gateway.");
-                }
-                for (i, host) in self.hosts.hosts().iter().enumerate() {
-                    if theme::list_row(ui, host, self.hosts.selected_index() == i).clicked() {
-                        picked = Some(i);
-                    }
-                }
-            });
-        });
-        if let Some(i) = picked {
-            self.hosts.select(i);
-        }
-        ui.add_space(6.0);
-        let host = self.host();
-        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-        let ready = host.is_some() && !busy;
-        ui.horizontal(|ui| {
-            if theme::action(ui, "Add...", true).clicked() && self.add_host.is_none() {
-                self.add_host = Some(TextDialog::new(
-                    "add-host",
-                    "Add a host",
-                    "Gateway as user@host:",
-                    false,
-                ));
-            }
-            if theme::action(ui, "Remove", ready).clicked() {
-                if let Err(error) = self.hosts.remove_selected() {
-                    emit(Kind::Err, error);
-                }
-            }
-            if theme::action(ui, "Bootstrap", ready).clicked() {
-                if let Some(host) = &host {
-                    self.services.bootstrap(host);
-                }
-            }
-        });
-        ui.add_space(6.0);
-        controls::status_bar(ui, if busy { "working..." } else { "ready" }, false);
     }
 }
 

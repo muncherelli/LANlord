@@ -3,11 +3,14 @@
 //! the actions; each front end only draws that description and turns input back into
 //! actions.
 
+pub mod console;
 pub mod demo_clock;
 pub mod desktop;
 pub mod gateway;
 pub mod hostlist;
+pub mod hosts_window;
 pub mod menu;
+pub mod module_window;
 pub mod my_server;
 pub mod remote;
 pub mod services;

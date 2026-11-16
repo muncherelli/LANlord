@@ -8,6 +8,8 @@
 //!
 //! windows move to this tree one by one; the variants grow with them.
 
+pub use lanlord_core::log::Kind;
+
 /// a piece of a window, carrying the message type `M` of the window it belongs to.
 pub enum Node<M> {
     /// a line of plain text.
@@ -56,6 +58,33 @@ pub enum Node<M> {
         lines: Vec<String>,
         height: f32,
     },
+    /// the black console: coloured lines that fill the window and follow the newest one.
+    Log {
+        id: &'static str,
+        lines: Vec<(Kind, String)>,
+    },
+    /// a one-column list in a white box; clicking an item sends `select(index)`. `empty` is
+    /// shown when there are no items.
+    List {
+        id: &'static str,
+        items: Vec<String>,
+        selected: Option<usize>,
+        min_height: f32,
+        empty: String,
+        select: fn(usize) -> M,
+    },
+    /// a row of buttons, left aligned, in order.
+    Toolbar(Vec<Button<M>>),
+    /// a window's big icon (by icon id) beside its title and a few lines about it.
+    Header {
+        icon: &'static str,
+        title: String,
+        lines: Vec<String>,
+    },
+    /// fixed-width text in a white box, such as an example settings file.
+    Code(String),
+    /// a thin etched line across the window.
+    Separator,
 }
 
 impl<M> Node<M> {

@@ -4,10 +4,12 @@
 use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, Ui};
 use lanlord_app::view::{Dialog, Node};
 
+use crate::console;
 use crate::controls;
 use crate::dialogs;
+use crate::icons;
 use crate::remote::RED;
-use crate::theme::{self, WHITE};
+use crate::theme::{self, BLACK, WHITE};
 use crate::widgets::Table;
 
 /// draw `nodes` top to bottom; the message of a click, if there was one.
@@ -122,6 +124,88 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                         }
                     });
             });
+            None
+        }
+        Node::Log { id, lines } => {
+            let height = controls::fill_height(ui);
+            theme::sunken(ui, BLACK, |ui| {
+                ui.set_width(ui.available_width());
+                ScrollArea::vertical()
+                    .id_salt(*id)
+                    .stick_to_bottom(true)
+                    .max_height(height)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.set_min_height(height);
+                        for (kind, text) in lines {
+                            let line = RichText::new(text.as_str())
+                                .monospace()
+                                .color(console::colour(*kind));
+                            ui.label(line);
+                        }
+                    });
+            });
+            None
+        }
+        Node::List {
+            id,
+            items,
+            selected,
+            min_height,
+            empty,
+            select,
+        } => {
+            let mut picked = None;
+            ui.push_id(*id, |ui| {
+                theme::sunken(ui, WHITE, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.set_min_height(*min_height);
+                    if items.is_empty() {
+                        ui.label(empty.as_str());
+                    }
+                    for (i, item) in items.iter().enumerate() {
+                        if theme::list_row(ui, item, *selected == Some(i)).clicked() {
+                            picked = Some(i);
+                        }
+                    }
+                });
+            });
+            picked.map(select)
+        }
+        Node::Toolbar(buttons) => {
+            ui.horizontal(|ui| {
+                let mut sent = None;
+                for button in buttons {
+                    if theme::action(ui, &button.label, button.enabled).clicked() {
+                        sent = Some(button.press.clone());
+                    }
+                }
+                sent
+            })
+            .inner
+        }
+        Node::Header { icon, title, lines } => {
+            ui.horizontal(|ui| {
+                icons::draw(ui.painter(), ui.cursor().min, icons::art(icon), 1.0);
+                ui.add_space(40.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title.as_str()).size(16.0).strong());
+                    for line in lines {
+                        ui.label(line.as_str());
+                    }
+                });
+            });
+            None
+        }
+        Node::Code(text) => {
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(text.as_str()).monospace());
+            });
+            None
+        }
+        Node::Separator => {
+            controls::separator(ui);
             None
         }
     }
