@@ -63,23 +63,25 @@ The software share is off by default too. Set `software: true` to add a `softwar
 
 ## The web UI
 
-The web UI runs only on the gateway. `lanlord webui` listens on the unix socket `/run/lanlord/web.sock` (no TCP port) as the unprivileged `lanlord` account, through the `lanlord-webui` systemd service that the Web Proxy module installs. It serves the browser build from `/opt/lanlord/web` (the `web` folder beside the binary's `bin` folder, or `--static DIR`), looking for it on every request, so a new build needs no restart. Until a build is there it shows a placeholder page, and a missing file such as a `.wasm` or `.js` is always a 404, never a page. Caddy answers on port 8443 of the normal network address only, never the retronet, and proxies to the socket.
+The web UI runs only on the gateway. `lanlord webui` listens on the unix socket `/run/lanlord-web/web.sock` (no TCP port) as the unprivileged `lanlord` account, through the `lanlord-webui` systemd service that the Web Proxy module installs. It serves the browser build from `/opt/lanlord/web` (the `web` folder beside the binary's `bin` folder, or `--static DIR`), looking for it on every request, so a new build needs no restart. Until a build is there it shows a placeholder page, and a missing file such as a `.wasm` or `.js` is always a 404, never a page. Dot files and anything a link leads to outside the build are never served. Caddy answers on port 8443 of the normal network address only, never the retronet, and proxies to the socket.
 
-The socket and its folder belong to the `lanlord-web` group (gid 9990), which gives access to nothing else. The proxy reaches the socket in one of two ways:
+The socket and its own folder, `/run/lanlord-web`, belong to the `lanlord-web` group (gid 9990), which gives access to nothing else. It is deliberately not `/run/lanlord`, where an apply keeps the decrypted settings. The proxy reaches the socket in one of two ways:
 
-- this module's Caddy container runs as root and gets `/run/lanlord` mounted (the folder survives service restarts, so the mount stays valid). This is the default, `proxy_user: root`.
-- a Caddy installed from a package runs as its own account. Set `proxy_user: caddy` (or whatever account it runs as) and the module adds that account to `lanlord-web`; restart that Caddy afterwards so it picks up the group.
+- this module's Caddy container runs as root and gets only `/run/lanlord-web` mounted, read-only (the folder survives service restarts, so the mount stays valid). This is the default, `proxy_user: root`.
+- a Caddy installed from a package runs as its own account. Set `proxy_user: caddy` (or whatever account it runs as) and the module adds that existing account to `lanlord-web` (it never creates one); restart that Caddy afterwards so it picks up the group.
+
+Every web UI response carries a content security policy (the app's page lists the hashes of its own inline loader script; anything else gets the plain policy), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, from the app and again from Caddy, which also drops its `Server` header and adds `Strict-Transport-Security` with a real certificate (not with `internal`). The service runs with a private network, no capabilities and a system call filter.
 
 ```yaml
 web-proxy:
   webui:
-    tls: internal               # letsencrypt-dns, cloudflare-origin, or internal (test gateways only)
+    tls: internal               # required: letsencrypt-dns, cloudflare-origin, or internal (test gateways only)
     host: gateway.example.lan   # default: the normal network address
     port: 8443                  # the default
     proxy_user: root            # the default; caddy for a packaged caddy
 ```
 
-The web UI is HTTPS only, and it stays off until `tls` names a certificate method:
+The web UI is HTTPS only, so a `webui` section must name a certificate method in `tls`, or the apply stops and says so. Leave the section out to have no web UI.
 
 - `cloudflare-origin` uses a Cloudflare origin certificate, for traffic that comes through Cloudflare. Put the certificate at `/opt/lanlord/caddy/config/webui-origin.pem` and its key at `/opt/lanlord/caddy/config/webui-origin.key`.
 - `letsencrypt-dns` (Let's Encrypt through a Cloudflare DNS challenge) is planned; it needs a Caddy build with the Cloudflare DNS module, so the module refuses it for now.

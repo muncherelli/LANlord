@@ -11,11 +11,10 @@
 #     - host: nostalgia.lan       # the name clients ask for
 #       upstream: 172.16.120.20:80
 #   webui:                        # the lanlord web ui, optional; only on the normal network, https only
-#     tls: internal               # letsencrypt-dns, cloudflare-origin or internal (development only);
-#                                 # off (the default) leaves the web ui out
+#     tls: internal               # required: letsencrypt-dns, cloudflare-origin or internal (development only)
 #     host: gateway.example.lan   # the name you browse to (default: the normal network address)
 #     port: 8443                  # the default
-#     upstream: unix//run/lanlord/web.sock   # the default: lanlord webui, run by systemd
+#     upstream: unix//run/lanlord-web/web.sock   # the default: lanlord webui, run by systemd
 #     proxy_user: root            # the account the proxy runs as: root for this module's caddy container
 #                                 # (the default), or e.g. caddy for a caddy installed from a package
 #   status:                       # the retronet status page on the internal address, optional
@@ -72,13 +71,13 @@
         webui_tls: "{{ 'off' if (webui_cfg.tls | default('off')) in ['off', false] else webui_cfg.tls }}"
         webui_host: "{{ webui_cfg.host | default(host_address) }}"
         webui_port: "{{ webui_cfg.port | default(8443) }}"
-        webui_upstream: "{{ webui_cfg.upstream | default('unix//run/lanlord/web.sock') }}"
+        webui_upstream: "{{ webui_cfg.upstream | default('unix//run/lanlord-web/web.sock') }}"
         webui_proxy_user: "{{ webui_cfg.proxy_user | default('root') }}"
       when: wp is defined
 
     - name: decide whether the web ui is served
       ansible.builtin.set_fact:
-        webui_on: "{{ wp.webui is defined and webui_tls != 'off' }}"
+        webui_on: "{{ wp.webui is defined }}"
         webui_socket: "{{ webui_upstream[6:] if webui_upstream is match('^unix//') else '' }}"
       when: wp is defined
 
@@ -89,7 +88,7 @@
           - proxy_listen | length > 0
           - proxy_listen | select('match', '^[0-9]{1,3}(\.[0-9]{1,3}){3}$') | list | length == proxy_listen | length
           - proxy_tls in ['off', 'internal']
-          - proxy_sites | length > 0 or wp.webui is defined
+          - proxy_sites | length > 0 or webui_on
           - proxy_sites | map(attribute='host') | list | length == proxy_sites | map(attribute='host') | list | unique | length
           - proxy_sites | map(attribute='host') | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$') | list | length == proxy_sites | length
           - proxy_sites | map(attribute='upstream') | select('match', '^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$') | list | length == proxy_sites | length
@@ -107,19 +106,20 @@
     - name: check the web ui settings
       ansible.builtin.assert:
         that:
-          - webui_tls in ['off', 'internal', 'letsencrypt-dns', 'cloudflare-origin']
+          - webui_tls in ['internal', 'letsencrypt-dns', 'cloudflare-origin']
           - webui_host is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
           - webui_host not in (proxy_sites | map(attribute='host') | list)
           - webui_port | string is match('^[0-9]{1,5}$') and (webui_port | int) >= 1 and (webui_port | int) <= 65535
           - (webui_port | int) not in [80, 443]
-          - webui_upstream is match('^unix///run/lanlord/[A-Za-z0-9._-]+\.sock$') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$')
+          - webui_upstream is match('^unix///run/lanlord-web/[A-Za-z0-9._-]+\.sock$') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$')
           - (host_address | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
           - webui_proxy_user is match('^[a-z_][a-z0-9_-]{0,31}$')
         fail_msg: >-
-          web-proxy webui settings: tls is letsencrypt-dns, cloudflare-origin, internal (development only) or off, host is a plain name
-          like gateway.example.lan that no site uses, port is a number other than 80 and 443 (8443 by default), upstream is
-          unix//run/lanlord/<name>.sock or an address like 127.0.0.1:8080, proxy_user is an account name like caddy,
-          and the normal network interface needs an address
+          web-proxy webui settings: the web ui is https only, so tls must name a certificate method: letsencrypt-dns,
+          cloudflare-origin or internal (test gateways only); remove the webui section to leave the web ui out. host is a
+          plain name like gateway.example.lan that no site uses, port is a number other than 80 and 443 (8443 by default),
+          upstream is unix//run/lanlord-web/<name>.sock or an address like 127.0.0.1:8080, proxy_user is an account name
+          like caddy, and the normal network interface needs an address
       when: wp is defined and wp.webui is defined
 
     # caddy's cloudflare dns plugin is not in the stock image yet
@@ -146,11 +146,6 @@
             fail_msg: >-
               web-proxy webui tls cloudflare-origin needs the certificate at {{ state_dir }}/config/webui-origin.pem
               and its key at {{ state_dir }}/config/webui-origin.key
-
-    - name: say that the web ui is left out
-      ansible.builtin.debug:
-        msg: "the web ui is left out until web-proxy webui has a tls method (letsencrypt-dns, cloudflare-origin or internal)"
-      when: wp is defined and wp.webui is defined and not webui_on
 
     - name: check that docker is installed
       ansible.builtin.command: docker info --format '{% raw %}{{.ServerVersion}}{% endraw %}'
@@ -239,11 +234,12 @@
             daemon_reload: true
 
     # lanlord webui runs as the unprivileged lanlord account with lanlord-web as its group, so
-    # its socket folder /run/lanlord and the socket belong to lanlord-web. the proxy reaches the
-    # socket as root (this module's caddy container, which gets the folder mounted below) or as a
-    # member of lanlord-web (proxy_user, e.g. a caddy installed from a package). lanlord-web gives
-    # nothing else: the lanlord group, which can read /opt/lanlord, stays private. the folder
-    # survives restarts so the container's mount never points at a removed folder.
+    # its own socket folder /run/lanlord-web and the socket belong to lanlord-web. that folder is
+    # not /run/lanlord, which holds the decrypted settings during an apply. the proxy reaches the
+    # socket as root (this module's caddy container, which gets only /run/lanlord-web mounted,
+    # read-only) or as a member of lanlord-web (proxy_user, e.g. a caddy installed from a
+    # package). lanlord-web gives nothing else. the folder survives restarts so the container's
+    # mount never points at a removed folder.
     - name: run lanlord webui
       when: wp is defined and webui_on and webui_socket != ''
       block:
@@ -252,6 +248,22 @@
             name: lanlord-web
             gid: 9990
             system: true
+
+        - name: look for the proxy account
+          ansible.builtin.command: getent passwd {{ webui_proxy_user }}
+          register: proxy_account
+          changed_when: false
+          failed_when: false
+          when: webui_proxy_user != 'root'
+
+        # never create the account: a typo would otherwise make a new user
+        - name: insist that the proxy account exists
+          ansible.builtin.assert:
+            that: proxy_account.rc == 0
+            fail_msg: >-
+              web-proxy webui proxy_user {{ webui_proxy_user }} does not exist on this machine; set it to the account
+              your proxy runs as (for example caddy), or leave it out for this module's caddy container
+          when: webui_proxy_user != 'root'
 
         - name: let the proxy account reach the socket
           ansible.builtin.user:
@@ -284,26 +296,36 @@
               [Service]
               User=lanlord
               Group=lanlord-web
+              # /opt/lanlord (the binary and the web build) is root:lanlord 0750
               SupplementaryGroups=lanlord
               ExecStart=/opt/lanlord/bin/lanlord webui --socket {{ webui_socket }}
-              RuntimeDirectory=lanlord
+              RuntimeDirectory=lanlord-web
               RuntimeDirectoryMode=0750
               RuntimeDirectoryPreserve=yes
               UMask=0007
               Restart=on-failure
               NoNewPrivileges=yes
+              CapabilityBoundingSet=
               ProtectSystem=strict
               ProtectHome=yes
               PrivateTmp=yes
               PrivateDevices=yes
+              PrivateNetwork=yes
               ProtectKernelTunables=yes
               ProtectKernelModules=yes
+              ProtectKernelLogs=yes
               ProtectControlGroups=yes
+              ProtectClock=yes
+              ProtectHostname=yes
+              ProtectProc=invisible
               RestrictAddressFamilies=AF_UNIX
               RestrictNamespaces=yes
+              RestrictRealtime=yes
+              RestrictSUIDSGID=yes
               LockPersonality=yes
               MemoryDenyWriteExecute=yes
               SystemCallArchitectures=native
+              SystemCallFilter=@system-service
 
               [Install]
               WantedBy=multi-user.target
@@ -358,7 +380,7 @@
               -v {{ state_dir }}/data:/data
               -v {{ state_dir }}/config:/config
               {{ '-v ' ~ status_dir ~ '/www:/srv/status:ro' if status_enabled else '' }}
-              {{ '-v /run/lanlord:/run/lanlord' if webui_on and webui_socket != '' else '' }}
+              {{ '-v /run/lanlord-web:/run/lanlord-web:ro' if webui_on and webui_socket != '' else '' }}
               {{ image }}
 
     - name: wait for caddy to be up
