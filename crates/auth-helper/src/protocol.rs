@@ -174,6 +174,22 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_read_is_an_error() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("gone"))
+            }
+        }
+        assert_eq!(read_request(&mut Broken).unwrap_err(), "read");
+    }
+
+    #[test]
+    fn a_name_must_be_utf8() {
+        assert_eq!(request(b"al\xffice\0secret\0").unwrap_err(), "bad-request");
+    }
+
+    #[test]
     fn the_bytes_read_are_wiped_whatever_the_outcome() {
         let mut good = b"alice\0secret\0".to_vec();
         assert!(parse(&mut good).is_ok());
