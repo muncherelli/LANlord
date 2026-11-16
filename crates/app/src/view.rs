@@ -9,6 +9,7 @@
 //! windows move to this tree one by one; the variants grow with them.
 
 pub use lanlord_core::log::Kind;
+use lanlord_core::settings::ValidationError;
 
 /// a piece of a window, carrying the message type `M` of the window it belongs to.
 pub enum Node<M> {
@@ -58,10 +59,12 @@ pub enum Node<M> {
         lines: Vec<String>,
         height: f32,
     },
-    /// the black console: coloured lines that fill the window and follow the newest one.
+    /// the black console: coloured lines that follow the newest one, `height` tall or filling
+    /// the window when `None`.
     Log {
         id: &'static str,
         lines: Vec<(Kind, String)>,
+        height: Option<f32>,
     },
     /// a one-column list in a white box; clicking an item sends `select(index)`. `empty` is
     /// shown when there are no items.
@@ -109,8 +112,25 @@ pub enum Node<M> {
         room: f32,
         masked: bool,
         focus: bool,
+        /// grey text shown while the field is empty.
+        hint: String,
         edit: Box<dyn Fn(String) -> M>,
+        /// what pressing Enter in the field sends, if anything.
+        enter: Option<M>,
     },
+    /// a section under a title that opens and closes when the title is clicked; the front end
+    /// remembers whether it is open.
+    Fold {
+        id: &'static str,
+        title: String,
+        body: Vec<Node<M>>,
+    },
+    /// nodes shown greyed out and not clickable.
+    Disabled(Vec<Node<M>>),
+    /// a form row: `label` in the label column, `body` beside it.
+    Labelled { label: String, body: Vec<Node<M>> },
+    /// a small red line under the field it is about.
+    FieldError(String),
     /// a line of red text, for input that was refused.
     Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.
@@ -138,6 +158,8 @@ pub struct Table<M> {
     pub widths: Vec<f32>,
     pub rows: Vec<Vec<String>>,
     pub selected: Option<usize>,
+    /// rows with a problem, drawn red.
+    pub bad: Vec<bool>,
     pub height: f32,
     pub select: fn(usize) -> M,
 }
@@ -171,4 +193,66 @@ pub struct Dialog<M> {
 pub fn status<T, M>(remote: &crate::remote::Remote<T>) -> Node<M> {
     let (error, text) = remote.note.clone().unwrap_or_default();
     Node::Status { text, error }
+}
+
+/// the messages of the errors at `path` (or below it, like `a.b[2]` for `a.b[2].c`).
+pub fn messages(errors: &[ValidationError], path: &str) -> Vec<String> {
+    errors
+        .iter()
+        .filter(|e| matches_path(&e.path, path))
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+fn matches_path(error: &str, path: &str) -> bool {
+    error == path
+        || error
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+}
+
+/// for each of `count` rows, does any error sit under `{prefix}[i]`?
+pub fn bad_rows(errors: &[ValidationError], prefix: &str, count: usize) -> Vec<bool> {
+    (0..count)
+        .map(|i| !messages(errors, &format!("{prefix}[{i}]")).is_empty())
+        .collect()
+}
+
+/// the problems with the field at `path`, one small red line each.
+pub fn field_errors<M>(errors: &[ValidationError], path: &str) -> Vec<Node<M>> {
+    messages(errors, path)
+        .into_iter()
+        .map(Node::FieldError)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error(path: &str) -> ValidationError {
+        ValidationError {
+            path: path.into(),
+            message: format!("bad {path}"),
+        }
+    }
+
+    #[test]
+    fn messages_match_a_path_and_what_is_below_it() {
+        let errors = [
+            error("dns.records[1].name"),
+            error("dns.records[10].name"),
+            error("dns.zone"),
+            error("dns.dhcp.range[0]"),
+        ];
+        assert_eq!(messages(&errors, "dns.zone"), ["bad dns.zone"]);
+        assert_eq!(messages(&errors, "dns.records[1]").len(), 1);
+        assert_eq!(messages(&errors, "dns.dhcp.range").len(), 1);
+        assert!(messages(&errors, "dns.zon").is_empty());
+        assert_eq!(
+            bad_rows(&errors, "dns.records", 3),
+            [false, true, false],
+            "[1] must not match [10]"
+        );
+    }
 }

@@ -124,6 +124,7 @@ impl UsersPanel {
             widths: vec![150.0, 100.0, 110.0],
             rows,
             selected: self.selected,
+            bad: Vec::new(),
             height: 200.0,
             select: Msg::Pick,
         })];
