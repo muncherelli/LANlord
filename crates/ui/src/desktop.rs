@@ -715,7 +715,7 @@ fn window_size(target: Target) -> Vec2 {
         Target::Console => Vec2::new(600.0, 300.0),
         Target::Hosts => Vec2::new(380.0, 280.0),
         Target::Settings => Vec2::new(600.0, 520.0),
-        Target::DateTime => Vec2::new(430.0, 470.0),
+        Target::DateTime => Vec2::new(430.0, 420.0),
     }
 }
 

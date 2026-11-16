@@ -992,6 +992,10 @@ impl Loaded {
     }
 
     fn status(&self, ui: &mut Ui) {
+        if self.state.container {
+            ui.label("The clock follows the host this container runs on.");
+            return;
+        }
         let service = match self.state.sync {
             Sync::Timesyncd => "systemd-timesyncd",
             Sync::Chrony => "chrony",
