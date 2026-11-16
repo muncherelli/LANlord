@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn a_row_becomes_one_cell_per_column() {
         let settings = Settings::parse(
-            "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.123.1, 172.16.123.254]\n    lease: 7d\n",
+            "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n",
         )
         .unwrap();
         let rows = networks::rows(&demo().interfaces, &settings, Some(2));
@@ -160,7 +160,7 @@ mod tests {
                 "172.16.120.1/22",
                 "1450",
                 "Connected",
-                "172.16.123.1 - 172.16.123.254",
+                "172.16.120.100 - 172.16.120.200",
                 "2"
             ]
         );

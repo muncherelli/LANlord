@@ -297,9 +297,9 @@ fn demo() -> bool {
     std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1")
 }
 
-const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.123.1, 172.16.123.254]\n    lease: 7d\n";
+const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
 
-const DEMO_LEASES: &str = "1795000000 bc:24:11:2f:2f:2e 172.16.123.5 ws1 *\n1795000000 bc:24:11:bd:f8:1c 172.16.123.6 ws2 *\n1795000000 bc:24:11:00:aa:01 172.16.123.7 nt4test *\n";
+const DEMO_LEASES: &str = "1795000000 02:00:00:00:00:01 172.16.120.101 ws1 *\n1795000000 02:00:00:00:00:02 172.16.120.102 ws2 *\n1795000000 02:00:00:00:00:03 172.16.120.103 nt4pc *\n";
 
 fn demo_purge() -> Vec<String> {
     [

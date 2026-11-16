@@ -332,7 +332,7 @@ fn change_with(
 mod tests {
     use super::*;
 
-    const SETTINGS: &str = "docker:\n  internal_address: 172.16.120.2/22\nnt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: james\n      password: one\n    - name: gone\n      state: absent\n";
+    const SETTINGS: &str = "docker:\n  internal_address: 172.16.120.2/22\nnt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: dana\n      password: one\n    - name: gone\n      state: absent\n";
 
     fn names(settings: &[u8]) -> Vec<String> {
         list(settings)
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn list_hides_users_marked_absent() {
-        assert_eq!(names(SETTINGS.as_bytes()), ["james"]);
+        assert_eq!(names(SETTINGS.as_bytes()), ["dana"]);
     }
 
     #[test]
@@ -360,7 +360,7 @@ mod tests {
             password: "pw".into(),
         };
         let out = edit(SETTINGS.as_bytes(), &change).unwrap();
-        assert_eq!(names(&out), ["james", "olive"]);
+        assert_eq!(names(&out), ["dana", "olive"]);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("internal_address: 172.16.120.2/22"));
         assert!(text.contains("name: RETRONET"));
@@ -371,7 +371,7 @@ mod tests {
         let out = edit(
             SETTINGS.as_bytes(),
             &Change::SetPassword {
-                name: "james".into(),
+                name: "dana".into(),
                 password: "two".into(),
             },
         )
@@ -386,7 +386,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(names(&out), ["james", "gone"]);
+        assert_eq!(names(&out), ["dana", "gone"]);
     }
 
     #[test]
@@ -394,7 +394,7 @@ mod tests {
         let out = edit(
             SETTINGS.as_bytes(),
             &Change::Remove {
-                name: "james".into(),
+                name: "dana".into(),
             },
         )
         .unwrap();
@@ -454,11 +454,11 @@ mod tests {
     #[test]
     fn changing_a_password_keeps_the_admin_flag() {
         let settings =
-            "nt4-domain:\n  users:\n    - name: james\n      password: one\n      admin: true\n";
+            "nt4-domain:\n  users:\n    - name: dana\n      password: one\n      admin: true\n";
         let out = edit(
             settings.as_bytes(),
             &Change::SetPassword {
-                name: "james".into(),
+                name: "dana".into(),
                 password: "two".into(),
             },
         )
@@ -475,7 +475,7 @@ mod tests {
         let granted = edit(
             SETTINGS.as_bytes(),
             &Change::SetAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 admin: true,
             },
         )
@@ -486,7 +486,7 @@ mod tests {
         let revoked = edit(
             &granted,
             &Change::SetAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 admin: false,
             },
         )
@@ -499,7 +499,7 @@ mod tests {
         let granted = edit(
             SETTINGS.as_bytes(),
             &Change::SetSoftwareAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 software_admin: true,
             },
         )
@@ -507,13 +507,13 @@ mod tests {
         assert!(String::from_utf8(granted.clone())
             .unwrap()
             .contains("software_admin: true"));
-        let james = list(&granted).unwrap().remove(0);
-        assert!(james.software_admin && !james.admin);
-        assert_eq!(james.roles(), ["software admin"]);
+        let dana = list(&granted).unwrap().remove(0);
+        assert!(dana.software_admin && !dana.admin);
+        assert_eq!(dana.roles(), ["software admin"]);
         let revoked = edit(
             &granted,
             &Change::SetSoftwareAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 software_admin: false,
             },
         )
@@ -545,7 +545,7 @@ mod tests {
         let edited = edit_split(
             SETTINGS.as_bytes(),
             &[Change::SetSoftwareAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 software_admin: true,
             }],
         )
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn a_user_entry_that_is_not_a_mapping_is_reported() {
-        let settings = b"nt4-domain:\n  users:\n    - james\n";
+        let settings = b"nt4-domain:\n  users:\n    - dana\n";
         // a bare name is not a user entry, so it is never matched; a mapping without a name is skipped
         let out = edit(
             settings,
@@ -581,11 +581,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(names(&out), ["olive"]);
-        let scalar = b"nt4-domain:\n  users:\n    - name: james\n";
+        let scalar = b"nt4-domain:\n  users:\n    - name: dana\n";
         let granted = edit(
             scalar,
             &Change::SetAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 admin: true,
             },
         )
@@ -598,12 +598,12 @@ mod tests {
         let out = edit(
             SETTINGS.as_bytes(),
             &Change::SetAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 admin: false,
             },
         )
         .unwrap();
-        assert_eq!(names(&out), ["james"]);
+        assert_eq!(names(&out), ["dana"]);
         assert!(String::from_utf8(out).unwrap().contains("password: one"));
     }
 
@@ -641,7 +641,7 @@ mod tests {
                     admin: true,
                 },
                 Change::Remove {
-                    name: "james".into(),
+                    name: "dana".into(),
                 },
             ],
         )
@@ -655,7 +655,7 @@ mod tests {
                 "pw".to_string()
             )]
         );
-        assert_eq!(edited.removed, ["nt4-domain.users[james].password"]);
+        assert_eq!(edited.removed, ["nt4-domain.users[dana].password"]);
         let users = list(edited.plain.as_bytes()).unwrap();
         assert_eq!(
             users,
@@ -674,11 +674,11 @@ mod tests {
             password: "new".into(),
         };
         let remove = |name: &str| Change::Remove { name: name.into() };
-        let edited = edit_split(SETTINGS.as_bytes(), &[set("james"), remove("james")]).unwrap();
+        let edited = edit_split(SETTINGS.as_bytes(), &[set("dana"), remove("dana")]).unwrap();
         assert!(edited.secrets.is_empty() && edited.removed.len() == 1);
-        let edited = edit_split(SETTINGS.as_bytes(), &[remove("james"), set("james")]).unwrap();
+        let edited = edit_split(SETTINGS.as_bytes(), &[remove("dana"), set("dana")]).unwrap();
         assert!(edited.removed.is_empty() && edited.secrets.len() == 1);
-        assert!(edit_split(b"docker: {}\n", &[set("james")]).is_err());
+        assert!(edit_split(b"docker: {}\n", &[set("dana")]).is_err());
     }
 
     #[cfg(unix)]
@@ -686,7 +686,7 @@ mod tests {
         use super::*;
         use crate::testgw::{identity, no_password, Gateway};
 
-        const LEGACY: &str = "docker:\n  internal_address: 172.16.120.2/22\nnt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: james\n      password: one\n      admin: true\n";
+        const LEGACY: &str = "docker:\n  internal_address: 172.16.120.2/22\nnt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: dana\n      password: one\n      admin: true\n";
 
         #[test]
         fn a_change_stores_names_plain_and_passwords_encrypted() {
@@ -705,7 +705,7 @@ mod tests {
             )
             .unwrap();
             let names: Vec<_> = now.iter().map(|u| (u.name.as_str(), u.admin)).collect();
-            assert_eq!(names, [("james", true), ("olive", false)]);
+            assert_eq!(names, [("dana", true), ("olive", false)]);
 
             let plain = gw.plain().unwrap();
             assert!(!plain.contains("one") && !plain.contains("pw"), "{plain}");
@@ -720,7 +720,7 @@ mod tests {
             let (gw, id) = (Gateway::new("users-software"), identity("users-software"));
             gw.seed_sealed(&id, LEGACY);
             let change = Change::SetSoftwareAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 software_admin: true,
             };
             let now = change_with(&gw.session, "gw", &id, &[change], &mut no_password).unwrap();
@@ -734,13 +734,13 @@ mod tests {
             let (gw, id) = (Gateway::new("users-remove"), identity("users-remove"));
             gw.seed_sealed(&id, LEGACY);
             let admin = Change::SetAdmin {
-                name: "james".into(),
+                name: "dana".into(),
                 admin: false,
             };
             change_with(&gw.session, "gw", &id, &[admin], &mut no_password).unwrap();
             assert!(gw.sealed(&id).unwrap().contains("one"), "kept");
             let remove = Change::Remove {
-                name: "james".into(),
+                name: "dana".into(),
             };
             change_with(&gw.session, "gw", &id, &[remove], &mut no_password).unwrap();
             assert!(!gw.sealed(&id).unwrap().contains("one"));
@@ -752,14 +752,14 @@ mod tests {
             let (gw, id) = (Gateway::new("users-list"), identity("users-list"));
             gw.seed_sealed(&id, LEGACY);
             let doc = document(&gw.session, "gw", &id, &mut no_password).unwrap();
-            assert_eq!(names(doc.plain.as_bytes()), ["james"]);
+            assert_eq!(names(doc.plain.as_bytes()), ["dana"]);
         }
 
         #[test]
         fn changing_users_needs_settings_on_the_gateway() {
             let (gw, id) = (Gateway::new("users-none"), identity("users-none"));
             let change = Change::Remove {
-                name: "james".into(),
+                name: "dana".into(),
             };
             let err = change_with(
                 &gw.session,

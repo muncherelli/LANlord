@@ -49,7 +49,7 @@ fn general_reads_what_the_server_is() {
     let (desktop, _ctx, fake) = server();
     assert_eq!(fake.calls(), ["facts me@gw"]);
     let facts = desktop.my_server.facts.data.clone().unwrap();
-    assert_eq!(facts.hostname, "testlord");
+    assert_eq!(facts.hostname, "demo");
     assert!(facts.is_root && facts.lanlord_installed);
 }
 
@@ -151,7 +151,7 @@ fn a_server_without_lanlord_cannot_be_purged() {
     ));
 }
 
-const NETWORKS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.123.1, 172.16.123.254]\n    lease: 7d\n";
+const NETWORKS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
 
 #[test]
 fn networks_lists_the_external_and_the_lanlord_network() {

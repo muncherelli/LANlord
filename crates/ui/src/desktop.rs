@@ -186,7 +186,7 @@ impl Desktop {
     /// can be looked at without one; the host list lives in memory only.
     pub fn use_demo_server(&mut self) {
         self.hosts = HostList::new(None);
-        let _ = self.hosts.add("demo@testlord");
+        let _ = self.hosts.add("demo@gateway");
     }
 
     /// the logon box for `host`, signing in at once with whatever the agent offers.
