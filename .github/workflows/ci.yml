@@ -83,7 +83,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: run tests with coverage
-        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --features lanlord/webui --locked --lcov --output-path lcov.info
       - name: coverage summary
         run: cargo llvm-cov report --summary-only
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
