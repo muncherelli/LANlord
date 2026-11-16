@@ -34,6 +34,91 @@
       become: true
       when: gateway is defined and gateway.motd is defined
 
+    # the clock. gateway.timezone is a zone name, gateway.ntp a list of time servers and
+    # gateway.ntp_enabled turns internet time on or off. a container takes its clock from its
+    # host, so only the time zone applies there. the Date/Time dialog writes these keys.
+    - name: work out whether this machine is a container
+      ansible.builtin.set_fact:
+        in_container: "{{ (ansible_facts['virtualization_type'] | default('')) in ['lxc', 'lxc-libvirt', 'docker', 'podman', 'openvz', 'systemd-nspawn'] }}"
+
+    - name: check the clock settings
+      ansible.builtin.assert:
+        that:
+          - gateway.timezone is not defined or gateway.timezone is match('^[A-Za-z0-9_+/-]{1,64}$')
+          - gateway.ntp is not defined or (gateway.ntp is sequence and gateway.ntp is not string and gateway.ntp | length <= 8 and (gateway.ntp | select('match', '^[A-Za-z0-9:.-]{1,253}$') | list | length) == (gateway.ntp | length))
+          - gateway.ntp_enabled is not defined or gateway.ntp_enabled is boolean
+        fail_msg: >-
+          gateway settings: timezone is a name like Europe/Berlin, ntp is a list of at most
+          eight server names and ntp_enabled is true or false
+      when: gateway is defined
+
+    - name: check that the time zone exists
+      ansible.builtin.stat:
+        path: "/usr/share/zoneinfo/{{ gateway.timezone }}"
+      register: zone_file
+      when: gateway is defined and gateway.timezone is defined
+
+    - name: stop when the time zone is unknown
+      ansible.builtin.assert:
+        that: zone_file.stat.exists
+        fail_msg: "gateway.timezone {{ gateway.timezone }} is not a time zone this machine knows"
+      when: gateway is defined and gateway.timezone is defined
+
+    - name: read the time zone
+      ansible.builtin.command: timedatectl show --property=Timezone --value
+      register: zone_now
+      changed_when: false
+      failed_when: false
+      when: gateway is defined and gateway.timezone is defined
+
+    - name: set the time zone
+      ansible.builtin.shell: |
+        timedatectl set-timezone '{{ gateway.timezone }}' 2>/dev/null || ln -sf '/usr/share/zoneinfo/{{ gateway.timezone }}' /etc/localtime
+      become: true
+      when: gateway is defined and gateway.timezone is defined and zone_now.stdout != gateway.timezone
+
+    - name: make a place for the internet time servers
+      ansible.builtin.file:
+        path: /etc/systemd/timesyncd.conf.d
+        state: directory
+        mode: "0755"
+      become: true
+      when: not (in_container | bool) and gateway is defined and gateway.ntp is defined
+
+    - name: write the internet time servers
+      ansible.builtin.copy:
+        dest: /etc/systemd/timesyncd.conf.d/lanlord.conf
+        content: |
+          # written by lanlord
+          [Time]
+          NTP={{ gateway.ntp | join(' ') }}
+        mode: "0644"
+      become: true
+      register: ntp_servers
+      when: not (in_container | bool) and gateway is defined and gateway.ntp is defined and gateway.ntp | length > 0
+
+    - name: use the system's time servers when none are listed
+      ansible.builtin.file:
+        path: /etc/systemd/timesyncd.conf.d/lanlord.conf
+        state: absent
+      become: true
+      when: not (in_container | bool) and gateway is defined and gateway.ntp is defined and gateway.ntp | length == 0
+
+    - name: turn internet time on or off
+      ansible.builtin.command: "timedatectl set-ntp {{ 'true' if gateway.ntp_enabled else 'false' }}"
+      become: true
+      changed_when: false
+      failed_when: false
+      when: not (in_container | bool) and gateway is defined and gateway.ntp_enabled is defined
+
+    - name: restart the time service after new servers
+      ansible.builtin.systemd:
+        name: systemd-timesyncd
+        state: restarted
+      become: true
+      failed_when: false
+      when: ntp_servers is changed and (gateway.ntp_enabled | default(true))
+
     - name: report
       ansible.builtin.debug:
         msg: >-

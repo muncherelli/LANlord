@@ -5,6 +5,7 @@ pub mod account;
 pub mod admins;
 pub mod apply;
 pub mod bootstrap;
+pub mod clock;
 pub mod config;
 pub mod crypto;
 pub mod exec;
