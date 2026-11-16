@@ -296,8 +296,11 @@ func navy(_ ctx: CGContext, _ w: CGFloat, _ h: CGFloat, scale: CGFloat, glow: CG
 
 // MARK: the word
 
-func wordPath(_ text: String, size: CGFloat, italic: Bool = false, spacing: CGFloat = 0.01) -> CGPath {
-    let name = italic ? "TimesNewRomanPS-ItalicMT" : "TimesNewRomanPS-BoldMT"
+/// the wordmark treatment: "m1" is high-contrast capitals with wide spacing between two gold rules, "m2" is
+/// Baskerville with a bold LAN and an italic lord, "m3" is engraved Copperplate capitals like a brass door plate.
+var wordmarkStyle = "m1"
+
+func wordPath(_ text: String, size: CGFloat, font name: String, spacing: CGFloat = 0) -> CGPath {
     let font = CTFontCreateWithName(name as CFString, size, nil)
     let attr = NSAttributedString(
         string: text,
@@ -329,27 +332,16 @@ func place(_ p: CGPath, _ x: CGFloat, _ baseline: CGFloat) -> CGPath {
     return p.copy(using: &t)!
 }
 
-/// the wordmark: a clean title with a faint lit edge and a soft, low shadow.
-func wordmark(_ ctx: CGContext, _ text: CGPath, light: Bool, size: CGFloat, finish: Int = 0) {
-    let box = text.boundingBox
-    let px = size / 188
-    ctx.saveGState()
-    ctx.setShadow(
-        offset: CGSize(width: 0, height: 3 * px), blur: 9 * px, color: rgb(light ? 0x000040 : 0x000000, light ? 0.18 : 0.4))
-    ctx.addPath(text)
-    ctx.setFillColor(rgb(light ? 0x1C2A9A : 0x00002A))
+/// the same, centred between two x positions.
+func placeCentered(_ p: CGPath, _ left: CGFloat, _ right: CGFloat, _ baseline: CGFloat) -> CGPath {
+    let b = p.boundingBox
+    return place(p, left + (right - left - b.width) / 2 - b.minX, baseline)
+}
+
+func fillText(_ ctx: CGContext, _ path: CGPath, _ color: UInt32, alpha: CGFloat = 1) {
+    ctx.addPath(path)
+    ctx.setFillColor(rgb(color, alpha))
     ctx.fillPath()
-    ctx.restoreGState()
-    // a faint 1 pixel lit edge up and to the left
-    var up = CGAffineTransform(translationX: -1.2 * px, y: -1.2 * px)
-    ctx.addPath(text.copy(using: &up)!)
-    ctx.setFillColor(rgb(0xFFFFFF, light ? 0.55 : 0.45))
-    ctx.fillPath()
-    var face = light
-        ? gradient([(0, 0x4A5CE8), (0.5, 0x0A1A8C), (1, 0x00004A)])
-        : gradient([(0, 0xFFFFFF), (0.45, 0xD2E0FF), (1, 0x6F8FE0)])
-    if !light && finish == 1 { face = gradient([(0, 0xFFF6B0), (0.45, 0xF4BE12), (1, 0x8A5300)]) }
-    fill(ctx, text, face, CGPoint(x: 0, y: box.minY), CGPoint(x: 0, y: box.maxY))
 }
 
 // MARK: the banner
@@ -377,18 +369,46 @@ func banner(_ scale: CGFloat, light: Bool) -> CGContext {
     shadowAlpha = light ? 0.10 : 0.28
     emblem(ctx, 52 * scale, 30 * scale, 340 * scale)
     shadowAlpha = 0.28
-    let size = 176 * scale
-    let word = place(wordPath("LANlord", size: size), 436 * scale, 238 * scale)
-    wordmark(ctx, word, light: light, size: size)
-    goldRule(ctx, 436 * scale, 1160 * scale, 76 * scale, scale, light: light)
-    goldRule(ctx, 436 * scale, 1160 * scale, 268 * scale, scale, light: light)
-    // the tagline in small capitals, italic and widely spaced
-    let tag = place(
-        wordPath("ALL YOUR LAN ARE BELONG TO YOU", size: 30 * scale, italic: true, spacing: 0.16), 446 * scale,
-        326 * scale)
-    ctx.addPath(tag)
-    ctx.setFillColor(rgb(light ? 0x6A5210 : 0xE6D59A, 0.95))
-    ctx.fillPath()
+    let left = 436 * scale
+    let right = 1160 * scale
+    let cream: UInt32 = light ? 0x14206B : 0xF3E9D2
+    let paleGold: UInt32 = light ? 0x7A5C14 : 0xE6CF8A
+    switch wordmarkStyle {
+    case "m2":
+        // network and lord: LAN in bold roman, lord in italic
+        let size = 168 * scale
+        let lan = wordPath("LAN", size: size, font: "Baskerville-Bold")
+        let lord = wordPath("lord", size: size, font: "Baskerville-Italic")
+        let gap = size * 0.03
+        let total = lan.boundingBox.maxX - lan.boundingBox.minX + gap + lord.boundingBox.width
+        let x0 = left + (right - left - total) / 2 - lan.boundingBox.minX
+        let baseline = 236 * scale
+        fillText(ctx, place(lan, x0, baseline), cream)
+        fillText(ctx, place(lord, x0 + lan.boundingBox.maxX + gap - lord.boundingBox.minX, baseline), paleGold)
+        let tag = wordPath("all your LAN are belong to you", size: 38 * scale, font: "Baskerville-Italic", spacing: 0.02)
+        fillText(ctx, placeCentered(tag, left, right, 318 * scale), paleGold, alpha: 0.9)
+    case "m3":
+        // engraved capitals, like lettering on a brass door plate
+        let size = 112 * scale
+        let word = placeCentered(wordPath("LANLORD", size: size, font: "Copperplate", spacing: 0.1), left, right, 226 * scale)
+        fillText(ctx, word, light ? 0x8A6A12 : 0xF1E4B8)
+        ctx.addPath(word)
+        ctx.setStrokeColor(rgb(light ? 0x3A2A10 : 0x3A2A10, 0.7))
+        ctx.setLineWidth(1.4 * scale)
+        ctx.setLineJoin(.round)
+        ctx.strokePath()
+        let tag = wordPath("ALL YOUR LAN ARE BELONG TO YOU", size: 25 * scale, font: "Copperplate", spacing: 0.2)
+        fillText(ctx, placeCentered(tag, left, right, 306 * scale), light ? 0x7A5C14 : 0xD9C58A)
+    default:
+        // refined capitals with wide spacing, between two fine gold rules
+        let size = 108 * scale
+        let word = wordPath("LANLORD", size: size, font: "Didot", spacing: 0.2)
+        fillText(ctx, placeCentered(word, left, right, 210 * scale), cream)
+        goldRule(ctx, left, right, 76 * scale, scale, light: light)
+        goldRule(ctx, left, right, 268 * scale, scale, light: light)
+        let tag = wordPath("ALL YOUR LAN ARE BELONG TO YOU", size: 24 * scale, font: "Didot", spacing: 0.3)
+        fillText(ctx, placeCentered(tag, left, right, 326 * scale), light ? 0x6A5210 : 0xE6D59A, alpha: 0.95)
+    }
     return ctx
 }
 
@@ -627,7 +647,8 @@ func ico(_ images: [(Int, Data)]) -> Data {
     return d
 }
 
-emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "a"
+emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "b"
+wordmarkStyle = ProcessInfo.processInfo.environment["WORDMARK"] ?? "m2"
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "assets"
 let ui = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "crates/ui/assets"
 
@@ -671,8 +692,9 @@ if CommandLine.arguments.count > 3 {
 }
 if CommandLine.arguments.count > 4 {
     let dir = CommandLine.arguments[4]
-    for (style, name) in [("a", "k-lean-a"), ("b", "k-lean-b")] {
-        emblemStyle = style
+    emblemStyle = "b"
+    for (style, name) in [("m1", "l-m1"), ("m2", "l-m2"), ("m3", "l-m3")] {
+        wordmarkStyle = style
         save(banner(1, light: false), "\(dir)/\(name).png")
     }
 }
