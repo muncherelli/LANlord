@@ -427,31 +427,40 @@ fn leases(host: &str) -> Result<()> {
     };
     if leases.is_empty() {
         println!("no leases on {host}");
-        return Ok(());
     }
-    for lease in leases {
-        let until = match lease.expires {
-            0 => "never".to_string(),
-            secs => format!(
-                "{} UTC",
-                lanlord_core::clock::local_text(i64::try_from(secs).unwrap_or(i64::MAX), 0)
-            ),
-        };
-        let name = if lease.name.is_empty() {
-            "-"
-        } else {
-            &lease.name
-        };
-        println!(
-            "{:<15}  {:<17}  {:<20}  expires {until}",
-            lease.address, lease.mac, name
-        );
+    for line in lease_lines(&leases) {
+        println!("{line}");
     }
     Ok(())
 }
 
+/// one line per lease: address, mac, name and when it ends.
+fn lease_lines(leases: &[lanlord_core::leases::Lease]) -> Vec<String> {
+    leases
+        .iter()
+        .map(|lease| {
+            let until = match lease.expires {
+                0 => "never".to_string(),
+                secs => format!(
+                    "{} UTC",
+                    lanlord_core::clock::local_text(i64::try_from(secs).unwrap_or(i64::MAX), 0)
+                ),
+            };
+            let name = if lease.name.is_empty() {
+                "-"
+            } else {
+                &lease.name
+            };
+            format!(
+                "{:<15}  {:<17}  {:<20}  expires {until}",
+                lease.address, lease.mac, name
+            )
+        })
+        .collect()
+}
+
 fn power(host: &str, action: PowerChoice, confirm: Option<String>) -> Result<()> {
-    use lanlord_core::power::{Outcome, Power};
+    use lanlord_core::power::Power;
     let (power, verb) = match action {
         PowerChoice::Reboot => (Power::Reboot, "reboot"),
         PowerChoice::Shutdown => (Power::PowerOff, "shut down"),
@@ -460,40 +469,57 @@ fn power(host: &str, action: PowerChoice, confirm: Option<String>) -> Result<()>
     if typed != host {
         bail!("the host name does not match; nothing was done");
     }
-    match execute(host, &Op::Power { power }, &mut ask)? {
-        Reply::Outcome(Outcome::Done) => println!("{host} is {}", power.doing()),
-        Reply::Outcome(Outcome::Dropped) => println!(
+    let reply = execute(host, &Op::Power { power }, &mut ask)?;
+    println!("{}", power_said(host, power, &reply)?);
+    Ok(())
+}
+
+/// what to say once the server took a reboot or shutdown.
+fn power_said(host: &str, power: lanlord_core::power::Power, reply: &Reply) -> Result<String> {
+    use lanlord_core::power::Outcome;
+    Ok(match reply {
+        Reply::Outcome(Outcome::Done) => format!("{host} is {}", power.doing()),
+        Reply::Outcome(Outcome::Dropped) => format!(
             "{host} dropped the connection, which is what {} looks like",
             power.doing()
         ),
         _ => bail!("the server answered something other than a power outcome"),
-    }
-    Ok(())
+    })
 }
 
 fn facts(host: &str) -> Result<()> {
     let Reply::Facts(facts) = execute(host, &Op::ServerFacts, &mut ask)? else {
         bail!("the server answered something other than its facts");
     };
-    println!("name:          {}", facts.hostname);
-    println!("system:        {}", facts.os);
-    println!("kernel:        {}", facts.kernel);
-    println!("up for:        {}", facts.uptime());
+    for line in fact_lines(&facts) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// the server's facts as labelled lines.
+fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
     let root = if facts.is_root { " (root)" } else { "" };
-    println!("signed in as:  {}{root}", facts.user);
-    println!("processors:    {}", facts.cpus);
-    println!(
-        "memory:        {} MB free of {} MB",
-        facts.mem_available_mb, facts.mem_total_mb
-    );
     let lanlord = match (facts.lanlord_installed, &facts.lanlord_version) {
         (false, _) => "not installed".to_string(),
         (true, Some(version)) => format!("installed, version {version}"),
         (true, None) => "installed".to_string(),
     };
-    println!("lanlord:       {lanlord}");
+    let mut lines = vec![
+        format!("name:          {}", facts.hostname),
+        format!("system:        {}", facts.os),
+        format!("kernel:        {}", facts.kernel),
+        format!("up for:        {}", facts.uptime()),
+        format!("signed in as:  {}{root}", facts.user),
+        format!("processors:    {}", facts.cpus),
+        format!(
+            "memory:        {} MB free of {} MB",
+            facts.mem_available_mb, facts.mem_total_mb
+        ),
+        format!("lanlord:       {lanlord}"),
+    ];
     if let Some(when) = &facts.last_applied {
-        println!("last applied:  {when}");
+        lines.push(format!("last applied:  {when}"));
     }
     for iface in &facts.interfaces {
         let route = if iface.default_route {
@@ -501,30 +527,61 @@ fn facts(host: &str) -> Result<()> {
         } else {
             ""
         };
-        println!(
+        lines.push(format!(
             "interface:     {} {} ({}{route}) {}",
             iface.name,
             iface.link(),
             iface.state,
             iface.addresses.join(" ")
-        );
+        ));
+    }
+    lines
+}
+
+/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the op
+/// without asking for confirmation: the front end that sent it already did.
+fn op(host: &str) -> Result<()> {
+    // the op may carry passwords
+    let mut input = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_to_string(&mut input)?;
+    let answered = answer(
+        &input,
+        |op| execute(host, op, &mut ask),
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    )?;
+    if !answered {
+        std::process::exit(1);
     }
     Ok(())
 }
 
-/// one operation in, one reply out, both as json; what the web ui backend calls.
-fn op(host: &str) -> Result<()> {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
-    let response: Response = match serde_json::from_str::<Op>(&input) {
-        Ok(op) => execute(host, &op, &mut ask).into(),
-        Err(e) => Response::Error(format!("not an operation: {e}")),
-    };
-    println!("{}", serde_json::to_string(&response)?);
-    if matches!(response, Response::Error(_)) {
-        std::process::exit(1);
+/// answer `input` with exactly one json line on `out`. whatever the server printed while the op
+/// ran goes to `err`, so `out` stays readable by a program. false when the answer is an error.
+fn answer(
+    input: &str,
+    run: impl FnOnce(&Op) -> Result<Reply>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<bool> {
+    use lanlord_core::log::{self, Kind};
+    let printed = log::subscribe();
+    let response = respond(input, run);
+    for line in printed.try_iter() {
+        if line.kind != Kind::Debug {
+            writeln!(err, "{}", line.text)?;
+        }
     }
-    Ok(())
+    writeln!(out, "{}", serde_json::to_string(&response)?)?;
+    Ok(!matches!(response, Response::Error(_)))
+}
+
+/// read `input` as an operation and answer it with `run`.
+fn respond(input: &str, run: impl FnOnce(&Op) -> Result<Reply>) -> Response {
+    match serde_json::from_str::<Op>(input) {
+        Ok(op) => run(&op).into(),
+        Err(e) => Response::Error(format!("not an operation: {e}")),
+    }
 }
 
 fn admin(host: &str, action: AdminCommand) -> Result<()> {
@@ -706,6 +763,146 @@ mod tests {
             Cli::try_parse_from(&wrong).is_err(),
             "the action is required"
         );
+    }
+
+    fn lease(expires: u64, name: &str) -> lanlord_core::leases::Lease {
+        lanlord_core::leases::Lease {
+            expires,
+            mac: "00:00:5e:00:53:01".into(),
+            address: "198.51.100.20".into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn leases_show_address_mac_name_and_expiry() {
+        let lines = lease_lines(&[lease(0, ""), lease(86_400, "pc01")]);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("198.51.100.20"), "{}", lines[0]);
+        assert!(lines[0].contains("00:00:5e:00:53:01") && lines[0].contains(" - "));
+        assert!(lines[0].ends_with("expires never"));
+        assert!(lines[1].contains("pc01"));
+        assert!(
+            lines[1].ends_with("expires 1970-01-02 00:00:00 UTC"),
+            "{}",
+            lines[1]
+        );
+        assert!(lease_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn power_says_what_happened() {
+        use lanlord_core::power::{Outcome, Power};
+        let done = power_said("gw", Power::Reboot, &Reply::Outcome(Outcome::Done)).unwrap();
+        assert_eq!(done, "gw is rebooting");
+        let dropped = power_said("gw", Power::PowerOff, &Reply::Outcome(Outcome::Dropped)).unwrap();
+        assert!(dropped.contains("dropped the connection") && dropped.contains("shutting down"));
+        assert!(power_said("gw", Power::Reboot, &Reply::Done).is_err());
+    }
+
+    #[test]
+    fn facts_are_labelled_lines() {
+        use lanlord_core::server::{Iface, ServerFacts};
+        let mut facts = ServerFacts {
+            hostname: "gateway".into(),
+            os: "Example Linux".into(),
+            kernel: "6.1.0".into(),
+            uptime_secs: 90_000,
+            user: "admin".into(),
+            is_root: true,
+            cpus: 2,
+            mem_total_mb: 2_048,
+            mem_available_mb: 1_024,
+            lanlord_installed: true,
+            lanlord_version: Some("0.1.0".into()),
+            last_applied: Some("2026-01-01 12:00".into()),
+            interfaces: vec![
+                Iface {
+                    name: "eth0".into(),
+                    mtu: 1_500,
+                    state: "UP".into(),
+                    addresses: vec!["192.0.2.10/24".into()],
+                    default_route: true,
+                },
+                Iface {
+                    name: "eth1".into(),
+                    mtu: 1_500,
+                    state: "DOWN".into(),
+                    addresses: vec![],
+                    default_route: false,
+                },
+            ],
+        };
+        let text = fact_lines(&facts).join("\n");
+        for want in [
+            "name:          gateway",
+            "signed in as:  admin (root)",
+            "up for:        1 day, 1 hour, 0 minutes",
+            "memory:        1024 MB free of 2048 MB",
+            "lanlord:       installed, version 0.1.0",
+            "last applied:  2026-01-01 12:00",
+            "interface:     eth0 Connected (UP, default route) 192.0.2.10/24",
+            "interface:     eth1 Disconnected (DOWN) ",
+        ] {
+            assert!(text.contains(want), "{want:?} in\n{text}");
+        }
+        facts.is_root = false;
+        facts.lanlord_version = None;
+        facts.last_applied = None;
+        let text = fact_lines(&facts).join("\n");
+        assert!(text.contains("lanlord:       installed\n") && !text.contains("(root)"));
+        assert!(!text.contains("last applied"));
+        facts.lanlord_installed = false;
+        assert!(fact_lines(&facts).join("\n").contains("not installed"));
+    }
+
+    #[test]
+    fn op_answers_json_with_a_reply_or_an_error() {
+        let ok = respond(r#"{"op":"leases"}"#, |op| {
+            assert_eq!(op, &Op::Leases);
+            Ok(Reply::Leases(vec![]))
+        });
+        assert_eq!(ok, Response::Ok(Reply::Leases(vec![])));
+        let failed = respond(r#"{"op":"server_facts"}"#, |_| bail!("no route to host"));
+        assert_eq!(failed, Response::Error("no route to host".into()));
+        let garbage = respond("not json", |_| unreachable!("never runs"));
+        assert!(matches!(garbage, Response::Error(e) if e.starts_with("not an operation")));
+        let json = serde_json::to_string(&ok).unwrap();
+        assert!(json.starts_with(r#"{"ok":"#), "{json}");
+    }
+
+    #[test]
+    fn op_writes_exactly_one_json_line_whatever_the_server_prints() {
+        use lanlord_core::log::{emit, Kind};
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let answered = answer(
+            r#"{"op":"run","command":["uptime"]}"#,
+            |_| {
+                emit(Kind::Out, "op-test: up 3 days");
+                emit(Kind::Err, "op-test: a warning");
+                Ok(Reply::ExitCode(0))
+            },
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        assert!(answered);
+        let out = String::from_utf8(out).unwrap();
+        assert_eq!(out.lines().count(), 1, "{out:?}");
+        let reply: Response = serde_json::from_str(out.trim_end()).unwrap();
+        assert_eq!(reply, Response::Ok(Reply::ExitCode(0)));
+        let err = String::from_utf8(err).unwrap();
+        assert!(err.contains("op-test: up 3 days") && err.contains("op-test: a warning"));
+
+        let mut out = Vec::new();
+        let answered = answer("{}", |_| unreachable!(), &mut out, &mut Vec::new()).unwrap();
+        assert!(!answered);
+        assert!(String::from_utf8(out).unwrap().starts_with(r#"{"error":"#));
+    }
+
+    #[test]
+    fn a_given_confirmation_skips_the_prompt() {
+        assert_eq!(confirmed("never shown", Some("gw".into())).unwrap(), "gw");
     }
 
     #[test]

@@ -17,3 +17,4 @@ lanlord-tui = { path = "../tui" }
 lanlord-ui = { path = "../ui", optional = true }
 rpassword = "7.5.5"
 serde_json.workspace = true
+zeroize = "1.9.1"

@@ -2829,6 +2829,7 @@ dependencies = [
  "lanlord-ui",
  "rpassword",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
