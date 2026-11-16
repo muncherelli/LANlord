@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::routes;
+
 /// whether a connection is usable, in the words Windows uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Connection {
@@ -48,6 +50,14 @@ impl Ipv4 {
     }
 }
 
+/// one ipv6 address with its prefix, like `2001:db8::10/64`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ipv6 {
+    pub address: String,
+    /// a privacy address that changes over time.
+    pub temporary: bool,
+}
+
 /// the dhcp lease an address came from. times are unix seconds.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dhcp {
@@ -80,9 +90,10 @@ pub struct InterfaceStatus {
     pub mac: Option<String>,
     pub mtu: u32,
     pub ipv4: Vec<Ipv4>,
-    /// the ipv6 addresses with their prefix, like `2001:db8::10/64`.
-    pub ipv6: Vec<String>,
+    /// the ipv6 addresses in use; deprecated ones and link-local ones are left out.
+    pub ipv6: Vec<Ipv6>,
     pub gateway: Option<String>,
+    pub gateway6: Option<String>,
     pub dns: Vec<String>,
     /// set when an address was handed out by dhcp.
     pub dhcp: Option<Dhcp>,
@@ -135,26 +146,74 @@ impl InterfaceStatus {
         if let Some(server) = self.dhcp.as_ref().and_then(|d| d.server.clone()) {
             rows.push(("IPv4 DHCP Server".to_string(), server));
         }
-        for (i, dns) in self.dns.iter().enumerate() {
-            let label = if i == 0 { "IPv4 DNS Server" } else { "" };
-            rows.push((label.to_string(), dns.clone()));
+        let (dns6, dns4): (Vec<&String>, Vec<&String>) =
+            self.dns.iter().partition(|d| d.contains(':'));
+        labelled(&mut rows, "IPv4 DNS Server", dns4.into_iter().cloned());
+        let (temporary, fixed): (Vec<&Ipv6>, Vec<&Ipv6>) =
+            self.ipv6.iter().partition(|ip| ip.temporary);
+        labelled(
+            &mut rows,
+            "IPv6 Address",
+            fixed.iter().map(|ip| ip.address.clone()),
+        );
+        labelled(
+            &mut rows,
+            "Temporary IPv6 Address",
+            temporary.iter().map(|ip| ip.address.clone()),
+        );
+        if let Some(gateway) = &self.gateway6 {
+            rows.push(("IPv6 Default Gateway".to_string(), gateway.clone()));
         }
-        for (i, ip) in self.ipv6.iter().enumerate() {
-            let label = if i == 0 { "IPv6 Address" } else { "" };
-            rows.push((label.to_string(), ip.clone()));
-        }
+        labelled(&mut rows, "IPv6 DNS Server", dns6.into_iter().cloned());
         rows.push(("MTU".to_string(), self.mtu.to_string()));
         rows
     }
 }
 
+/// the first value under `label`, the rest under a blank label, the way Windows lists them.
+fn labelled(rows: &mut Vec<(String, String)>, label: &str, values: impl Iterator<Item = String>) {
+    for (i, value) in values.enumerate() {
+        let label = if i == 0 { label } else { "" };
+        rows.push((label.to_string(), value));
+    }
+}
+
+/// the dns servers resolved and the resolver files name, in the order they are tried for the
+/// external network when its link has none of its own.
+#[derive(Default)]
+struct Fallback {
+    /// resolved's global servers.
+    global: Vec<String>,
+    /// resolved's upstream file, /run/systemd/resolve/resolv.conf.
+    resolved: Vec<String>,
+    /// /etc/resolv.conf.
+    resolv: Vec<String>,
+}
+
+impl Fallback {
+    fn servers(&self) -> Vec<String> {
+        [&self.global, &self.resolved, &self.resolv]
+            .into_iter()
+            .map(|list| {
+                list.iter()
+                    .filter(|s| !s.starts_with("127.") && *s != "::1")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .find(|list| !list.is_empty())
+            .unwrap_or_default()
+    }
+}
+
 /// the interfaces in `text`, the output of the read script in core: an `---iface <name>` block
 /// per interface with `key=value` lines and the interface's `ip -j addr` json, then `---route`
-/// (`ip -j route show default`), `---resolv` (the nameserver lines) and `---now` (unix time).
+/// and `---route6` (`ip -j route show default`), the fallback dns in `---dnsglobal`,
+/// `---resolved` and `---resolv`, and `---now` (unix time).
 pub fn parse(text: &str) -> Vec<InterfaceStatus> {
     let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
     let mut route = String::new();
-    let mut resolv = Vec::new();
+    let mut route6 = String::new();
+    let mut fallback = Fallback::default();
     let mut now = None;
     let mut section = "";
     for line in text.lines() {
@@ -164,6 +223,9 @@ pub fn parse(text: &str) -> Vec<InterfaceStatus> {
         } else if let Some(rest) = line.strip_prefix("---") {
             section = match rest.trim() {
                 "route" => "route",
+                "route6" => "route6",
+                "dnsglobal" => "dnsglobal",
+                "resolved" => "resolved",
                 "resolv" => "resolv",
                 "now" => "now",
                 _ => "",
@@ -176,9 +238,18 @@ pub fn parse(text: &str) -> Vec<InterfaceStatus> {
                     }
                 }
                 "route" => route.push_str(line),
-                "resolv" => {
+                "route6" => route6.push_str(line),
+                "dnsglobal" => fallback
+                    .global
+                    .extend(line.split_whitespace().map(str::to_string)),
+                "resolved" | "resolv" => {
                     if let Some(server) = line.trim().strip_prefix("nameserver") {
-                        resolv.push(server.trim().to_string());
+                        let list = if section == "resolved" {
+                            &mut fallback.resolved
+                        } else {
+                            &mut fallback.resolv
+                        };
+                        list.push(server.trim().to_string());
                     }
                 }
                 "now" => now = line.trim().parse::<i64>().ok().or(now),
@@ -186,10 +257,21 @@ pub fn parse(text: &str) -> Vec<InterfaceStatus> {
             }
         }
     }
-    let routes: Vec<Value> = serde_json::from_str(&route).unwrap_or_default();
+    let mut defaults = routes::from_json(&route, false);
+    defaults.extend(routes::from_json(&route6, true));
+    let external = routes::external(&defaults);
     blocks
         .iter()
-        .map(|(name, lines)| one(name, lines, &routes, &resolv, now))
+        .map(|(name, lines)| {
+            let mut status = one(name, lines, now);
+            status.default_route = Some(name.as_str()) == external;
+            status.gateway = routes::gateway_for(&defaults, name, false).map(str::to_string);
+            status.gateway6 = routes::gateway_for(&defaults, name, true).map(str::to_string);
+            if status.dns.is_empty() && status.default_route {
+                status.dns = fallback.servers();
+            }
+            status
+        })
         .collect()
 }
 
@@ -206,13 +288,15 @@ fn number<T: std::str::FromStr>(lines: &[&str], key: &str) -> Option<T> {
     value(lines, key)?.parse().ok()
 }
 
-fn one(
-    name: &str,
-    lines: &[&str],
-    routes: &[Value],
-    resolv: &[String],
-    now: Option<i64>,
-) -> InterfaceStatus {
+/// dhclient writes lease times like `2026/11/16 12:00:00`, in utc.
+fn dhclient_time(text: &str) -> Option<i64> {
+    chrono::NaiveDateTime::parse_from_str(text.trim(), "%Y/%m/%d %H:%M:%S")
+        .ok()
+        .map(|t| t.and_utc().timestamp())
+}
+
+/// one interface from its block; the routes and the fallback dns are filled in by `parse`.
+fn one(name: &str, lines: &[&str], now: Option<i64>) -> InterfaceStatus {
     let addr: Value = value(lines, "addr")
         .and_then(|j| serde_json::from_str::<Vec<Value>>(j).ok())
         .and_then(|mut v| (!v.is_empty()).then(|| v.remove(0)))
@@ -236,15 +320,18 @@ fn one(
                     lease_left = lease_left.or(info["valid_life_time"].as_i64());
                 }
             }
-            Some("inet6") if info["scope"].as_str() != Some("link") => {
-                ipv6.push(format!("{local}/{prefix}"));
+            Some("inet6")
+                if info["scope"].as_str() != Some("link")
+                    && info["deprecated"].as_bool() != Some(true) =>
+            {
+                ipv6.push(Ipv6 {
+                    address: format!("{local}/{prefix}"),
+                    temporary: info["temporary"].as_bool() == Some(true),
+                });
             }
             _ => {}
         }
     }
-    let default = routes
-        .iter()
-        .find(|r| r["dev"].as_str() == Some(name) && r["dst"].as_str() == Some("default"));
     let operstate = value(lines, "operstate").or_else(|| addr["operstate"].as_str());
     let carrier = value(lines, "carrier");
     let connection = match (operstate, carrier) {
@@ -253,11 +340,19 @@ fn one(
         (Some("up"), _) | (_, Some("1")) => Connection::Connected,
         _ => Connection::Unknown,
     };
-    let dhcp = lease_left.map(|left| {
-        let lease_time = number::<i64>(lines, "lease_time");
-        let expires = now.map(|n| n + left);
+    // an address the kernel counts down came from dhcp; so did one a dhcp client has a lease
+    // for (dhclient leaves the address static)
+    let server = value(lines, "dhcp_server").map(str::to_string);
+    let lease_time = number::<i64>(lines, "lease_time");
+    let dhclient_expires = value(lines, "dhclient_expire").and_then(dhclient_time);
+    let leased = server.is_some() || lease_time.is_some() || dhclient_expires.is_some();
+    let dhcp = (lease_left.is_some() || leased).then(|| {
+        let expires = lease_left
+            .zip(now)
+            .map(|(left, n)| n + left)
+            .or(dhclient_expires);
         Dhcp {
-            server: value(lines, "dhcp_server").map(str::to_string),
+            server,
             obtained: expires.zip(lease_time).map(|(e, t)| e - t),
             expires,
         }
@@ -265,20 +360,11 @@ fn one(
     let dns: Vec<String> = value(lines, "dns")
         .map(|d| d.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default();
-    let dns = if dns.is_empty() && default.is_some() {
-        resolv
-            .iter()
-            .filter(|s| !s.starts_with("127."))
-            .cloned()
-            .collect()
-    } else {
-        dns
-    };
     InterfaceStatus {
         name: name.to_string(),
         description: description(value(lines, "kind"), value(lines, "driver")),
         connection,
-        default_route: default.is_some(),
+        default_route: false,
         speed_mbps: number::<i64>(lines, "speed")
             .filter(|s| *s > 0)
             .and_then(|s| u32::try_from(s).ok()),
@@ -292,9 +378,8 @@ fn one(
             .unwrap_or(0),
         ipv4,
         ipv6,
-        gateway: default
-            .and_then(|r| r["gateway"].as_str())
-            .map(str::to_string),
+        gateway: None,
+        gateway6: None,
         dns,
         dhcp,
         counters: Counters {
@@ -379,7 +464,10 @@ mod tests {
         );
         assert_eq!(
             eth0.ipv6,
-            ["2001:db8::10/64"],
+            [Ipv6 {
+                address: "2001:db8::10/64".into(),
+                temporary: false
+            }],
             "link-local addresses are left out"
         );
         let dhcp = eth0.dhcp.as_ref().unwrap();
@@ -434,6 +522,101 @@ mod tests {
         let unplugged = &parse("---iface ens4\noperstate=up\ncarrier=0\n")[0];
         assert_eq!(unplugged.connection, Connection::CableUnplugged);
         assert_eq!(description(None, Some("e1000e")), "Ethernet (e1000e)");
+    }
+
+    /// an `---iface` block with `addr_info` entries, in the script's format.
+    fn iface(name: &str, infos: &str) -> String {
+        format!(
+            "---iface {name}\noperstate=up\ncarrier=1\naddr=[{{\"ifname\":\"{name}\",\"mtu\":1500,\"address\":\"02:00:00:00:bb:01\",\"addr_info\":[{infos}]}}]\n"
+        )
+    }
+
+    #[test]
+    fn several_ipv4_addresses_each_get_a_mask() {
+        let text = iface(
+            "ens3",
+            r#"{"family":"inet","local":"192.0.2.10","prefixlen":24},{"family":"inet","local":"198.51.100.7","prefixlen":25}"#,
+        );
+        let ens3 = &parse(&text)[0];
+        assert!(
+            ens3.dhcp.is_none(),
+            "no dynamic flag and no lease means static"
+        );
+        let rows = ens3.details(|t| t.to_string());
+        let masks: Vec<_> = rows
+            .iter()
+            .filter(|(l, _)| l == "IPv4 Subnet Mask")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(masks, ["255.255.255.0", "255.255.255.128"]);
+    }
+
+    #[test]
+    fn only_the_lowest_metric_multipath_default_is_external() {
+        let text = format!(
+            "{}{}---route\n{}\n",
+            iface("wan1", ""),
+            iface("wan2", ""),
+            r#"[{"dst":"default","metric":200,"nexthops":[{"gateway":"198.51.100.1","dev":"wan2"}]},{"dst":"default","metric":100,"nexthops":[{"gateway":"192.0.2.1","dev":"wan1"},{"gateway":"192.0.2.2","dev":"wan2"}]}]"#
+        );
+        let all = parse(&text);
+        assert!(all[0].default_route && !all[1].default_route);
+        assert_eq!(all[0].gateway.as_deref(), Some("192.0.2.1"));
+        assert_eq!(all[1].gateway.as_deref(), Some("192.0.2.2"));
+    }
+
+    #[test]
+    fn an_ipv6_only_server_has_an_external_network_too() {
+        let text = format!(
+            "{}---route\n[]\n---route6\n{}\n---dnsglobal\n 2001:db8::53 198.51.100.53\n",
+            iface(
+                "uplink",
+                r#"{"family":"inet6","local":"2001:db8::10","prefixlen":64,"scope":"global"},{"family":"inet6","local":"2001:db8::bad","prefixlen":64,"scope":"global","deprecated":true},{"family":"inet6","local":"2001:db8::1234","prefixlen":64,"scope":"global","temporary":true,"dynamic":true,"valid_life_time":7200}"#
+            ),
+            r#"[{"dst":"default","gateway":"fe80::1","dev":"uplink","metric":1024}]"#
+        );
+        let uplink = &parse(&text)[0];
+        assert!(uplink.default_route);
+        assert_eq!(uplink.gateway6.as_deref(), Some("fe80::1"));
+        assert_eq!(uplink.ipv6.len(), 2, "the deprecated address is left out");
+        let rows = uplink.details(|t| t.to_string());
+        let find = |label: &str| {
+            rows.iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(find("IPv6 Address").as_deref(), Some("2001:db8::10/64"));
+        assert_eq!(
+            find("Temporary IPv6 Address").as_deref(),
+            Some("2001:db8::1234/64")
+        );
+        assert_eq!(find("IPv6 Default Gateway").as_deref(), Some("fe80::1"));
+        assert_eq!(find("IPv6 DNS Server").as_deref(), Some("2001:db8::53"));
+        assert_eq!(find("IPv4 DNS Server").as_deref(), Some("198.51.100.53"));
+    }
+
+    #[test]
+    fn dns_falls_back_from_the_link_to_resolved_then_resolv_conf() {
+        let base = format!(
+            "{}---route\n{}\n",
+            iface("ens3", ""),
+            r#"[{"dst":"default","gateway":"192.0.2.1","dev":"ens3"}]"#
+        );
+        let both = format!(
+            "{base}---resolved\nnameserver 198.51.100.1\n---resolv\nnameserver 127.0.0.53\nnameserver 198.51.100.2\n"
+        );
+        assert_eq!(parse(&both)[0].dns, ["198.51.100.1"]);
+        let only_resolv =
+            format!("{base}---resolv\nnameserver 127.0.0.53\nnameserver 198.51.100.2\n");
+        assert_eq!(parse(&only_resolv)[0].dns, ["198.51.100.2"]);
+        // the per-link line sits in the interface's block, before the route sections
+        let with_link = base.replace("---route", "dns= 198.51.100.9\n---route");
+        let link = format!("{with_link}---resolved\nnameserver 198.51.100.1\n");
+        assert_eq!(
+            parse(&link)[0].dns,
+            ["198.51.100.9"],
+            "the link's own servers come first"
+        );
     }
 
     #[test]

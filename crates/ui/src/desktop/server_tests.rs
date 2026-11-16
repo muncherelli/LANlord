@@ -223,6 +223,28 @@ fn networks_has_a_tab_per_network_with_its_connection_status() {
 }
 
 #[test]
+fn a_failed_status_read_says_why_and_refresh_tries_again() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = NETWORKS.into();
+    *fake.network_error.lock().unwrap() = Some("ip is not installed".into());
+    desktop.open(Target::Networks);
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| {
+        d.networks.rows.belongs_to("me@gw") && d.networks.status.note.is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.networks.status.data.is_none());
+    let note = desktop.networks.status.note.clone().unwrap();
+    assert!(note.0 && note.1.contains("ip is not installed"));
+    // a failure is not retried on its own; Refresh does
+    *fake.network_error.lock().unwrap() = None;
+    frames(&mut desktop, &ctx, 3);
+    assert!(desktop.networks.status.data.is_none());
+    assert!(press(&mut desktop, &ctx, "Refresh"));
+    until(&mut desktop, &ctx, |d| d.networks.status.data.is_some());
+}
+
+#[test]
 fn the_server_windows_say_so_without_a_server() {
     let (mut desktop, ctx, _fake) = desktop();
     desktop.open(Target::MyServer);

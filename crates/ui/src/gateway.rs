@@ -369,6 +369,8 @@ mod fake {
         pub facts: Mutex<Option<ServerFacts>>,
         /// the lines a purge preview and a purge answer with.
         pub purge_lines: Mutex<Vec<String>>,
+        /// when set, reading the network status fails with this.
+        pub network_error: Mutex<Option<String>>,
         /// the server's clock, changed by `clock_apply`.
         pub clock: Mutex<ClockState>,
         /// the time zones it lists.
@@ -395,6 +397,7 @@ mod fake {
                 outcome: Mutex::new(Outcome::Dropped),
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
+                network_error: Mutex::new(None),
                 clock: Mutex::new(ClockState {
                     timezone: "Etc/UTC".into(),
                     utc_secs: 1_794_759_123,
@@ -580,7 +583,10 @@ mod fake {
                 .lock()
                 .unwrap()
                 .push(format!("network-status {host}"));
-            Ok(netstatus::demo())
+            match self.network_error.lock().unwrap().clone() {
+                Some(error) => Err(anyhow!(error)),
+                None => Ok(netstatus::demo()),
+            }
         }
 
         fn purge_preview(

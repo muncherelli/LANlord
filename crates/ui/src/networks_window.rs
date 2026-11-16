@@ -33,7 +33,12 @@ pub struct Networks {
     pub(crate) details: Option<NetworkRow>,
     /// the connection whose Network Connection Details are open.
     pub(crate) connection: Option<InterfaceStatus>,
+    /// when the status was last asked for, in egui's seconds.
+    status_at: f64,
 }
+
+/// how often an open window reads the status again, so the traffic counts move.
+const STATUS_EVERY: f64 = 5.0;
 
 impl Networks {
     #[cfg(test)]
@@ -72,9 +77,26 @@ impl Networks {
         if self.rows.wants_load(host, false) {
             self.reload(services, host);
         }
-        if self.status.wants_load(host, false) {
+        // the status loads when the window opens, then again every few seconds while it is
+        // open and the last read worked; after a failure it waits for Refresh
+        let now = ui.input(|i| i.time);
+        let status_failed = self.status.note.as_ref().is_some_and(|(error, _)| *error);
+        let stale = self.status.belongs_to(host)
+            && !status_failed
+            && !self.status.busy()
+            && now - self.status_at >= STATUS_EVERY;
+        if self.status.wants_load(host, false) || stale {
+            self.status_at = now;
             self.reload_status(services, host);
         }
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(STATUS_EVERY));
+        let status_error = self
+            .status
+            .note
+            .as_ref()
+            .filter(|(error, _)| *error)
+            .map(|(_, text)| text.clone());
         let mut ask = None;
         let idle = !services.busy(host);
         let rows = self.rows.data.clone().unwrap_or_default();
@@ -87,14 +109,22 @@ impl Networks {
         let labels: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         controls::tabs(ui, &labels, &mut self.selected, |ui, open| {
             let row = &rows[open];
-            page(ui, row, status.iter().find(|s| s.name == row.interface));
+            page(
+                ui,
+                row,
+                status.iter().find(|s| s.name == row.interface),
+                status_error.as_deref(),
+            );
         });
         ui.add_space(6.0);
         let chosen = rows.get(self.selected).cloned();
         let chosen_status = chosen
             .as_ref()
             .and_then(|r| status.iter().find(|s| s.name == r.interface).cloned());
+        let mut refresh = false;
         controls::buttons(ui, |ui| {
+            let reading = self.rows.busy() || self.status.busy();
+            refresh = theme::action(ui, "Refresh", !reading).clicked();
             if theme::action(ui, "Details...", chosen_status.is_some()).clicked() {
                 self.connection = chosen_status.clone();
             }
@@ -106,6 +136,11 @@ impl Networks {
                 self.details = chosen.clone();
             }
         });
+        if refresh {
+            self.reload(services, host);
+            self.status_at = now;
+            self.reload_status(services, host);
+        }
         ui.add_space(4.0);
         ui.label("Editing networks comes next. For now you can look at them, and open DNS & DHCP.");
         ui.add_space(4.0);
@@ -182,7 +217,7 @@ impl Networks {
 
 /// one network's tab: Connection and Activity like a connection's Status box, and the lanlord
 /// network's dhcp.
-fn page(ui: &mut Ui, row: &NetworkRow, status: Option<&InterfaceStatus>) {
+fn page(ui: &mut Ui, row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>) {
     controls::group(ui, "Connection", |ui| {
         let state = status.map_or(row.link.clone(), |s| s.connection.text().to_string());
         controls::row(ui, "Status:", |ui| ui.label(state));
@@ -192,6 +227,12 @@ fn page(ui: &mut Ui, row: &NetworkRow, status: Option<&InterfaceStatus>) {
         });
         controls::row(ui, "Address:", |ui| ui.label(&row.address));
     });
+    if let (None, Some(error)) = (status, error) {
+        ui.add_space(6.0);
+        ui.label(format!(
+            "Could not read the connection status: {error}. Press Refresh to try again."
+        ));
+    }
     if let Some(status) = status {
         ui.add_space(6.0);
         controls::group(ui, "Activity", |ui| {

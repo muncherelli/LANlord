@@ -13,6 +13,7 @@ pub mod networks;
 pub mod nt4;
 pub mod ops;
 pub mod power;
+pub mod routes;
 pub mod secret;
 pub mod server;
 pub mod settings;
