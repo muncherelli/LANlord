@@ -26,11 +26,10 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::Widget;
 
-use crate::paint::art;
 use crate::paint::chrome::{
     Menu, MenuRow, TaskButton, Taskbar, TaskbarLayout, WindowFrame, WindowLayout,
 };
-use crate::paint::desktop::{icon_rect, Desktop as Teal, DesktopIcon};
+use crate::paint::desktop::{icon_rect, Desktop as Teal, GlyphTile};
 use crate::paint::mouse::{Gesture, Mouse};
 use crate::paint::palette::{Palette, BLACK, GRAY, NAVY, WHITE};
 use crate::paint::{fill, style, text};
@@ -652,8 +651,8 @@ impl Shell {
             if rect.is_empty() {
                 continue;
             }
-            DesktopIcon {
-                art: art::small(target.id()),
+            GlyphTile {
+                id: target.id(),
                 label: target.title(),
                 selected: self.selected == Some(i),
                 palette,
@@ -677,7 +676,7 @@ impl Shell {
             let active = self.active == Some(target);
             WindowFrame {
                 title: target.title(),
-                icon: Some(art::small(target.id())),
+                icon: Some(target.id()),
                 active,
                 palette,
             }
@@ -723,7 +722,7 @@ impl Shell {
         let buttons: Vec<TaskButton> = shown
             .iter()
             .map(|(target, pressed)| TaskButton {
-                icon: Some(art::small(target.id())),
+                icon: Some(target.id()),
                 label: target.title(),
                 pressed: *pressed,
             })
@@ -731,7 +730,7 @@ impl Shell {
         let bar = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
         let taskbar = Taskbar {
             menu_label: "LANlord",
-            menu_icon: Some(art::small("lanlord")),
+            menu_icon: Some("lanlord"),
             menu_open: self.menu.is_some(),
             buttons: &buttons,
             clock: &clock,

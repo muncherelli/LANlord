@@ -11,11 +11,11 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
-use crate::paint::art::Icon;
 use crate::paint::chrome::{row_button, Bevel};
 use crate::paint::controls::{self, Checkbox, TextField};
+use crate::paint::desktop::GlyphTile;
 use crate::paint::palette::{Palette, Rgb, BLACK, GRAY, NAVY, SHADOW, WHITE};
-use crate::paint::{art, bold, fill, style, text};
+use crate::paint::{bold, fill, style, text};
 
 /// layout units per column and per row: one unit is one egui point, and a gui line of text is
 /// about 16 points tall and 7 wide per character.
@@ -359,7 +359,7 @@ impl<'a> Painter<'a> {
                 let least = rows(*min_height).max(2);
                 (items.len() as u16).clamp(least, least.max(8)) + 2
             }
-            Node::Header { lines, .. } => (1 + lines.len() as u16).max(4) + 1,
+            Node::Header { lines, .. } => (1 + lines.len() as u16).max(3) + 1,
             Node::Code(text) => text.lines().count() as u16 + 2,
             Node::Row(body) => body
                 .iter()
@@ -861,16 +861,18 @@ impl<'a> Painter<'a> {
                 self.push(inner, path, Part::Field, true);
             }
             Node::Header { icon, title, lines } => {
-                let icon_area = Rect::new(area.x, area.y, 8, 4).intersection(buf.area);
-                if !icon_area.is_empty() {
-                    Icon {
-                        art: art::small(icon),
-                        step: 2,
+                // the window's own icon as a desktop tile, its label left out
+                let tile = Rect::new(area.x, area.y, 6, 3).intersection(buf.area);
+                if !tile.is_empty() {
+                    GlyphTile {
+                        id: icon,
+                        label: "",
+                        selected: false,
                         palette: p,
                     }
-                    .render(icon_area, buf);
+                    .render(tile, buf);
                 }
-                let x = area.x + 10;
+                let x = area.x + 8;
                 let room = area.right().saturating_sub(x);
                 text(buf, x, area.y, room, title, bold(self.st(BLACK, GRAY)));
                 for (n, line) in lines.iter().enumerate() {
