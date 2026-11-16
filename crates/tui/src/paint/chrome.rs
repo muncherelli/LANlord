@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
-use super::art::badge;
+use super::glyphs::chip;
 use super::palette::{Palette, Rgb, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use super::{bold, fill, put, style, text};
 
@@ -95,7 +95,7 @@ pub struct WindowLayout {
 /// title at the left like the gui, and the minimise, maximise and close buttons.
 pub struct WindowFrame<'a> {
     pub title: &'a str,
-    pub icon: Option<&'a [&'a str]>,
+    pub icon: Option<&'a str>,
     pub active: bool,
     pub palette: Palette,
 }
@@ -144,8 +144,8 @@ impl Widget for WindowFrame<'_> {
         };
         fill(buf, layout.title_bar, palette, bar);
         let mut x = layout.title_bar.x + 1;
-        if let Some(art) = self.icon {
-            badge(buf, x, layout.title_bar.y, art, bar, palette);
+        if let Some(id) = self.icon {
+            chip(buf, x, layout.title_bar.y, id, palette);
             x += 2;
         }
         let room = layout.minimise.x.saturating_sub(x + 1);
@@ -174,7 +174,7 @@ impl Widget for WindowFrame<'_> {
 
 /// one button on the taskbar.
 pub struct TaskButton<'a> {
-    pub icon: Option<&'a [&'a str]>,
+    pub icon: Option<&'a str>,
     pub label: &'a str,
     pub pressed: bool,
 }
@@ -191,7 +191,7 @@ pub struct TaskbarLayout {
 /// and the sunken clock at the right.
 pub struct Taskbar<'a> {
     pub menu_label: &'a str,
-    pub menu_icon: Option<&'a [&'a str]>,
+    pub menu_icon: Option<&'a str>,
     pub menu_open: bool,
     pub buttons: &'a [TaskButton<'a>],
     pub clock: &'a str,
@@ -257,11 +257,11 @@ fn row_edges(buf: &mut Buffer, rect: Rect, sunken: bool, palette: Palette) {
     );
 }
 
-/// a one-row raised button (sunk when pressed) with an optional icon badge.
+/// a one-row raised button (sunk when pressed) with an optional icon chip.
 pub fn row_button(
     buf: &mut Buffer,
     rect: Rect,
-    icon: Option<&[&str]>,
+    icon: Option<&str>,
     label: &str,
     pressed: bool,
     palette: Palette,
@@ -272,8 +272,8 @@ pub fn row_button(
     fill(buf, rect, palette, GRAY);
     row_edges(buf, rect, pressed, palette);
     let mut x = rect.x + 2;
-    if let Some(art) = icon {
-        badge(buf, x, rect.y, art, GRAY, palette);
+    if let Some(id) = icon {
+        chip(buf, x, rect.y, id, palette);
         x += 2;
     }
     text(
@@ -437,7 +437,6 @@ impl Widget for Menu<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paint::art::small;
     use crate::paint::lines;
     use crate::paint::palette::Depth;
     use ratatui::style::{Color, Modifier};
@@ -467,7 +466,7 @@ mod tests {
         let off = Rect::new(6, 2, 30, 12);
         WindowFrame {
             title: "Console",
-            icon: Some(small("console")),
+            icon: Some("console"),
             active: true,
             palette: palette(),
         }
@@ -481,7 +480,7 @@ mod tests {
         .render(off, &mut buf);
         Taskbar {
             menu_label: "LANlord",
-            menu_icon: Some(small("lanlord")),
+            menu_icon: Some("lanlord"),
             menu_open: true,
             buttons: &[TaskButton {
                 icon: None,
@@ -537,7 +536,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 24, 4));
         WindowFrame {
             title: "My Server",
-            icon: Some(small("my-server")),
+            icon: Some("my-server"),
             active: true,
             palette: palette(),
         }
@@ -546,7 +545,7 @@ mod tests {
             lines(&buf),
             [
                 "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕",
-                "▏ ■ My Server   _▕□▕ ×▕▕",
+                "▏ ≡ My Server   _▕□▕ ×▕▕",
                 "▏                      ▕",
                 "▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
             ]
@@ -583,7 +582,7 @@ mod tests {
         }];
         let bar = Taskbar {
             menu_label: "LANlord",
-            menu_icon: Some(small("lanlord")),
+            menu_icon: Some("lanlord"),
             menu_open: false,
             buttons: &buttons,
             clock: "10:55 AM",
@@ -593,7 +592,7 @@ mod tests {
         bar.render(buf.area, &mut buf);
         assert_eq!(
             lines(&buf),
-            ["▏ ■ LANlord ▕ ▏ Console ▕       ▏ 10:55 AM ▕"]
+            ["▏ L LANlord ▕ ▏ Console ▕       ▏ 10:55 AM ▕"]
         );
         assert_eq!(layout.menu, Rect::new(0, 0, 13, 1));
         assert_eq!(layout.buttons, [Rect::new(14, 0, 11, 1)]);

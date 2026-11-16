@@ -6,10 +6,9 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use lanlord_tui::paint::art::small;
 use lanlord_tui::paint::chrome::{place, Menu, MenuRow, TaskButton, Taskbar, WindowFrame};
 use lanlord_tui::paint::controls::{Button, Checkbox, List, TextField};
-use lanlord_tui::paint::desktop::{icon_rect, Desktop, DesktopIcon};
+use lanlord_tui::paint::desktop::{icon_rect, Desktop, GlyphTile};
 use lanlord_tui::paint::mouse::{Capture, Gesture, HitMap, Mouse};
 use lanlord_tui::paint::palette::Palette;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -119,8 +118,8 @@ impl Demo {
         self.hits.push(Hit::Desktop, desk);
         for (i, (id, label)) in ICONS.iter().enumerate() {
             let rect = icon_rect(desk, i);
-            DesktopIcon {
-                art: small(id),
+            GlyphTile {
+                id,
                 label,
                 selected: self.selected == Some(i),
                 palette,
@@ -134,7 +133,7 @@ impl Demo {
             let rect = w.rect.intersection(desk);
             WindowFrame {
                 title,
-                icon: Some(small(id)),
+                icon: Some(id),
                 active: i == top && !self.menu_open,
                 palette,
             }
@@ -197,7 +196,7 @@ impl Demo {
             .windows
             .iter()
             .map(|w| TaskButton {
-                icon: Some(small(ICONS[w.icon].0)),
+                icon: Some(ICONS[w.icon].0),
                 label: ICONS[w.icon].1,
                 pressed: false,
             })
@@ -205,7 +204,7 @@ impl Demo {
         let clock = clock();
         let taskbar = Taskbar {
             menu_label: "LANlord",
-            menu_icon: Some(small("lanlord")),
+            menu_icon: Some("lanlord"),
             menu_open: self.menu_open,
             buttons: &buttons,
             clock: &clock,
