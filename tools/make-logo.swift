@@ -113,9 +113,9 @@ func jewel(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ r: CGFloat, _ light: 
 
 // MARK: the emblem: a flat server tower dressed as a lord, in the spirit of nt and backoffice branding
 
-/// which emblem to draw: "a" has no eyes (the monocle rings a status light), "b" has one small eye behind the
-/// monocle, "c" is "a" without the cane and the sash.
-var emblemStyle = "c"
+/// which emblem to draw: "a" has the staff on the right, leaning on a fold of the robe; "b" has it on the left,
+/// standing a little out with the robe draped over it.
+var emblemStyle = "a"
 /// how dark the little ground shadow under the tower is; lighter on a white page.
 var shadowAlpha: CGFloat = 0.28
 
@@ -176,20 +176,31 @@ func emblem(_ ctx: CGContext, _ ox: CGFloat, _ oy: CGFloat, _ size: CGFloat, thi
     ctx.scaleBy(x: size / 1000, y: size / 1000)
     ctx.translateBy(x: 500, y: 540)
     ctx.scaleBy(x: 1.17, y: 1.17)
-    ctx.translateBy(x: -480, y: -548)
+    ctx.translateBy(x: emblemStyle == "b" ? -446 : -492, y: -548)
     gentleman(ctx, burgundy, shadow: true)
     ctx.restoreGState()
 }
 
-/// a small gold monocle: a thin ring and one short chain.
-func monocle(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, _ r: CGFloat, chainTo end: (CGFloat, CGFloat)) {
-    stroke(ctx, CGPath(ellipseIn: CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r), transform: nil), gold, 6)
-    let k = r * 0.72
-    let chain = CGMutablePath()
-    chain.move(to: CGPoint(x: x + k, y: y + k))
-    chain.addQuadCurve(to: CGPoint(x: end.0, y: end.1), control: CGPoint(x: end.0 + 6, y: y + k + 6))
-    stroke(ctx, chain, gold, 3)
-    flat(ctx, circle(end.0, end.1, 4.5), gold)
+/// the lord's staff, stood against the tower: a thin shaft with a gold ball on top and a small gold ferrule.
+func staff(_ ctx: CGContext) {
+    let top: (CGFloat, CGFloat) = emblemStyle == "b" ? (306, 352) : (612, 352)
+    let foot: (CGFloat, CGFloat) = emblemStyle == "b" ? (306, 926) : (640, 926)
+    stroke(ctx, segment(top.0, top.1 + 14, foot.0, foot.1 - 22), 0xB98A52, 10)
+    stroke(ctx, segment(top.0 - 3, top.1 + 14, foot.0 - 3, foot.1 - 22), 0xFFFFFF, 2, alpha: 0.35)
+    stroke(ctx, segment(foot.0, foot.1 - 26, foot.0, foot.1), gold, 10)
+    flat(ctx, circle(top.0, top.1, 20), gold)
+    flat(ctx, circle(top.0 - 6, top.1 - 7, 6), 0xF4DC86)
+}
+
+/// a fold of the robe draped over the staff, so it is held and not just standing there.
+func staffFold(_ ctx: CGContext, _ robe: Cloth) {
+    if emblemStyle == "b" {
+        flat(ctx, poly([(346, 420), (300, 430), (284, 472), (302, 528), (346, 542)]), robe.front)
+        flat(ctx, poly([(346, 434), (318, 442), (310, 518), (346, 534)]), robe.side)
+    } else {
+        flat(ctx, poly([(585, 418), (624, 428), (634, 470), (616, 522), (585, 540)]), robe.front)
+        flat(ctx, poly([(585, 432), (610, 442), (602, 516), (585, 528)]), robe.side)
+    }
 }
 
 /// a tall top hat tipped a little to one side: a wide brim, a satin band and a lit left edge.
@@ -216,6 +227,7 @@ func gentleman(_ ctx: CGContext, _ robe: Cloth, shadow: Bool) {
     flat(ctx, poly([(355, 360), (515, 360), (515, 920), (355, 920)]), 0xD7DBE8)
     flat(ctx, poly([(515, 360), (585, 324), (585, 884), (515, 920)]), robe.side)
     flat(ctx, poly([(355, 360), (425, 324), (585, 324), (515, 360)]), robe.top)
+    staff(ctx)
     // the bays down the open middle, where the robe falls away
     for i in 0..<3 {
         let y = 600 + CGFloat(i) * 52
@@ -229,30 +241,11 @@ func gentleman(_ ctx: CGContext, _ robe: Cloth, shadow: Bool) {
     flat(ctx, poly([(346, 352), (474, 350), (446, 470), (420, 640), (398, 790), (382, 916), (346, 916)]), robe.front)
     flat(ctx, poly([(366, 364), (398, 362), (390, 560), (376, 912), (356, 912)]), robe.side)
     flat(ctx, poly([(515, 358), (490, 356), (494, 560), (500, 720), (498, 916), (515, 916)]), robe.front)
+    staffFold(ctx, robe)
     // gold on the collar edge only
     stroke(ctx, segment(474, 350, 446, 470), gold, 5)
     // one lit edge
     stroke(ctx, segment(346, 352, 425, 324), 0xFFFFFF, 5, alpha: 0.8)
-    if emblemStyle == "b" {
-        // one small round eye behind the monocle
-        flat(ctx, circle(470, 425, 11), 0xFFFFFF)
-        flat(ctx, circle(472, 427, 5), ink)
-        monocle(ctx, 470, 425, 21, chainTo: (484, 492))
-    } else {
-        // the monocle rings the top status light
-        monocle(ctx, 438, 617, 21, chainTo: (472, 664))
-    }
-    if emblemStyle != "c" {
-        // a plain gold sash, with the cane tucked into it and its handle up
-        let sash = CGMutablePath()
-        sash.move(to: CGPoint(x: 400, y: 792))
-        sash.addQuadCurve(to: CGPoint(x: 496, y: 792), control: CGPoint(x: 448, y: 806))
-        stroke(ctx, segment(404, 798, 326, 694), 0xB98A52, 9)
-        flat(ctx, circle(321, 686, 19), gold)
-        flat(ctx, circle(316, 680, 5), 0xF4DC86)
-        stroke(ctx, sash, gold, 7)
-        flat(ctx, circle(482, 798, 9), gold)
-    }
     topHat(ctx)
 }
 
@@ -548,6 +541,11 @@ func pixelIcon32() -> CGContext {
     tileBase(&p)
     for (x, y) in [(4, 6), (27, 9), (5, 24), (28, 21), (3, 15)] { p[x, y] = 0xFFFFFF }
     p.rect(11, 29, 12, 1, 0x00004A)
+    // the staff: a thin line the height of the tower with a gold ball and a gold foot
+    let sx = emblemStyle == "b" ? 7 : 25
+    p.rect(sx, 10, 1, 18, 0xB98A52)
+    p.rect(sx - 1, 8, 3, 2, gold)
+    p[sx, 28] = gold
     p.rect(12, 11, 7, 18, towerFront)
     for (x, t, height) in [(19, 11, 18), (20, 10, 18), (21, 10, 17)] { p.rect(x, t, 1, height, c.side) }
     p.rect(19, 12, 2, 14, c.front)
@@ -564,7 +562,6 @@ func pixelIcon32() -> CGContext {
         p.rect(14, y, 4, 2, bay)
         p[14, y] = led
     }
-    for (x, y) in [(13, 16), (14, 16), (15, 16), (13, 17), (15, 17), (13, 18), (14, 18), (15, 18)] { p[x, y] = gold }
     // a tall top hat tipped to the left
     p.rect(10, 8, 13, 1, hatBrim)
     p.rect(9, 7, 3, 1, hatBrim)
@@ -581,6 +578,10 @@ func pixelIcon16() -> CGContext {
     var p = Pix(16, 16)
     tileBase(&p)
     p.rect(5, 14, 7, 1, 0x00004A)
+    // the staff: one line the height of the tower with a gold dot on top
+    let sx = emblemStyle == "b" ? 2 : 14
+    p.rect(sx, 7, 1, 7, 0xB98A52)
+    p[sx, 6] = gold
     p.rect(5, 7, 6, 7, towerFront)
     p.rect(11, 7, 2, 7, c.side)
     p.rect(5, 6, 8, 1, c.top)
@@ -630,7 +631,7 @@ func ico(_ images: [(Int, Data)]) -> Data {
     return d
 }
 
-emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "c"
+emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "b"
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "assets"
 let ui = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "crates/ui/assets"
 
@@ -674,7 +675,7 @@ if CommandLine.arguments.count > 3 {
 }
 if CommandLine.arguments.count > 4 {
     let dir = CommandLine.arguments[4]
-    for (style, name) in [("a", "i-simple-a"), ("b", "i-simple-b"), ("c", "i-simple-c")] {
+    for (style, name) in [("a", "j-staff-a"), ("b", "j-staff-b")] {
         emblemStyle = style
         save(banner(1, light: false), "\(dir)/\(name).png")
     }
