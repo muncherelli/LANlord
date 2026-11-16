@@ -32,6 +32,8 @@ pub enum Action {
     CheckUpdates,
     About,
     Quit,
+    /// the server line at the top of the menu, which only names the server.
+    ServerLine,
 }
 
 pub enum Row {
@@ -46,6 +48,8 @@ pub struct Item {
     ticked: bool,
     arrow: bool,
     enabled: bool,
+    /// a line of text that names something and does nothing when clicked.
+    header: bool,
 }
 
 impl Item {
@@ -62,6 +66,7 @@ impl Item {
             ticked: false,
             arrow: false,
             enabled: true,
+            header: false,
         }
     }
 }
@@ -145,11 +150,11 @@ fn paint(ui: &mut Ui, rows: &[Row], rect: Rect, rects: &[Rect], strip: bool) -> 
             continue;
         };
         let response = ui.interact(*at, Id::unique(("menu-item", n, strip)), Sense::click());
-        let hot = response.hovered() && item.enabled;
+        let hot = response.hovered() && item.enabled && !item.header;
         if hot {
             ui.painter().rect_filled(*at, 0.0, NAVY);
         }
-        let colour = match (hot, item.enabled) {
+        let colour = match (hot, item.enabled || item.header) {
             (true, _) => WHITE,
             (false, true) => BLACK,
             (false, false) => SHADOW,
@@ -186,7 +191,7 @@ fn paint(ui: &mut Ui, rows: &[Row], rect: Rect, rects: &[Rect], strip: bool) -> 
                 colour,
             );
         }
-        if response.clicked() && item.enabled {
+        if response.clicked() && item.enabled && !item.header {
             chosen = Some(item.action.clone());
         }
     }
@@ -196,24 +201,10 @@ fn paint(ui: &mut Ui, rows: &[Row], rect: Rect, rects: &[Rect], strip: bool) -> 
 impl Desktop {
     /// the main menu.
     pub(super) fn menu_rows(&self) -> Vec<Row> {
-        let mut rows: Vec<Row> = MODULES
-            .iter()
-            .enumerate()
-            .map(|(i, m)| {
-                Row::Item(Item {
-                    art: Some(m.id),
-                    ..Item::new(m.name, Action::Open(Target::Module(i)))
-                })
-            })
-            .collect();
-        for target in [Target::Settings, Target::Console] {
-            let item = Item::new(target.title(), Action::Open(target));
-            rows.push(Row::Item(Item {
-                art: Some(target.id()),
-                ..item
-            }));
-        }
-        rows.push(Row::Separator);
+        let mut rows = vec![Row::Item(Item {
+            header: true,
+            ..Item::new(&self.server_line(), Action::ServerLine)
+        })];
         if self.auth.is_some() {
             rows.push(Row::Item(Item::new(
                 "Switch server...",
@@ -228,6 +219,21 @@ impl Desktop {
                 Action::LogOff,
             )));
         }
+        rows.push(Row::Separator);
+        rows.extend(MODULES.iter().enumerate().map(|(i, m)| {
+            Row::Item(Item {
+                art: Some(m.id),
+                ..Item::new(m.name, Action::Open(Target::Module(i)))
+            })
+        }));
+        for target in [Target::Settings, Target::Console] {
+            let item = Item::new(target.title(), Action::Open(target));
+            rows.push(Row::Item(Item {
+                art: Some(target.id()),
+                ..item
+            }));
+        }
+        rows.push(Row::Separator);
         let ready = self.host().is_some_and(|h| !self.services.busy(&h));
         for (label, power) in [
             ("Reboot server...", Power::Reboot),
@@ -253,6 +259,12 @@ impl Desktop {
         rows.push(Row::Item(Item::new("About LANlord", Action::About)));
         rows.push(Row::Item(Item::new("Quit LANlord", Action::Quit)));
         rows
+    }
+
+    /// the line at the top of the menu naming the server every action targets.
+    pub(super) fn server_line(&self) -> String {
+        self.host()
+            .map_or_else(|| "No server".to_string(), |h| format!("Server: {h}"))
     }
 
     /// the Developer submenu, only there in a development build.
@@ -380,6 +392,7 @@ impl Desktop {
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));
             }
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::ServerLine => {}
         }
         self.start_open = false;
         self.dev_open = false;

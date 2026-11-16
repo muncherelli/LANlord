@@ -36,9 +36,8 @@ use crate::windows;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
-/// the width of the LANlord button and of the box naming the selected server.
+/// the width of the LANlord button.
 const MENU_BUTTON: f32 = 92.0;
-const SERVER_CHIP: f32 = 170.0;
 /// the clock's width in the tray, and the width of one tray icon.
 const CLOCK: f32 = 72.0;
 const TRAY_ICON: f32 = 22.0;
@@ -111,6 +110,8 @@ pub struct Desktop {
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// the Developer submenu is open.
     dev_open: bool,
+    /// the title the window has been given, so it is only sent when it changes.
+    window_title: String,
 }
 
 impl Desktop {
@@ -143,6 +144,7 @@ impl Desktop {
             exe: None,
             rebuilding: None,
             dev_open: false,
+            window_title: "LANlord".into(),
         }
     }
 
@@ -215,6 +217,18 @@ impl Desktop {
         }
     }
 
+    /// the window is titled with the signed-in server, once someone is signed in.
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let title = match (self.signed_in.as_ref(), self.host()) {
+            (Some(_), Some(host)) => format!("LANlord - {host}"),
+            _ => "LANlord".to_string(),
+        };
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
+    }
+
     /// the host every action targets.
     fn host(&self) -> Option<String> {
         match self.hosts.selected() {
@@ -239,6 +253,7 @@ impl Desktop {
         theme::apply(&ctx);
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        self.sync_window_title(&ctx);
 
         if self.login.is_some() {
             self.show_login(ui, &ctx);
@@ -558,7 +573,6 @@ impl Desktop {
             if start.clicked() {
                 self.start_open = !self.start_open;
             }
-            self.server_chip(ui);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), Sense::hover());
             bevel(ui.painter(), rect, false);
             ui.add_space(2.0);
@@ -637,22 +651,6 @@ impl Desktop {
                 }
             });
         });
-    }
-
-    /// the box beside the menu button naming the server every action targets.
-    fn server_chip(&self, ui: &mut Ui) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(SERVER_CHIP, 22.0), Sense::hover());
-        bevel(ui.painter(), rect, false);
-        let text = self
-            .host()
-            .map_or_else(|| "no server".to_string(), |h| format!("Server: {h}"));
-        ui.painter().with_clip_rect(rect.shrink(2.0)).text(
-            rect.left_center() + Vec2::new(6.0, 0.0),
-            Align2::LEFT_CENTER,
-            text,
-            theme::font(),
-            BLACK,
-        );
     }
 }
 
@@ -1018,7 +1016,7 @@ mod tests {
         frames(&mut desktop, &ctx, 1);
         // the first window button sits just right of the start button
         let button = Pos2::new(
-            MENU_BUTTON + SERVER_CHIP + 4.0 + 4.0 + 8.0 + 2.0 + 20.0 + 75.0,
+            MENU_BUTTON + 4.0 + 8.0 + 2.0 + 20.0 + 75.0,
             SCREEN.y - TASKBAR / 2.0,
         );
         for events in click(button).into_iter().map(|e| vec![e]) {

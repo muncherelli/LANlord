@@ -293,6 +293,31 @@ fn the_menu_offers_log_off_and_switch_server_once_signed_in() {
 }
 
 #[test]
+fn the_server_sits_at_the_top_of_the_menu_and_in_the_window_title() {
+    let (mut desktop, ctx, auth) = logon();
+    assert_eq!(desktop.server_line(), "No server");
+    assert_eq!(desktop.window_title, "LANlord");
+    auth.push(Ok(id("alice", 1000)));
+    sign_in(&mut desktop, &ctx, "alice", "gw");
+    until(&mut desktop, &ctx, logged_on);
+    desktop.start_open = true;
+    frames(&mut desktop, &ctx, 3);
+    let rows = desktop.menu_rows();
+    let Some(Row::Item(first)) = rows.first() else {
+        panic!("the menu starts with the server line");
+    };
+    assert!(first.label().starts_with("Server: ") && first.label().contains("gw"));
+    assert_eq!(
+        desktop.window_title,
+        format!("LANlord - {}", desktop.host().unwrap())
+    );
+    // the line only names the server: clicking it does nothing
+    let before = desktop.windows.len();
+    desktop.do_action(&ctx, Action::ServerLine);
+    assert_eq!(desktop.windows.len(), before);
+}
+
+#[test]
 fn logging_off_closes_the_connection_and_returns_to_the_box() {
     let (mut desktop, ctx, auth) = logon();
     auth.push(Ok(id("alice", 1000)));
