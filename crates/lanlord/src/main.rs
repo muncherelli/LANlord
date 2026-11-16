@@ -1,3 +1,5 @@
+mod launcher;
+
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
@@ -235,9 +237,20 @@ enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// add LANlord to the start menu (windows), applications (macos) or the app menu (linux)
-    InstallLauncher,
+    InstallLauncher {
+        /// show what would be written without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// replace launcher files that install-launcher didn't write
+        #[arg(long)]
+        force: bool,
+    },
     /// remove the launcher added by install-launcher
-    UninstallLauncher,
+    UninstallLauncher {
+        /// show what would be removed without removing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// ask for a password on the terminal.
@@ -745,9 +758,8 @@ fn main() -> Result<()> {
             };
             std::process::exit(exec(&target, &command)?);
         }
-        Some(Command::InstallLauncher | Command::UninstallLauncher) => {
-            bail!("launcher setup is not implemented yet")
-        }
+        Some(Command::InstallLauncher { dry_run, force }) => launcher::install(dry_run, force),
+        Some(Command::UninstallLauncher { dry_run }) => launcher::uninstall(dry_run),
     }
 }
 
