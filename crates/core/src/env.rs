@@ -580,7 +580,7 @@ fn feature_problem(value: Tri, subject: &'static str, no: &str, unknown: &str) -
     })
 }
 
-/// the probe script, for the tests that run it.
+/// the probe script, for the tests (they run it with `sh`, so only where there is one).
 #[cfg(all(test, unix))]
 pub(crate) fn probe_script() -> &'static str {
     PROBE_SCRIPT
