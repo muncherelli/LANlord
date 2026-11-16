@@ -62,6 +62,7 @@ mod tests {
         let shown = format!("{secret:?} {:?}", vec![secret.clone()]);
         assert!(!shown.contains("hunter2"), "{shown}");
         assert_eq!(secret.expose(), "hunter2");
+        assert_eq!(Secret::from(String::from("hunter2")), secret);
     }
 
     #[test]

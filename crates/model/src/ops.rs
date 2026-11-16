@@ -388,6 +388,20 @@ mod tests {
             }
         );
         assert_eq!(UserChange::from(&in_memory), change);
+        for change in [
+            UserChange::SetAdmin {
+                name: "alice".into(),
+                admin: true,
+            },
+            UserChange::SetSoftwareAdmin {
+                name: "bob".into(),
+                software_admin: false,
+            },
+            UserChange::Remove { name: "eve".into() },
+        ] {
+            let in_memory = UserChangeInMemory::from(&change);
+            assert_eq!(UserChange::from(&in_memory), change);
+        }
     }
 
     #[test]
