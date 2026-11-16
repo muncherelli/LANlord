@@ -1,4 +1,6 @@
 mod launcher;
+#[cfg(feature = "webui")]
+mod webui;
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
@@ -132,8 +134,18 @@ enum AdminCommand {
 enum Command {
     /// open the native window
     Gui,
-    /// run the web server
-    Webui,
+    /// run the web server on a gateway (caddy serves it over https on port 8443)
+    Webui {
+        /// the unix socket to listen on
+        #[arg(long, value_name = "PATH", default_value = "/run/lanlord-web/web.sock")]
+        socket: PathBuf,
+        /// listen on this tcp address instead of the socket, to try the server out
+        #[arg(long, value_name = "ADDRESS")]
+        listen: Option<std::net::SocketAddr>,
+        /// the browser build to serve (default: the web folder beside the binary's folder)
+        #[arg(long = "static", value_name = "DIR")]
+        static_dir: Option<PathBuf>,
+    },
     /// install the gateway payload on a host
     Bootstrap {
         host: String,
@@ -472,7 +484,20 @@ fn main() -> Result<()> {
         Some(Command::Gui) => lanlord_ui::run(),
         #[cfg(not(feature = "gui"))]
         Some(Command::Gui) => bail!("this build has no gui; install the desktop build"),
-        Some(Command::Webui) => bail!("webui is not implemented yet"),
+        #[cfg(feature = "webui")]
+        Some(Command::Webui {
+            socket,
+            listen,
+            static_dir,
+        }) => webui::run(webui::Options {
+            socket,
+            listen,
+            static_dir,
+        }),
+        #[cfg(not(feature = "webui"))]
+        Some(Command::Webui { .. }) => {
+            bail!("this build has no web server; build lanlord with --features webui")
+        }
         Some(Command::Bootstrap {
             host,
             ansible,
@@ -539,5 +564,23 @@ fn main() -> Result<()> {
         }
         Some(Command::InstallLauncher { dry_run, force }) => launcher::install(dry_run, force),
         Some(Command::UninstallLauncher { dry_run }) => launcher::uninstall(dry_run),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_web_server_has_its_own_runtime_folder() {
+        // /run/lanlord holds the decrypted settings during an apply; the web server's socket
+        // folder is mounted into the proxy, so it must be a different one
+        let Some(Command::Webui { socket, .. }) =
+            Cli::try_parse_from(["lanlord", "webui"]).unwrap().command
+        else {
+            panic!("webui parses");
+        };
+        assert_eq!(socket, PathBuf::from("/run/lanlord-web/web.sock"));
+        assert!(!socket.starts_with("/run/lanlord/"));
     }
 }

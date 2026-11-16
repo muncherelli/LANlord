@@ -87,4 +87,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The Ansible files live in [`ansible/`](ansible/README.md).
+Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The gateway's web server (`lanlord webui`) is behind the `webui` feature: `cargo build -p lanlord --no-default-features --features webui`. The Ansible files live in [`ansible/`](ansible/README.md).
