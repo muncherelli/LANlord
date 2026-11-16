@@ -1,10 +1,11 @@
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
+use lanlord_core::ops::{execute, Op, Reply, Response};
 use lanlord_core::users::Change;
 use lanlord_core::{crypto, paths};
 
@@ -23,6 +24,12 @@ enum AnsibleChoice {
     Auto,
     Local,
     Remote,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum PowerChoice {
+    Reboot,
+    Shutdown,
 }
 
 #[derive(Subcommand)]
@@ -193,6 +200,22 @@ enum Command {
         #[arg(long, value_name = "HOST")]
         confirm: Option<String>,
     },
+    /// list the dhcp leases the gateway has handed out
+    Leases { host: String },
+    /// reboot or shut down a server
+    Power {
+        host: String,
+        #[arg(value_enum)]
+        action: PowerChoice,
+        /// skip the prompt by repeating the host name (for scripts)
+        #[arg(long, value_name = "HOST")]
+        confirm: Option<String>,
+    },
+    /// show what a server is: its system, uptime, memory and network interfaces
+    Facts { host: String },
+    /// read one operation as json on stdin, run it and print the reply as json
+    #[command(hide = true)]
+    Op { host: String },
     /// turn the nt4-domain software share (S: at logon) on or off, and apply it
     Software {
         host: String,
@@ -373,16 +396,7 @@ fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()>
     for line in preview(&session, options, &mut ask)? {
         println!("  {line}");
     }
-    let typed = match confirm {
-        Some(typed) => typed,
-        None => {
-            print!("type the host name to remove lanlord from it: ");
-            std::io::stdout().flush()?;
-            let mut line = String::new();
-            std::io::stdin().read_line(&mut line)?;
-            line.trim().to_string()
-        }
-    };
+    let typed = confirmed("type the host name to remove lanlord from it: ", confirm)?;
     if typed != host {
         bail!("the host name does not match; nothing was removed");
     }
@@ -391,6 +405,124 @@ fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()>
     }
     if let Some(path) = lanlord_core::hosts::config_path() {
         let _ = lanlord_core::hosts::remove(&path, host);
+    }
+    Ok(())
+}
+
+/// the host name typed at a prompt, or the one given with --confirm.
+fn confirmed(question: &str, confirm: Option<String>) -> Result<String> {
+    if let Some(typed) = confirm {
+        return Ok(typed);
+    }
+    print!("{question}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+fn leases(host: &str) -> Result<()> {
+    let Reply::Leases(leases) = execute(host, &Op::Leases, &mut ask)? else {
+        bail!("the server answered something other than leases");
+    };
+    if leases.is_empty() {
+        println!("no leases on {host}");
+        return Ok(());
+    }
+    for lease in leases {
+        let until = match lease.expires {
+            0 => "never".to_string(),
+            secs => format!(
+                "{} UTC",
+                lanlord_core::clock::local_text(i64::try_from(secs).unwrap_or(i64::MAX), 0)
+            ),
+        };
+        let name = if lease.name.is_empty() {
+            "-"
+        } else {
+            &lease.name
+        };
+        println!(
+            "{:<15}  {:<17}  {:<20}  expires {until}",
+            lease.address, lease.mac, name
+        );
+    }
+    Ok(())
+}
+
+fn power(host: &str, action: PowerChoice, confirm: Option<String>) -> Result<()> {
+    use lanlord_core::power::{Outcome, Power};
+    let (power, verb) = match action {
+        PowerChoice::Reboot => (Power::Reboot, "reboot"),
+        PowerChoice::Shutdown => (Power::PowerOff, "shut down"),
+    };
+    let typed = confirmed(&format!("type the host name to {verb} it: "), confirm)?;
+    if typed != host {
+        bail!("the host name does not match; nothing was done");
+    }
+    match execute(host, &Op::Power { power }, &mut ask)? {
+        Reply::Outcome(Outcome::Done) => println!("{host} is {}", power.doing()),
+        Reply::Outcome(Outcome::Dropped) => println!(
+            "{host} dropped the connection, which is what {} looks like",
+            power.doing()
+        ),
+        _ => bail!("the server answered something other than a power outcome"),
+    }
+    Ok(())
+}
+
+fn facts(host: &str) -> Result<()> {
+    let Reply::Facts(facts) = execute(host, &Op::ServerFacts, &mut ask)? else {
+        bail!("the server answered something other than its facts");
+    };
+    println!("name:          {}", facts.hostname);
+    println!("system:        {}", facts.os);
+    println!("kernel:        {}", facts.kernel);
+    println!("up for:        {}", facts.uptime());
+    let root = if facts.is_root { " (root)" } else { "" };
+    println!("signed in as:  {}{root}", facts.user);
+    println!("processors:    {}", facts.cpus);
+    println!(
+        "memory:        {} MB free of {} MB",
+        facts.mem_available_mb, facts.mem_total_mb
+    );
+    let lanlord = match (facts.lanlord_installed, &facts.lanlord_version) {
+        (false, _) => "not installed".to_string(),
+        (true, Some(version)) => format!("installed, version {version}"),
+        (true, None) => "installed".to_string(),
+    };
+    println!("lanlord:       {lanlord}");
+    if let Some(when) = &facts.last_applied {
+        println!("last applied:  {when}");
+    }
+    for iface in &facts.interfaces {
+        let route = if iface.default_route {
+            ", default route"
+        } else {
+            ""
+        };
+        println!(
+            "interface:     {} {} ({}{route}) {}",
+            iface.name,
+            iface.link(),
+            iface.state,
+            iface.addresses.join(" ")
+        );
+    }
+    Ok(())
+}
+
+/// one operation in, one reply out, both as json; what the web ui backend calls.
+fn op(host: &str) -> Result<()> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let response: Response = match serde_json::from_str::<Op>(&input) {
+        Ok(op) => execute(host, &op, &mut ask).into(),
+        Err(e) => Response::Error(format!("not an operation: {e}")),
+    };
+    println!("{}", serde_json::to_string(&response)?);
+    if matches!(response, Response::Error(_)) {
+        std::process::exit(1);
     }
     Ok(())
 }
@@ -490,6 +622,14 @@ fn main() -> Result<()> {
             remove_admins,
             confirm,
         }) => purge(&host, remove_admins, confirm),
+        Some(Command::Leases { host }) => leases(&host),
+        Some(Command::Power {
+            host,
+            action,
+            confirm,
+        }) => power(&host, action, confirm),
+        Some(Command::Facts { host }) => facts(&host),
+        Some(Command::Op { host }) => op(&host),
         Some(Command::Software { host, state }) => {
             let identity = crypto::load(&identity_path()?)?;
             let session = lanlord_core::ssh::Session::new(&host)?;
@@ -527,5 +667,55 @@ fn main() -> Result<()> {
         Some(Command::InstallLauncher | Command::UninstallLauncher) => {
             bail!("launcher setup is not implemented yet")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Command {
+        let mut all = vec!["lanlord"];
+        all.extend_from_slice(args);
+        Cli::try_parse_from(all)
+            .expect("parses")
+            .command
+            .expect("a command")
+    }
+
+    #[test]
+    fn leases_and_facts_take_a_host() {
+        assert!(matches!(parse(&["leases", "gw"]), Command::Leases { host } if host == "gw"));
+        assert!(matches!(parse(&["facts", "gw"]), Command::Facts { host } if host == "gw"));
+    }
+
+    #[test]
+    fn power_takes_an_action_and_an_optional_confirmation() {
+        assert!(matches!(
+            parse(&["power", "gw", "reboot"]),
+            Command::Power { host, action: PowerChoice::Reboot, confirm: None } if host == "gw"
+        ));
+        assert!(matches!(
+            parse(&["power", "gw", "shutdown", "--confirm", "gw"]),
+            Command::Power { action: PowerChoice::Shutdown, confirm: Some(c), .. } if c == "gw"
+        ));
+        let mut wrong = vec!["lanlord", "power", "gw", "explode"];
+        assert!(Cli::try_parse_from(&wrong).is_err());
+        wrong.truncate(3);
+        assert!(
+            Cli::try_parse_from(&wrong).is_err(),
+            "the action is required"
+        );
+    }
+
+    #[test]
+    fn op_is_hidden_from_help() {
+        assert!(matches!(parse(&["op", "gw"]), Command::Op { host } if host == "gw"));
+        let help = Cli::command().render_help().to_string();
+        assert!(help.contains("leases") && help.contains("facts") && help.contains("power"));
+        assert!(
+            !help.lines().any(|l| l.trim_start().starts_with("op ")),
+            "{help}"
+        );
     }
 }
