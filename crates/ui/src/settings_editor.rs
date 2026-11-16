@@ -564,7 +564,7 @@ mod tests {
         assert!(editor.message.as_ref().unwrap().0);
         // let the waiting task finish
         let request = loop {
-            if let Some(request) = services.tasks.next_request() {
+            if let Some(request) = services.next_request() {
                 break request;
             }
             std::thread::sleep(Duration::from_millis(5));
