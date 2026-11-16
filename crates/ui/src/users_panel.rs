@@ -7,11 +7,11 @@ use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::users::{self, Change, User};
 
 use crate::form::{Form, FormAnswer};
-use crate::gateway::Gateway;
-use crate::remote::Remote;
-use crate::services::Services;
+use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::Table;
+use lanlord_app::gateway::Gateway;
+use lanlord_app::services::Services;
 
 pub struct UsersData {
     pub users: Vec<User>,

@@ -24,18 +24,19 @@ use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
 use crate::form::Form;
-use crate::hostlist::HostList;
 use crate::icons;
 use crate::login::{Auth, LoginBox, Outcome, SignedIn};
 use crate::my_server::MyServer;
 use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
-use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
-use crate::tasks::PasswordRequest;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
 use crate::update_panel::{Choice, Updates};
 use crate::windows;
+use lanlord_app::gateway::Gateway;
+use lanlord_app::hostlist::HostList;
+use lanlord_app::services::Services;
+use lanlord_app::tasks::PasswordRequest;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
@@ -98,6 +99,8 @@ pub struct Desktop {
     hosts: HostList,
     console: Console,
     services: Services,
+    /// the egui context background work wakes, and windows that need one (logon box, console).
+    ctx: egui::Context,
     settings: SettingsEditor,
     nt4: Nt4Window,
     dns: DnsPanel,
@@ -139,8 +142,14 @@ pub struct Desktop {
 }
 
 impl Desktop {
-    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `services`.
-    pub fn new(services: Services, hosts_path: Option<PathBuf>) -> Self {
+    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `gateway`;
+    /// background work wakes `ctx` when it finishes.
+    pub fn new(
+        gateway: Arc<dyn Gateway>,
+        ctx: &egui::Context,
+        hosts_path: Option<PathBuf>,
+    ) -> Self {
+        let services = Services::new(gateway, crate::wake(ctx));
         let mut icons = vec![Target::MyServer, Target::Networks];
         icons.extend((0..MODULES.len()).map(Target::Module));
         icons.extend([Target::Settings, Target::Console, Target::Hosts]);
@@ -151,7 +160,8 @@ impl Desktop {
             active: None,
             start_open: false,
             hosts: HostList::new(hosts_path),
-            console: Console::new(&services.ctx),
+            console: Console::new(ctx),
+            ctx: ctx.clone(),
             services,
             settings: SettingsEditor::default(),
             nt4: Nt4Window::default(),
@@ -202,7 +212,7 @@ impl Desktop {
         let Some(auth) = self.auth.clone() else {
             return;
         };
-        let mut login = LoginBox::new(auth, &self.services.ctx, Some(host));
+        let mut login = LoginBox::new(auth, &self.ctx, Some(host));
         login.submit();
         self.login = Some(login);
     }
@@ -213,11 +223,7 @@ impl Desktop {
             return;
         }
         let last = self.hosts.selected().map(String::from);
-        self.login = Some(LoginBox::new(
-            auth.clone(),
-            &self.services.ctx,
-            last.as_deref(),
-        ));
+        self.login = Some(LoginBox::new(auth.clone(), &self.ctx, last.as_deref()));
         self.auth = Some(auth);
     }
 }
@@ -466,7 +472,7 @@ impl Desktop {
         self.windows.clear();
         self.active = None;
         self.start_open = false;
-        let mut login = LoginBox::new(auth, &self.services.ctx, last.as_deref());
+        let mut login = LoginBox::new(auth, &self.ctx, last.as_deref());
         if let Some(note) = note {
             login.note(&note);
         }
@@ -548,7 +554,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
         let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.services.ctx.clone();
+        let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = update::verify_built(&exe)
                 .and_then(|()| update::relaunch(&exe, host.as_deref(), grace));
@@ -605,7 +611,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
         let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.services.ctx.clone();
+        let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = update::install_build(&repo, &exe, host.as_deref(), pull, grace);
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));

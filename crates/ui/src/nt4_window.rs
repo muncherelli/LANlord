@@ -5,8 +5,8 @@ use eframe::egui::{self, Ui};
 use crate::controls;
 use crate::logon_panel::LogonPanel;
 use crate::nt4_panel::Nt4Panel;
-use crate::services::Services;
 use crate::users_panel::UsersPanel;
+use lanlord_app::services::Services;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {

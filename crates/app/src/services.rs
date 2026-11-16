@@ -1,10 +1,9 @@
 //! what every window needs to reach a gateway: the gateway itself (real or
-//! fake), the task runner and the egui context to wake up.
+//! fake), the task runner and the front end to wake up.
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use eframe::egui::Context;
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::log::{emit, Kind};
 use lanlord_core::power::{Outcome, Power};
@@ -13,19 +12,20 @@ use lanlord_core::users::cached;
 
 use crate::gateway::Gateway;
 use crate::tasks::{Job, Tasks};
+use crate::wake::Wake;
 
 pub struct Services {
     pub gateway: Arc<dyn Gateway>,
     pub tasks: Tasks,
-    pub ctx: Context,
+    pub wake: Wake,
 }
 
 impl Services {
-    pub fn new(gateway: Arc<dyn Gateway>, ctx: &Context) -> Self {
+    pub fn new(gateway: Arc<dyn Gateway>, wake: Wake) -> Self {
         Self {
             gateway,
             tasks: Tasks::default(),
-            ctx: ctx.clone(),
+            wake,
         }
     }
 
@@ -34,7 +34,7 @@ impl Services {
         self.tasks.busy(host)
     }
 
-    /// run `work` on a thread with the gateway; `None` when `host` already has a task.
+    /// run `work` in the background with the gateway; `None` when `host` already has a task.
     /// the sudo password is asked for once per task, however many steps need it.
     pub fn spawn<T: Send + 'static>(
         &self,
@@ -42,7 +42,7 @@ impl Services {
         work: impl FnOnce(&dyn Gateway, AskPassword) -> Result<T> + Send + 'static,
     ) -> Option<Job<T>> {
         let gateway = self.gateway.clone();
-        self.tasks.spawn(&self.ctx, host, move |ask| {
+        self.tasks.spawn(&self.wake, host, move |ask| {
             let mut ask = cached(ask);
             work(&*gateway, &mut ask)
         })
@@ -54,7 +54,7 @@ impl Services {
         work: impl FnOnce(&dyn Gateway) -> Result<T> + Send + 'static,
     ) -> Job<T> {
         let gateway = self.gateway.clone();
-        self.tasks.quiet(&self.ctx, move || work(&*gateway))
+        self.tasks.quiet(&self.wake, move || work(&*gateway))
     }
 
     /// bootstrap `host` in the background; progress goes to the console.

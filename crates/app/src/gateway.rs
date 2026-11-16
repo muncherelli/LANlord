@@ -322,10 +322,10 @@ fn demo_purge() -> Vec<String> {
     .to_vec()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fake"))]
 pub use fake::Fake;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fake"))]
 mod fake {
     use std::sync::Mutex;
 

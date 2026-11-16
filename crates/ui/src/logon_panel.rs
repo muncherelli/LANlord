@@ -8,11 +8,11 @@ use lanlord_core::logon::{self, valid_script_name};
 
 use crate::controls;
 use crate::form::{Form, FormAnswer};
-use crate::gateway::Gateway;
-use crate::remote::Remote;
-use crate::services::Services;
+use crate::remote::{Remote, ShowNote};
 use crate::theme::{self, WHITE};
 use crate::widgets::Table;
+use lanlord_app::gateway::Gateway;
+use lanlord_app::services::Services;
 
 pub struct LogonData {
     /// the scripts on the gateway.

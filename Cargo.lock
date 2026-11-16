@@ -2831,6 +2831,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lanlord-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "lanlord-core",
+ "lanlord-model",
+ "zeroize",
+]
+
+[[package]]
 name = "lanlord-core"
 version = "0.1.0"
 dependencies = [
@@ -2870,6 +2880,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "eframe",
+ "lanlord-app",
  "lanlord-core",
  "zeroize",
 ]

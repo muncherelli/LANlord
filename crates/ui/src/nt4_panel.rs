@@ -6,10 +6,10 @@ use lanlord_core::nt4::{valid_machine, Nt4Settings};
 
 use crate::controls;
 use crate::form::{Form, FormAnswer};
-use crate::remote::Remote;
-use crate::services::{update_settings, Services};
+use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::{bad_rows, field_error, labelled_edit, Table};
+use lanlord_app::services::{update_settings, Services};
 
 const ADMIN_PASSWORD: &str = "nt4-domain.admin_password";
 const MODULE: &str = "nt4-domain";
@@ -20,7 +20,7 @@ pub struct Nt4Data {
 }
 
 fn load(
-    gateway: &dyn crate::gateway::Gateway,
+    gateway: &dyn lanlord_app::gateway::Gateway,
     host: &str,
     ask: lanlord_core::bootstrap::AskPassword,
 ) -> anyhow::Result<Nt4Data> {

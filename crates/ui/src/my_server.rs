@@ -7,9 +7,9 @@ use lanlord_core::server::ServerFacts;
 
 use crate::controls;
 use crate::dialogs;
-use crate::remote::{Remote, RED};
-use crate::services::Services;
+use crate::remote::{Remote, ShowNote, RED};
 use crate::theme::{self, WHITE};
+use lanlord_app::services::Services;
 
 const GENERAL: usize = 0;
 

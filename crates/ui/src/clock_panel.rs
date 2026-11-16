@@ -11,11 +11,11 @@ use eframe::egui::{self, Align2, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use lanlord_core::clock::{self, Change, ClockState, NtpChange, Stored, Sync, ZoneNow};
 
 use crate::controls;
-use crate::gateway::Gateway;
-use crate::remote::{Remote, RED};
-use crate::services::Services;
-use crate::tasks::Job;
+use crate::remote::{Remote, ShowNote, RED};
 use crate::theme::{self, BLACK, GRAY, NAVY, SHADOW, WHITE};
+use lanlord_app::gateway::Gateway;
+use lanlord_app::services::Services;
+use lanlord_app::tasks::Job;
 
 const MONTHS: [&str; 12] = [
     "January",

@@ -9,8 +9,8 @@ use lanlord_core::network::Internal;
 
 use super::harness::*;
 use super::*;
-use crate::gateway::Fake;
 use crate::nt4_window::Tab;
+use lanlord_app::gateway::Fake;
 
 const NT4: &str =
     "nt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: dana\n      admin: true\n";

@@ -6,7 +6,7 @@ use eframe::egui;
 
 use super::harness::*;
 use super::*;
-use crate::gateway::Fake;
+use lanlord_app::gateway::Fake;
 
 fn server() -> (Desktop, egui::Context, Arc<Fake>) {
     let (mut desktop, ctx, fake) = desktop();
