@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::power::{Outcome, Power};
-use lanlord_core::settings::Settings;
-use lanlord_core::users::cached;
+use lanlord_model::power::{Outcome, Power};
+use lanlord_model::settings::Settings;
+
+use crate::ask::{cached, AskPassword};
+use crate::log::{emit, Kind};
 
 use crate::gateway::Gateway;
 use crate::tasks::{Job, Tasks};

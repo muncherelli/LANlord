@@ -1,7 +1,7 @@
 //! the desktop every front end shows: which icons it has and in what order, the windows they
 //! open, how big those windows start, and the title of the whole app.
 
-use lanlord_core::modules::MODULES;
+use lanlord_model::modules::MODULES;
 
 /// a window the desktop can open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

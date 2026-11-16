@@ -6,9 +6,9 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
+use crate::ask::AskPassword;
+use crate::log::{emit, Kind};
 use anyhow::{anyhow, Result};
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::log::{emit, Kind};
 
 use crate::wake::Wake;
 
@@ -132,11 +132,12 @@ fn background(work: impl FnOnce() + Send + 'static) {
     std::thread::spawn(work);
 }
 
-/// in the browser there are no threads: tasks will become requests to the backend
-/// (`wasm_bindgen_futures::spawn_local`), which is not built yet.
+/// in the browser there are no threads: the work runs on the page's event loop once the
+/// current frame is done. a task that talks to the server sends its op with
+/// `gateway::http::Http::send`, which does not block.
 #[cfg(target_arch = "wasm32")]
 fn background(work: impl FnOnce() + Send + 'static) {
-    work();
+    wasm_bindgen_futures::spawn_local(async move { work() });
 }
 
 /// a password prompt that asks through the ui.

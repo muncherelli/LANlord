@@ -6,11 +6,22 @@ license.workspace = true
 description = "the LANlord app layer: state, layout and actions shared by the gui, tui and web ui"
 
 [features]
-# the in-memory gateway the tests (and later the browser demo) run against
+default = ["native"]
+# the desktop backends: ssh to a gateway (client mode) and the gateway itself (server mode),
+# the hosts file and the log bus; none of it builds for the browser
+native = ["dep:lanlord-core"]
+# the in-memory gateway the tests and the browser demo run against
 fake = []
 
 [dependencies]
 anyhow.workspace = true
-lanlord-core = { version = "0.1.0", path = "../core" }
+lanlord-core = { version = "0.1.0", path = "../core", optional = true }
 lanlord-model.workspace = true
+web-time = "1.1"
 zeroize = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+serde_json.workspace = true
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Headers", "Request", "RequestInit", "Response", "Window"] }

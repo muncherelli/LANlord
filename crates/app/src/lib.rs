@@ -3,10 +3,12 @@
 //! the actions; each front end only draws that description and turns input back into
 //! actions.
 
+pub mod ask;
 pub mod demo_clock;
 pub mod desktop;
 pub mod gateway;
 pub mod hostlist;
+pub mod log;
 pub mod menu;
 pub mod my_server;
 pub mod remote;

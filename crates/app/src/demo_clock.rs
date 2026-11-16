@@ -3,9 +3,9 @@
 //! (whose clock is its host's) looks. nothing is sent anywhere.
 
 use std::sync::{Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
-use lanlord_core::clock::{Change, ClockState, Stored, Sync, ZoneNow};
+use lanlord_model::clock::{Change, ClockState, Stored, Sync, ZoneNow};
 
 static STATE: Mutex<Option<ClockState>> = Mutex::new(None);
 
@@ -112,7 +112,7 @@ pub fn apply(change: &Change, container: bool) -> (Vec<String>, Stored) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lanlord_core::clock::NtpChange;
+    use lanlord_model::clock::NtpChange;
 
     #[test]
     fn the_demo_clock_remembers_what_it_was_given() {
