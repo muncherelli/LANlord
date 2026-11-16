@@ -1,8 +1,11 @@
 # written by lanlord; changes here are overwritten on the next apply
 {
 	admin off
-{% if proxy_tls == 'off' %}
+{% if proxy_tls == 'off' and not webui_on %}
 	auto_https off
+{% elif proxy_tls == 'off' %}
+	# the sites are plain http; only the web ui below has a certificate
+	auto_https disable_redirects
 {% endif %}
 }
 {% for site in proxy_sites %}
@@ -22,6 +25,20 @@ http://{{ status_host }}, http://{{ internal_ip }} {
 	bind {{ internal_ip }}
 	root * /srv/status
 	file_server
+}
+{% endif %}
+{% if webui_on %}
+
+# the lanlord web ui, on the normal network only and always https
+https://{{ webui_host }}:{{ webui_port }} {
+	bind {{ host_address }}
+{% if webui_tls == 'internal' %}
+	# development only: browsers do not trust caddy's own certificate authority
+	tls internal
+{% elif webui_tls == 'cloudflare-origin' %}
+	tls /config/webui-origin.pem /config/webui-origin.key
+{% endif %}
+	reverse_proxy {{ webui_upstream }}
 }
 {% endif %}
 {% if proxy_tls == 'off' %}

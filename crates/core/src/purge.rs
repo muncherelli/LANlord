@@ -73,7 +73,7 @@ if have docker; then
   done
 fi
 
-for u in lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
+for u in lanlord-webui.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
   if exists "$ROOT/etc/systemd/system/$u"; then
     if have systemctl; then act "stop and disable $u" systemctl disable --now "$u"; fi
     act "remove unit $u" rm -f "$ROOT/etc/systemd/system/$u"

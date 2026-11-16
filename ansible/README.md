@@ -61,3 +61,22 @@ Every domain logon runs `lanlord.bat` from the `netlogon` share, which LANlord w
 
 The software share is off by default too. Set `software: true` to add a `software` share that maps to `S:` at logon, for service packs and installers. Domain users read it; domain admins and the Software Admins domain group write to it (the group shows up in User Manager for Domains, but LANlord decides who is in it). To let someone write without making them a domain admin, give their entry in `users` `software_admin: true`. Files you put in the share from the gateway land in `/opt/lanlord/nt4/lib/software`.
 
+## The web UI
+
+The web UI runs only on the gateway. `lanlord webui` listens on the unix socket `/run/lanlord/web.sock` (no TCP port) as the unprivileged `lanlord` account, through the `lanlord-webui` systemd service that the Web Proxy module installs. It serves the browser build from `/opt/lanlord/web` (the `web` folder beside the binary's `bin` folder, or `--static DIR`) and a placeholder page until that build exists. Caddy answers on port 8443 of the normal network address only, never the retronet, and proxies to the socket. The socket's folder is mounted into the Caddy container and survives service restarts.
+
+```yaml
+web-proxy:
+  webui:
+    tls: internal               # letsencrypt-dns, cloudflare-origin, or internal (test gateways only)
+    host: gateway.example.lan   # default: the normal network address
+    port: 8443                  # the default
+```
+
+The web UI is HTTPS only, and it stays off until `tls` names a certificate method:
+
+- `cloudflare-origin` uses a Cloudflare origin certificate, for traffic that comes through Cloudflare. Put the certificate at `/opt/lanlord/caddy/config/webui-origin.pem` and its key at `/opt/lanlord/caddy/config/webui-origin.key`.
+- `letsencrypt-dns` (Let's Encrypt through a Cloudflare DNS challenge) is planned; it needs a Caddy build with the Cloudflare DNS module, so the module refuses it for now.
+- `internal` uses Caddy's own certificate authority. Browsers do not trust it, so it is for test gateways only.
+
+The service waits for the `lanlord` binary at `/opt/lanlord/bin/lanlord`. Its name never goes into the retronet DNS zone.
