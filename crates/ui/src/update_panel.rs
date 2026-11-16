@@ -565,9 +565,9 @@ impl Updates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit;
     use lanlord_app::update_box::{buttons_for, label, status_text};
     use lanlord_core::update::Source;
-    use crate::testkit;
     use std::path::Path;
 
     /// a clock the tests move by hand.
