@@ -12,8 +12,30 @@ use crate::remote::RED;
 use crate::theme::{self, BLACK, WHITE};
 use crate::widgets::Table;
 
-/// draw `nodes` top to bottom; the message of a click, if there was one.
+/// draw `nodes` top to bottom; the message of a click, if there was one. a message changes the
+/// window, so another frame is asked for to show it.
 pub fn show<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
+    let sent = nodes_ui(ui, nodes);
+    if sent.is_some() {
+        ui.ctx().request_repaint();
+    }
+    sent
+}
+
+/// draw a modal box; the message of a click inside it, if there was one.
+pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
+    let sent = dialogs::modal(ctx, dialog.id, &dialog.title, |ui| {
+        let sent = nodes_ui(ui, &dialog.body);
+        let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        sent.or_else(|| escaped.then(|| dialog.escape.clone()).flatten())
+    });
+    if sent.is_some() {
+        ctx.request_repaint();
+    }
+    sent
+}
+
+fn nodes_ui<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
     let mut sent = None;
     for node in nodes {
         if let Some(msg) = node_ui(ui, node) {
@@ -21,15 +43,6 @@ pub fn show<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
         }
     }
     sent
-}
-
-/// draw a modal box; the message of a click inside it, if there was one.
-pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
-    dialogs::modal(ctx, dialog.id, &dialog.title, |ui| {
-        let sent = show(ui, &dialog.body);
-        let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
-        sent.or_else(|| escaped.then(|| dialog.escape.clone()).flatten())
-    })
 }
 
 fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
@@ -42,7 +55,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.add_space(*height);
             None
         }
-        Node::Group { title, body } => controls::group(ui, title, |ui| show(ui, body)),
+        Node::Group { title, body } => controls::group(ui, title, |ui| nodes_ui(ui, body)),
         Node::Table(table) => Table {
             id: table.id,
             headings: &table.headings,
@@ -85,7 +98,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             body,
         } => {
             let mut tab = *current;
-            let inside = controls::tabs(ui, titles, &mut tab, |ui, _| show(ui, body));
+            let inside = controls::tabs(ui, titles, &mut tab, |ui, _| nodes_ui(ui, body));
             if tab == *current {
                 inside
             } else {
@@ -96,7 +109,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             Frame::new()
                 .stroke(Stroke::new(1.0, RED))
                 .inner_margin(Margin::same(3))
-                .show(ui, |ui| show(ui, body))
+                .show(ui, |ui| nodes_ui(ui, body))
                 .inner
         }
         Node::Check {

@@ -110,6 +110,8 @@ struct Answer {
     list: Option<(Option<usize>, usize)>,
     tab: Option<(usize, usize)>,
     choice: Option<(Vec<(usize, String)>, String)>,
+    /// the field at the queried path sends its own message on Enter.
+    enters: bool,
     height: u16,
 }
 
@@ -173,6 +175,7 @@ fn drive<M: Clone>(
             answer.list = view::list_state(nodes, path);
             answer.tab = view::tab_state(nodes, path);
             answer.choice = view::choice_state(nodes, path);
+            answer.enters = view::field_enters(nodes, path);
             (answer, None)
         }
     }
@@ -403,7 +406,7 @@ impl Shell {
             let _ = host;
         }
         if self.modal.is_none() {
-            if let Some(request) = self.services.tasks.next_request() {
+            if let Some(request) = self.services.next_request() {
                 let form = Form::new("password", "Password", &request.prompt).secret("Password");
                 self.modal = Some(Modal::Password(request, form));
             } else if let Some(path) = self.settings.asking().map(String::from) {
@@ -575,9 +578,8 @@ impl Shell {
             if let Some(msg) = msg {
                 let host = self
                     .my_server
-                    .purge
-                    .as_ref()
-                    .map(|p| p.host.clone())
+                    .purge()
+                    .map(|p| p.host().to_string())
                     .unwrap_or_default();
                 self.my_server.update(msg, &self.services, &host);
             }
@@ -1136,9 +1138,21 @@ impl Shell {
                 self.open_dropdown(owner, &region);
                 return;
             }
+            Part::Fold => {
+                self.toggle_fold(owner, &region.key);
+                return;
+            }
             _ => return,
         };
         self.send(owner, region.path, input);
+    }
+
+    /// open or close a fold, which only the front end remembers.
+    fn toggle_fold(&mut self, owner: Owner, key: &str) {
+        let open = &mut self.view_mut(owner).open;
+        if !open.remove(key) {
+            open.insert(key.to_string());
+        }
     }
 
     fn open_dropdown(&mut self, owner: Owner, region: &Region) {
@@ -1333,6 +1347,9 @@ impl Shell {
             (Part::Toggle, KeyCode::Enter | KeyCode::Char(' ')) => {
                 self.send(owner, region.path, Input::Toggle);
             }
+            (Part::Fold, KeyCode::Enter | KeyCode::Char(' ')) => {
+                self.toggle_fold(owner, &region.key);
+            }
             (Part::List, KeyCode::Up) => self.list_step(owner, &region, -1),
             (Part::List, KeyCode::Down) => self.list_step(owner, &region, 1),
             (Part::TabBar, KeyCode::Left | KeyCode::Right) => {
@@ -1387,6 +1404,10 @@ impl Shell {
                         value.pop();
                     }
                     KeyCode::Enter if multi => value.push('\n'),
+                    KeyCode::Enter if answer.enters => {
+                        self.send(owner, region.path, Input::Enter);
+                        return;
+                    }
                     KeyCode::Enter => {
                         // Enter in a box's one-line field presses its default button: the last
                         // one of its bottom row, which the gui draws leftmost (OK before Cancel)

@@ -3,7 +3,7 @@
 //! window's messages. nothing here knows what a window is for: every window that describes
 //! itself as a tree shows up in the terminal through this one file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lanlord_app::view::{Button, Kind, Node};
 use ratatui::buffer::Buffer;
@@ -53,6 +53,8 @@ pub enum Part {
     Open,
     /// something that scrolls with the wheel.
     Scroll,
+    /// a fold's title, which opens and closes it.
+    Fold,
 }
 
 /// a part of a drawn tree: where it is, which node it belongs to (its path through the tree)
@@ -109,6 +111,8 @@ pub struct ViewState {
     pub focus: Option<String>,
     pub scroll: HashMap<String, usize>,
     pub dropdown: Option<Dropdown>,
+    /// the folds that are open, by the key of their title.
+    pub open: HashSet<String>,
 }
 
 impl ViewState {
@@ -128,6 +132,8 @@ pub enum Input {
     Pick(usize),
     /// the field's whole new text.
     Text(String),
+    /// Enter in a one-line field.
+    Enter,
 }
 
 /// the node at `path`, going down through groups, tabs, rows and scroll boxes.
@@ -141,7 +147,8 @@ fn find<'a, M>(nodes: &'a [Node<M>], path: &[usize]) -> Option<&'a Node<M>> {
         Node::Group { body, .. } | Node::Tabs { body, .. } | Node::Scroll { body, .. } => {
             find(body, rest)
         }
-        Node::Danger(body) | Node::Row(body) => find(body, rest),
+        Node::Danger(body) | Node::Row(body) | Node::Disabled(body) => find(body, rest),
+        Node::Fold { body, .. } | Node::Labelled { body, .. } => find(body, rest),
         _ => None,
     }
 }
@@ -186,6 +193,7 @@ pub fn act<M: Clone>(nodes: &[Node<M>], path: &[usize], input: Input) -> Option<
         (Node::Entry { value, edit, .. }, Input::Text(text)) => {
             (text != *value).then(|| edit(text))
         }
+        (Node::Entry { enter, .. }, Input::Enter) => enter.clone(),
         _ => None,
     }
 }
@@ -197,6 +205,11 @@ pub fn field_value<M>(nodes: &[Node<M>], path: &[usize]) -> Option<(String, bool
         Node::TextArea { value, .. } => Some((value.clone(), true)),
         _ => None,
     }
+}
+
+/// a one-line field sends something of its own when Enter is pressed in it.
+pub fn field_enters<M>(nodes: &[Node<M>], path: &[usize]) -> bool {
+    matches!(find(nodes, path), Some(Node::Entry { enter: Some(_), .. }))
 }
 
 /// the selected row of a list or table and how many rows it has.
@@ -302,32 +315,44 @@ impl<'a> Painter<'a> {
 
     /// how many rows `nodes` take at `width`, giving a console whatever `room` is left.
     pub fn height<M>(&self, nodes: &[Node<M>], width: u16, room: Option<u16>) -> u16 {
+        self.height_at(nodes, width, room, &[])
+    }
+
+    fn height_at<M>(
+        &self,
+        nodes: &[Node<M>],
+        width: u16,
+        room: Option<u16>,
+        path: &[usize],
+    ) -> u16 {
         let fixed: u16 = nodes
             .iter()
-            .filter(|n| !matches!(n, Node::Log { .. }))
-            .map(|n| self.node_height(n, width))
+            .enumerate()
+            .filter(|(_, n)| !fills(n))
+            .map(|(i, n)| self.node_height(n, width, &child(path, i)))
             .sum();
-        let logs = nodes
-            .iter()
-            .filter(|n| matches!(n, Node::Log { .. }))
-            .count() as u16;
+        let logs = nodes.iter().filter(|n| fills(n)).count() as u16;
         let log = match room {
-            Some(room) if logs > 0 => (room.saturating_sub(fixed) / logs).max(4),
-            _ => 8,
+            Some(room) => room
+                .saturating_sub(fixed)
+                .checked_div(logs)
+                .map_or(0, |rows| rows.max(4)),
+            None => 8,
         };
         fixed + logs * log
     }
 
-    fn node_height<M>(&self, node: &Node<M>, width: u16) -> u16 {
+    fn node_height<M>(&self, node: &Node<M>, width: u16, path: &[usize]) -> u16 {
+        let inner = |body: &[Node<M>], width: u16| self.height_at(body, width, None, path);
         match node {
             Node::Text(text) => wrap(text, width).len() as u16,
             Node::Gap(height) => rows(*height),
-            Node::Group { body, .. } => 2 + self.height(body, width.saturating_sub(4), None),
+            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(4)),
             Node::Table(table) => rows(table.height).max(3) + 2,
-            Node::Tabs { body, .. } => 3 + self.height(body, width.saturating_sub(4), None),
-            Node::Danger(body) => 2 + self.height(body, width.saturating_sub(4), None),
+            Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(4)),
+            Node::Danger(body) => 2 + inner(body, width.saturating_sub(4)),
             Node::Lines { height, .. } => rows(*height).max(2) + 2,
-            Node::Log { .. } => 8,
+            Node::Log { height, .. } => height.map_or(8, |h| rows(h).max(3) + 2),
             Node::List {
                 items, min_height, ..
             } => {
@@ -338,30 +363,35 @@ impl<'a> Painter<'a> {
             Node::Code(text) => text.lines().count() as u16 + 2,
             Node::Row(body) => body
                 .iter()
-                .map(|n| self.node_height(n, width))
+                .enumerate()
+                .map(|(i, n)| self.node_height(n, width, &child(path, i)))
                 .max()
                 .unwrap_or(0),
             Node::TextArea { height, .. } => rows(*height).max(3) + 2,
             Node::Scroll {
                 max_height, body, ..
-            } => {
-                let inner = self.height(body, width.saturating_sub(2), None);
-                inner.min(rows(*max_height).max(3)) + 2
+            } => inner(body, width.saturating_sub(2)).min(rows(*max_height).max(3)) + 2,
+            Node::Fold { body, .. } => {
+                if self.state.open.contains(&fold_key(path)) {
+                    1 + inner(body, width.saturating_sub(2))
+                } else {
+                    1
+                }
             }
+            Node::Disabled(body) => inner(body, width),
+            Node::Labelled { body, .. } => inner(body, width.saturating_sub(LABEL)).max(1),
             _ => 1,
         }
     }
 
     /// draw `nodes` top to bottom inside `area`.
     pub fn draw<M>(&mut self, nodes: &[Node<M>], area: Rect, buf: &mut Buffer, path: &[usize]) {
-        let logs = nodes
-            .iter()
-            .filter(|n| matches!(n, Node::Log { .. }))
-            .count() as u16;
+        let logs = nodes.iter().filter(|n| fills(n)).count() as u16;
         let without: u16 = nodes
             .iter()
-            .filter(|n| !matches!(n, Node::Log { .. }))
-            .map(|n| self.node_height(n, area.width))
+            .enumerate()
+            .filter(|(_, n)| !fills(n))
+            .map(|(i, n)| self.node_height(n, area.width, &child(path, i)))
             .sum();
         let log_rows = area
             .height
@@ -370,14 +400,13 @@ impl<'a> Painter<'a> {
             .map_or(0, |rows| rows.max(4));
         let mut y = area.y;
         for (i, node) in nodes.iter().enumerate() {
-            let height = if matches!(node, Node::Log { .. }) {
+            let here = child(path, i);
+            let height = if fills(node) {
                 log_rows
             } else {
-                self.node_height(node, area.width)
+                self.node_height(node, area.width, &here)
             };
             let rect = Rect::new(area.x, y, area.width, height);
-            let mut here = path.to_vec();
-            here.push(i);
             self.node(node, rect, buf, &here);
             y = y.saturating_add(height);
         }
@@ -413,7 +442,7 @@ impl<'a> Painter<'a> {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
             Node::Field { label, value } => {
-                let label_width = 18.min(area.width / 2);
+                let label_width = LABEL.min(area.width / 2);
                 text(
                     buf,
                     area.x,
@@ -530,8 +559,65 @@ impl<'a> Painter<'a> {
                 let rect = Rect::new(area.x, area.y, cols(*width).min(area.width), 1);
                 self.field(value, false, rect, buf, path);
             }
-            Node::Entry { value, masked, .. } => {
+            Node::Entry {
+                value,
+                masked,
+                hint,
+                ..
+            } => {
                 self.field(value, *masked, area, buf, path);
+                if value.is_empty() && !self.focused(path, Part::Field) && area.width > 2 {
+                    let room = area.width - 2;
+                    text(buf, area.x + 1, area.y, room, hint, self.st(SHADOW, WHITE));
+                }
+            }
+            Node::FieldError(t) => {
+                text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
+            }
+            Node::Labelled { label, body } => {
+                let width = LABEL.min(area.width / 2);
+                text(buf, area.x, area.y, width, label, self.st(BLACK, GRAY));
+                let rest = Rect::new(area.x + width, area.y, area.width - width, area.height);
+                self.draw(body, rest, buf, path);
+            }
+            Node::Disabled(body) => {
+                let before = self.regions.len();
+                self.draw(body, area, buf, path);
+                // greyed out and not clickable, like the gui
+                self.regions.truncate(before);
+                let area = area.intersection(buf.area);
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        let cell = &mut buf[(x, y)];
+                        if cell.symbol().trim().is_empty() {
+                            continue;
+                        }
+                        cell.set_fg(self.palette.color(SHADOW));
+                    }
+                }
+            }
+            Node::Fold { title, body, .. } => {
+                let open = self.state.open.contains(&fold_key(path));
+                let mark = if open { "[-] " } else { "[+] " };
+                let line = format!("{mark}{title}");
+                let width = (line.chars().count() as u16).min(area.width);
+                let head = Rect::new(area.x, area.y, width, 1).intersection(buf.area);
+                let s = if self.focused(path, Part::Fold) {
+                    self.st(WHITE, NAVY)
+                } else {
+                    self.st(BLACK, GRAY)
+                };
+                text(buf, area.x, area.y, area.width, &line, s);
+                self.push(head, path, Part::Fold, true);
+                if open {
+                    let inner = Rect::new(
+                        area.x + 2,
+                        area.y + 1,
+                        area.width.saturating_sub(2),
+                        area.height.saturating_sub(1),
+                    );
+                    self.draw(body, inner, buf, path);
+                }
             }
             Node::Choice { current, width, .. } => {
                 let w = cols(*width)
@@ -640,10 +726,11 @@ impl<'a> Painter<'a> {
                 {
                     let y = inner.y + 1 + (n - offset) as u16;
                     let selected = table.selected == Some(n);
-                    let (fg, bg) = if selected {
-                        (WHITE, if focused { NAVY } else { SHADOW })
-                    } else {
-                        (BLACK, WHITE)
+                    let bad = table.bad.get(n).copied().unwrap_or(false);
+                    let (fg, bg) = match (selected, bad) {
+                        (true, _) => (WHITE, if focused { NAVY } else { SHADOW }),
+                        (false, true) => (RED, WHITE),
+                        (false, false) => (BLACK, WHITE),
                     };
                     let line = Rect::new(inner.x, y, inner.width, 1);
                     fill(buf, line, p, bg);
@@ -811,7 +898,7 @@ impl<'a> Painter<'a> {
             Node::Scroll { body, .. } => {
                 let inner = self.sunken(area, buf, WHITE);
                 self.push(inner, path, Part::Scroll, false);
-                let total = self.height(body, inner.width, None);
+                let total = self.height_at(body, inner.width, None, path);
                 let offset = self
                     .state
                     .scroll
@@ -961,6 +1048,26 @@ impl<'a> Painter<'a> {
     }
 }
 
+/// the width of the label column in a form row, like the gui's.
+const LABEL: u16 = 18;
+
+/// a console without a height of its own takes the rest of the window.
+fn fills<M>(node: &Node<M>) -> bool {
+    matches!(node, Node::Log { height: None, .. })
+}
+
+/// `path` with `i` added.
+fn child(path: &[usize], i: usize) -> Vec<usize> {
+    let mut here = path.to_vec();
+    here.push(i);
+    here
+}
+
+/// the key a fold's open state is kept under: the key of its title.
+pub fn fold_key(path: &[usize]) -> String {
+    Region::new(Rect::default(), path, Part::Fold, true).key
+}
+
 /// the key a scrolling box keeps its offset under: the key of its scroll region.
 pub fn scroll_key(path: &[usize]) -> String {
     Region::new(Rect::default(), path, Part::Scroll, false).key
@@ -1107,7 +1214,9 @@ mod tests {
                         room: 0.0,
                         masked: false,
                         focus: true,
+                        hint: String::new(),
                         edit: Box::new(Msg::Typed),
+                        enter: Some(Msg::Ok),
                     },
                 ],
             },
@@ -1209,6 +1318,7 @@ mod tests {
                 .map(|n| vec![format!("pc{n}"), format!("192.0.2.{n}")])
                 .collect(),
             selected: Some(15),
+            bad: Vec::new(),
             height: 64.0,
             select: Msg::Pick,
         })];
@@ -1217,6 +1327,39 @@ mod tests {
         assert!(text.contains("Name") && text.contains("pc15"), "{text}");
         assert!(regions.iter().any(|r| r.part == Part::Row(15)));
         assert_eq!(act(&nodes, &[0], Input::Row(3)), Some(Msg::Pick(3)));
+    }
+
+    #[test]
+    fn a_fold_opens_greyed_nodes_take_no_clicks_and_enter_sends_its_message() {
+        let nodes: Vec<Node<Msg>> = vec![
+            Node::Fold {
+                id: "more",
+                title: "More".into(),
+                body: vec![Node::Text("hidden detail".into())],
+            },
+            Node::Disabled(vec![Node::Buttons(vec![Button::new("OK", true, Msg::Ok)])]),
+            Node::Labelled {
+                label: "Name:".into(),
+                body: vec![Node::Text("value".into())],
+            },
+            Node::FieldError("too short".into()),
+        ];
+        let (buf, regions) = paint(&nodes, &ViewState::default());
+        let text = lines(&buf).join("\n");
+        assert!(
+            text.contains("[+] More") && !text.contains("hidden detail"),
+            "{text}"
+        );
+        assert!(text.contains("Name:") && text.contains("value") && text.contains("too short"));
+        assert!(
+            regions.iter().all(|r| r.part != Part::Press(0)),
+            "greyed buttons are dead"
+        );
+        let mut state = ViewState::default();
+        state.open.insert(fold_key(&[0]));
+        let (buf, _) = paint(&nodes, &state);
+        assert!(lines(&buf).join("\n").contains("hidden detail"));
+        assert_eq!(act(&sample(), &[1, 2], Input::Enter), Some(Msg::Ok));
     }
 
     #[test]
@@ -1230,6 +1373,7 @@ mod tests {
         let nodes: Vec<Node<Msg>> = vec![Node::Log {
             id: "console",
             lines: (0..50).map(|n| (Kind::Info, format!("line {n}"))).collect(),
+            height: None,
         }];
         let (buf, _) = paint(&nodes, &ViewState::default());
         let text = lines(&buf).join("\n");

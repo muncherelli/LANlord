@@ -132,11 +132,12 @@ fn background(work: impl FnOnce() + Send + 'static) {
     std::thread::spawn(work);
 }
 
-/// in the browser there are no threads: tasks will become requests to the backend
-/// (`wasm_bindgen_futures::spawn_local`), which is not built yet.
+/// in the browser there are no threads, and running the work inline could wait forever on the
+/// password dialog it is drawn behind. tasks become requests to the backend there, which are
+/// not built yet.
 #[cfg(target_arch = "wasm32")]
-fn background(work: impl FnOnce() + Send + 'static) {
-    work();
+fn background(_work: impl FnOnce() + Send + 'static) {
+    unimplemented!("background tasks in the browser need wasm_bindgen_futures::spawn_local");
 }
 
 /// a password prompt that asks through the ui.
