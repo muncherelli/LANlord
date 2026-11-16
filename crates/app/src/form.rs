@@ -4,7 +4,9 @@
 
 use lanlord_core::passwords;
 
-use crate::view::{Button, Dialog, Node};
+use zeroize::Zeroizing;
+
+use crate::view::{Button, Dialog, Node, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormAnswer {
@@ -17,6 +19,8 @@ pub enum FormAnswer {
 pub enum FormMsg {
     /// field `0` now holds this text.
     Edit(usize, String),
+    /// secret field `0` now holds this text.
+    EditSecret(usize, Zeroizing<String>),
     Generate(usize),
     /// show or hide what was typed in a secret field.
     Reveal(usize),
@@ -28,7 +32,8 @@ pub enum FormMsg {
 
 pub struct FormField {
     pub label: String,
-    pub value: String,
+    /// zeroized when the form goes, since a field may hold a password.
+    pub value: Zeroizing<String>,
     secret: bool,
     shown: bool,
 }
@@ -60,7 +65,7 @@ impl Form {
     pub fn text(mut self, label: &str, value: &str) -> Self {
         self.fields.push(FormField {
             label: label.into(),
-            value: value.into(),
+            value: Zeroizing::new(value.into()),
             secret: false,
             shown: false,
         });
@@ -70,7 +75,7 @@ impl Form {
     pub fn secret(mut self, label: &str) -> Self {
         self.fields.push(FormField {
             label: label.into(),
-            value: String::new(),
+            value: Zeroizing::new(String::new()),
             secret: true,
             shown: false,
         });
@@ -96,6 +101,13 @@ impl Form {
         self.checks.get(i).is_some_and(|c| c.1)
     }
 
+    /// put `text` in field `i`.
+    pub fn set(&mut self, i: usize, text: &str) {
+        if let Some(field) = self.fields.get_mut(i) {
+            field.value = Zeroizing::new(text.to_string());
+        }
+    }
+
     /// is secret field `i` shown in clear?
     pub fn shown(&self, i: usize) -> bool {
         self.fields.get(i).is_some_and(|f| f.shown)
@@ -109,14 +121,25 @@ impl Form {
         }
         for (i, field) in self.fields.iter().enumerate() {
             body.push(Node::Text(field.label.clone()));
-            let mut row = vec![Node::Entry {
-                value: field.value.clone(),
-                room: if field.secret { 176.0 } else { 10.0 },
-                masked: field.secret && !field.shown,
-                focus: i == 0 && !self.focused,
-                hint: String::new(),
-                edit: Box::new(move |text| FormMsg::Edit(i, text)),
-                enter: None,
+            let focus = i == 0 && !self.focused;
+            let mut row = vec![if field.secret {
+                Node::Secret {
+                    value: field.value.clone(),
+                    size: Size::FillLess(176.0),
+                    shown: field.shown,
+                    focus,
+                    edit: Box::new(move |text| FormMsg::EditSecret(i, text)),
+                    enter: None,
+                }
+            } else {
+                Node::Input {
+                    value: field.value.to_string(),
+                    size: Size::FillLess(10.0),
+                    focus,
+                    hint: String::new(),
+                    edit: Box::new(move |text| FormMsg::Edit(i, text)),
+                    enter: None,
+                }
             }];
             if field.secret {
                 let reveal = if field.shown { "Hide" } else { "Show" };
@@ -157,14 +180,15 @@ impl Form {
     /// act on a message; `Some` once the box was answered.
     pub fn update(&mut self, msg: FormMsg) -> Option<FormAnswer> {
         match msg {
-            FormMsg::Edit(i, text) => {
+            FormMsg::Edit(i, text) => self.set(i, &text),
+            FormMsg::EditSecret(i, text) => {
                 if let Some(field) = self.fields.get_mut(i) {
                     field.value = text;
                 }
             }
             FormMsg::Generate(i) => {
                 if let Some(field) = self.fields.get_mut(i) {
-                    field.value = passwords::generate(passwords::DEFAULT_LEN);
+                    field.value = Zeroizing::new(passwords::generate(passwords::DEFAULT_LEN));
                     field.shown = true;
                 }
             }
@@ -213,7 +237,7 @@ mod tests {
                 .iter()
                 .filter_map(|n| match n {
                     Node::Row(row) => row.iter().find_map(|n| match n {
-                        Node::Entry { focus, .. } => Some(*focus),
+                        Node::Input { focus, .. } | Node::Secret { focus, .. } => Some(*focus),
                         _ => None,
                     }),
                     _ => None,

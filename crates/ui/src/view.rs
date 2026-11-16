@@ -1,8 +1,8 @@
 //! draws the app's layout tree (`lanlord_app::view`) with egui, in the nt4 look, and returns
 //! the message of whatever was clicked.
 
-use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui};
-use lanlord_app::view::{Dialog, Node};
+use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui, Vec2};
+use lanlord_app::view::{Dialog, Node, Size};
 
 use crate::console;
 use crate::controls;
@@ -122,10 +122,36 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.add_enabled_ui(*enabled, |ui| controls::check(ui, &mut ticked, label));
             (ticked != *checked).then(|| toggle.clone())
         }
-        Node::Input { value, width, edit } => {
+        Node::Input {
+            value,
+            size,
+            focus,
+            hint,
+            edit,
+            enter,
+        } => {
             let mut text = value.clone();
-            controls::edit(ui, &mut text, *width);
-            (text != *value).then(|| edit(text))
+            let pressed = line_edit(ui, &mut text, *size, false, hint, *focus);
+            match enter {
+                // Enter carries the final text, so keys typed with it are kept
+                Some(enter) if pressed => Some(enter(text)),
+                _ => (text != *value).then(|| edit(text)),
+            }
+        }
+        Node::Secret {
+            value,
+            size,
+            shown,
+            focus,
+            edit,
+            enter,
+        } => {
+            let mut text = value.clone();
+            let pressed = line_edit(ui, &mut text, *size, !shown, "", *focus);
+            match enter {
+                Some(enter) if pressed => Some(enter(text)),
+                _ => (*text != **value).then(|| edit(text)),
+            }
         }
         Node::Lines { id, lines, height } => {
             theme::sunken(ui, WHITE, |ui| {
@@ -212,7 +238,9 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 icons::draw(ui.painter(), ui.cursor().min, icons::art(icon), 1.0);
                 ui.add_space(40.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(title.as_str()).size(16.0).strong());
+                    if !title.is_empty() {
+                        ui.label(RichText::new(title.as_str()).size(16.0).strong());
+                    }
                     for line in lines {
                         ui.label(line.as_str());
                     }
@@ -236,6 +264,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             id,
             value,
             height,
+            hint,
             edit,
         } => {
             let mut text = value.clone();
@@ -248,6 +277,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                         ui.add_sized(
                             [ui.available_width(), *height],
                             TextEdit::multiline(&mut text)
+                                .hint_text(hint.as_str())
                                 .font(egui::TextStyle::Monospace)
                                 .frame(egui::Frame::NONE)
                                 .desired_width(f32::INFINITY),
@@ -276,36 +306,6 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             });
             picked.map(pick)
         }
-        Node::Entry {
-            value,
-            room,
-            masked,
-            focus,
-            hint,
-            edit,
-            enter,
-        } => {
-            let mut text = value.clone();
-            let width = ui.available_width() - room;
-            let response = controls::field(ui, |ui| {
-                ui.add(
-                    TextEdit::singleline(&mut text)
-                        .password(*masked)
-                        .hint_text(hint.as_str())
-                        .desired_width(width)
-                        .frame(egui::Frame::new())
-                        .margin(egui::Margin::ZERO),
-                )
-            });
-            if *focus {
-                response.request_focus();
-            }
-            let pressed = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if pressed && enter.is_some() {
-                return enter.clone();
-            }
-            (text != *value).then(|| edit(text))
-        }
         Node::Fold { id, title, body } => egui::CollapsingHeader::new(title.as_str())
             .id_salt(*id)
             .show(ui, |ui| show(ui, body))
@@ -315,6 +315,23 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         Node::Labelled { label, body } => controls::row(ui, label, |ui| show(ui, body)),
         Node::FieldError(text) => {
             ui.label(RichText::new(text.as_str()).color(RED).small());
+            None
+        }
+        Node::Alert(text) => {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+                warning_sign(ui, rect);
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(text.as_str());
+                });
+            });
+            None
+        }
+        Node::Icon(id) => {
+            let (art, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+            icons::draw(ui.painter(), art.min, icons::small(id), 1.0);
             None
         }
         Node::Warning(text) => {
@@ -334,4 +351,56 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 .inner
         }),
     }
+}
+
+/// the yellow warning triangle of a message box.
+fn warning_sign(ui: &egui::Ui, rect: egui::Rect) {
+    let c = rect.center();
+    let points = vec![
+        c + Vec2::new(0.0, -14.0),
+        c + Vec2::new(15.0, 13.0),
+        c + Vec2::new(-15.0, 13.0),
+    ];
+    let yellow = egui::Color32::from_rgb(255, 255, 0);
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        yellow,
+        egui::Stroke::new(1.5, BLACK),
+    ));
+    ui.painter().text(
+        c + Vec2::new(0.0, 4.0),
+        egui::Align2::CENTER_CENTER,
+        "!",
+        egui::FontId::proportional(16.0),
+        BLACK,
+    );
+}
+
+/// a one-line edit box; true when Enter was pressed in it.
+fn line_edit(
+    ui: &mut Ui,
+    text: &mut String,
+    size: Size,
+    masked: bool,
+    hint: &str,
+    focus: bool,
+) -> bool {
+    let width = match size {
+        Size::Points(width) => width,
+        Size::FillLess(room) => ui.available_width() - room,
+    };
+    let response = controls::field(ui, |ui| {
+        ui.add(
+            TextEdit::singleline(text)
+                .password(masked)
+                .hint_text(hint)
+                .desired_width(width)
+                .frame(egui::Frame::new())
+                .margin(egui::Margin::ZERO),
+        )
+    });
+    if focus {
+        response.request_focus();
+    }
+    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }

@@ -2835,6 +2835,7 @@ name = "lanlord-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "lanlord-core",
  "lanlord-model",
  "zeroize",

@@ -114,6 +114,16 @@ impl LogonPanel {
         self.remote.track(host, job, "saving...", "saved", false);
     }
 
+    /// a script may be opened or named: nothing runs, no unsaved edits, no box open.
+    pub fn can_open(&self, services: &Services, host: &str) -> bool {
+        !services.busy(host) && !self.remote.busy() && !self.dirty() && self.form.is_none()
+    }
+
+    /// the open script may be saved or reverted: nothing runs and it was edited.
+    pub fn can_save(&self, services: &Services, host: &str) -> bool {
+        !services.busy(host) && !self.remote.busy() && self.dirty()
+    }
+
     /// the panel for `host`; loads the scripts when it shows another host's.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
@@ -151,8 +161,7 @@ impl LogonPanel {
                 vec![format!("{name}.bat"), format!("{who}{state}")]
             })
             .collect();
-        let free = idle && !self.dirty() && self.form.is_none();
-        let changed = idle && self.dirty();
+        let (free, changed) = (self.can_open(services, host), self.can_save(services, host));
         let generated = match self.remote.data.as_ref().and_then(|d| d.generated.as_ref()) {
             Some(text) => Node::Code(text.clone()),
             None => Node::Text("Not written yet; apply the nt4-domain module.".into()),
@@ -190,6 +199,7 @@ impl LogonPanel {
                         id: "logon-editor",
                         value: self.draft.clone(),
                         height: 130.0,
+                        hint: String::new(),
                         edit: Msg::Edit,
                     },
                     Node::Gap(4.0),
@@ -212,6 +222,17 @@ impl LogonPanel {
 
     /// act on a click or keystroke for `host`.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
+        // the same rules as the buttons: a front end may send any message
+        let reload = !services.busy(host) && !self.remote.busy() && !self.dirty();
+        let allowed = match msg {
+            Msg::New => self.can_open(services, host),
+            Msg::Reload => reload,
+            Msg::Save | Msg::Revert => self.can_save(services, host),
+            Msg::Pick(_) | Msg::Edit(_) => true,
+        };
+        if !allowed {
+            return;
+        }
         match msg {
             Msg::Pick(i) => {
                 let names = self.entries();
@@ -301,5 +322,27 @@ impl LogonPanel {
 
     pub fn entries_for_test(&self) -> Vec<String> {
         self.entries()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::gateway::Fake;
+    use crate::wake::Wake;
+
+    #[test]
+    fn nothing_unedited_is_saved_and_an_open_box_is_not_replaced() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut panel = LogonPanel::default();
+        panel.update(Msg::Save, &services, "a@b");
+        assert!(fake.calls().is_empty(), "nothing was edited");
+        panel.update(Msg::New, &services, "a@b");
+        panel.form_mut().unwrap().set(0, "dana");
+        panel.update(Msg::New, &services, "a@b");
+        assert_eq!(panel.form_mut().unwrap().value(0), "dana", "the box stays");
     }
 }

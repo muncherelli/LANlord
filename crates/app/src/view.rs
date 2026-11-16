@@ -10,12 +10,14 @@
 
 pub use lanlord_core::log::Kind;
 use lanlord_core::settings::ValidationError;
+use zeroize::Zeroizing;
 
 /// a piece of a window, carrying the message type `M` of the window it belongs to.
 pub enum Node<M> {
     /// a line of plain text.
     Text(String),
-    /// empty space below the previous node.
+    /// empty space after the previous node: below it in a column, beside it in a `Row`. a
+    /// spacing hint; a front end with coarse units (the tui) may round it away.
     Gap(f32),
     /// a captioned frame around other nodes.
     Group { title: String, body: Vec<Node<M>> },
@@ -47,11 +49,26 @@ pub enum Node<M> {
         enabled: bool,
         toggle: M,
     },
-    /// a one-line text field; each change sends `edit(new text)`.
+    /// a one-line text field; `focus` puts the cursor in it. each change sends `edit(new text)`
+    /// and Enter sends `enter(final text)`, so text typed together with Enter is never lost.
     Input {
         value: String,
-        width: f32,
-        edit: fn(String) -> M,
+        size: Size,
+        focus: bool,
+        /// grey text shown while the field is empty.
+        hint: String,
+        edit: Box<dyn Fn(String) -> M>,
+        enter: Option<Box<dyn Fn(String) -> M>>,
+    },
+    /// a one-line field for a password: masked unless `shown`, and what is typed only ever
+    /// travels in zeroized memory.
+    Secret {
+        value: Zeroizing<String>,
+        size: Size,
+        shown: bool,
+        focus: bool,
+        edit: Box<dyn Fn(Zeroizing<String>) -> M>,
+        enter: Option<Box<dyn Fn(Zeroizing<String>) -> M>>,
     },
     /// a scrolling box of fixed-width text lines.
     Lines {
@@ -95,6 +112,8 @@ pub enum Node<M> {
         id: &'static str,
         value: String,
         height: f32,
+        /// grey text shown while the box is empty.
+        hint: String,
         edit: fn(String) -> M,
     },
     /// a drop-down list showing `current`; picking an option sends `pick(its key)`.
@@ -104,19 +123,6 @@ pub enum Node<M> {
         width: f32,
         options: Vec<(usize, String)>,
         pick: fn(usize) -> M,
-    },
-    /// a one-line text field as wide as the row less `room`; `masked` hides what is typed,
-    /// `focus` puts the cursor in it. each change sends `edit(new text)`.
-    Entry {
-        value: String,
-        room: f32,
-        masked: bool,
-        focus: bool,
-        /// grey text shown while the field is empty.
-        hint: String,
-        edit: Box<dyn Fn(String) -> M>,
-        /// what pressing Enter in the field sends, if anything.
-        enter: Option<M>,
     },
     /// a section under a title that opens and closes when the title is clicked; the front end
     /// remembers whether it is open.
@@ -131,6 +137,10 @@ pub enum Node<M> {
     Labelled { label: String, body: Vec<Node<M>> },
     /// a small red line under the field it is about.
     FieldError(String),
+    /// a warning sign beside a message, as in a message box.
+    Alert(String),
+    /// a small inline icon, by icon id.
+    Icon(&'static str),
     /// a line of red text, for input that was refused.
     Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.
@@ -148,6 +158,13 @@ impl<M> Node<M> {
             value: value.into(),
         }
     }
+}
+
+/// how wide a field is: a fixed number of layout units, or the rest of the row less some room.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Size {
+    Points(f32),
+    FillLess(f32),
 }
 
 pub struct Table<M> {

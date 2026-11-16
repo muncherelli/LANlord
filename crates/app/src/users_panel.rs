@@ -44,6 +44,17 @@ pub enum Msg {
     Reload,
 }
 
+/// which buttons work right now; the view greys out the rest and `update` ignores them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Gates {
+    pub add: bool,
+    pub password: bool,
+    pub delete: bool,
+    pub admin: bool,
+    pub software_admin: bool,
+    pub reload: bool,
+}
+
 #[derive(Default)]
 pub struct UsersPanel {
     remote: Remote<UsersData>,
@@ -85,6 +96,23 @@ impl UsersPanel {
             .track(host, job, "changing the logins...", done, false);
     }
 
+    /// what may run on `host` now: nothing else running, no box open, and a picked login from
+    /// `host`'s own list.
+    pub fn gates(&self, services: &Services, host: &str) -> Gates {
+        let idle = !services.busy(host) && !self.remote.busy();
+        let free = idle && self.form.is_none();
+        let picked = self.current().filter(|_| self.remote.belongs_to(host));
+        Gates {
+            add: free,
+            password: free && picked.is_some(),
+            delete: free && picked.is_some(),
+            admin: idle && picked.is_some(),
+            // domain admins already write to the software share, so the flag only matters for others
+            software_admin: idle && picked.is_some_and(|u| !u.admin),
+            reload: idle,
+        }
+    }
+
     /// the panel for `host`; starts a load when it shows another host's logins.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
@@ -95,8 +123,7 @@ impl UsersPanel {
         if self.remote.wants_load(host, false) {
             self.reload(services, host);
         }
-        let idle = !services.busy(host) && !self.remote.busy();
-        let free = idle && self.form.is_none();
+        let gates = self.gates(services, host);
         let secrets = self.remote.data.as_ref().map(|d| &d.secrets_set);
         let rows: Vec<Vec<String>> = self
             .users()
@@ -113,11 +140,8 @@ impl UsersPanel {
             .collect();
         let empty = rows.is_empty() && self.remote.note.is_none();
         let picked = self.current();
-        let has = picked.is_some();
         let admin = picked.is_some_and(|u| u.admin);
         let software = picked.is_some_and(|u| u.software_admin);
-        // domain admins already write to the software share, so the flag only matters for others
-        let others = picked.is_some_and(|u| !u.admin);
         let mut nodes = vec![Node::Table(Table {
             id: "users-table",
             headings: vec!["Login", "Domain admin", "Software admin", "Password"],
@@ -134,9 +158,9 @@ impl UsersPanel {
         nodes.extend([
             Node::Gap(6.0),
             Node::Toolbar(vec![
-                Button::new("Add login...", free, Msg::Add),
-                Button::new("Password...", free && has, Msg::Password),
-                Button::new("Delete...", free && has, Msg::Delete),
+                Button::new("Add login...", gates.add, Msg::Add),
+                Button::new("Password...", gates.password, Msg::Password),
+                Button::new("Delete...", gates.delete, Msg::Delete),
             ]),
             Node::Gap(2.0),
             Node::Toolbar(vec![
@@ -146,7 +170,7 @@ impl UsersPanel {
                     } else {
                         "Make domain admin"
                     },
-                    idle && has,
+                    gates.admin,
                     Msg::ToggleAdmin,
                 ),
                 Button::new(
@@ -155,10 +179,10 @@ impl UsersPanel {
                     } else {
                         "Make software admin"
                     },
-                    idle && has && others,
+                    gates.software_admin,
                     Msg::ToggleSoftwareAdmin,
                 ),
-                Button::new("Reload logins", idle, Msg::Reload),
+                Button::new("Reload logins", gates.reload, Msg::Reload),
             ]),
             Node::Gap(6.0),
             view::status(&self.remote),
@@ -168,6 +192,20 @@ impl UsersPanel {
 
     /// act on a click in the panel for `host`.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
+        // the same rules as the buttons: a front end may send any message
+        let gates = self.gates(services, host);
+        let allowed = match msg {
+            Msg::Pick(_) => true,
+            Msg::Add => gates.add,
+            Msg::Password => gates.password,
+            Msg::Delete => gates.delete,
+            Msg::ToggleAdmin => gates.admin,
+            Msg::ToggleSoftwareAdmin => gates.software_admin,
+            Msg::Reload => gates.reload,
+        };
+        if !allowed {
+            return;
+        }
         let picked = self.current().cloned();
         match (msg, picked) {
             (Msg::Pick(i), _) => self.selected = Some(i),
@@ -309,4 +347,50 @@ fn set_password(name: &str, password: &str) -> Result<Change, String> {
         name: name.into(),
         password: password.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use crate::gateway::Fake;
+    use crate::wake::Wake;
+
+    fn loaded() -> (UsersPanel, Services) {
+        let fake = Arc::new(Fake::new());
+        *fake.stored.lock().unwrap() = "nt4-domain:\n  users: [{name: dana}]\n".into();
+        let services = Services::new(fake, Wake::none());
+        let mut panel = UsersPanel::default();
+        panel.reload(&services, "a@b");
+        let start = Instant::now();
+        while panel.remote.busy() {
+            panel.poll();
+            assert!(start.elapsed() < Duration::from_secs(5), "never loaded");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panel.select("dana");
+        (panel, services)
+    }
+
+    #[test]
+    fn an_open_box_is_not_replaced_and_another_hosts_login_is_not_changed() {
+        let (mut panel, services) = loaded();
+        panel.update(Msg::Password, &services, "a@b");
+        let before = panel.form_mut().map(|f| f.raw(0).to_string());
+        panel.update(Msg::Add, &services, "a@b");
+        panel.update(Msg::Delete, &services, "a@b");
+        assert_eq!(
+            panel.form_mut().map(|f| f.fields.len()),
+            Some(1),
+            "still the password box"
+        );
+        assert_eq!(panel.form_mut().map(|f| f.raw(0).to_string()), before);
+        panel.form = None;
+        // the list is a@b's: toggling for c@d does nothing
+        assert!(!panel.gates(&services, "c@d").admin);
+        panel.update(Msg::ToggleAdmin, &services, "c@d");
+        assert!(!panel.remote.busy());
+    }
 }

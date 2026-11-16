@@ -132,6 +132,17 @@ mod tests {
     }
 
     #[test]
+    fn text_typed_in_the_same_frame_as_enter_is_kept() {
+        let (mut dialog, ctx) = open(true);
+        let answer = frame(
+            &mut dialog,
+            &ctx,
+            vec![Event::Text("pass".into()), key(Key::Enter)],
+        );
+        assert_eq!(answer, Some(Answer::Ok("pass".into())));
+    }
+
+    #[test]
     fn escape_cancels() {
         let (mut dialog, ctx) = open(false);
         assert_eq!(

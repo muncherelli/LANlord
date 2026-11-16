@@ -6,7 +6,7 @@ use lanlord_core::nt4::{valid_machine, Nt4Settings};
 use crate::form::{Form, FormAnswer, FormMsg};
 use crate::remote::Remote;
 use crate::services::{update_settings, Services};
-use crate::view::{self, Button, Dialog, Node, Table};
+use crate::view::{self, Button, Dialog, Node, Size, Table};
 
 const ADMIN_PASSWORD: &str = "nt4-domain.admin_password";
 const MODULE: &str = "nt4-domain";
@@ -56,6 +56,17 @@ pub enum Msg {
 }
 
 const MODES: [&str; 2] = ["domain", "workgroup"];
+
+/// which buttons work right now; the view greys out the rest and `update` ignores them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Gates {
+    pub set_password: bool,
+    pub add_machine: bool,
+    pub remove_machine: bool,
+    pub reset_machine: bool,
+    pub reload: bool,
+    pub save: bool,
+}
 
 #[derive(Default)]
 pub struct Nt4Panel {
@@ -155,6 +166,23 @@ impl Nt4Panel {
         self.remote.track(host, job, doing, done, false);
     }
 
+    /// what may run on `host` now: nothing else running, no box open, settings that pass the
+    /// checks before a save, and a picked machine from `host`'s own settings.
+    pub fn gates(&self, services: &Services, host: &str) -> Gates {
+        let idle = !services.busy(host) && !self.remote.busy();
+        let free = self.form.is_none();
+        let picked = self.picked().is_some() && self.remote.belongs_to(host);
+        let sound = self.draft.validate(self.password_set()).is_empty();
+        Gates {
+            set_password: idle && free,
+            add_machine: free,
+            remove_machine: idle && picked,
+            reset_machine: idle && free && picked,
+            reload: idle,
+            save: idle && sound && self.remote.belongs_to(host),
+        }
+    }
+
     /// the panel for `host`; loads the settings when it shows another host's.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
@@ -165,9 +193,8 @@ impl Nt4Panel {
         if self.remote.wants_load(host, self.dirty()) {
             self.reload(services, host);
         }
-        let idle = !services.busy(host) && !self.remote.busy();
+        let gates = self.gates(services, host);
         let errors = self.draft.validate(self.password_set());
-        let free = self.form.is_none();
         let state = match (self.new_password.is_some(), self.password_set()) {
             (true, _) => "password: new value on Save",
             (false, true) => "password: set",
@@ -177,8 +204,11 @@ impl Nt4Panel {
             label: "Domain name".into(),
             body: vec![Node::Input {
                 value: self.draft.name.clone(),
-                width: 170.0,
-                edit: Msg::Name,
+                size: Size::Points(170.0),
+                hint: String::new(),
+                focus: false,
+                edit: Box::new(Msg::Name),
+                enter: None,
             }],
         }];
         domain.extend(view::field_errors(&errors, "nt4-domain.name"));
@@ -187,8 +217,11 @@ impl Nt4Panel {
             body: vec![
                 Node::Input {
                     value: self.draft.netbios_name.clone(),
-                    width: 170.0,
-                    edit: Msg::ServerName,
+                    size: Size::Points(170.0),
+                    hint: String::new(),
+                    focus: false,
+                    edit: Box::new(Msg::ServerName),
+                    enter: None,
                 },
                 Node::Text("blank: the gateway's hostname".into()),
             ],
@@ -233,14 +266,12 @@ impl Nt4Panel {
                 Node::Text(state.into()),
                 Node::Button(Button::new(
                     "Set password...",
-                    idle && free,
+                    gates.set_password,
                     Msg::SetPassword,
                 )),
             ],
         });
         domain.extend(view::field_errors(&errors, "nt4-domain.admin_password"));
-        let picked = self.picked().is_some();
-        let blocked = !errors.is_empty();
         vec![
             Node::Group {
                 title: "Domain".into(),
@@ -270,21 +301,17 @@ impl Nt4Panel {
                         select: Msg::Pick,
                     }),
                     Node::Toolbar(vec![
-                        Button::new("Add machine...", free, Msg::AddMachine),
-                        Button::new("Remove machine", idle && picked, Msg::RemoveMachine),
-                        Button::new(
-                            "Reset account...",
-                            idle && free && picked,
-                            Msg::ResetMachine,
-                        ),
+                        Button::new("Add machine...", gates.add_machine, Msg::AddMachine),
+                        Button::new("Remove machine", gates.remove_machine, Msg::RemoveMachine),
+                        Button::new("Reset account...", gates.reset_machine, Msg::ResetMachine),
                     ]),
                 ],
             },
             Node::Gap(6.0),
             Node::Buttons(vec![
-                Button::new("Reload settings", idle, Msg::Reload),
-                Button::new("Save & apply", idle && !blocked, Msg::SaveAndApply),
-                Button::new("Save settings", idle && !blocked, Msg::Save),
+                Button::new("Reload settings", gates.reload, Msg::Reload),
+                Button::new("Save & apply", gates.save, Msg::SaveAndApply),
+                Button::new("Save settings", gates.save, Msg::Save),
             ]),
             Node::Gap(4.0),
             view::status(&self.remote),
@@ -297,6 +324,20 @@ impl Nt4Panel {
 
     /// act on a click or keystroke for `host`.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
+        // the same rules as the buttons: a front end may send any message
+        let gates = self.gates(services, host);
+        let allowed = match msg {
+            Msg::SetPassword => gates.set_password,
+            Msg::AddMachine => gates.add_machine,
+            Msg::RemoveMachine => gates.remove_machine,
+            Msg::ResetMachine => gates.reset_machine,
+            Msg::Reload => gates.reload,
+            Msg::SaveAndApply | Msg::Save => gates.save,
+            _ => true,
+        };
+        if !allowed {
+            return;
+        }
         match msg {
             Msg::Name(text) => self.draft.name = text,
             Msg::ServerName(text) => self.draft.netbios_name = text,
@@ -403,5 +444,34 @@ impl Nt4Panel {
 
     pub fn note(&self) -> Option<&(bool, String)> {
         self.remote.note.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::gateway::Fake;
+    use crate::wake::Wake;
+
+    #[test]
+    fn broken_settings_are_not_saved_and_an_open_box_is_not_replaced() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut panel = Nt4Panel::default();
+        // nothing loaded: the draft is not this host's and fails its checks
+        panel.draft.name = "not a valid domain name!".into();
+        assert!(!panel.gates(&services, "a@b").save);
+        panel.update(Msg::Save, &services, "a@b");
+        panel.update(Msg::SaveAndApply, &services, "a@b");
+        assert!(fake.calls().is_empty());
+        panel.update(Msg::AddMachine, &services, "a@b");
+        panel.update(Msg::SetPassword, &services, "a@b");
+        assert_eq!(
+            panel.form_mut().map(|f| f.fields[0].label.clone()),
+            Some("Name".into()),
+            "the machine box stays"
+        );
     }
 }

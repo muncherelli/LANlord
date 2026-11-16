@@ -219,6 +219,16 @@ impl SettingsWindow {
         }
     }
 
+    /// nothing is running for `host`, here or on the gateway.
+    pub fn idle(&self, services: &Services, host: &str) -> bool {
+        !services.busy(host) && !self.working()
+    }
+
+    /// Save is allowed: idle, sound text, and the text is `host`'s own.
+    pub fn can_save(&self, services: &Services, host: &str) -> bool {
+        self.idle(services, host) && self.problem().is_none() && self.belongs_to(host)
+    }
+
     /// the window for the selected `host`; starts a load when it shows another host's text.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
@@ -229,10 +239,10 @@ impl SettingsWindow {
         if self.wants_load(Some(host)) {
             self.load(services, host);
         }
-        let idle = !services.busy(host) && !self.working();
+        let idle = self.idle(services, host);
         let stale = !self.belongs_to(host);
         let problem = self.problem();
-        let can_save = idle && problem.is_none() && !stale;
+        let can_save = self.can_save(services, host);
         let fields = self.fields();
         let mut secrets: Vec<Node<Msg>> = fields
             .iter()
@@ -282,6 +292,7 @@ impl SettingsWindow {
                     id: "settings-text",
                     value: self.text.clone(),
                     height: EDITOR_HEIGHT,
+                    hint: String::new(),
                     edit: Msg::Edit,
                 }],
             },
@@ -316,17 +327,20 @@ impl SettingsWindow {
 
     /// act on a click or keystroke for `host`.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
+        // the same rules as the buttons: a front end may send any message
+        let idle = self.idle(services, host);
         match msg {
             Msg::Edit(text) => self.text = text,
-            Msg::SetSecret(path) => self.ask_secret(&path),
-            Msg::Save => self.save(services, host),
-            Msg::Reload => self.load(services, host),
-            Msg::Apply => self.apply(services, host, &[]),
+            Msg::SetSecret(path) if idle => self.ask_secret(&path),
+            Msg::Save if self.can_save(services, host) => self.save(services, host),
+            Msg::Reload if idle => self.load(services, host),
+            Msg::Apply if idle => self.apply(services, host, &[]),
             Msg::PickModule(i) => self.module = i,
-            Msg::ApplyModule => {
+            Msg::ApplyModule if idle => {
                 let id = MODULES[self.module].id.to_string();
                 self.apply(services, host, &[id]);
             }
+            Msg::SetSecret(_) | Msg::Save | Msg::Reload | Msg::Apply | Msg::ApplyModule => {}
         }
     }
 
@@ -547,5 +561,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         };
         request.reply.send(None).unwrap();
+    }
+
+    #[test]
+    fn save_refuses_another_hosts_text_and_a_running_task_even_without_the_button() {
+        let (mut editor, services, fake) = setup("a: 1\n");
+        editor.load(&services, "a@b");
+        settle(&mut editor);
+        // the text belongs to a@b: saving it to c@d is refused
+        editor.update(Msg::Save, &services, "c@d");
+        assert!(!editor.working());
+        // while a load runs, nothing else starts
+        editor.load(&services, "a@b");
+        editor.update(Msg::Save, &services, "a@b");
+        editor.update(Msg::SetSecret("x.password".into()), &services, "a@b");
+        assert_eq!(editor.asking(), None);
+        settle(&mut editor);
+        assert_eq!(fake.calls(), ["load a@b", "load a@b"]);
     }
 }

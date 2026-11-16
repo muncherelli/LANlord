@@ -6,7 +6,7 @@ use lanlord_core::server::ServerFacts;
 
 use crate::remote::Remote;
 use crate::services::Services;
-use crate::view::{self, Button, Dialog, Node};
+use crate::view::{self, Button, Dialog, Node, Size};
 
 pub const GENERAL: usize = 0;
 
@@ -319,8 +319,11 @@ impl MyServer {
             Node::Text(format!("Type {} to confirm:", purge.host)),
             Node::Input {
                 value: purge.typed.clone(),
-                width: 240.0,
-                edit: Msg::Typed,
+                size: Size::Points(240.0),
+                hint: String::new(),
+                focus: false,
+                edit: Box::new(Msg::Typed),
+                enter: None,
             },
             Node::Gap(6.0),
             Node::Buttons(vec![

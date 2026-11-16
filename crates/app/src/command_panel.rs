@@ -7,7 +7,7 @@ use lanlord_core::log::{self, Kind, Line};
 
 use crate::services::Services;
 use crate::tasks::Job;
-use crate::view::{Button, Node, Table};
+use crate::view::{Button, Node, Size, Table};
 
 const HISTORY: usize = 10;
 const KEEP: usize = 500;
@@ -23,6 +23,8 @@ pub enum Msg {
     /// the command line now reads this.
     Edit(String),
     Run,
+    /// Enter on the command line with this text on it: take it and run it.
+    Submit(String),
     /// put history entry `0` back on the command line.
     Recall(usize),
 }
@@ -124,14 +126,14 @@ impl CommandPanel {
                 title: "Run on the gateway".into(),
                 body: vec![
                     Node::Row(vec![
-                        Node::Entry {
+                        Node::Input {
                             value: self.line.clone(),
-                            room: 100.0,
-                            masked: false,
+                            size: Size::FillLess(100.0),
                             focus: false,
                             hint: "command to run on the gateway".into(),
                             edit: Box::new(Msg::Edit),
-                            enter: idle.then_some(Msg::Run),
+                            enter: idle
+                                .then(|| Box::new(Msg::Submit) as Box<dyn Fn(String) -> Msg>),
                         },
                         Node::Button(Button::new("Run", can_run, Msg::Run)),
                     ]),
@@ -191,6 +193,10 @@ impl CommandPanel {
         match msg {
             Msg::Edit(text) => self.line = text,
             Msg::Run => self.run(services, host),
+            Msg::Submit(text) => {
+                self.line = text;
+                self.run(services, host);
+            }
             Msg::Recall(i) => {
                 if let Some(command) = self.history.get(i) {
                     self.line.clone_from(command);
