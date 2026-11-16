@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- the app sets the full title, with its version, once it starts -->
+    <title>LANlord Server</title>
+    <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" />
+    <!-- the gui's own icon; trunk copies it into the build output -->
+    <link data-trunk rel="icon" href="../ui/assets/icon.png" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #008080;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .status {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        right: 0;
+        margin: 0;
+        text-align: center;
+        color: #ffffff;
+        font: 13px sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="lanlord"></canvas>
+    <!-- the app removes this once it runs, or writes why it could not start -->
+    <p id="status" class="status">Loading LANlord…</p>
+    <noscript>
+      <style>
+        #status {
+          display: none;
+        }
+      </style>
+      <p class="status">LANlord needs JavaScript and WebGL.</p>
+    </noscript>
+  </body>
+</html>

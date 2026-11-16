@@ -1,3 +1,7 @@
+mod launcher;
+#[cfg(feature = "webui")]
+mod webui;
+
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
@@ -67,6 +71,24 @@ enum Switch {
 }
 
 #[derive(Subcommand)]
+enum ClockCommand {
+    /// show the server's time, time zone and internet time
+    Show,
+    /// set the time zone, for example Europe/Berlin
+    SetTimezone { zone: String },
+    /// set the time, as 'YYYY-MM-DD HH:MM:SS' (internet time must be off)
+    SetTime { time: String },
+    /// turn internet time on or off, optionally with the servers to use
+    Ntp {
+        #[arg(value_enum)]
+        state: Switch,
+        servers: Vec<String>,
+    },
+    /// synchronize with the time servers now
+    Update,
+}
+
+#[derive(Subcommand)]
 enum MachinesCommand {
     /// list the machine accounts in your settings
     List,
@@ -112,8 +134,18 @@ enum AdminCommand {
 enum Command {
     /// open the native window
     Gui,
-    /// run the web server
-    Webui,
+    /// run the web server on a gateway (caddy serves it over https on port 8443)
+    Webui {
+        /// the unix socket to listen on
+        #[arg(long, value_name = "PATH", default_value = "/run/lanlord-web/web.sock")]
+        socket: PathBuf,
+        /// listen on this tcp address instead of the socket, to try the server out
+        #[arg(long, value_name = "ADDRESS")]
+        listen: Option<std::net::SocketAddr>,
+        /// the browser build to serve (default: the web folder beside the binary's folder)
+        #[arg(long = "static", value_name = "DIR")]
+        static_dir: Option<PathBuf>,
+    },
     /// install the gateway payload on a host
     Bootstrap {
         host: String,
@@ -161,6 +193,12 @@ enum Command {
     },
     /// say what kind of machine a server is and whether it can run docker and the modules
     Check { host: String },
+    /// show or change a server's time, time zone and internet time
+    Clock {
+        host: String,
+        #[command(subcommand)]
+        action: ClockCommand,
+    },
     /// remove lanlord from a server: containers, files, service account and sudo rules
     Purge {
         host: String,
@@ -189,9 +227,20 @@ enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// add LANlord to the start menu (windows), applications (macos) or the app menu (linux)
-    InstallLauncher,
+    InstallLauncher {
+        /// show what would be written without writing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// replace launcher files that install-launcher didn't write
+        #[arg(long)]
+        force: bool,
+    },
     /// remove the launcher added by install-launcher
-    UninstallLauncher,
+    UninstallLauncher {
+        /// show what would be removed without removing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// ask for a password on the terminal.
@@ -299,6 +348,50 @@ fn logon(host: &str, action: LogonCommand) -> Result<()> {
     }
 }
 
+fn clock(host: &str, action: ClockCommand) -> Result<()> {
+    use lanlord_core::clock::{self, Change, NtpChange};
+    let session = lanlord_core::ssh::Session::new(host)?;
+    let change = match action {
+        ClockCommand::Show => {
+            let state = clock::read(&session)?;
+            println!("{}", clock::describe(&state));
+            return Ok(());
+        }
+        ClockCommand::Update => {
+            for line in clock::update_now(&session, &mut ask)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        ClockCommand::SetTimezone { zone } => Change {
+            timezone: Some(zone),
+            ..Change::default()
+        },
+        ClockCommand::SetTime { time } => Change {
+            time: Some(clock::valid_time(&time)?),
+            ..Change::default()
+        },
+        ClockCommand::Ntp { state, servers } => Change {
+            ntp: Some(NtpChange {
+                enabled: matches!(state, Switch::On),
+                servers: clock::parse_servers(&servers.join(" "))?,
+            }),
+            ..Change::default()
+        },
+    };
+    let identity = crypto::load_default()?;
+    let (said, stored) = clock::apply_stored(&session, host, identity.as_ref(), &change, &mut ask)?;
+    for line in said {
+        println!("{line}");
+    }
+    if stored == clock::Stored::NoKey {
+        eprintln!(
+            "note: this change is not kept in your settings (no key yet), so an apply may undo it"
+        );
+    }
+    Ok(())
+}
+
 fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()> {
     use lanlord_core::purge::{preview, purge, PurgeOptions};
     let session = lanlord_core::ssh::Session::new(host)?;
@@ -393,7 +486,20 @@ fn main() -> Result<()> {
         Some(Command::Gui) => lanlord_ui::run(),
         #[cfg(not(feature = "gui"))]
         Some(Command::Gui) => bail!("this build has no gui; install the desktop build"),
-        Some(Command::Webui) => bail!("webui is not implemented yet"),
+        #[cfg(feature = "webui")]
+        Some(Command::Webui {
+            socket,
+            listen,
+            static_dir,
+        }) => webui::run(webui::Options {
+            socket,
+            listen,
+            static_dir,
+        }),
+        #[cfg(not(feature = "webui"))]
+        Some(Command::Webui { .. }) => {
+            bail!("this build has no web server; build lanlord with --features webui")
+        }
         Some(Command::Bootstrap {
             host,
             ansible,
@@ -427,6 +533,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Command::Clock { host, action }) => clock(&host, action),
         Some(Command::Purge {
             host,
             remove_admins,
@@ -466,8 +573,25 @@ fn main() -> Result<()> {
             };
             std::process::exit(exec(&target, &command)?);
         }
-        Some(Command::InstallLauncher | Command::UninstallLauncher) => {
-            bail!("launcher setup is not implemented yet")
-        }
+        Some(Command::InstallLauncher { dry_run, force }) => launcher::install(dry_run, force),
+        Some(Command::UninstallLauncher { dry_run }) => launcher::uninstall(dry_run),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_web_server_has_its_own_runtime_folder() {
+        // /run/lanlord holds the decrypted settings during an apply; the web server's socket
+        // folder is mounted into the proxy, so it must be a different one
+        let Some(Command::Webui { socket, .. }) =
+            Cli::try_parse_from(["lanlord", "webui"]).unwrap().command
+        else {
+            panic!("webui parses");
+        };
+        assert_eq!(socket, PathBuf::from("/run/lanlord-web/web.sock"));
+        assert!(!socket.starts_with("/run/lanlord/"));
     }
 }

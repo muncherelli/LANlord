@@ -87,7 +87,7 @@ pub fn check(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
         BLACK,
     );
     #[cfg(test)]
-    theme::probe::record(ui, label, rect, true);
+    theme::probe::record(ui, label, rect, ui.is_enabled());
     response
 }
 

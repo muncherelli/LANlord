@@ -872,13 +872,13 @@ mod tests {
         assert_eq!(app.window.unwrap().id, "nt4-domain");
         assert_eq!(loads.borrow().as_slice(), ["a@one"]);
         assert_eq!(app.users, UsersState::Loading);
-        deliver(&mut app, &["james", "olive"]);
-        assert_eq!(app.selected_user(), Some("james"));
+        deliver(&mut app, &["dana", "olive"]);
+        assert_eq!(app.selected_user(), Some("dana"));
         app.on_key(key(KeyCode::Down));
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.selected_user(), Some("olive"));
         app.on_key(key(KeyCode::Up));
-        assert_eq!(app.selected_user(), Some("james"));
+        assert_eq!(app.selected_user(), Some("dana"));
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.users, UsersState::Idle);
         assert_eq!(app.mode, Mode::Normal);
@@ -986,9 +986,9 @@ mod tests {
             Mode::Window,
             "nothing is selected before the list loads"
         );
-        deliver(&mut app, &["james"]);
+        deliver(&mut app, &["dana"]);
         app.on_key(key(KeyCode::Char('p')));
-        assert_eq!(app.pending_name(), Some("james"));
+        assert_eq!(app.pending_name(), Some("dana"));
         type_text(&mut app, "new");
         app.on_key(key(KeyCode::Enter));
         type_text(&mut app, "new");
@@ -996,7 +996,7 @@ mod tests {
         assert_eq!(
             changes.borrow()[0].1,
             Change::SetPassword {
-                name: "james".into(),
+                name: "dana".into(),
                 password: "new".into()
             }
         );
@@ -1018,7 +1018,7 @@ mod tests {
     fn deleting_needs_a_yes() {
         let (mut app, _, changes) = users_app();
         open_users_window(&mut app);
-        deliver(&mut app, &["james"]);
+        deliver(&mut app, &["dana"]);
         app.on_key(key(KeyCode::Char('d')));
         assert_eq!(app.mode, Mode::UserDelete);
         app.on_key(key(KeyCode::Char('n')));
@@ -1031,7 +1031,7 @@ mod tests {
             [(
                 "a@one".to_string(),
                 Change::Remove {
-                    name: "james".into()
+                    name: "dana".into()
                 }
             )]
         );

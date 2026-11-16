@@ -73,7 +73,7 @@ if have docker; then
   done
 fi
 
-for u in lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
+for u in lanlord-webui.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
   if exists "$ROOT/etc/systemd/system/$u"; then
     if have systemctl; then act "stop and disable $u" systemctl disable --now "$u"; fi
     act "remove unit $u" rm -f "$ROOT/etc/systemd/system/$u"
@@ -95,7 +95,7 @@ for f in "$ROOT"/etc/systemd/network/*.network.d/lanlord.conf; do
 done
 if [ "$netchanged" = 1 ] && [ "$DRY" = 0 ] && have networkctl; then networkctl reload >/dev/null 2>&1; fi
 
-for d in /etc/lanlord /opt/lanlord /run/lanlord; do
+for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web; do
   if exists "$ROOT$d"; then act "remove $d" rm -rf "$ROOT$d"; fi
 done
 
@@ -106,6 +106,7 @@ if [ "$REMOVE_ADMINS" = 1 ]; then
   done
 fi
 if getent passwd lanlord >/dev/null 2>&1; then act "remove the service account lanlord" userdel lanlord; fi
+if getent group lanlord-web >/dev/null 2>&1; then act "remove the group lanlord-web" groupdel lanlord-web; fi
 if getent group lanlord >/dev/null 2>&1; then act "remove the group lanlord" groupdel lanlord; fi
 if getent group @ADMINS@ >/dev/null 2>&1; then act "remove the group @ADMINS@" groupdel @ADMINS@; fi
 
@@ -184,7 +185,7 @@ mod tests {
             let root = dir.join("root");
             for file in [
                 "opt/lanlord/config/settings.age",
-                "opt/lanlord/nt4/lib/profiles/james/ntuser.dat",
+                "opt/lanlord/nt4/lib/profiles/dana/ntuser.dat",
                 "etc/lanlord/firewall.nft",
                 "etc/systemd/system/lanlord-firewall.service",
                 "etc/systemd/system/lanlord-status.timer",
@@ -228,6 +229,7 @@ echo "nft $*" >> LOG"#,
   "group admins") echo "admins:x:9998:root,alice" ;;
   "passwd lanlord") echo "lanlord:x:9999:9999::/opt/lanlord:/bin/false" ;;
   "group lanlord") echo "lanlord:x:9999:" ;;
+  "group lanlord-web") echo "lanlord-web:x:9990:" ;;
   *) exit 2 ;;
 esac"#,
                 ),
@@ -370,6 +372,7 @@ esac"#,
             "docker image rm ghcr.io/x/lanlord-samba-nt4:abc",
             "nft delete table inet lanlord",
             "userdel lanlord",
+            "groupdel lanlord-web",
             "groupdel lanlord",
             "groupdel admins",
             "systemctl daemon-reload",
@@ -435,7 +438,9 @@ esac"#,
                 "/etc/lanlord",
                 "/opt/lanlord",
                 "/run/lanlord",
+                "/run/lanlord-web",
                 "lanlord",
+                "lanlord-web",
                 ADMINS_GROUP,
             ]
             .map(str::to_string),

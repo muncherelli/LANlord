@@ -13,7 +13,7 @@ use crate::gateway::Fake;
 use crate::nt4_window::Tab;
 
 const NT4: &str =
-    "nt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: james\n      admin: true\n";
+    "nt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: dana\n      admin: true\n";
 const DNS: &str = "dns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n    hosts:\n      - {name: a, mac: 'aa:bb:cc:dd:ee:ff', address: 172.16.120.10}\n";
 
 fn module(id: &str) -> Target {
@@ -68,7 +68,7 @@ fn fill(form: Option<&mut crate::form::Form>, values: &[&str]) {
 #[test]
 fn logins_are_listed_added_with_a_generated_password_and_kept_out_of_the_plain_text() {
     let (mut desktop, ctx, fake) = logins();
-    assert_eq!(desktop.nt4.users.names(), ["james"]);
+    assert_eq!(desktop.nt4.users.names(), ["dana"]);
     assert!(press(&mut desktop, &ctx, "Add login..."));
     fill(desktop.nt4.users.form_mut(), &["olive"]);
     assert!(press(&mut desktop, &ctx, "Generate"));
@@ -78,7 +78,7 @@ fn logins_are_listed_added_with_a_generated_password_and_kept_out_of_the_plain_t
     desktop.nt4.users.form_mut().unwrap().checks[1].1 = true;
     assert!(press(&mut desktop, &ctx, "OK"));
     settled(&mut desktop, &ctx);
-    assert_eq!(desktop.nt4.users.names(), ["james", "olive"]);
+    assert_eq!(desktop.nt4.users.names(), ["dana", "olive"]);
     let plain = stored(&fake);
     assert!(
         plain.contains("olive") && !plain.contains(&generated),
@@ -104,7 +104,7 @@ fn logins_are_listed_added_with_a_generated_password_and_kept_out_of_the_plain_t
 fn a_bad_add_keeps_the_form_open_and_cancel_changes_nothing() {
     let (mut desktop, ctx, fake) = logins();
     assert!(press(&mut desktop, &ctx, "Add login..."));
-    for (name, password) in [("Bad Name", "x"), ("james", "x"), ("olive", "")] {
+    for (name, password) in [("Bad Name", "x"), ("dana", "x"), ("olive", "")] {
         fill(desktop.nt4.users.form_mut(), &[name, password]);
         assert!(press(&mut desktop, &ctx, "OK"));
         let form = desktop.nt4.users.form_mut().expect("still open");
@@ -124,7 +124,7 @@ fn passwords_admin_flags_and_deletion_need_a_selection_and_go_through_the_task_r
         Some(false),
         "nothing selected"
     );
-    desktop.nt4.users.select("james");
+    desktop.nt4.users.select("dana");
     frames(&mut desktop, &ctx, 2);
 
     assert!(press(&mut desktop, &ctx, "Password..."));
@@ -134,7 +134,7 @@ fn passwords_admin_flags_and_deletion_need_a_selection_and_go_through_the_task_r
     assert_eq!(
         fake.secrets.lock().unwrap()[0],
         (
-            "nt4-domain.users[james].password".to_string(),
+            "nt4-domain.users[dana].password".to_string(),
             "N3WPASS".to_string()
         )
     );
@@ -188,7 +188,7 @@ fn logins_without_a_domain_section_explain_themselves_and_reload_works() {
     *fake.stored.lock().unwrap() = NT4.into();
     assert!(press(&mut desktop, &ctx, "Reload logins"));
     until(&mut desktop, &ctx, |d| d.nt4.users.belongs_to("me@gw"));
-    assert_eq!(desktop.nt4.users.names(), ["james"]);
+    assert_eq!(desktop.nt4.users.names(), ["dana"]);
 }
 
 fn dns() -> (Desktop, egui::Context, Arc<Fake>) {
@@ -375,7 +375,7 @@ fn the_nt4_settings_tab_needs_an_admin_password_for_a_domain_and_never_shows_it(
     let plain = stored(&fake);
     assert!(plain.contains("ws1") && plain.contains("roaming_profiles: true"));
     assert!(
-        plain.contains("james") && !plain.contains("Adm1nPass"),
+        plain.contains("dana") && !plain.contains("Adm1nPass"),
         "{plain}"
     );
     assert_eq!(secret_paths(&fake), ["nt4-domain.admin_password"]);
@@ -549,15 +549,13 @@ fn a_new_script_for_a_login_is_named_edited_and_saved() {
         desktop.nt4.logon.form_mut().unwrap().error.is_some(),
         "the generated script is reserved"
     );
-    fill(desktop.nt4.logon.form_mut(), &["muncherelli"]);
+    fill(desktop.nt4.logon.form_mut(), &["dana"]);
     assert!(press(&mut desktop, &ctx, "OK"));
-    until(&mut desktop, &ctx, |d| {
-        d.nt4.logon.selected() == "muncherelli"
-    });
+    until(&mut desktop, &ctx, |d| d.nt4.logon.selected() == "dana");
     settled(&mut desktop, &ctx);
     assert_eq!(
         desktop.nt4.logon.entries_for_test(),
-        ["logon", "muncherelli"],
+        ["logon", "dana"],
         "listed before it is saved"
     );
     assert_eq!(enabled(&ctx, "New script..."), Some(true));
@@ -567,14 +565,8 @@ fn a_new_script_for_a_login_is_named_edited_and_saved() {
     assert_eq!(enabled(&ctx, "New script..."), Some(false), "unsaved edits");
     assert!(press(&mut desktop, &ctx, "Save script"));
     settled(&mut desktop, &ctx);
-    assert_eq!(
-        fake.logon.lock().unwrap()["muncherelli"],
-        "net use P: \\\\A\\b\n"
-    );
-    assert_eq!(
-        desktop.nt4.logon.entries_for_test(),
-        ["logon", "muncherelli"]
-    );
+    assert_eq!(fake.logon.lock().unwrap()["dana"], "net use P: \\\\A\\b\n");
+    assert_eq!(desktop.nt4.logon.entries_for_test(), ["logon", "dana"]);
 }
 
 #[test]

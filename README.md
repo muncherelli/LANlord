@@ -43,6 +43,10 @@ lanlord gui                                 # The desktop window.
 
 The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh` client, so your `~/.ssh/config`, jump hosts and SSH agent (including 1Password) all work.
 
+## Date, time and time zone
+
+Double-click the clock in the taskbar to open Date/Time Properties for the server you are signed in to (the taskbar clock shows the server's time, not your computer's). It has the familiar three tabs: Date & Time, Time Zone and Internet Time. From the command line, `lanlord clock HOST show`, `set-timezone ZONE`, `set-time 'YYYY-MM-DD HH:MM:SS'`, `ntp on|off [SERVERS...]` and `update` do the same. The time zone and the time servers are also kept in the `gateway` settings (`timezone`, `ntp`, `ntp_enabled`), so a later apply does not undo them; a time set by hand is a one-off. A server that is an LXC container takes its clock from the Proxmox host, so there only the time zone can be changed.
+
 ## Checking a server
 
 `lanlord check HOST` says what kind of machine a server is (bare metal, a virtual machine, a privileged or unprivileged LXC container) and which features it has: nesting and keyctl for Docker in an LXC container, `/dev/net/tun`, nftables, and the link types LANlord's networks use. It marks each line OK, WARN or FAIL and gives the exact Proxmox fix, for example `pct set <CTID> --features nesting=1,keyctl=1`. `lanlord apply` runs the same check for the modules that use Docker (docker, nt4-domain, web-proxy and dns) and stops on a definite FAIL, never on something it could not tell. LANlord cannot change a container's features from inside it; the fix is made on the Proxmox host, followed by a restart of the container.
@@ -87,4 +91,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The Ansible files live in [`ansible/`](ansible/README.md).
+Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The gateway's web server (`lanlord webui`) is behind the `webui` feature: `cargo build -p lanlord --no-default-features --features webui`. The Ansible files live in [`ansible/`](ansible/README.md).
