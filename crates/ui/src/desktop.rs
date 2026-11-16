@@ -154,6 +154,9 @@ impl Desktop {
     /// look for updates in the background, and offer a rebuild when this is a development build.
     pub fn watch_updates(&mut self, updates: Updates, dev: Option<PathBuf>, exe: Option<PathBuf>) {
         self.updates = updates;
+        if let (Some(repo), Some(exe)) = (&dev, &exe) {
+            self.updates.watch_checkout(repo.clone(), exe.clone());
+        }
         self.dev = dev;
         self.exe = exe;
     }
@@ -433,9 +436,37 @@ impl Desktop {
         if self.updates.balloon(ctx, TASKBAR) {
             self.updates.open_dialog();
         }
-        if self.updates.dialog(ctx) == Some(Choice::Install) {
-            self.install_update();
+        match self.updates.dialog(ctx) {
+            Some(Choice::Install) => self.install_update(),
+            Some(Choice::Pause) => self.updates.pause(),
+            Some(Choice::Resume) => self.updates.resume(),
+            Some(Choice::Cancel) => self.updates.cancel(),
+            Some(Choice::Restart) => self.restart_into_new_build(),
+            Some(Choice::Later) | None => {}
         }
+    }
+
+    /// start the build that was just installed and quit, once it is up and still running; the
+    /// same checks as a rebuild, so a build that dies at once leaves this window open.
+    fn restart_into_new_build(&mut self) {
+        let Some(exe) = self.exe.clone() else {
+            emit(Kind::Err, "this build cannot be restarted from here");
+            return;
+        };
+        if self.is_rebuilding() {
+            return;
+        }
+        let host = self.signed_in.as_ref().map(|s| s.target.clone());
+        let grace = self.relaunch_grace;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.services.ctx.clone();
+        std::thread::spawn(move || {
+            let result = update::verify_built(&exe)
+                .and_then(|()| update::relaunch(&exe, host.as_deref(), grace));
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
+            ctx.request_repaint();
+        });
+        self.rebuilding = Some(rx);
     }
 
     /// install what the notice found: rebuild from trunk, or open the release page.
@@ -444,7 +475,11 @@ impl Desktop {
             return;
         };
         match found.source {
-            update::Source::Git => self.start_rebuild(true),
+            update::Source::Git => {
+                // the pull and the build run in the background, and say so in the console
+                self.open(Target::Console);
+                self.updates.install();
+            }
             update::Source::Release { url } => {
                 if let Err(error) = update::open_release(&url) {
                     emit(

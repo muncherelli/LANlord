@@ -6,11 +6,14 @@ use std::sync::Arc;
 
 use lanlord_core::log;
 use lanlord_core::update::{Runner, Source, Update};
+use lanlord_core::updater::State;
 
 use eframe::egui;
 
 use super::harness::{click_at, desktop, frames, press, screen, until, SCREEN};
-use super::menu::{Action, Confirm};
+use super::menu::Action;
+#[cfg(unix)]
+use super::menu::Confirm;
 use super::{theme, Desktop, TASKBAR};
 use crate::login::fake::{id, FakeAuth};
 use crate::update_panel::Updates;
@@ -269,6 +272,34 @@ fn a_build_that_leaves_no_program_behind_leaves_this_window_open() {
 
 #[cfg(unix)]
 #[test]
+fn restarting_into_the_new_build_quits_only_when_it_is_up() {
+    let (mut desktop, ctx, repo) = dev("restart", true);
+    let seen = log::subscribe();
+    // a build that stays up: the restart finishes without an error box
+    desktop.restart_into_new_build();
+    assert!(desktop.is_rebuilding());
+    until(&mut desktop, &ctx, |d| !d.is_rebuilding());
+    assert!(desktop.confirm.is_none());
+    // a build that dies at once: the window stays and says why
+    script(&fake_exe(&repo), "echo broken >&2; exit 5");
+    desktop.restart_into_new_build();
+    until(&mut desktop, &ctx, |d| !d.is_rebuilding());
+    let said = lines(&seen);
+    assert!(
+        said.iter()
+            .any(|l| l.contains("exited at once") && l.contains("broken")),
+        "{said:?}"
+    );
+    assert!(matches!(desktop.confirm, Some((Confirm::Failure, _))));
+    // and with nothing to start there is nothing to do
+    let (mut bare, _ctx, _) = super::harness::desktop();
+    bare.restart_into_new_build();
+    assert!(!bare.is_rebuilding());
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+#[cfg(unix)]
+#[test]
 fn the_failure_box_closes_with_ok() {
     let (mut desktop, ctx, repo) = dev("box", false);
     desktop.start_rebuild(false);
@@ -374,9 +405,25 @@ fn installing_a_trunk_update_rebuilds() {
     frames(&mut desktop, &ctx, 3);
     desktop.updates.open_dialog();
     assert!(press(&mut desktop, &ctx, "Install"));
-    until(&mut desktop, &ctx, |d| !d.is_rebuilding());
+    // the pull runs in the background; the scratch folder is no checkout, so it ends in a failure
+    until(&mut desktop, &ctx, |d| {
+        matches!(d.updates.state(), State::Failed(_))
+    });
     let said = lines(&seen);
     assert!(said.iter().any(|l| l.starts_with("$ git pull")), "{said:?}");
+    assert!(
+        desktop
+            .windows
+            .iter()
+            .any(|w| w.target == super::Target::Console),
+        "the console opens to show the work"
+    );
+    // the shield stays with its failure, and the box offers to try again or dismiss it
+    desktop.updates.open_dialog();
+    frames(&mut desktop, &ctx, 3);
+    assert!(press(&mut desktop, &ctx, "Dismiss"));
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(*desktop.updates.state(), State::Available);
     let _ = std::fs::remove_dir_all(repo);
 }
 

@@ -587,21 +587,18 @@ GLOBE_FRAMES = 8
 ARROW_BOB = [0, 0, 1, 1, 1, 1, 0, 0]
 
 
-def globe_frame(i):
-    """the globe turned `i` eighths of a turn, with the yellow arrow at its place in the bob."""
-    g = Grid(16)
-    cx = cy = 6.5
-    turn = 2 * math.pi * i / GLOBE_FRAMES
+def globe_pixels(g, turn, cx, cy, r, grey=False):
+    """a globe turned by `turn` radians, lit from the top left; grey for an idle state."""
     light = (-0.5, -0.5, 0.7)
     for y in range(16):
         for x in range(16):
             d = math.hypot(x - cx, y - cy)
-            if d > 6:
+            if d > r:
                 continue
-            if d > 5:
+            if d > r - 1:
                 g.dot(x, y, "k")
                 continue
-            nx, ny = (x - cx) / 5.2, (y - cy) / 5.2
+            nx, ny = (x - cx) / (r - 0.8), (y - cy) / (r - 0.8)
             nz = math.sqrt(max(0.0, 1 - nx * nx - ny * ny))
             lon = math.atan2(nx, nz) + turn
             lat = math.asin(max(-1.0, min(1.0, -ny)))
@@ -609,11 +606,70 @@ def globe_frame(i):
             row = min(len(LAND) - 1, int((math.pi / 2 - lat) / math.pi * len(LAND)))
             land = LAND[row][col] == "X"
             shade = nx * light[0] + ny * light[1] + nz * light[2]
-            if land:
+            if grey:
+                g.dot(x, y, "w" if shade > 0.93 else ("g" if land else "d"))
+            elif land:
                 g.dot(x, y, "l" if shade > 0.93 else "G")
             else:
                 g.dot(x, y, "c" if shade > 0.95 else ("n" if shade < 0.0 else "b"))
+
+
+def globe_frame(i):
+    """the globe turned `i` eighths of a turn, with the yellow arrow at its place in the bob."""
+    g = Grid(16)
+    globe_pixels(g, 2 * math.pi * i / GLOBE_FRAMES, 6.5, 6.5, 6)
     outlined(g, arrow_pixels(9, 8 + ARROW_BOB[i], 3), "y")
+    return g
+
+
+# badges for the corner of the globe, seven pixels square
+BADGES = {
+    "pause": ["..kkk..", ".kyyyk.", "kykykyk", "kykykyk", "kykykyk", ".kyyyk.", "..kkk.."],
+    "x": ["..kkk..", ".krrrk.", "kwrrrwk", "krrwrrk", "kwrrrwk", ".krrrk.", "..kkk.."],
+    "check": ["..kkk..", ".kGGGk.", "kGGGwwk", "kwGwGGk", "kGwGGGk", ".kGGGk.", "..kkk.."],
+}
+
+
+def with_badge(g, name):
+    for j, row in enumerate(BADGES[name]):
+        for i, c in enumerate(row):
+            if c != ".":
+                g.dot(9 + i, 9 + j, c)
+    return g
+
+
+def still_globe(grey=False):
+    g = Grid(16)
+    globe_pixels(g, 0.0, 6.5, 6.5, 6, grey=grey)
+    return g
+
+
+def u_paused():
+    """a grey globe with a pause badge."""
+    return with_badge(still_globe(grey=True), "pause")
+
+
+def u_failed():
+    """a grey globe with a red cross badge."""
+    return with_badge(still_globe(grey=True), "x")
+
+
+def u_done():
+    """the globe in colour with a green check badge."""
+    return with_badge(still_globe(), "check")
+
+
+INSTALL_FILLS = [0, 1, 2, 3, 4, 4]
+
+
+def install_frame(i):
+    """a still globe over a segmented progress strip that fills block by block and wraps."""
+    g = Grid(16)
+    globe_pixels(g, 0.0, 7.5, 5.5, 5.7)
+    g.rect(1, 12, 14, 4, "k")
+    g.rect(2, 13, 12, 2, "w")
+    for block in range(INSTALL_FILLS[i]):
+        g.rect(2 + 3 * block, 13, 2, 2, "n")
     return g
 
 
@@ -743,6 +799,10 @@ UPDATE_CANDIDATES = {
 }
 
 
+# the other states of the tray icon: a strip of frames, or a single sprite
+INSTALL_FRAMES = len(INSTALL_FILLS)
+UPDATE_SPRITES = {"UPDATE_PAUSED": u_paused, "UPDATE_FAILED": u_failed, "UPDATE_DONE": u_done}
+
 # candidates that turn: how many frames each has and how to draw frame `i`
 ANIMATED = {"globe": (GLOBE_FRAMES, globe_frame)}
 
@@ -805,6 +865,32 @@ def frames_sheet(path):
         block(ox, oy, art, zoom)
         block(ox, oy + 16 * zoom + 8, art, 1)
         block(ox + 30, oy + 16 * zoom + 8, art, 2)
+    with open(path, "wb") as f:
+        f.write(png(w, h, img))
+
+
+def states_sheet(path):
+    """every state of the tray icon: the spin and install frames, then the stills, at 8x."""
+    gray = RGB["g"]
+    items = update_frames() + [install_frame(i) for i in range(INSTALL_FRAMES)]
+    items += [fn() for fn in UPDATE_SPRITES.values()]
+    zoom, pad, cols = 6, 10, 8
+    cell = 16 * zoom + 12
+    rows = (len(items) + cols - 1) // cols
+    w, h = cols * cell + pad, rows * (cell + 30) + pad
+    img = [[gray] * w for _ in range(h)]
+    for n, grid in enumerate(items):
+        ox, oy = pad + (n % cols) * cell, pad + (n // cols) * (cell + 30)
+        for j, row in enumerate(grid.rows()):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(zoom):
+                        for dx in range(zoom):
+                            img[oy + j * zoom + dy][ox + i * zoom + dx] = RGB[c]
+        for j, row in enumerate(grid.rows()):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    img[oy + 16 * zoom + 6 + j][ox + i] = RGB[c]
     with open(path, "wb") as f:
         f.write(png(w, h, img))
 
@@ -887,6 +973,17 @@ def emit(path):
         out.append(f"pub(crate) const SMALL_{name}: [&str; 16] = [\n")
         out += [f'    "{r}",\n' for r in rows]
         out.append("];\n\n")
+    for name, fn in UPDATE_SPRITES.items():
+        out.append(f"pub(crate) const SMALL_{name}: [&str; 16] = [\n")
+        out += [f'    "{r}",\n' for r in fn().rows()]
+        out.append("];\n\n")
+    installing = [install_frame(i) for i in range(INSTALL_FRAMES)]
+    out.append(f"pub(crate) const SMALL_UPDATE_INSTALL_FRAMES: [[&str; 16]; {len(installing)}] = [\n")
+    for frame in installing:
+        out.append("    [\n")
+        out += [f'        "{r}",\n' for r in frame.rows()]
+        out.append("    ],\n")
+    out.append("];\n\n")
     frames = update_frames()
     out.append(f"pub(crate) const SMALL_UPDATE_FRAMES: [[&str; 16]; {len(frames)}] = [\n")
     for frame in frames:
@@ -935,6 +1032,7 @@ if __name__ == "__main__":
     ap.add_argument("--preview", help="write a zoomed contact sheet png here")
     ap.add_argument("--update-sheet", help="write a contact sheet of the update icon candidates here")
     ap.add_argument("--frames-sheet", help="write every frame of the chosen update icon here")
+    ap.add_argument("--states-sheet", help="write every state of the tray icon here")
     ap.add_argument("--zoom", type=int, default=6)
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
@@ -946,3 +1044,5 @@ if __name__ == "__main__":
         update_sheet(a.update_sheet)
     if a.frames_sheet:
         frames_sheet(a.frames_sheet)
+    if a.states_sheet:
+        states_sheet(a.states_sheet)

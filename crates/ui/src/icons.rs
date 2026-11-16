@@ -72,6 +72,29 @@ pub fn update_frame(i: usize) -> &'static [&'static str] {
     &data::SMALL_UPDATE_FRAMES[i % UPDATE_FRAMES]
 }
 
+/// how many frames the installing animation has: a progress strip that fills and wraps.
+pub const INSTALL_FRAMES: usize = data::SMALL_UPDATE_INSTALL_FRAMES.len();
+
+/// frame `i` of the installing animation, wrapping round.
+pub fn install_frame(i: usize) -> &'static [&'static str] {
+    &data::SMALL_UPDATE_INSTALL_FRAMES[i % INSTALL_FRAMES]
+}
+
+/// the globe with a pause badge, for an update that is paused.
+pub fn update_paused() -> &'static [&'static str] {
+    &data::SMALL_UPDATE_PAUSED
+}
+
+/// the grey globe with a red cross, for an update that failed.
+pub fn update_failed() -> &'static [&'static str] {
+    &data::SMALL_UPDATE_FAILED
+}
+
+/// the globe with a green check, for an update that is installed and waits for a restart.
+pub fn update_done() -> &'static [&'static str] {
+    &data::SMALL_UPDATE_DONE
+}
+
 /// draw `art` with its top-left corner at `pos`, each pixel `scale` points wide.
 pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
     for (y, row) in art.iter().enumerate() {
@@ -115,6 +138,29 @@ mod tests {
                 assert_ne!(update_frame(a), update_frame(b), "frames {a} and {b}");
             }
         }
+    }
+
+    #[test]
+    fn every_state_of_the_tray_icon_has_art_in_the_palette() {
+        assert_eq!(INSTALL_FRAMES, 6);
+        for i in 0..INSTALL_FRAMES {
+            check("install frame", install_frame(i), 16);
+        }
+        assert_eq!(install_frame(INSTALL_FRAMES), install_frame(0), "it wraps");
+        // the strip fills as the frames go: no frame repeats until the last two
+        assert_ne!(install_frame(0), install_frame(1));
+        assert_ne!(install_frame(3), install_frame(4));
+        for (name, art) in [
+            ("paused", update_paused()),
+            ("failed", update_failed()),
+            ("done", update_done()),
+        ] {
+            check(name, art, 16);
+        }
+        // each still is its own picture
+        assert_ne!(update_paused(), update_failed());
+        assert_ne!(update_failed(), update_done());
+        assert_ne!(update_done(), small("update"));
     }
 
     fn check(id: &str, icon: &[&str], size: usize) {

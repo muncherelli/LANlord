@@ -5,6 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -225,7 +226,8 @@ pub fn json_string(text: &str, key: &str) -> Option<String> {
     }
 }
 
-/// the update notice's content when LANLORD_FAKE_UPDATE=1, to look at it without a network.
+/// the update notice's content when LANLORD_FAKE_UPDATE is set (to 1, or to the name of a state to
+/// look at), to see it without a network.
 fn fake() -> Update {
     Update {
         source: Source::Git,
@@ -243,7 +245,7 @@ pub fn check(runner: &dyn Runner, enabled: bool) -> Option<Update> {
     if !enabled || off {
         return None;
     }
-    if std::env::var("LANLORD_FAKE_UPDATE").as_deref() == Ok("1") {
+    if std::env::var("LANLORD_FAKE_UPDATE").is_ok_and(|v| !v.is_empty()) {
         return Some(fake());
     }
     match dev_repo() {
@@ -321,22 +323,82 @@ fn find_program(name: &str, path: &OsStr) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// run `step`, sending every line it prints to the console as it comes; a failure carries the
-/// last lines it printed.
-pub fn run_step(step: &Step) -> Result<()> {
+/// a flag a background job checks so it can be stopped early.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// something to call whenever a job makes progress, such as a line of output.
+pub type Beat = Arc<dyn Fn() + Send + Sync>;
+
+/// why a step did not finish.
+#[derive(Debug)]
+pub enum StepFault {
+    Cancelled,
+    Failed { message: String, tail: Vec<String> },
+}
+
+/// start `command` in its own process group, so that stopping it stops everything it started.
+fn own_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = command;
+}
+
+/// stop a step and whatever it started: politely first, then for good.
+fn stop(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let group = format!("-{}", child.id());
+        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        for _ in 0..20 {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = Command::new("kill").args(["-KILL", &group]).status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// run `step`, sending every line it prints to the console and to `beat` as it comes. it stops
+/// when `cancel` is set; a failure carries the last lines it printed.
+pub fn run_step_with(step: &Step, cancel: &Cancel, beat: &Beat) -> Result<(), StepFault> {
     emit(
         Kind::Info,
         format!("$ {} {}", step.program, step.args.join(" ")),
     );
-    let mut child = Command::new(&step.program)
+    let fail = |message: String| StepFault::Failed {
+        message,
+        tail: Vec::new(),
+    };
+    let mut command = Command::new(&step.program);
+    command
         .args(&step.args)
         .current_dir(&step.dir)
         .env("PATH", search_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    own_group(&mut command);
+    let mut child = command
         .spawn()
-        .with_context(|| format!("could not run {}", step.program))?;
+        .map_err(|e| fail(format!("could not run {}: {e}", step.program)))?;
     let tail: Arc<Mutex<Vec<String>>> = Arc::default();
     let mut readers = Vec::new();
     let out = child
@@ -349,10 +411,14 @@ pub fn run_step(step: &Step) -> Result<()> {
         .map(|p| Box::new(p) as Box<dyn Read + Send>);
     for pipe in [out, err].into_iter().flatten() {
         let tail = Arc::clone(&tail);
+        let beat = Arc::clone(beat);
         readers.push(std::thread::spawn(move || {
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                 emit(Kind::Info, line.clone());
-                let mut kept = tail.lock().unwrap_or_else(|e| e.into_inner());
+                beat();
+                let mut kept = tail
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 kept.push(line);
                 if kept.len() > TAIL_LINES {
                     kept.remove(0);
@@ -360,19 +426,118 @@ pub fn run_step(step: &Step) -> Result<()> {
             }
         }));
     }
-    let status = child.wait()?;
+    let status = loop {
+        if cancel.is_cancelled() {
+            stop(&mut child);
+            for reader in readers {
+                let _ = reader.join();
+            }
+            return Err(StepFault::Cancelled);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
+            Err(e) => return Err(fail(format!("could not watch {}: {e}", step.program))),
+        }
+    };
     for reader in readers {
         let _ = reader.join();
     }
-    if !status.success() {
-        let kept = tail.lock().unwrap_or_else(|e| e.into_inner());
-        bail!("{} failed ({status}){}", step.program, indent(&kept));
+    if status.success() {
+        return Ok(());
     }
-    Ok(())
+    let kept = tail
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Err(StepFault::Failed {
+        message: format!("{} failed ({status})", step.program),
+        tail: kept.clone(),
+    })
+}
+
+/// run `step` to the end, sending every line it prints to the console; a failure carries the
+/// last lines it printed.
+pub fn run_step(step: &Step) -> Result<()> {
+    let beat: Beat = Arc::new(|| {});
+    match run_step_with(step, &Cancel::default(), &beat) {
+        Ok(()) => Ok(()),
+        Err(StepFault::Cancelled) => bail!("{} was stopped", step.program),
+        Err(StepFault::Failed { message, tail }) => bail!("{message}{}", indent(&tail)),
+    }
+}
+
+/// does this output look like the network being down, rather than something wrong with the
+/// checkout or the build?
+pub fn is_network_error(text: &str) -> bool {
+    const SIGNS: [&str; 9] = [
+        "Could not resolve host",
+        "Failed to connect",
+        "Network is unreachable",
+        "Connection timed out",
+        "Operation timed out",
+        "Connection refused",
+        "Temporary failure in name resolution",
+        "unable to access",
+        "Could not read from remote repository",
+    ];
+    SIGNS.iter().any(|sign| text.contains(sign))
+}
+
+/// a git operation that was cut off leaves marks in the checkout; say so rather than carry on.
+pub fn checkout_problem(repo: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(repo)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let dir = if Path::new(&dir).is_absolute() {
+        PathBuf::from(dir)
+    } else {
+        repo.join(dir)
+    };
+    [
+        (
+            "index.lock",
+            "a git command did not finish; if none is running, remove this file",
+        ),
+        ("MERGE_HEAD", "a merge is half done"),
+        ("rebase-merge", "a rebase is half done"),
+        ("rebase-apply", "a rebase is half done"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick is half done"),
+    ]
+    .iter()
+    .find(|(name, _)| dir.join(name).exists())
+    .map(|(name, what)| {
+        format!(
+            "the checkout was left half-finished: {what} ({})",
+            dir.join(name).display()
+        )
+    })
+}
+
+/// an app build that was cut off leaves its half-built copy beside the installed app.
+pub fn app_leftover(exe: &Path) -> Option<String> {
+    let app = bundle_of(exe)?;
+    let name = app.file_name()?.to_string_lossy().into_owned();
+    let prefix = format!("{name}.tmp.");
+    std::fs::read_dir(app.parent()?)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| {
+            format!(
+                "a half-built copy was left at {}; the installed app was not touched",
+                entry.path().display()
+            )
+        })
 }
 
 /// `lines` as an indented block after a newline, or nothing when there are none.
-fn indent(lines: &[String]) -> String {
+pub(crate) fn indent(lines: &[String]) -> String {
     if lines.is_empty() {
         return String::new();
     }
@@ -955,6 +1120,125 @@ mod tests {
             Some(tool)
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_step_can_be_stopped_and_takes_what_it_started_with_it() {
+        let dir = scratch("stop");
+        let pid = dir.join("pid");
+        let step = Step {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                format!("sleep 30 & echo $! > '{}'; wait", pid.display()),
+            ],
+            dir: dir.clone(),
+        };
+        let cancel = Cancel::default();
+        let beat: Beat = Arc::new(|| {});
+        let stopper = cancel.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            stopper.cancel();
+        });
+        let started = Instant::now();
+        let result = run_step_with(&step, &cancel, &beat);
+        handle.join().unwrap();
+        assert!(matches!(result, Err(StepFault::Cancelled)), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it stopped promptly"
+        );
+        // the sleep it started is gone too
+        let child = std::fs::read_to_string(&pid).unwrap();
+        let mut gone = false;
+        for _ in 0..40 {
+            let alive = Command::new("kill")
+                .args(["-0", child.trim()])
+                .status()
+                .unwrap();
+            if !alive.success() {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(gone, "the process group was stopped");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn every_line_a_step_prints_is_a_beat() {
+        let dir = scratch("beats");
+        let step = Step {
+            program: "sh".into(),
+            args: vec!["-c".into(), "echo one; echo two >&2; echo three".into()],
+            dir: dir.clone(),
+        };
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&count);
+        let beat: Beat = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        run_step_with(&step, &Cancel::default(), &beat).unwrap();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn network_trouble_is_told_apart_from_other_failures() {
+        for text in [
+            "fatal: unable to access 'https://github.com/x/': Could not resolve host: github.com",
+            "ssh: connect to host github.com port 22: Network is unreachable",
+            "fatal: Could not read from remote repository.",
+        ] {
+            assert!(is_network_error(text), "{text}");
+        }
+        assert!(!is_network_error("error: could not compile `lanlord`"));
+        assert!(!is_network_error(
+            "fatal: Not possible to fast-forward, aborting."
+        ));
+    }
+
+    #[test]
+    fn an_interrupted_pull_or_build_is_noticed() {
+        let dir = scratch("half");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .unwrap()
+        };
+        if !git(&["init", "-q"]).status.success() {
+            return; // no git here, nothing to check
+        }
+        assert_eq!(checkout_problem(&dir), None);
+        std::fs::write(dir.join(".git/index.lock"), "").unwrap();
+        let problem = checkout_problem(&dir).unwrap();
+        assert!(
+            problem.contains("index.lock") && problem.contains("half-finished"),
+            "{problem}"
+        );
+        std::fs::remove_file(dir.join(".git/index.lock")).unwrap();
+        std::fs::write(dir.join(".git/MERGE_HEAD"), "").unwrap();
+        assert!(checkout_problem(&dir).unwrap().contains("merge"));
+        // not a checkout at all: nothing to say
+        let plain = scratch("plain");
+        assert_eq!(checkout_problem(&plain), None);
+        // a half-built app next to the installed one
+        let exe = dir.join("Apps/LANlord.app/Contents/MacOS/lanlord-bin");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        assert_eq!(app_leftover(&exe), None);
+        std::fs::create_dir_all(dir.join("Apps/LANlord.app.tmp.4242")).unwrap();
+        let left = app_leftover(&exe).unwrap();
+        assert!(
+            left.contains("half-built") && left.contains("not touched"),
+            "{left}"
+        );
+        assert_eq!(app_leftover(&dir.join("target/debug/lanlord")), None);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(plain);
     }
 
     #[test]
