@@ -296,7 +296,8 @@ fn the_menu_offers_log_off_and_switch_server_once_signed_in() {
 fn the_server_sits_at_the_top_of_the_menu_and_in_the_window_title() {
     let (mut desktop, ctx, auth) = logon();
     assert_eq!(desktop.server_line(), "No server");
-    assert_eq!(desktop.window_title, "LANlord");
+    let client = format!("LANlord Client v{}", env!("CARGO_PKG_VERSION"));
+    assert_eq!(desktop.window_title, client);
     auth.push(Ok(id("alice", 1000)));
     sign_in(&mut desktop, &ctx, "alice", "gw");
     until(&mut desktop, &ctx, logged_on);
@@ -309,7 +310,7 @@ fn the_server_sits_at_the_top_of_the_menu_and_in_the_window_title() {
     assert!(first.label().starts_with("Server: ") && first.label().contains("gw"));
     assert_eq!(
         desktop.window_title,
-        format!("LANlord - {}", desktop.host().unwrap())
+        format!("{client} - {}", desktop.host().unwrap())
     );
     // the line only names the server: clicking it does nothing
     let before = desktop.windows.len();
@@ -369,4 +370,8 @@ fn the_local_mode_never_shows_the_box() {
     desktop.require_login(Arc::new(FakeAuth::default()));
     assert!(desktop.login.is_none() && desktop.auth.is_none());
     frames(&mut desktop, &ctx, 2);
+    assert_eq!(
+        desktop.window_title,
+        format!("LANlord Server v{}", env!("CARGO_PKG_VERSION"))
+    );
 }

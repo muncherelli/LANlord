@@ -275,11 +275,23 @@ impl Desktop {
         }
     }
 
-    /// the window is titled with the signed-in server, once someone is signed in.
+    /// "LANlord Client v0.1.0" on a mac or pc, "LANlord Server v0.1.0" when lanlord runs on the
+    /// gateway itself (server mode, which is also what the web ui is).
+    fn app_title(&self) -> String {
+        let side = if self.services.is_local() {
+            "Server"
+        } else {
+            "Client"
+        };
+        format!("LANlord {side} v{}", env!("CARGO_PKG_VERSION"))
+    }
+
+    /// the window is titled with the app and its version, plus the signed-in server once someone
+    /// is signed in.
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let title = match (self.signed_in.as_ref(), self.host()) {
-            (Some(_), Some(host)) => format!("LANlord - {host}"),
-            _ => "LANlord".to_string(),
+            (Some(_), Some(host)) => format!("{} - {host}", self.app_title()),
+            _ => self.app_title(),
         };
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
