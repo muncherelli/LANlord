@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use lanlord_core::log;
 use lanlord_core::update::{Runner, Source, Update};
+#[cfg(unix)]
 use lanlord_core::updater::State;
 
 use eframe::egui;
