@@ -67,6 +67,24 @@ enum Switch {
 }
 
 #[derive(Subcommand)]
+enum ClockCommand {
+    /// show the server's time, time zone and internet time
+    Show,
+    /// set the time zone, for example Europe/Berlin
+    SetTimezone { zone: String },
+    /// set the time, as 'YYYY-MM-DD HH:MM:SS' (internet time must be off)
+    SetTime { time: String },
+    /// turn internet time on or off, optionally with the servers to use
+    Ntp {
+        #[arg(value_enum)]
+        state: Switch,
+        servers: Vec<String>,
+    },
+    /// synchronize with the time servers now
+    Update,
+}
+
+#[derive(Subcommand)]
 enum MachinesCommand {
     /// list the machine accounts in your settings
     List,
@@ -158,6 +176,12 @@ enum Command {
         host: String,
         #[command(subcommand)]
         action: LogonCommand,
+    },
+    /// show or change a server's time, time zone and internet time
+    Clock {
+        host: String,
+        #[command(subcommand)]
+        action: ClockCommand,
     },
     /// remove lanlord from a server: containers, files, service account and sudo rules
     Purge {
@@ -297,6 +321,50 @@ fn logon(host: &str, action: LogonCommand) -> Result<()> {
     }
 }
 
+fn clock(host: &str, action: ClockCommand) -> Result<()> {
+    use lanlord_core::clock::{self, Change, NtpChange};
+    let session = lanlord_core::ssh::Session::new(host)?;
+    let change = match action {
+        ClockCommand::Show => {
+            let state = clock::read(&session)?;
+            println!("{}", clock::describe(&state));
+            return Ok(());
+        }
+        ClockCommand::Update => {
+            for line in clock::update_now(&session, &mut ask)? {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        ClockCommand::SetTimezone { zone } => Change {
+            timezone: Some(zone),
+            ..Change::default()
+        },
+        ClockCommand::SetTime { time } => Change {
+            time: Some(clock::valid_time(&time)?),
+            ..Change::default()
+        },
+        ClockCommand::Ntp { state, servers } => Change {
+            ntp: Some(NtpChange {
+                enabled: matches!(state, Switch::On),
+                servers: clock::parse_servers(&servers.join(" "))?,
+            }),
+            ..Change::default()
+        },
+    };
+    let identity = crypto::load_default()?;
+    let (said, stored) = clock::apply_stored(&session, host, identity.as_ref(), &change, &mut ask)?;
+    for line in said {
+        println!("{line}");
+    }
+    if stored == clock::Stored::NoKey {
+        eprintln!(
+            "note: this change is not kept in your settings (no key yet), so an apply may undo it"
+        );
+    }
+    Ok(())
+}
+
 fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()> {
     use lanlord_core::purge::{preview, purge, PurgeOptions};
     let session = lanlord_core::ssh::Session::new(host)?;
@@ -416,6 +484,7 @@ fn main() -> Result<()> {
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
+        Some(Command::Clock { host, action }) => clock(&host, action),
         Some(Command::Purge {
             host,
             remove_admins,
