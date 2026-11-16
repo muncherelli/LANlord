@@ -141,6 +141,7 @@ fn background(work: impl FnOnce() + Send + 'static) {
 }
 
 /// a password prompt that asks through the ui.
+#[cfg(not(target_arch = "wasm32"))]
 fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> Result<String> {
     move |what| {
         let (reply, answer) = mpsc::channel();
@@ -158,6 +159,18 @@ fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> R
             .ok_or_else(|| anyhow!("cancelled"))
     }
 }
+
+/// in the browser a task runs on the page's only thread, so waiting for the dialog would wait
+/// forever. a prompt fails at once instead; the web ui asks for the password itself when the
+/// server answers an op with `Reply::NeedsPassword` (see `gateway::http::Http::send`).
+#[cfg(target_arch = "wasm32")]
+fn asker(_requests: Sender<PasswordRequest>, _wake: Wake) -> impl FnMut(&str) -> Result<String> {
+    |what: &str| Err(anyhow!("{PROMPT_IN_BROWSER} ({what})"))
+}
+
+/// why a task in the browser cannot ask for a password in the middle of its work.
+pub const PROMPT_IN_BROWSER: &str =
+    "the browser cannot stop a task to ask for a password; send the op again with it";
 
 #[cfg(test)]
 mod tests {
