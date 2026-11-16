@@ -11,6 +11,7 @@ fake = []
 
 [dependencies]
 anyhow.workspace = true
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 lanlord-core = { version = "0.1.0", path = "../core" }
 lanlord-model.workspace = true
 zeroize = "1"

@@ -1,9 +1,7 @@
 //! small drawing helpers shared by the management windows.
 
-use eframe::egui::{Align2, Pos2, Rect, RichText, ScrollArea, Sense, Ui, Vec2};
-use lanlord_core::settings::ValidationError;
+use eframe::egui::{Align2, Pos2, Rect, ScrollArea, Sense, Ui, Vec2};
 
-use crate::controls;
 use crate::remote::RED;
 use crate::theme::{self, BLACK, NAVY, WHITE};
 
@@ -113,20 +111,4 @@ fn data_row(
         x += width;
     }
     response
-}
-
-pub use lanlord_app::view::{bad_rows, messages};
-
-/// the problem with the field at `path`, drawn small and red under it.
-pub fn field_error(ui: &mut Ui, errors: &[ValidationError], path: &str) {
-    for message in messages(errors, path) {
-        ui.label(RichText::new(message).color(RED).small());
-    }
-}
-
-/// a label in the form's label column and a line edit beside it.
-pub fn labelled_edit(ui: &mut Ui, label: &str, text: &mut String, width: f32) {
-    controls::row(ui, label, |ui| {
-        controls::edit(ui, text, width);
-    });
 }
