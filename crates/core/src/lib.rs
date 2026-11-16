@@ -30,4 +30,5 @@ pub mod ssh;
 #[cfg(all(test, unix))]
 mod testgw;
 pub mod update;
+pub mod updater;
 pub mod users;

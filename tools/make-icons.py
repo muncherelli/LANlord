@@ -6,6 +6,7 @@ palette letter per pixel) and, with --preview FILE, a zoomed png contact sheet t
 only the standard library is used. run from the repository root: python3 tools/make-icons.py
 """
 import argparse
+import math
 import os
 import struct
 import zlib
@@ -576,30 +577,458 @@ def s_lanlord():
     return g
 
 
-def s_update():
-    """the update notice: a shield in the windows update blue and yellow."""
+# ---------------------------------------------------------------- the update notice icon
+#
+# the tray icon beside the clock. several candidates are drawn below; the one in the tray is
+# whichever UPDATE_ICON names, so switching is a one-line change. run with --update-sheet FILE
+# to see them all side by side.
+
+UPDATE_ICON = "globe"
+
+
+def disc(g, cx, cy, r, face, hi=None, lo=None, edge="k"):
+    """a round shape with a 1px outline, light from the top left."""
+    for y in range(g.n):
+        for x in range(g.n):
+            d = math.hypot(x - cx, y - cy)
+            if d > r:
+                continue
+            if d > r - 1.0:
+                g.dot(x, y, edge)
+                continue
+            c = face
+            t = (x - cx) + (y - cy)
+            if hi and t < -r * 0.75 and d > r * 0.45:
+                c = hi
+            if lo and t > r * 0.75 and d > r * 0.45:
+                c = lo
+            g.dot(x, y, c)
+
+
+def outlined(g, pixels, fill, edge="k"):
+    """fill the set of (x, y) pixels and draw a 1px outline around it."""
+    for (x, y) in pixels:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if (x + dx, y + dy) not in pixels:
+                    g.dot(x + dx, y + dy, edge)
+    for (x, y) in pixels:
+        g.dot(x, y, fill)
+
+
+def arrow_pixels(x0, y0, shaft_h, down=True):
+    """a six wide arrow: a two wide shaft and a three row head."""
+    shaft = {(x0 + 2 + i, y0 + j) for i in range(2) for j in range(shaft_h)}
+    head = set()
+    for k, (lo, hi) in enumerate([(0, 5), (1, 4), (2, 3)]):
+        for x in range(x0 + lo, x0 + hi + 1):
+            head.add((x, y0 + shaft_h + k))
+    pixels = shaft | head
+    if not down:
+        height = shaft_h + 3
+        pixels = {(x, y0 + (y0 + height - 1 - y)) for (x, y) in pixels}
+    return pixels
+
+
+def u_balloon():
+    """a yellow circle with a black exclamation mark, like a balloon warning."""
     g = Grid(16)
-    g.rect(3, 1, 10, 1, "k")
-    g.rect(2, 2, 12, 7, "k")
-    g.rect(3, 9, 10, 2, "k")
-    g.rect(4, 11, 8, 1, "k")
-    g.rect(5, 12, 6, 1, "k")
-    g.rect(6, 13, 4, 1, "k")
-    g.rect(7, 14, 2, 1, "k")
-    g.rect(3, 2, 10, 7, "b")
-    g.rect(4, 9, 8, 2, "b")
-    g.rect(5, 11, 6, 1, "b")
-    g.rect(6, 12, 4, 1, "b")
-    g.rect(7, 13, 2, 1, "b")
-    g.rect(3, 2, 10, 1, "c")
-    g.rect(3, 2, 1, 7, "c")
-    g.rect(7, 3, 2, 8, "y")
-    g.rect(4, 6, 8, 2, "y")
-    g.rect(7, 3, 1, 8, "w")
-    g.rect(4, 6, 8, 1, "w")
-    g.rect(12, 3, 1, 6, "n")
-    g.rect(11, 9, 1, 2, "n")
+    disc(g, 7.5, 7.5, 7, "y", hi="w", lo="o")
+    g.rect(7, 4, 2, 5, "k")
+    g.rect(7, 10, 2, 2, "k")
     return g
+
+
+def u_info():
+    """a blue circle with a white i."""
+    g = Grid(16)
+    disc(g, 7.5, 7.5, 7, "b", hi="c", lo="n")
+    g.rect(7, 4, 2, 2, "w")
+    g.rect(6, 7, 3, 1, "w")
+    g.rect(7, 8, 2, 3, "w")
+    g.rect(6, 11, 4, 1, "w")
+    return g
+
+
+# a coarse world map: 24 columns of longitude from -180 and 12 rows of latitude from the north pole
+LAND = [
+    "........................",
+    "...XXX....XXXXXX.XX.....",
+    "...XXXX..XXXXXXXXXXXX...",
+    "....XXX...XXXXXXXXXXX...",
+    ".....XX....XXXXXXX.XX...",
+    ".....XXX...XXXX...XX....",
+    "......XXX...XXX.........",
+    "......XX....XXX....XX...",
+    ".......X.....X.....XXX..",
+    "........................",
+    "........................",
+    "..XXXXXXXXXXXXXXXXXXXX..",
+]
+GLOBE_FRAMES = 8
+# how far the arrow has dipped on each frame: down for four frames and back
+ARROW_BOB = [0, 0, 1, 1, 1, 1, 0, 0]
+
+
+def globe_pixels(g, turn, cx, cy, r, grey=False):
+    """a globe turned by `turn` radians, lit from the top left; grey for an idle state."""
+    light = (-0.5, -0.5, 0.7)
+    for y in range(16):
+        for x in range(16):
+            d = math.hypot(x - cx, y - cy)
+            if d > r:
+                continue
+            if d > r - 1:
+                g.dot(x, y, "k")
+                continue
+            nx, ny = (x - cx) / (r - 0.8), (y - cy) / (r - 0.8)
+            nz = math.sqrt(max(0.0, 1 - nx * nx - ny * ny))
+            lon = math.atan2(nx, nz) + turn
+            lat = math.asin(max(-1.0, min(1.0, -ny)))
+            col = int(((lon + math.pi) / (2 * math.pi)) * len(LAND[0])) % len(LAND[0])
+            row = min(len(LAND) - 1, int((math.pi / 2 - lat) / math.pi * len(LAND)))
+            land = LAND[row][col] == "X"
+            shade = nx * light[0] + ny * light[1] + nz * light[2]
+            if grey:
+                g.dot(x, y, "w" if shade > 0.93 else ("g" if land else "d"))
+            elif land:
+                g.dot(x, y, "l" if shade > 0.93 else "G")
+            else:
+                g.dot(x, y, "c" if shade > 0.95 else ("n" if shade < 0.0 else "b"))
+
+
+def globe_frame(i):
+    """the globe turned `i` eighths of a turn, with the yellow arrow at its place in the bob."""
+    g = Grid(16)
+    globe_pixels(g, 2 * math.pi * i / GLOBE_FRAMES, 6.5, 6.5, 6)
+    outlined(g, arrow_pixels(9, 8 + ARROW_BOB[i], 3), "y")
+    return g
+
+
+# badges for the corner of the globe, seven pixels square
+BADGES = {
+    "pause": ["..kkk..", ".kyyyk.", "kykykyk", "kykykyk", "kykykyk", ".kyyyk.", "..kkk.."],
+    "x": ["..kkk..", ".krrrk.", "kwrrrwk", "krrwrrk", "kwrrrwk", ".krrrk.", "..kkk.."],
+    "check": ["..kkk..", ".kGGGk.", "kGGGwwk", "kwGwGGk", "kGwGGGk", ".kGGGk.", "..kkk.."],
+}
+
+
+def with_badge(g, name):
+    for j, row in enumerate(BADGES[name]):
+        for i, c in enumerate(row):
+            if c != ".":
+                g.dot(9 + i, 9 + j, c)
+    return g
+
+
+def still_globe(grey=False):
+    g = Grid(16)
+    globe_pixels(g, 0.0, 6.5, 6.5, 6, grey=grey)
+    return g
+
+
+def u_paused():
+    """a grey globe with a pause badge."""
+    return with_badge(still_globe(grey=True), "pause")
+
+
+def u_failed():
+    """a grey globe with a red cross badge."""
+    return with_badge(still_globe(grey=True), "x")
+
+
+def u_done():
+    """the globe in colour with a green check badge."""
+    return with_badge(still_globe(), "check")
+
+
+INSTALL_FILLS = [0, 1, 2, 3, 4, 4]
+
+
+def install_frame(i):
+    """a still globe over a segmented progress strip that fills block by block and wraps."""
+    g = Grid(16)
+    globe_pixels(g, 0.0, 7.5, 5.5, 5.7)
+    g.rect(1, 12, 14, 4, "k")
+    g.rect(2, 13, 12, 2, "w")
+    for block in range(INSTALL_FILLS[i]):
+        g.rect(2 + 3 * block, 13, 2, 2, "n")
+    return g
+
+
+def u_globe():
+    """a small globe with a yellow down arrow, like the old windows update (the first frame)."""
+    return globe_frame(0)
+
+
+def u_monitor():
+    """a small monitor with a white down arrow on its screen."""
+    g = Grid(16)
+    g.solid(1, 1, 14, 11)
+    g.rect(3, 3, 10, 7, "n")
+    g.rect(3, 3, 10, 1, "d")
+    g.rect(3, 3, 1, 7, "d")
+    for (x, y) in arrow_pixels(5, 4, 1):
+        g.dot(x, y, "w")
+    g.rect(6, 12, 4, 1, "d")
+    g.solid(4, 13, 8, 2)
+    return g
+
+
+def u_cog():
+    """a grey cog with eight teeth and a yellow spark."""
+    g = Grid(16)
+    cx, cy = 6.5, 8.5
+    mask = {(x, y) for y in range(16) for x in range(16) if math.hypot(x - cx, y - cy) <= 4.1}
+    teeth = [(6, 3, 2, 2), (6, 13, 2, 2), (1, 8, 2, 2), (11, 8, 2, 2),
+             (2, 4, 2, 2), (10, 4, 2, 2), (2, 12, 2, 2), (10, 12, 2, 2)]
+    for (x, y, w, h) in teeth:
+        mask |= {(x + i, y + j) for i in range(w) for j in range(h)}
+    outlined(g, mask, "g")
+    for (x, y) in mask:
+        t = (x - cx) + (y - cy)
+        if t < -3.0:
+            g.dot(x, y, "w")
+        elif t > 3.0:
+            g.dot(x, y, "d")
+    disc(g, cx, cy, 1.9, "t")
+    spark = {(13, 0), (13, 1), (13, 2), (13, 3), (13, 4), (11, 2), (12, 2), (14, 2), (15, 2)}
+    outlined(g, spark, "y")
+    g.dot(13, 2, "w")
+    return g
+
+
+def u_mail():
+    """an envelope with a red notification dot."""
+    g = Grid(16)
+    g.rect(1, 4, 13, 10, "k")
+    g.rect(2, 5, 11, 8, "w")
+    g.rect(2, 12, 11, 1, "d")
+    g.rect(12, 5, 1, 8, "d")
+    for i in range(5):
+        g.dot(2 + i, 5 + i, "d")
+        g.dot(12 - i, 5 + i, "d")
+    g.dot(7, 10, "d")
+    disc(g, 12.5, 3.5, 3.2, "r", lo="m")
+    g.dot(11, 2, "w")
+    return g
+
+
+def u_package():
+    """a blue square with a white up arrow above a box."""
+    g = Grid(16)
+    g.rect(1, 1, 14, 14, "k")
+    g.rect(2, 2, 12, 12, "b")
+    g.rect(2, 2, 12, 1, "c")
+    g.rect(2, 2, 1, 12, "c")
+    g.rect(2, 13, 12, 1, "n")
+    g.rect(13, 2, 1, 12, "n")
+    for (x, y) in arrow_pixels(5, 3, 3, down=False):
+        g.dot(x, y, "w")
+    g.rect(4, 10, 1, 2, "w")
+    g.rect(11, 10, 1, 2, "w")
+    g.rect(4, 12, 8, 1, "w")
+    return g
+
+
+def u_window():
+    """a window in four of our own colours: blue, teal, yellow and white panes."""
+    g = Grid(16)
+    g.solid(1, 1, 14, 14)
+    g.rect(3, 3, 10, 2, "n")
+    for (x, y, c) in [(3, 6, "b"), (9, 6, "t"), (3, 10, "y"), (9, 10, "w")]:
+        g.rect(x, y, 4, 3, c)
+        g.rect(x, y + 2, 4, 1, {"b": "n", "t": "G", "y": "o", "w": "d"}[c])
+    return g
+
+
+def u_round():
+    """a round windows blue button with a white down arrow, lit from the top left."""
+    rows = [
+        "................",
+        "....kkkkkkkk....",
+        "..kkbbbbbbbbkk..",
+        ".kbbcbbbbbbbbnk.",
+        ".kbcbbbwwbbbbnk.",
+        ".kbcbbbwwbbbbnk.",
+        ".kbbbbbwwbbbbnk.",
+        ".kbbbwwwwwwbbnk.",
+        ".kbbbbwwwwbbbnk.",
+        ".kbbbbbwwbbbbnk.",
+        ".knbbbbbbbbbnnk.",
+        "..knnbbbbbbnnk..",
+        "..kknnnnnnnnkk..",
+        "....kkkkkkkk....",
+        "................",
+        "................",
+    ]
+    g = Grid(16)
+    for y, row in enumerate(rows):
+        for x, c in enumerate(row):
+            g.dot(x, y, c)
+    return g
+
+
+UPDATE_CANDIDATES = {
+    "balloon": ("BALLOON", u_balloon),
+    "info": ("INFO", u_info),
+    "globe": ("GLOBE", u_globe),
+    "monitor": ("MONITOR", u_monitor),
+    "cog": ("COG", u_cog),
+    "mail": ("MAIL", u_mail),
+    "package": ("PACKAGE", u_package),
+    "window": ("WINDOW", u_window),
+    "round": ("ROUND", u_round),
+}
+
+
+# the other states of the tray icon: a strip of frames, or a single sprite
+INSTALL_FRAMES = len(INSTALL_FILLS)
+UPDATE_SPRITES = {"UPDATE_PAUSED": u_paused, "UPDATE_FAILED": u_failed, "UPDATE_DONE": u_done}
+
+# candidates that turn: how many frames each has and how to draw frame `i`
+ANIMATED = {"globe": (GLOBE_FRAMES, globe_frame)}
+
+
+def s_update():
+    """the update notice in the tray: the candidate UPDATE_ICON names (the first frame)."""
+    return UPDATE_CANDIDATES[UPDATE_ICON][1]()
+
+
+def update_frames():
+    """every frame of the tray icon: just one unless the chosen candidate animates."""
+    if UPDATE_ICON in ANIMATED:
+        count, draw = ANIMATED[UPDATE_ICON]
+        return [draw(i) for i in range(count)]
+    return [s_update()]
+
+
+# a 3x5 font, just enough for the labels on the contact sheet
+FONT = {
+    "A": [".X.", "X.X", "XXX", "X.X", "X.X"], "B": ["XX.", "X.X", "XX.", "X.X", "XX."],
+    "C": [".XX", "X..", "X..", "X..", ".XX"], "D": ["XX.", "X.X", "X.X", "X.X", "XX."],
+    "E": ["XXX", "X..", "XX.", "X..", "XXX"], "F": ["XXX", "X..", "XX.", "X..", "X.."],
+    "G": [".XX", "X..", "X.X", "X.X", ".XX"], "I": ["XXX", ".X.", ".X.", ".X.", "XXX"],
+    "K": ["X.X", "X.X", "XX.", "X.X", "X.X"], "L": ["X..", "X..", "X..", "X..", "XXX"],
+    "M": ["X.X", "XXX", "XXX", "X.X", "X.X"], "N": ["XX.", "X.X", "X.X", "X.X", "X.X"],
+    "O": [".X.", "X.X", "X.X", "X.X", ".X."], "P": ["XX.", "X.X", "XX.", "X..", "X.."],
+    "R": ["XX.", "X.X", "XX.", "X.X", "X.X"], "T": ["XXX", ".X.", ".X.", ".X.", ".X."],
+    "U": ["X.X", "X.X", "X.X", "X.X", "XXX"], "W": ["X.X", "X.X", "XXX", "XXX", "X.X"],
+    "1": [".X.", "XX.", ".X.", ".X.", "XXX"], "2": ["XX.", "..X", ".X.", "X..", "XXX"],
+    "3": ["XX.", "..X", ".X.", "..X", "XX."], "4": ["X.X", "X.X", "XXX", "..X", "..X"],
+    "5": ["XXX", "X..", "XX.", "..X", "XX."], "6": [".XX", "X..", "XX.", "X.X", ".X."],
+    "7": ["XXX", "..X", ".X.", ".X.", ".X."], "8": [".X.", "X.X", ".X.", "X.X", ".X."],
+    "9": [".X.", "X.X", ".XX", "..X", "XX."], "X": ["X.X", "X.X", ".X.", "X.X", "X.X"],
+    " ": ["...", "...", "...", "...", "..."],
+}
+
+
+def frames_sheet(path):
+    """every frame of the tray icon at 8x, then at 1x and 2x on the taskbar gray."""
+    gray = RGB["g"]
+    frames = update_frames()
+    zoom, pad = 8, 10
+    cell_w, cell_h = 16 * zoom + 40, 16 * zoom + 70
+    cols = 4
+    rows = (len(frames) + cols - 1) // cols
+    w, h = cols * cell_w + pad, rows * cell_h + pad
+    img = [[gray] * w for _ in range(h)]
+
+    def block(x, y, art, z):
+        for j, row in enumerate(art):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(z):
+                        for dx in range(z):
+                            img[y + j * z + dy][x + i * z + dx] = RGB[c]
+
+    for n, frame in enumerate(frames):
+        art = frame.rows()
+        ox, oy = pad + (n % cols) * cell_w, pad + (n // cols) * cell_h
+        block(ox, oy, art, zoom)
+        block(ox, oy + 16 * zoom + 8, art, 1)
+        block(ox + 30, oy + 16 * zoom + 8, art, 2)
+    with open(path, "wb") as f:
+        f.write(png(w, h, img))
+
+
+def states_sheet(path):
+    """every state of the tray icon: the spin and install frames, then the stills, at 8x."""
+    gray = RGB["g"]
+    items = update_frames() + [install_frame(i) for i in range(INSTALL_FRAMES)]
+    items += [fn() for fn in UPDATE_SPRITES.values()]
+    zoom, pad, cols = 6, 10, 8
+    cell = 16 * zoom + 12
+    rows = (len(items) + cols - 1) // cols
+    w, h = cols * cell + pad, rows * (cell + 30) + pad
+    img = [[gray] * w for _ in range(h)]
+    for n, grid in enumerate(items):
+        ox, oy = pad + (n % cols) * cell, pad + (n // cols) * (cell + 30)
+        for j, row in enumerate(grid.rows()):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(zoom):
+                        for dx in range(zoom):
+                            img[oy + j * zoom + dy][ox + i * zoom + dx] = RGB[c]
+        for j, row in enumerate(grid.rows()):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    img[oy + 16 * zoom + 6 + j][ox + i] = RGB[c]
+    with open(path, "wb") as f:
+        f.write(png(w, h, img))
+
+
+def update_sheet(path):
+    """eight candidates for the tray icon: each at 8x, then a 1x and a 2x copy on the taskbar gray."""
+    gray = RGB["g"]
+    zoom, pad, cell_w, cell_h = 8, 14, 214, 190
+    names = [k for k in UPDATE_CANDIDATES if k != "round"]
+    cols, rows = 4, 2
+    w, h = cols * cell_w + pad, rows * cell_h + pad
+    img = [[gray] * w for _ in range(h)]
+
+    def put(x, y, c):
+        if 0 <= x < w and 0 <= y < h:
+            img[y][x] = c
+
+    def block(x, y, art, z):
+        for j, row in enumerate(art):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(z):
+                        for dx in range(z):
+                            put(x + i * z + dx, y + j * z + dy, RGB[c])
+
+    def text(x, y, label, z=3):
+        for ch in label:
+            for j, row in enumerate(FONT.get(ch, FONT[" "])):
+                for i, bit in enumerate(row):
+                    if bit == "X":
+                        for dy in range(z):
+                            for dx in range(z):
+                                put(x + i * z + dx, y + j * z + dy, (0, 0, 0))
+            x += 4 * z
+
+    for n, key in enumerate(names):
+        label, fn = UPDATE_CANDIDATES[key]
+        art = fn().rows()
+        ox = pad + (n % cols) * cell_w
+        oy = pad + (n // cols) * cell_h
+        # the 8x zoom, on a sunken frame
+        for i in range(16 * zoom + 4):
+            put(ox - 2 + i, oy - 2, RGB["d"])
+            put(ox - 2, oy - 2 + i, RGB["d"])
+            put(ox - 2 + i, oy + 16 * zoom + 1, RGB["w"])
+            put(ox + 16 * zoom + 1, oy - 2 + i, RGB["w"])
+        block(ox, oy, art, zoom)
+        # a 1x and a 2x copy beside it, where they would sit in the tray
+        block(ox + 16 * zoom + 14, oy + 6, art, 1)
+        block(ox + 16 * zoom + 14, oy + 40, art, 2)
+        text(ox + 16 * zoom + 12, oy + 28, "1X", 2)
+        text(ox + 16 * zoom + 12, oy + 76, "2X", 2)
+        text(ox, oy + 16 * zoom + 12, f"{n + 1} {label}", 3)
+    with open(path, "wb") as f:
+        f.write(png(w, h, img))
 
 
 BIG = {
@@ -629,6 +1058,24 @@ def emit(path):
         out.append(f"pub(crate) const SMALL_{name}: [&str; 16] = [\n")
         out += [f'    "{r}",\n' for r in rows]
         out.append("];\n\n")
+    for name, fn in UPDATE_SPRITES.items():
+        out.append(f"pub(crate) const SMALL_{name}: [&str; 16] = [\n")
+        out += [f'    "{r}",\n' for r in fn().rows()]
+        out.append("];\n\n")
+    installing = [install_frame(i) for i in range(INSTALL_FRAMES)]
+    out.append(f"pub(crate) const SMALL_UPDATE_INSTALL_FRAMES: [[&str; 16]; {len(installing)}] = [\n")
+    for frame in installing:
+        out.append("    [\n")
+        out += [f'        "{r}",\n' for r in frame.rows()]
+        out.append("    ],\n")
+    out.append("];\n\n")
+    frames = update_frames()
+    out.append(f"pub(crate) const SMALL_UPDATE_FRAMES: [[&str; 16]; {len(frames)}] = [\n")
+    for frame in frames:
+        out.append("    [\n")
+        out += [f'        "{r}",\n' for r in frame.rows()]
+        out.append("    ],\n")
+    out.append("];\n\n")
     with open(path, "w") as f:
         f.write("".join(out).rstrip() + "\n")
 
@@ -668,6 +1115,9 @@ def preview(path, zoom):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--preview", help="write a zoomed contact sheet png here")
+    ap.add_argument("--update-sheet", help="write a contact sheet of the update icon candidates here")
+    ap.add_argument("--frames-sheet", help="write every frame of the chosen update icon here")
+    ap.add_argument("--states-sheet", help="write every state of the tray icon here")
     ap.add_argument("--zoom", type=int, default=6)
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
@@ -675,3 +1125,9 @@ if __name__ == "__main__":
         emit(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "crates", "ui", "src", "icon_data.rs"))
     if a.preview:
         preview(a.preview, a.zoom)
+    if a.update_sheet:
+        update_sheet(a.update_sheet)
+    if a.frames_sheet:
+        frames_sheet(a.frames_sheet)
+    if a.states_sheet:
+        states_sheet(a.states_sheet)

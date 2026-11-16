@@ -39,9 +39,8 @@ use crate::windows;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
-/// the width of the LANlord button and of the box naming the selected server.
+/// the width of the LANlord button.
 const MENU_BUTTON: f32 = 92.0;
-const SERVER_CHIP: f32 = 170.0;
 /// the clock's width in the tray, and the width of one tray icon.
 const CLOCK: f32 = 72.0;
 const TRAY_ICON: f32 = 22.0;
@@ -129,10 +128,14 @@ pub struct Desktop {
     /// the checkout a development build rebuilds from, and the build that is running.
     dev: Option<PathBuf>,
     exe: Option<PathBuf>,
-    /// a rebuild in progress; it answers once, with the error when it failed.
+    /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// how long the new build must stay alive before this window may close.
+    relaunch_grace: update::Grace,
     /// the Developer submenu is open.
     dev_open: bool,
+    /// the title the window has been given, so it is only sent when it changes.
+    window_title: String,
 }
 
 impl Desktop {
@@ -171,13 +174,18 @@ impl Desktop {
             dev: None,
             exe: None,
             rebuilding: None,
+            relaunch_grace: update::Grace::default(),
             dev_open: false,
+            window_title: "LANlord".into(),
         }
     }
 
     /// look for updates in the background, and offer a rebuild when this is a development build.
     pub fn watch_updates(&mut self, updates: Updates, dev: Option<PathBuf>, exe: Option<PathBuf>) {
         self.updates = updates;
+        if let (Some(repo), Some(exe)) = (&dev, &exe) {
+            self.updates.watch_checkout(repo.clone(), exe.clone());
+        }
         self.dev = dev;
         self.exe = exe;
     }
@@ -267,6 +275,30 @@ impl Desktop {
         }
     }
 
+    /// "LANlord Client v0.1.0" on a mac or pc, "LANlord Server v0.1.0" when lanlord runs on the
+    /// gateway itself (server mode, which is also what the web ui is).
+    fn app_title(&self) -> String {
+        let side = if self.services.is_local() {
+            "Server"
+        } else {
+            "Client"
+        };
+        format!("LANlord {side} v{}", env!("CARGO_PKG_VERSION"))
+    }
+
+    /// the window is titled with the app and its version, plus the signed-in server once someone
+    /// is signed in.
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let title = match (self.signed_in.as_ref(), self.host()) {
+            (Some(_), Some(host)) => format!("{} - {host}", self.app_title()),
+            _ => self.app_title(),
+        };
+        if title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.window_title = title;
+        }
+    }
+
     /// the host every action targets.
     fn host(&self) -> Option<String> {
         match self.hosts.selected() {
@@ -291,6 +323,7 @@ impl Desktop {
         theme::apply(&ctx);
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        self.sync_window_title(&ctx);
 
         if self.login.is_some() {
             self.show_login(ui, &ctx);
@@ -492,9 +525,37 @@ impl Desktop {
         if self.updates.balloon(ctx, TASKBAR) {
             self.updates.open_dialog();
         }
-        if self.updates.dialog(ctx) == Some(Choice::Install) {
-            self.install_update();
+        match self.updates.dialog(ctx) {
+            Some(Choice::Install) => self.install_update(),
+            Some(Choice::Pause) => self.updates.pause(),
+            Some(Choice::Resume) => self.updates.resume(),
+            Some(Choice::Cancel) => self.updates.cancel(),
+            Some(Choice::Restart) => self.restart_into_new_build(),
+            Some(Choice::Later) | None => {}
         }
+    }
+
+    /// start the build that was just installed and quit, once it is up and still running; the
+    /// same checks as a rebuild, so a build that dies at once leaves this window open.
+    fn restart_into_new_build(&mut self) {
+        let Some(exe) = self.exe.clone() else {
+            emit(Kind::Err, "this build cannot be restarted from here");
+            return;
+        };
+        if self.is_rebuilding() {
+            return;
+        }
+        let host = self.signed_in.as_ref().map(|s| s.target.clone());
+        let grace = self.relaunch_grace;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.services.ctx.clone();
+        std::thread::spawn(move || {
+            let result = update::verify_built(&exe)
+                .and_then(|()| update::relaunch(&exe, host.as_deref(), grace));
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
+            ctx.request_repaint();
+        });
+        self.rebuilding = Some(rx);
     }
 
     /// install what the notice found: rebuild from trunk, or open the release page.
@@ -503,7 +564,11 @@ impl Desktop {
             return;
         };
         match found.source {
-            update::Source::Git => self.start_rebuild(true),
+            update::Source::Git => {
+                // the pull and the build run in the background, and say so in the console
+                self.open(Target::Console);
+                self.updates.install();
+            }
             update::Source::Release { url } => {
                 if let Err(error) = update::open_release(&url) {
                     emit(
@@ -520,8 +585,9 @@ impl Desktop {
         self.rebuilding.is_some()
     }
 
-    /// rebuild this build in the background, with its output in the console; when it works the
-    /// new build starts and this one quits, and when it fails this window stays open.
+    /// rebuild this build in the background, with its output in the console. this window only
+    /// closes once the new build has started and is still running; every other outcome leaves
+    /// it open with the reason in the console and in a box.
     pub(super) fn start_rebuild(&mut self, pull: bool) {
         let (Some(repo), Some(exe)) = (self.dev.clone(), self.exe.clone()) else {
             emit(Kind::Err, "this build cannot be rebuilt from here");
@@ -530,18 +596,35 @@ impl Desktop {
         if self.is_rebuilding() {
             return;
         }
+        // before anything is touched: is the checkout still there, and can the tools be found?
+        if let Err(error) = update::preflight(&repo, &exe, pull) {
+            self.rebuild_failed(&format!("{error:#}"));
+            return;
+        }
         self.open(Target::Console);
-        let steps = update::rebuild_steps(&repo, &exe, pull);
+        let host = self.signed_in.as_ref().map(|s| s.target.clone());
+        let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.services.ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(update::rebuild(&steps).map_err(|e| e.to_string()));
+            let result = update::install_build(&repo, &exe, host.as_deref(), pull, grace);
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
             ctx.request_repaint();
         });
         self.rebuilding = Some(rx);
     }
 
-    /// once a frame: when the rebuild finished, start the new build and quit, or say why not.
+    /// say that a rebuild did not work, in the console and in a box, and carry on.
+    fn rebuild_failed(&mut self, error: &str) {
+        emit(Kind::Err, format!("the rebuild failed: {error}"));
+        let text = format!("The rebuild did not work, so this window stays open.\n{error}");
+        self.confirm = Some((
+            Confirm::Failure,
+            Form::new("rebuild-failed", "Rebuild and relaunch", &text),
+        ));
+    }
+
+    /// once a frame: when the rebuild answered, quit if the new build is running, or say why not.
     fn poll_rebuild(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.rebuilding else {
             return;
@@ -555,15 +638,8 @@ impl Desktop {
         };
         self.rebuilding = None;
         match result {
-            Ok(()) => {
-                let host = self.signed_in.as_ref().map(|s| s.target.clone());
-                let exe = self.exe.clone().unwrap_or_default();
-                match update::relaunch(&exe, host.as_deref()) {
-                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                    Err(error) => emit(Kind::Err, format!("rebuilt, but {error}")),
-                }
-            }
-            Err(error) => emit(Kind::Err, format!("the rebuild failed: {error}")),
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(error) => self.rebuild_failed(&error),
         }
     }
 }
@@ -635,7 +711,6 @@ impl Desktop {
             if start.clicked() {
                 self.start_open = !self.start_open;
             }
-            self.server_chip(ui);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), Sense::hover());
             bevel(ui.painter(), rect, false);
             ui.add_space(2.0);
@@ -722,22 +797,6 @@ impl Desktop {
                 }
             });
         });
-    }
-
-    /// the box beside the menu button naming the server every action targets.
-    fn server_chip(&self, ui: &mut Ui) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(SERVER_CHIP, 22.0), Sense::hover());
-        bevel(ui.painter(), rect, false);
-        let text = self
-            .host()
-            .map_or_else(|| "no server".to_string(), |h| format!("Server: {h}"));
-        ui.painter().with_clip_rect(rect.shrink(2.0)).text(
-            rect.left_center() + Vec2::new(6.0, 0.0),
-            Align2::LEFT_CENTER,
-            text,
-            theme::font(),
-            BLACK,
-        );
     }
 }
 
@@ -1138,7 +1197,7 @@ mod tests {
         frames(&mut desktop, &ctx, 1);
         // the first window button sits just right of the start button
         let button = Pos2::new(
-            MENU_BUTTON + SERVER_CHIP + 4.0 + 4.0 + 8.0 + 2.0 + 20.0 + 75.0,
+            MENU_BUTTON + 4.0 + 8.0 + 2.0 + 20.0 + 75.0,
             SCREEN.y - TASKBAR / 2.0,
         );
         for events in click(button).into_iter().map(|e| vec![e]) {
