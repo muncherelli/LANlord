@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use lanlord_core::account;
 use lanlord_core::apply;
 use lanlord_core::bootstrap::{self, AnsibleMode, AskPassword, Options};
+use lanlord_core::clock::{self, Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_core::crypto::{self, Identity};
 use lanlord_core::exec::{self, Target};
 use lanlord_core::leases::{self, Lease};
@@ -12,9 +13,13 @@ use lanlord_core::logon;
 use lanlord_core::network::{self, Internal};
 use lanlord_core::nt4;
 use lanlord_core::power::{self, Outcome, Power};
+use lanlord_core::purge::{self, PurgeOptions};
+use lanlord_core::server::{self, ServerFacts};
 use lanlord_core::settings::{self, Document, Settings};
 use lanlord_core::ssh::Session;
 use lanlord_core::users::{self, Change};
+
+use crate::demo_clock;
 
 /// an administrator to create; the password is wiped when this is dropped.
 pub struct NewAdmin {
@@ -63,6 +68,33 @@ pub trait Gateway: Send + Sync {
     fn run(&self, host: &str, command: &[String]) -> Result<i32>;
     /// reboot or power off the gateway.
     fn power(&self, host: &str, power: Power, ask: AskPassword) -> Result<Outcome>;
+    /// what the server is: its system, uptime and interfaces (read-only, no sudo).
+    fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts>;
+    /// everything a purge would remove, as lines; nothing is changed.
+    fn purge_preview(
+        &self,
+        host: &str,
+        remove_admins: bool,
+        ask: AskPassword,
+    ) -> Result<Vec<String>>;
+    /// remove lanlord from the server; the lines say what was removed.
+    fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>>;
+    /// the server's time, time zone and internet time; asks for nothing.
+    fn clock_state(&self, host: &str) -> Result<ClockState>;
+    /// the time zones the server knows.
+    fn clock_zones(&self, host: &str) -> Result<Vec<String>>;
+    /// what a time zone looks like on the server right now.
+    fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow>;
+    /// change the time, the time zone or internet time; what the server said, and whether the
+    /// zone and servers were also kept in the settings.
+    fn clock_apply(
+        &self,
+        host: &str,
+        change: &ClockChange,
+        ask: AskPassword,
+    ) -> Result<(Vec<String>, Stored)>;
+    /// ask the time service to synchronize now; what it said.
+    fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>>;
     /// true when lanlord runs on the gateway itself: there is one server and no host list.
     fn is_local(&self) -> bool {
         false
@@ -111,6 +143,12 @@ impl Gateway for Ssh {
     }
 
     fn load_document(&self, host: &str, ask: AskPassword) -> Result<Document> {
+        if demo() {
+            return Ok(Document {
+                plain: DEMO_SETTINGS.to_string(),
+                ..Document::default()
+            });
+        }
         settings::load_document(host, &key()?, ask)
     }
 
@@ -149,6 +187,9 @@ impl Gateway for Ssh {
     }
 
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
+        if demo() {
+            return Ok(leases::parse(DEMO_LEASES));
+        }
         leases::read_on(host, ask)
     }
 
@@ -176,6 +217,109 @@ impl Gateway for Ssh {
     fn power(&self, host: &str, action: Power, ask: AskPassword) -> Result<Outcome> {
         power::run(host, action, ask)
     }
+
+    fn server_facts(&self, host: &str, _ask: AskPassword) -> Result<ServerFacts> {
+        if demo() {
+            return Ok(server::demo());
+        }
+        server::read(&Session::new(host)?)
+    }
+
+    fn purge_preview(
+        &self,
+        host: &str,
+        remove_admins: bool,
+        ask: AskPassword,
+    ) -> Result<Vec<String>> {
+        if demo() {
+            return Ok(demo_purge());
+        }
+        purge::preview(&Session::new(host)?, PurgeOptions { remove_admins }, ask)
+    }
+
+    fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>> {
+        if demo() {
+            return Err(anyhow!("demo mode: nothing is removed"));
+        }
+        purge::purge(
+            &Session::new(host)?,
+            host,
+            PurgeOptions { remove_admins },
+            ask,
+        )
+    }
+    fn clock_state(&self, host: &str) -> Result<ClockState> {
+        if let Some(container) = demo_clock::mode() {
+            return Ok(demo_clock::state(container));
+        }
+        clock::read(&Session::new(host)?)
+    }
+
+    fn clock_zones(&self, host: &str) -> Result<Vec<String>> {
+        if demo_clock::mode().is_some() {
+            return Ok(demo_clock::zones());
+        }
+        clock::zones(&Session::new(host)?)
+    }
+
+    fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow> {
+        if demo_clock::mode().is_some() {
+            return Ok(demo_clock::zone_now(zone));
+        }
+        clock::zone_now(&Session::new(host)?, zone)
+    }
+
+    fn clock_apply(
+        &self,
+        host: &str,
+        change: &ClockChange,
+        ask: AskPassword,
+    ) -> Result<(Vec<String>, Stored)> {
+        if let Some(container) = demo_clock::mode() {
+            return Ok(demo_clock::apply(change, container));
+        }
+        // no key just means the change is not kept in the settings
+        let identity = crypto::load_default()?;
+        clock::apply_stored(&Session::new(host)?, host, identity.as_ref(), change, ask)
+    }
+
+    fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+        if demo_clock::mode().is_some() {
+            return Ok(vec!["Server: 162.159.200.1 (pool.ntp.org)".into()]);
+        }
+        clock::update_now(&Session::new(host)?, ask)
+    }
+}
+
+/// `LANLORD_FAKE_SERVER=1` answers the server windows with made-up facts, so they can be tried
+/// without a server; a purge never runs in it.
+fn demo() -> bool {
+    std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1")
+}
+
+const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
+
+const DEMO_LEASES: &str = "1795000000 02:00:00:00:00:01 172.16.120.101 ws1 *\n1795000000 02:00:00:00:00:02 172.16.120.102 ws2 *\n1795000000 02:00:00:00:00:03 172.16.120.103 nt4pc *\n";
+
+fn demo_purge() -> Vec<String> {
+    [
+        "data: 12 KB in /opt/lanlord/config",
+        "data: 5120 KB in /opt/lanlord/nt4/lib/profiles",
+        "note: settings.age is the only copy of the stored secrets",
+        "remove container lanlord-nt4",
+        "remove container lanlord-dns",
+        "remove image ghcr.io/muncherelli/lanlord-samba-nt4:3f2a9c1d7e44",
+        "remove unit lanlord-firewall.service",
+        "remove the firewall table inet lanlord",
+        "remove /opt/lanlord",
+        "remove the service account lanlord",
+        "remove the group admins",
+        "remove the sudo rules admins",
+        "kept: the docker engine, /etc/motd and the accounts of people",
+        "dry run: nothing was changed",
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 #[cfg(test)]
@@ -211,6 +355,16 @@ mod fake {
         pub local: Mutex<bool>,
         /// what `power` reports.
         pub outcome: Mutex<Outcome>,
+        /// what the server facts say; the demo server when not set.
+        pub facts: Mutex<Option<ServerFacts>>,
+        /// the lines a purge preview and a purge answer with.
+        pub purge_lines: Mutex<Vec<String>>,
+        /// the server's clock, changed by `clock_apply`.
+        pub clock: Mutex<ClockState>,
+        /// the time zones it lists.
+        pub zones: Mutex<Vec<String>>,
+        /// the small reads that are not tasks (the taskbar clock).
+        pub reads: Mutex<Vec<String>>,
     }
 
     impl Fake {
@@ -229,6 +383,31 @@ mod fake {
                 exit: Mutex::new(0),
                 local: Mutex::new(false),
                 outcome: Mutex::new(Outcome::Dropped),
+                facts: Mutex::new(None),
+                purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
+                clock: Mutex::new(ClockState {
+                    timezone: "Etc/UTC".into(),
+                    utc_secs: 1_794_759_123,
+                    offset_secs: 0,
+                    ntp: true,
+                    synchronized: true,
+                    container: false,
+                    sync: clock::Sync::Timesyncd,
+                    servers: Vec::new(),
+                    status: vec!["Server: 10.0.0.1 (pool.ntp.org)".into()],
+                }),
+                reads: Mutex::new(Vec::new()),
+                zones: Mutex::new(
+                    [
+                        "Africa/Cairo",
+                        "America/Argentina/Buenos_Aires",
+                        "America/New_York",
+                    ]
+                    .iter()
+                    .chain(&["Asia/Kolkata", "Etc/UTC", "Europe/Berlin", "UTC"])
+                    .map(|z| z.to_string())
+                    .collect(),
+                ),
             }
         }
 
@@ -378,6 +557,99 @@ mod fake {
 
         fn is_local(&self) -> bool {
             *self.local.lock().unwrap()
+        }
+
+        fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts> {
+            self.enter(format!("facts {host}"), ask)?;
+            let facts = self.facts.lock().unwrap().clone();
+            Ok(facts.unwrap_or_else(server::demo))
+        }
+
+        fn purge_preview(
+            &self,
+            host: &str,
+            remove_admins: bool,
+            ask: AskPassword,
+        ) -> Result<Vec<String>> {
+            self.enter(format!("purge-preview {host} admins={remove_admins}"), ask)?;
+            Ok(self.purge_lines.lock().unwrap().clone())
+        }
+
+        fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>> {
+            self.enter(format!("purge {host} admins={remove_admins}"), ask)?;
+            Ok(self.purge_lines.lock().unwrap().clone())
+        }
+
+        fn clock_state(&self, host: &str) -> Result<ClockState> {
+            // quiet reads are not tasks, so they are kept apart from `calls`
+            self.reads
+                .lock()
+                .unwrap()
+                .push(format!("clock-state {host}"));
+            match self.fail.lock().unwrap().clone() {
+                Some(message) => Err(anyhow!(message)),
+                None => Ok(self.clock.lock().unwrap().clone()),
+            }
+        }
+
+        fn clock_zones(&self, host: &str) -> Result<Vec<String>> {
+            self.reads
+                .lock()
+                .unwrap()
+                .push(format!("clock-zones {host}"));
+            Ok(self.zones.lock().unwrap().clone())
+        }
+
+        fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow> {
+            self.reads
+                .lock()
+                .unwrap()
+                .push(format!("clock-zone-now {host} {zone}"));
+            Ok(if zone.contains("Berlin") {
+                ZoneNow {
+                    offset_secs: 3600,
+                    abbrev: "CET".into(),
+                }
+            } else {
+                ZoneNow {
+                    offset_secs: 0,
+                    abbrev: "UTC".into(),
+                }
+            })
+        }
+
+        fn clock_apply(
+            &self,
+            host: &str,
+            change: &ClockChange,
+            ask: AskPassword,
+        ) -> Result<(Vec<String>, Stored)> {
+            self.enter(
+                format!(
+                    "clock-apply {host} zone={:?} time={:?} ntp={:?}",
+                    change.timezone,
+                    change.time,
+                    change
+                        .ntp
+                        .as_ref()
+                        .map(|n| (n.enabled, n.servers.join(" ")))
+                ),
+                ask,
+            )?;
+            let mut state = self.clock.lock().unwrap();
+            if let Some(zone) = &change.timezone {
+                state.timezone.clone_from(zone);
+            }
+            if let Some(ntp) = &change.ntp {
+                state.ntp = ntp.enabled;
+                state.servers.clone_from(&ntp.servers);
+            }
+            Ok((vec!["applied".into()], Stored::Yes))
+        }
+
+        fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+            self.enter(format!("clock-update {host}"), ask)?;
+            Ok(vec!["Server: 10.0.0.2 (updated)".into()])
         }
 
         fn run(&self, host: &str, command: &[String]) -> Result<i32> {

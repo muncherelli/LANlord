@@ -324,6 +324,61 @@ def hosts():
     return g
 
 
+def my_server():
+    """a beige server tower: a lit display, a floppy slot, a key lock, a power light, vents."""
+    g = Grid(32)
+    x, y, w, h = 6, 3, 19, 26
+    g.solid(x, y, w, h)
+    # the side of the case, for depth
+    g.rect(x + w, y + 2, 2, h - 2, "d")
+    g.rect(x + w, y + 2, 2, 1, "k")
+    g.rect(x + w + 2, y + 2, 1, h - 1, "k")
+    # the status display
+    g.sunken(x + 3, y + 3, 13, 6, face="k")
+    g.rect(x + 5, y + 5, 9, 1, "c")
+    g.rect(x + 5, y + 7, 6, 1, "c")
+    # the floppy slot
+    g.solid(x + 3, y + 11, 13, 4, face="g")
+    g.rect(x + 5, y + 13, 9, 1, "k")
+    g.dot(x + 14, y + 12, "l")
+    # the key lock, the power button and its light
+    g.rect(x + 3, y + 17, 3, 3, "k")
+    g.dot(x + 4, y + 18, "y")
+    g.solid(x + 8, y + 17, 5, 3, face="g")
+    g.rect(x + 14, y + 17, 3, 3, "k")
+    g.rect(x + 15, y + 18, 1, 1, "l")
+    # vents
+    for i in range(4):
+        g.rect(x + 3, y + 21 + i, 13, 1, "d" if i % 2 == 0 else "w")
+    g.rect(x + 2, y + h, 4, 1, "k")
+    g.rect(x + w - 6, y + h, 4, 1, "k")
+    return g
+
+
+def small_pc(g, x, y):
+    """a small computer, 14 wide and 15 tall: monitor, stand and base."""
+    g.solid(x, y, 14, 10)
+    g.sunken(x + 2, y + 2, 10, 6, face="t")
+    g.rect(x + 2, y + 2, 10, 1, "c")
+    g.rect(x + 5, y + 10, 4, 2, "d")
+    g.solid(x + 2, y + 12, 10, 3)
+    g.dot(x + 9, y + 13, "l")
+
+
+def networks():
+    """two computers joined by a network cable, like the network neighbourhood."""
+    g = Grid(32)
+    g.line(9, 17, 9, 26, "k")
+    g.line(9, 26, 16, 26, "k")
+    g.line(10, 17, 10, 25, "d")
+    g.line(10, 25, 16, 25, "d")
+    small_pc(g, 1, 2)
+    small_pc(g, 17, 15)
+    g.dot(9, 26, "l")
+    g.dot(16, 26, "l")
+    return g
+
+
 def folder():
     g = Grid(32)
     g.rect(3, 6, 12, 5, "k")
@@ -466,6 +521,34 @@ def s_hosts():
     g.rect(4, 2, 7, 1, "c")
     g.rect(12, 11, 4, 4, "k")
     g.rect(13, 12, 2, 2, "G")
+    return g
+
+
+def s_my_server():
+    g = Grid(16)
+    g.solid(3, 1, 10, 14)
+    g.sunken(5, 3, 6, 3)
+    g.rect(6, 4, 4, 1, "c")
+    g.rect(5, 8, 6, 1, "k")
+    g.rect(6, 10, 2, 2, "k")
+    g.dot(6, 10, "l")
+    g.rect(9, 11, 3, 1, "d")
+    g.rect(4, 15, 2, 1, "k")
+    g.rect(10, 15, 2, 1, "k")
+    return g
+
+
+def s_networks():
+    g = Grid(16)
+    g.line(3, 8, 3, 13, "k")
+    g.line(3, 13, 8, 13, "k")
+    g.solid(0, 0, 8, 7)
+    g.rect(2, 2, 4, 3, "t")
+    g.rect(2, 2, 4, 1, "c")
+    g.solid(8, 7, 8, 7)
+    g.rect(10, 9, 4, 3, "t")
+    g.rect(10, 9, 4, 1, "c")
+    g.rect(9, 14, 6, 2, "d")
     return g
 
 
@@ -951,11 +1034,13 @@ def update_sheet(path):
 BIG = {
     "GATEWAY": gateway, "DOCKER": docker, "NT4": tower, "WEB": globe, "COMMANDS": remote,
     "CONSOLE": console, "DNS": dns, "SETTINGS": settings, "HOSTS": hosts, "FOLDER": folder,
+    "MYSERVER": my_server, "NETWORKS": networks,
 }
 SMALL = {
     "GATEWAY": s_gateway, "DOCKER": s_docker, "NT4": s_tower, "WEB": s_globe,
     "COMMANDS": lambda: s_window(False), "CONSOLE": lambda: s_window(True), "DNS": s_dns,
     "SETTINGS": s_settings, "HOSTS": s_hosts, "FOLDER": s_folder, "LANLORD": s_lanlord,
+    "MYSERVER": s_my_server, "NETWORKS": s_networks,
     "UPDATE": s_update,
 }
 

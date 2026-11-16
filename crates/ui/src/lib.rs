@@ -4,9 +4,11 @@
 mod admin_setup;
 #[cfg(test)]
 mod artwork;
+mod clock_panel;
 mod command_panel;
 mod console;
 mod controls;
+mod demo_clock;
 mod desktop;
 mod dialogs;
 mod dns_panel;
@@ -17,6 +19,8 @@ mod icon_data;
 mod icons;
 mod login;
 mod logon_panel;
+mod my_server;
+mod networks_window;
 mod nt4_panel;
 mod nt4_window;
 mod remote;
@@ -76,6 +80,9 @@ pub fn run() -> Result<()> {
                 update::dev_repo(),
                 std::env::current_exe().ok(),
             );
+            if std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1") {
+                desktop.use_demo_server();
+            }
             if let Ok(spec) = std::env::var("LANLORD_OPEN") {
                 desktop.open_spec(&spec);
             }

@@ -277,7 +277,7 @@ fn change_section(
 mod tests {
     use super::*;
 
-    const TEXT: &str = "docker: {}\nnt4-domain:\n  mode: workgroup\n  name: lab\n  address: 172.16.120.1/22\n  machines: [ws1, ws2]\n  users:\n    - name: james\n";
+    const TEXT: &str = "docker: {}\nnt4-domain:\n  mode: workgroup\n  name: lab\n  address: 172.16.120.1/22\n  machines: [ws1, ws2]\n  users:\n    - name: dana\n";
 
     #[test]
     fn a_missing_section_gives_the_defaults() {
@@ -307,7 +307,7 @@ mod tests {
         nt4.machines.push("ws3".into());
         nt4.apply_to(&mut settings);
         let text = settings.text();
-        assert!(text.contains("address: 172.16.120.1/22") && text.contains("james"));
+        assert!(text.contains("address: 172.16.120.1/22") && text.contains("dana"));
         assert!(text.contains("ws3") && text.contains("netbios_name: gw"));
         let back = Nt4Settings::from_settings(&settings).unwrap();
         assert_eq!(back, nt4);
@@ -353,17 +353,17 @@ mod tests {
 
     #[test]
     fn machines_are_added_once_and_removed() {
-        let added = edit_machines(TEXT, &MachineChange::Add("nt4test".into())).unwrap();
-        let twice = edit_machines(&added, &MachineChange::Add("NT4TEST".into())).unwrap();
+        let added = edit_machines(TEXT, &MachineChange::Add("nt4pc".into())).unwrap();
+        let twice = edit_machines(&added, &MachineChange::Add("NT4PC".into())).unwrap();
         let machines = |t: &str| {
             Nt4Settings::from_settings(&Settings::parse(t).unwrap())
                 .unwrap()
                 .machines
         };
-        assert_eq!(machines(&twice), ["ws1", "ws2", "nt4test"]);
+        assert_eq!(machines(&twice), ["ws1", "ws2", "nt4pc"]);
         let removed = edit_machines(&twice, &MachineChange::Remove("WS1".into())).unwrap();
-        assert_eq!(machines(&removed), ["ws2", "nt4test"]);
-        assert!(removed.contains("james"));
+        assert_eq!(machines(&removed), ["ws2", "nt4pc"]);
+        assert!(removed.contains("dana"));
         assert!(edit_machines(TEXT, &MachineChange::Add("bad name".into())).is_err());
         // a reset does not touch the settings
         let reset = edit_machines(TEXT, &MachineChange::Reset("ws1".into())).unwrap();
@@ -384,9 +384,9 @@ mod tests {
             gw.seed_sealed(&id, STORED);
             let listed = machines_on(&gw.session, "gw", &id, &mut no_password).unwrap();
             assert_eq!(listed, ["ws1"]);
-            let add = MachineChange::Add("nt4test".into());
+            let add = MachineChange::Add("nt4pc".into());
             change_machine(&gw.session, "gw", &id, &add, &mut no_password).unwrap();
-            assert!(gw.plain().unwrap().contains("nt4test"));
+            assert!(gw.plain().unwrap().contains("nt4pc"));
             set_software(&gw.session, "gw", &id, true, &mut no_password).unwrap();
             assert!(gw.plain().unwrap().contains("software: true"));
         }

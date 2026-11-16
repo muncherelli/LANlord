@@ -77,6 +77,22 @@ impl Tasks {
         self.asked.try_recv().ok()
     }
 
+    /// run a small read on its own thread. it marks no host busy and never asks for a
+    /// password, so it cannot hold up what you are doing (the tray clock uses it).
+    pub fn quiet<T: Send + 'static>(
+        &self,
+        ctx: &Context,
+        work: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Job<T> {
+        let (done, result) = mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(work().map_err(|err| err.to_string()));
+            ctx.request_repaint();
+        });
+        Job { result }
+    }
+
     /// run `work` against `host` on its own thread; `None` when that host
     /// already has a task. failures are also written to the console.
     pub fn spawn<T: Send + 'static>(

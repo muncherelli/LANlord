@@ -228,7 +228,12 @@ impl Desktop {
                 ..Item::new(m.name, Action::Open(Target::Module(i)))
             })
         }));
-        for target in [Target::Settings, Target::Console] {
+        for target in [
+            Target::MyServer,
+            Target::Networks,
+            Target::Settings,
+            Target::Console,
+        ] {
             let item = Item::new(target.title(), Action::Open(target));
             rows.push(Row::Item(Item {
                 art: Some(target.id()),

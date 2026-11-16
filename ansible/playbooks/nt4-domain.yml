@@ -18,7 +18,7 @@
 #   machines: [ws1, ws2]         # computers to create accounts for in advance; join them without
 #                                # ticking "Create a Computer Account in the Domain"
 #   users:
-#     - name: james
+#     - name: dana
 #       password: change-me
 #       admin: true          # a domain admin (member of Domain Admins)
 #       software_admin: true # may write to the software share without being a domain admin

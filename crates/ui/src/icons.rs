@@ -42,6 +42,8 @@ pub fn art(id: &str) -> &'static [&'static str] {
         "console" => &data::CONSOLE,
         "settings" => &data::SETTINGS,
         "folder" => &data::FOLDER,
+        "my-server" => &data::MYSERVER,
+        "networks" => &data::NETWORKS,
         _ => &data::HOSTS,
     }
 }
@@ -58,8 +60,11 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "console" => &data::SMALL_CONSOLE,
         "settings" => &data::SMALL_SETTINGS,
         "folder" => &data::SMALL_FOLDER,
+        "my-server" => &data::SMALL_MYSERVER,
+        "networks" => &data::SMALL_NETWORKS,
         "lanlord" => &data::SMALL_LANLORD,
         "update" => &data::SMALL_UPDATE,
+        "datetime" => &SMALL_CLOCK,
         _ => &data::SMALL_HOSTS,
     }
 }
@@ -95,6 +100,27 @@ pub fn update_done() -> &'static [&'static str] {
     &data::SMALL_UPDATE_DONE
 }
 
+/// the title bar icon of the Date/Time window, drawn by hand here (the generated icons are not
+/// for a window that is opened from the taskbar rather than the desktop).
+const SMALL_CLOCK: [&str; 16] = [
+    "......kkkk......",
+    "....kkkwwkkk....",
+    "..kkwwwwwwwwkk..",
+    "..kwwwwkwwwwdk..",
+    ".kwwwwwkwwwwddk.",
+    ".kwwwwwkwwwwwdk.",
+    "kkwwwwwkwwwwwdkk",
+    "kwwwwwwkwwwwwwdk",
+    "kwwwwwwkkkwwwwdk",
+    "kkwwwwwwwwkkwdkk",
+    ".kwwwwwwwwwwwdk.",
+    ".kwwwwwwwwwwddk.",
+    "..kddwwwwwwddk..",
+    "..kkdddwwdddkk..",
+    "....kkkddkkk....",
+    "......kkkk......",
+];
+
 /// draw `art` with its top-left corner at `pos`, each pixel `scale` points wide.
 pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
     for (y, row) in art.iter().enumerate() {
@@ -111,7 +137,7 @@ pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
 mod tests {
     use super::*;
 
-    const IDS: [&str; 10] = [
+    const IDS: [&str; 12] = [
         "gateway",
         "docker",
         "nt4-domain",
@@ -122,6 +148,8 @@ mod tests {
         "hosts",
         "settings",
         "folder",
+        "my-server",
+        "networks",
     ];
 
     #[test]
