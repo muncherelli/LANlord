@@ -2,9 +2,10 @@
 # redraws the lanlord app icon, social avatar, setup panel and the installer wallpaper from tools/make-logo.swift
 # (macos only: it needs swiftc and iconutil). run it from the repository root: tools/make-assets.sh
 # pass a directory as the first argument to also leave previews there: the icon at every size on light and dark
-# gray, and both wallpaper patterns.
-# EMBLEM=a|b picks the side the staff leans on (default b, the left); BACKGROUND=a|b picks the wallpaper
-# (a classic damask, b fleur-de-lis grid with scrollwork, the default). for example: BACKGROUND=a tools/make-assets.sh
+# gray for both backdrops, and both wallpaper patterns.
+# EMBLEM=a|b picks the side the staff leans on (default b, the left); BACKDROP=teal|cream picks the icon background
+# (default cream); BACKGROUND=c|d picks the installer wallpaper (c damask, d fleur-de-lis, the default).
+# for example: BACKDROP=teal tools/make-assets.sh
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
