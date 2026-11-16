@@ -29,7 +29,8 @@
         state: directory
         owner: root
         group: root
-        mode: "0755"
+        # only root stages and reads the helper here
+        mode: "0700"
 
     - name: look for the helper binary
       ansible.builtin.stat:
@@ -61,7 +62,8 @@
             remote_src: true
             owner: root
             group: root
-            mode: "0755"
+            # only systemd runs it, as root
+            mode: "0700"
 
         # debian, ubuntu and suse share their pam rules as common-*, most other distros as
         # system-auth
@@ -86,7 +88,8 @@
             dest: /etc/pam.d/lanlord
             owner: root
             group: root
-            mode: "0644"
+            # only libpam in the root helper reads it
+            mode: "0600"
             content: |
               # written by lanlord: web ui logins check the password and the account like a login does
               {% if ansible_facts['os_family'] == 'Debian' %}
@@ -103,7 +106,8 @@
             dest: /etc/systemd/system/lanlord-auth.socket
             owner: root
             group: root
-            mode: "0644"
+            # only systemd (root) reads the unit
+            mode: "0600"
             content: |
               # written by lanlord
               [Unit]
@@ -128,7 +132,8 @@
             dest: /etc/systemd/system/lanlord-auth@.service
             owner: root
             group: root
-            mode: "0644"
+            # only systemd (root) reads the unit
+            mode: "0600"
             content: |
               # written by lanlord
               [Unit]

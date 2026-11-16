@@ -61,7 +61,7 @@ The `webui-login` playbook installs it once the binary has been put at
 `/opt/lanlord/bin/lanlord-auth-helper` (owned by root, writable only by root, or the playbook
 stops):
 
-- `/usr/local/libexec/lanlord-auth-helper` (root, mode 0755)
+- `/usr/local/libexec/lanlord-auth-helper` (root, mode 0700)
 - `/etc/pam.d/lanlord`, built on the distro's `common-auth` or `system-auth`
 - `lanlord-auth.socket` and `lanlord-auth@.service`
 
