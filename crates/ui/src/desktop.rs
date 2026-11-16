@@ -17,6 +17,7 @@ mod menu;
 use menu::Confirm;
 
 use crate::admin_setup::{self, AdminSetup};
+use crate::clock_panel::{ClockFeed, ClockPanel};
 use crate::command_panel::CommandPanel;
 use crate::console::{self, Console};
 use crate::controls;
@@ -54,6 +55,8 @@ enum Target {
     Console,
     Hosts,
     Settings,
+    /// opened by double-clicking the clock; it has no desktop icon.
+    DateTime,
 }
 
 impl Target {
@@ -65,6 +68,7 @@ impl Target {
             Self::Console => "console",
             Self::Hosts => "hosts",
             Self::Settings => "settings",
+            Self::DateTime => "datetime",
         }
     }
 
@@ -76,6 +80,7 @@ impl Target {
             Self::Console => "Console",
             Self::Hosts => "Hosts",
             Self::Settings => "Settings",
+            Self::DateTime => "Date/Time Properties",
         }
     }
 }
@@ -102,6 +107,11 @@ pub struct Desktop {
     networks: Networks,
     /// a window a window asked for; it opens once all the windows are drawn.
     open_next: Option<Target>,
+    /// the Date/Time Properties window, and the server's time shown in the taskbar.
+    clock: ClockPanel,
+    feed: ClockFeed,
+    /// windows that asked to be closed from inside (OK or Cancel).
+    close_requests: Vec<Target>,
     /// the box asking before a reboot or power off, or showing the version.
     confirm: Option<(Confirm, Form)>,
     /// a task is waiting for this password.
@@ -147,6 +157,9 @@ impl Desktop {
             my_server: MyServer::default(),
             networks: Networks::default(),
             open_next: None,
+            clock: ClockPanel::default(),
+            feed: ClockFeed::default(),
+            close_requests: Vec::new(),
             confirm: None,
             password: None,
             add_host: None,
@@ -205,10 +218,16 @@ impl Desktop {
     fn open(&mut self, target: Target) {
         match self.windows.iter_mut().find(|w| w.target == target) {
             Some(window) => window.minimized = false,
-            None => self.windows.push(Window {
-                target,
-                minimized: false,
-            }),
+            None => {
+                if target == Target::DateTime {
+                    // a fresh reading of the server every time the window opens
+                    self.clock.reset();
+                }
+                self.windows.push(Window {
+                    target,
+                    minimized: false,
+                });
+            }
         }
         self.active = Some(target);
         self.start_open = false;
@@ -222,6 +241,9 @@ impl Desktop {
             let (id, tab) = item.split_once('@').unwrap_or((item, ""));
             if id == "menu" {
                 self.start_open = true;
+            } else if id == "datetime" {
+                self.open(Target::DateTime);
+                self.clock.open_tab(tab);
             } else if id == "developer" {
                 self.start_open = true;
                 self.dev_open = true;
@@ -298,11 +320,22 @@ impl Desktop {
         self.nt4.poll();
         self.dns.poll();
         self.commands.poll();
+        self.poll_clock();
         self.show_windows(&ctx);
         if self.start_open {
             self.start_menu(&ctx);
         }
         self.dialogs(&ctx);
+    }
+
+    /// keep the taskbar clock on the server's time: read it once, and take what the Date/Time
+    /// window reads or changes.
+    fn poll_clock(&mut self) {
+        let host = self.host();
+        self.feed.watch(&self.services, host.as_deref());
+        if let (Some(state), Some(host)) = (self.clock.poll(), host.as_deref()) {
+            self.feed.set(host, state);
+        }
     }
 
     /// the logon box on the bare desktop colour: no icons or taskbar until someone is signed in.
@@ -647,7 +680,7 @@ impl Desktop {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let clock = chrono::Local::now().format("%-I:%M %p").to_string();
+                let clock = self.feed.text();
                 // the tray: a shallow sunken panel holding the update shield and the clock, whose
                 // text is flat inside it
                 let shield = self.updates.visible();
@@ -665,6 +698,14 @@ impl Desktop {
                     theme::font(),
                     BLACK,
                 );
+                let clock_hit = ui
+                    .interact(clock_at, ui.scope_id().with("tray-clock"), Sense::click())
+                    .on_hover_text(self.feed.tooltip());
+                #[cfg(test)]
+                theme::probe::record(ui, "clock", clock_at, true);
+                if clock_hit.double_clicked() {
+                    self.open(Target::DateTime);
+                }
                 if shield {
                     let icon_at = Rect::from_min_size(
                         Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
@@ -720,6 +761,7 @@ fn window_size(target: Target) -> Vec2 {
         Target::Console => Vec2::new(600.0, 300.0),
         Target::Hosts => Vec2::new(380.0, 280.0),
         Target::Settings => Vec2::new(600.0, 520.0),
+        Target::DateTime => Vec2::new(430.0, 420.0),
     }
 }
 
@@ -763,10 +805,15 @@ impl Desktop {
                 }
             }
         }
+        close.append(&mut self.close_requests);
         windows.retain(|w| !close.contains(&w.target));
         self.windows = windows;
         if let Some(target) = self.open_next.take() {
             self.open(target);
+        }
+        if close.contains(&Target::DateTime) {
+            // what the window changed shows on the taskbar clock, and so does the server's own drift
+            self.feed.refresh();
         }
     }
 
@@ -792,6 +839,12 @@ impl Desktop {
             Target::Settings => {
                 let host = self.host();
                 self.settings.show(ui, &self.services, host.as_deref());
+            }
+            Target::DateTime => {
+                let host = self.host();
+                if self.clock.show(ui, &self.services, host.as_deref()) {
+                    self.close_requests.push(Target::DateTime);
+                }
             }
         }
     }
@@ -924,6 +977,8 @@ impl Desktop {
     }
 }
 
+#[cfg(test)]
+mod clock_tests;
 #[cfg(test)]
 mod harness;
 #[cfg(test)]

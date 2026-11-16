@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use lanlord_core::account;
 use lanlord_core::apply;
 use lanlord_core::bootstrap::{self, AnsibleMode, AskPassword, Options};
+use lanlord_core::clock::{self, Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_core::crypto::{self, Identity};
 use lanlord_core::exec::{self, Target};
 use lanlord_core::leases::{self, Lease};
@@ -17,6 +18,8 @@ use lanlord_core::server::{self, ServerFacts};
 use lanlord_core::settings::{self, Document, Settings};
 use lanlord_core::ssh::Session;
 use lanlord_core::users::{self, Change};
+
+use crate::demo_clock;
 
 /// an administrator to create; the password is wiped when this is dropped.
 pub struct NewAdmin {
@@ -76,6 +79,22 @@ pub trait Gateway: Send + Sync {
     ) -> Result<Vec<String>>;
     /// remove lanlord from the server; the lines say what was removed.
     fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>>;
+    /// the server's time, time zone and internet time; asks for nothing.
+    fn clock_state(&self, host: &str) -> Result<ClockState>;
+    /// the time zones the server knows.
+    fn clock_zones(&self, host: &str) -> Result<Vec<String>>;
+    /// what a time zone looks like on the server right now.
+    fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow>;
+    /// change the time, the time zone or internet time; what the server said, and whether the
+    /// zone and servers were also kept in the settings.
+    fn clock_apply(
+        &self,
+        host: &str,
+        change: &ClockChange,
+        ask: AskPassword,
+    ) -> Result<(Vec<String>, Stored)>;
+    /// ask the time service to synchronize now; what it said.
+    fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>>;
     /// true when lanlord runs on the gateway itself: there is one server and no host list.
     fn is_local(&self) -> bool {
         false
@@ -229,6 +248,47 @@ impl Gateway for Ssh {
             ask,
         )
     }
+    fn clock_state(&self, host: &str) -> Result<ClockState> {
+        if let Some(container) = demo_clock::mode() {
+            return Ok(demo_clock::state(container));
+        }
+        clock::read(&Session::new(host)?)
+    }
+
+    fn clock_zones(&self, host: &str) -> Result<Vec<String>> {
+        if demo_clock::mode().is_some() {
+            return Ok(demo_clock::zones());
+        }
+        clock::zones(&Session::new(host)?)
+    }
+
+    fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow> {
+        if demo_clock::mode().is_some() {
+            return Ok(demo_clock::zone_now(zone));
+        }
+        clock::zone_now(&Session::new(host)?, zone)
+    }
+
+    fn clock_apply(
+        &self,
+        host: &str,
+        change: &ClockChange,
+        ask: AskPassword,
+    ) -> Result<(Vec<String>, Stored)> {
+        if let Some(container) = demo_clock::mode() {
+            return Ok(demo_clock::apply(change, container));
+        }
+        // no key just means the change is not kept in the settings
+        let identity = crypto::load_default()?;
+        clock::apply_stored(&Session::new(host)?, host, identity.as_ref(), change, ask)
+    }
+
+    fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+        if demo_clock::mode().is_some() {
+            return Ok(vec!["Server: 162.159.200.1 (pool.ntp.org)".into()]);
+        }
+        clock::update_now(&Session::new(host)?, ask)
+    }
 }
 
 /// `LANLORD_FAKE_SERVER=1` answers the server windows with made-up facts, so they can be tried
@@ -299,6 +359,12 @@ mod fake {
         pub facts: Mutex<Option<ServerFacts>>,
         /// the lines a purge preview and a purge answer with.
         pub purge_lines: Mutex<Vec<String>>,
+        /// the server's clock, changed by `clock_apply`.
+        pub clock: Mutex<ClockState>,
+        /// the time zones it lists.
+        pub zones: Mutex<Vec<String>>,
+        /// the small reads that are not tasks (the taskbar clock).
+        pub reads: Mutex<Vec<String>>,
     }
 
     impl Fake {
@@ -319,6 +385,29 @@ mod fake {
                 outcome: Mutex::new(Outcome::Dropped),
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
+                clock: Mutex::new(ClockState {
+                    timezone: "Etc/UTC".into(),
+                    utc_secs: 1_794_759_123,
+                    offset_secs: 0,
+                    ntp: true,
+                    synchronized: true,
+                    container: false,
+                    sync: clock::Sync::Timesyncd,
+                    servers: Vec::new(),
+                    status: vec!["Server: 10.0.0.1 (pool.ntp.org)".into()],
+                }),
+                reads: Mutex::new(Vec::new()),
+                zones: Mutex::new(
+                    [
+                        "Africa/Cairo",
+                        "America/Argentina/Buenos_Aires",
+                        "America/New_York",
+                    ]
+                    .iter()
+                    .chain(&["Asia/Kolkata", "Etc/UTC", "Europe/Berlin", "UTC"])
+                    .map(|z| z.to_string())
+                    .collect(),
+                ),
             }
         }
 
@@ -489,6 +578,78 @@ mod fake {
         fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>> {
             self.enter(format!("purge {host} admins={remove_admins}"), ask)?;
             Ok(self.purge_lines.lock().unwrap().clone())
+        }
+
+        fn clock_state(&self, host: &str) -> Result<ClockState> {
+            // quiet reads are not tasks, so they are kept apart from `calls`
+            self.reads
+                .lock()
+                .unwrap()
+                .push(format!("clock-state {host}"));
+            match self.fail.lock().unwrap().clone() {
+                Some(message) => Err(anyhow!(message)),
+                None => Ok(self.clock.lock().unwrap().clone()),
+            }
+        }
+
+        fn clock_zones(&self, host: &str) -> Result<Vec<String>> {
+            self.reads
+                .lock()
+                .unwrap()
+                .push(format!("clock-zones {host}"));
+            Ok(self.zones.lock().unwrap().clone())
+        }
+
+        fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow> {
+            self.reads
+                .lock()
+                .unwrap()
+                .push(format!("clock-zone-now {host} {zone}"));
+            Ok(if zone.contains("Berlin") {
+                ZoneNow {
+                    offset_secs: 3600,
+                    abbrev: "CET".into(),
+                }
+            } else {
+                ZoneNow {
+                    offset_secs: 0,
+                    abbrev: "UTC".into(),
+                }
+            })
+        }
+
+        fn clock_apply(
+            &self,
+            host: &str,
+            change: &ClockChange,
+            ask: AskPassword,
+        ) -> Result<(Vec<String>, Stored)> {
+            self.enter(
+                format!(
+                    "clock-apply {host} zone={:?} time={:?} ntp={:?}",
+                    change.timezone,
+                    change.time,
+                    change
+                        .ntp
+                        .as_ref()
+                        .map(|n| (n.enabled, n.servers.join(" ")))
+                ),
+                ask,
+            )?;
+            let mut state = self.clock.lock().unwrap();
+            if let Some(zone) = &change.timezone {
+                state.timezone.clone_from(zone);
+            }
+            if let Some(ntp) = &change.ntp {
+                state.ntp = ntp.enabled;
+                state.servers.clone_from(&ntp.servers);
+            }
+            Ok((vec!["applied".into()], Stored::Yes))
+        }
+
+        fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+            self.enter(format!("clock-update {host}"), ask)?;
+            Ok(vec!["Server: 10.0.0.2 (updated)".into()])
         }
 
         fn run(&self, host: &str, command: &[String]) -> Result<i32> {

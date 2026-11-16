@@ -64,9 +64,31 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "networks" => &data::SMALL_NETWORKS,
         "lanlord" => &data::SMALL_LANLORD,
         "update" => &data::SMALL_UPDATE,
+        "datetime" => &SMALL_CLOCK,
         _ => &data::SMALL_HOSTS,
     }
 }
+
+/// the title bar icon of the Date/Time window, drawn by hand here (the generated icons are not
+/// for a window that is opened from the taskbar rather than the desktop).
+const SMALL_CLOCK: [&str; 16] = [
+    "......kkkk......",
+    "....kkkwwkkk....",
+    "..kkwwwwwwwwkk..",
+    "..kwwwwkwwwwdk..",
+    ".kwwwwwkwwwwddk.",
+    ".kwwwwwkwwwwwdk.",
+    "kkwwwwwkwwwwwdkk",
+    "kwwwwwwkwwwwwwdk",
+    "kwwwwwwkkkwwwwdk",
+    "kkwwwwwwwwkkwdkk",
+    ".kwwwwwwwwwwwdk.",
+    ".kwwwwwwwwwwddk.",
+    "..kddwwwwwwddk..",
+    "..kkdddwwdddkk..",
+    "....kkkddkkk....",
+    "......kkkk......",
+];
 
 /// draw `art` with its top-left corner at `pos`, each pixel `scale` points wide.
 pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
