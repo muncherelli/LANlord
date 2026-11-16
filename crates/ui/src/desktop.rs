@@ -106,8 +106,10 @@ pub struct Desktop {
     /// the checkout a development build rebuilds from, and the build that is running.
     dev: Option<PathBuf>,
     exe: Option<PathBuf>,
-    /// a rebuild in progress; it answers once, with the error when it failed.
+    /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// how long the new build must stay alive before this window may close.
+    relaunch_grace: update::Grace,
     /// the Developer submenu is open.
     dev_open: bool,
     /// the title the window has been given, so it is only sent when it changes.
@@ -143,6 +145,7 @@ impl Desktop {
             dev: None,
             exe: None,
             rebuilding: None,
+            relaunch_grace: update::Grace::default(),
             dev_open: false,
             window_title: "LANlord".into(),
         }
@@ -458,8 +461,9 @@ impl Desktop {
         self.rebuilding.is_some()
     }
 
-    /// rebuild this build in the background, with its output in the console; when it works the
-    /// new build starts and this one quits, and when it fails this window stays open.
+    /// rebuild this build in the background, with its output in the console. this window only
+    /// closes once the new build has started and is still running; every other outcome leaves
+    /// it open with the reason in the console and in a box.
     pub(super) fn start_rebuild(&mut self, pull: bool) {
         let (Some(repo), Some(exe)) = (self.dev.clone(), self.exe.clone()) else {
             emit(Kind::Err, "this build cannot be rebuilt from here");
@@ -468,18 +472,35 @@ impl Desktop {
         if self.is_rebuilding() {
             return;
         }
+        // before anything is touched: is the checkout still there, and can the tools be found?
+        if let Err(error) = update::preflight(&repo, &exe, pull) {
+            self.rebuild_failed(&format!("{error:#}"));
+            return;
+        }
         self.open(Target::Console);
-        let steps = update::rebuild_steps(&repo, &exe, pull);
+        let host = self.signed_in.as_ref().map(|s| s.target.clone());
+        let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = self.services.ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(update::rebuild(&steps).map_err(|e| e.to_string()));
+            let result = update::install_build(&repo, &exe, host.as_deref(), pull, grace);
+            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
             ctx.request_repaint();
         });
         self.rebuilding = Some(rx);
     }
 
-    /// once a frame: when the rebuild finished, start the new build and quit, or say why not.
+    /// say that a rebuild did not work, in the console and in a box, and carry on.
+    fn rebuild_failed(&mut self, error: &str) {
+        emit(Kind::Err, format!("the rebuild failed: {error}"));
+        let text = format!("The rebuild did not work, so this window stays open.\n{error}");
+        self.confirm = Some((
+            Confirm::Failure,
+            Form::new("rebuild-failed", "Rebuild and relaunch", &text),
+        ));
+    }
+
+    /// once a frame: when the rebuild answered, quit if the new build is running, or say why not.
     fn poll_rebuild(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.rebuilding else {
             return;
@@ -493,15 +514,8 @@ impl Desktop {
         };
         self.rebuilding = None;
         match result {
-            Ok(()) => {
-                let host = self.signed_in.as_ref().map(|s| s.target.clone());
-                let exe = self.exe.clone().unwrap_or_default();
-                match update::relaunch(&exe, host.as_deref()) {
-                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                    Err(error) => emit(Kind::Err, format!("rebuilt, but {error}")),
-                }
-            }
-            Err(error) => emit(Kind::Err, format!("the rebuild failed: {error}")),
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(error) => self.rebuild_failed(&error),
         }
     }
 }

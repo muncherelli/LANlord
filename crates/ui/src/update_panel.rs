@@ -15,10 +15,47 @@ use crate::dialogs::modal;
 use crate::icons;
 use crate::theme::{self, BLACK};
 
-/// how long the balloon stays up before it goes away on its own.
-const BALLOON_FOR: Duration = Duration::from_secs(12);
+/// how long the balloon stays up in full before it starts to fade, and how long the fade takes.
+const BALLOON_FOR: Duration = Duration::from_secs(8);
+const BALLOON_FADE: Duration = Duration::from_millis(600);
+/// how long the tray tooltip takes to fade once the pointer has left the shield.
+const TIP_FADE: Duration = Duration::from_millis(250);
 /// the pale yellow of a classic tooltip.
 const TIP: Color32 = Color32::from_rgb(255, 255, 225);
+
+/// the time the notice measures with; a real clock in the app and a fake one in tests.
+pub trait Clock: Send + Sync {
+    /// time since some fixed start.
+    fn now(&self) -> Duration;
+}
+
+struct RealClock(Instant);
+
+impl Clock for RealClock {
+    fn now(&self) -> Duration {
+        self.0.elapsed()
+    }
+}
+
+/// how opaque the balloon is `age` after it went up: whole, then fading, then gone.
+fn balloon_opacity(age: Duration) -> Option<f32> {
+    if age < BALLOON_FOR {
+        Some(1.0)
+    } else if age < BALLOON_FOR + BALLOON_FADE {
+        Some(1.0 - (age - BALLOON_FOR).as_secs_f32() / BALLOON_FADE.as_secs_f32())
+    } else {
+        None
+    }
+}
+
+/// how opaque the tooltip is `since_left` after the pointer left the shield (`None` while over it).
+fn tip_opacity(since_left: Option<Duration>) -> f32 {
+    match since_left {
+        None => 1.0,
+        Some(gone) if gone >= TIP_FADE => 0.0,
+        Some(gone) => 1.0 - gone.as_secs_f32() / TIP_FADE.as_secs_f32(),
+    }
+}
 
 /// what the box was answered with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,8 +71,12 @@ pub struct Updates {
     found: Option<Update>,
     pending: Option<Receiver<Option<Update>>>,
     last_check: Option<Instant>,
+    clock: Arc<dyn Clock>,
     /// when the balloon went up; `None` before it does and after it was closed or timed out.
-    balloon_since: Option<Instant>,
+    balloon_since: Option<Duration>,
+    /// when the pointer was last over the shield, for the tooltip's fade.
+    tip_seen: Option<Duration>,
+    tip_over: bool,
     balloon_done: bool,
     /// "remind me later": the shield hides until the next check finds something.
     snoozed: bool,
@@ -52,11 +93,38 @@ impl Updates {
             found: None,
             pending: None,
             last_check: None,
+            clock: Arc::new(RealClock(Instant::now())),
             balloon_since: None,
+            tip_seen: None,
+            tip_over: false,
             balloon_done: false,
             snoozed: false,
             dialog: false,
         }
+    }
+
+    /// the same notice measuring time with `clock`, for tests.
+    #[cfg(test)]
+    fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// how opaque the balloon is now; `None` when it is not up.
+    fn balloon_alpha(&self) -> Option<f32> {
+        let since = self.balloon_since?;
+        balloon_opacity(self.clock.now().saturating_sub(since))
+    }
+
+    /// how opaque the tray tooltip is now; 0 when it was never shown.
+    fn tip_alpha(&self) -> f32 {
+        let Some(seen) = self.tip_seen else {
+            return 0.0;
+        };
+        if self.tip_over {
+            return 1.0;
+        }
+        tip_opacity(Some(self.clock.now().saturating_sub(seen)))
     }
 
     /// a notice that never checks: for tests and for lanlord running on the gateway.
@@ -160,7 +228,7 @@ impl Updates {
                 if self.found.is_none() {
                     self.snoozed = false;
                     if !self.balloon_done {
-                        self.balloon_since = Some(Instant::now());
+                        self.balloon_since = Some(self.clock.now());
                     }
                 }
                 self.found = Some(update);
@@ -172,7 +240,8 @@ impl Updates {
         }
     }
 
-    /// the shield beside the clock; true when it was clicked.
+    /// the shield beside the clock; true when it was clicked. its tooltip fades out when the
+    /// pointer leaves.
     pub fn shield(&mut self, ui: &mut Ui) -> bool {
         let (rect, response) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::click());
         #[cfg(test)]
@@ -183,27 +252,65 @@ impl Updates {
             icons::small("update"),
             1.0,
         );
-        response
-            .on_hover_text("Updates are available for LANlord")
-            .clicked()
+        self.tip_over = response.hovered();
+        if self.tip_over {
+            self.tip_seen = Some(self.clock.now());
+        }
+        let alpha = self.tip_alpha();
+        if alpha > 0.0 {
+            self.tooltip(ui.ctx(), rect, alpha);
+            if alpha < 1.0 {
+                ui.ctx().request_repaint_after(Duration::from_millis(30));
+            }
+        }
+        response.clicked()
+    }
+
+    /// the small yellow tip above the shield, drawn at `alpha`.
+    fn tooltip(&self, ctx: &egui::Context, shield: egui::Rect, alpha: f32) {
+        Area::new(Id::unique("update-tip"))
+            .order(Order::Tooltip)
+            .pivot(Align2::RIGHT_BOTTOM)
+            .fixed_pos(shield.right_top() + Vec2::new(0.0, -4.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.set_opacity(alpha);
+                let framed = Frame::new()
+                    .fill(TIP)
+                    .inner_margin(Margin::symmetric(6, 3))
+                    .show(ui, |ui| {
+                        ui.colored_label(BLACK, "Updates are available for LANlord");
+                    });
+                ui.painter().rect_stroke(
+                    framed.response.rect,
+                    0.0,
+                    egui::Stroke::new(1.0, BLACK),
+                    egui::StrokeKind::Inside,
+                );
+                #[cfg(test)]
+                theme::probe::record(ui, "shield-tip", framed.response.rect, true);
+            });
     }
 
     /// the balloon over the clock; true when it was clicked.
     pub fn balloon(&mut self, ctx: &egui::Context, taskbar: f32) -> bool {
-        let Some(since) = self.balloon_since else {
+        if self.balloon_since.is_none() {
             return false;
-        };
-        if !self.visible() || since.elapsed() >= BALLOON_FOR {
+        }
+        let Some(alpha) = self.balloon_alpha().filter(|_| self.visible()) else {
             self.balloon_since = None;
             self.balloon_done = true;
             return false;
-        }
+        };
+        // keep drawing while it fades, and come back for the moment it starts to
+        ctx.request_repaint_after(Duration::from_millis(if alpha < 1.0 { 30 } else { 250 }));
         let mut clicked = false;
         let mut closed = false;
         Area::new(Id::unique("update-balloon"))
             .order(Order::Tooltip)
             .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-8.0, -(taskbar + 10.0)))
             .show(ctx, |ui| {
+                ui.set_opacity(alpha);
                 let framed = Frame::new()
                     .fill(TIP)
                     .inner_margin(Margin::same(8))
@@ -237,13 +344,22 @@ impl Updates {
                     Vec2::splat(12.0),
                 );
                 let close = ui.interact(mark, Id::unique("update-balloon-close"), Sense::click());
-                ui.painter().text(
-                    mark.center(),
-                    Align2::CENTER_CENTER,
-                    "x",
-                    theme::font(),
-                    BLACK,
-                );
+                if close.hovered() {
+                    ui.painter().rect_stroke(
+                        mark,
+                        0.0,
+                        egui::Stroke::new(1.0, Color32::from_rgb(128, 128, 128)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                let c = mark.center();
+                let stroke = egui::Stroke::new(1.5, BLACK);
+                for (from, to) in [((-3.0, -3.0), (3.0, 3.0)), ((-3.0, 3.0), (3.0, -3.0))] {
+                    ui.painter().line_segment(
+                        [c + Vec2::new(from.0, from.1), c + Vec2::new(to.0, to.1)],
+                        stroke,
+                    );
+                }
                 #[cfg(test)]
                 {
                     theme::probe::record(ui, "balloon", rect, true);
@@ -327,6 +443,25 @@ mod tests {
     use super::*;
     use crate::testkit;
     use std::path::Path;
+
+    /// a clock the tests move by hand.
+    struct Fake(std::sync::atomic::AtomicU64);
+
+    impl Fake {
+        fn at(ms: u64) -> Arc<Self> {
+            Arc::new(Self(std::sync::atomic::AtomicU64::new(ms)))
+        }
+
+        fn set(&self, ms: u64) {
+            self.0.store(ms, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl Clock for Fake {
+        fn now(&self) -> Duration {
+            Duration::from_millis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
 
     /// pretends to be git: always one new commit.
     struct Behind;
@@ -412,6 +547,84 @@ mod tests {
         assert!(updates.visible() && updates.balloon_since.is_none());
         updates.arrived(Some(pretend()));
         assert!(updates.balloon_since.is_none(), "one balloon only");
+    }
+
+    #[test]
+    fn the_balloon_is_whole_for_eight_seconds_then_fades_and_never_returns() {
+        let clock = Fake::at(0);
+        let mut updates = found().with_clock(clock.clone());
+        let ctx = egui::Context::default();
+        frame(&mut updates, &ctx, Vec::new());
+        assert_eq!(updates.balloon_alpha(), Some(1.0));
+        clock.set(7_900);
+        assert_eq!(updates.balloon_alpha(), Some(1.0));
+        // half way through the fade it is half there, and still drawn
+        clock.set(8_300);
+        let half = updates.balloon_alpha().unwrap();
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+        frame(&mut updates, &ctx, Vec::new());
+        assert!(updates.balloon_since.is_some());
+        // after the fade it is gone for good
+        clock.set(8_700);
+        assert_eq!(updates.balloon_alpha(), None);
+        frame(&mut updates, &ctx, Vec::new());
+        assert!(updates.balloon_since.is_none() && updates.visible());
+        updates.arrived(Some(pretend()));
+        assert!(updates.balloon_since.is_none(), "it does not come back");
+    }
+
+    #[test]
+    fn the_close_mark_dismisses_the_balloon_at_once_even_mid_fade() {
+        let clock = Fake::at(0);
+        let mut updates = found().with_clock(clock.clone());
+        let ctx = egui::Context::default();
+        clock.set(8_200);
+        click(&mut updates, &ctx, "balloon-close");
+        assert!(updates.balloon_since.is_none() && updates.balloon_done);
+        assert!(updates.visible(), "the shield stays");
+    }
+
+    #[test]
+    fn the_opacity_curves_are_whole_then_linear_then_gone() {
+        assert_eq!(balloon_opacity(Duration::ZERO), Some(1.0));
+        assert_eq!(balloon_opacity(BALLOON_FOR), Some(1.0));
+        assert_eq!(balloon_opacity(BALLOON_FOR + BALLOON_FADE), None);
+        assert_eq!(tip_opacity(None), 1.0);
+        assert_eq!(tip_opacity(Some(TIP_FADE)), 0.0);
+        let half = tip_opacity(Some(TIP_FADE / 2));
+        assert!((half - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_shield_tooltip_fades_out_after_the_pointer_leaves() {
+        let clock = Fake::at(0);
+        let mut updates = found().with_clock(clock.clone());
+        let ctx = egui::Context::default();
+        assert_eq!(updates.tip_alpha(), 0.0, "never shown before a hover");
+        frame(&mut updates, &ctx, Vec::new());
+        let (rect, _) = theme::probe::find(&ctx, "shield").expect("shield");
+        // over the shield: the tip is whole
+        frame(
+            &mut updates,
+            &ctx,
+            vec![egui::Event::PointerMoved(rect.center())],
+        );
+        frame(&mut updates, &ctx, Vec::new());
+        assert_eq!(updates.tip_alpha(), 1.0);
+        assert!(theme::probe::find(&ctx, "shield-tip").is_some());
+        // pointer leaves: it fades over a short time instead of popping away
+        clock.set(100);
+        frame(
+            &mut updates,
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(900.0, 10.0))],
+        );
+        frame(&mut updates, &ctx, Vec::new());
+        let fading = updates.tip_alpha();
+        assert!(fading > 0.0 && fading < 1.0, "{fading}");
+        clock.set(400);
+        frame(&mut updates, &ctx, Vec::new());
+        assert_eq!(updates.tip_alpha(), 0.0);
     }
 
     #[test]

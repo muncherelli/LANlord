@@ -78,6 +78,8 @@ pub enum Confirm {
     About,
     /// rebuild and relaunch; the box has one tick for pulling trunk first.
     Rebuild,
+    /// a rebuild that did not work; the box only says why.
+    Failure,
 }
 
 /// the menu's rows and box.
@@ -441,7 +443,7 @@ impl Desktop {
                     }
                 }
                 Confirm::Rebuild => self.start_rebuild(form.checked(0)),
-                Confirm::About => {}
+                Confirm::About | Confirm::Failure => {}
             },
         }
     }

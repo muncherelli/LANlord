@@ -6,6 +6,7 @@ palette letter per pixel) and, with --preview FILE, a zoomed png contact sheet t
 only the standard library is used. run from the repository root: python3 tools/make-icons.py
 """
 import argparse
+import math
 import os
 import struct
 import zlib
@@ -493,8 +494,173 @@ def s_lanlord():
     return g
 
 
-def s_update():
-    """the update notice: a round windows blue button with a white down arrow, lit from the top left."""
+# ---------------------------------------------------------------- the update notice icon
+#
+# the tray icon beside the clock. several candidates are drawn below; the one in the tray is
+# whichever UPDATE_ICON names, so switching is a one-line change. run with --update-sheet FILE
+# to see them all side by side.
+
+UPDATE_ICON = "round"
+
+
+def disc(g, cx, cy, r, face, hi=None, lo=None, edge="k"):
+    """a round shape with a 1px outline, light from the top left."""
+    for y in range(g.n):
+        for x in range(g.n):
+            d = math.hypot(x - cx, y - cy)
+            if d > r:
+                continue
+            if d > r - 1.0:
+                g.dot(x, y, edge)
+                continue
+            c = face
+            t = (x - cx) + (y - cy)
+            if hi and t < -r * 0.75 and d > r * 0.45:
+                c = hi
+            if lo and t > r * 0.75 and d > r * 0.45:
+                c = lo
+            g.dot(x, y, c)
+
+
+def outlined(g, pixels, fill, edge="k"):
+    """fill the set of (x, y) pixels and draw a 1px outline around it."""
+    for (x, y) in pixels:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if (x + dx, y + dy) not in pixels:
+                    g.dot(x + dx, y + dy, edge)
+    for (x, y) in pixels:
+        g.dot(x, y, fill)
+
+
+def arrow_pixels(x0, y0, shaft_h, down=True):
+    """a six wide arrow: a two wide shaft and a three row head."""
+    shaft = {(x0 + 2 + i, y0 + j) for i in range(2) for j in range(shaft_h)}
+    head = set()
+    for k, (lo, hi) in enumerate([(0, 5), (1, 4), (2, 3)]):
+        for x in range(x0 + lo, x0 + hi + 1):
+            head.add((x, y0 + shaft_h + k))
+    pixels = shaft | head
+    if not down:
+        height = shaft_h + 3
+        pixels = {(x, y0 + (y0 + height - 1 - y)) for (x, y) in pixels}
+    return pixels
+
+
+def u_balloon():
+    """a yellow circle with a black exclamation mark, like a balloon warning."""
+    g = Grid(16)
+    disc(g, 7.5, 7.5, 7, "y", hi="w", lo="o")
+    g.rect(7, 4, 2, 5, "k")
+    g.rect(7, 10, 2, 2, "k")
+    return g
+
+
+def u_info():
+    """a blue circle with a white i."""
+    g = Grid(16)
+    disc(g, 7.5, 7.5, 7, "b", hi="c", lo="n")
+    g.rect(7, 4, 2, 2, "w")
+    g.rect(6, 7, 3, 1, "w")
+    g.rect(7, 8, 2, 3, "w")
+    g.rect(6, 11, 4, 1, "w")
+    return g
+
+
+def u_globe():
+    """a small globe with a yellow down arrow, like the old windows update."""
+    g = Grid(16)
+    disc(g, 6.5, 6.5, 6, "b", hi="c", lo="n")
+    for (x, y) in [(4, 3), (5, 3), (3, 4), (4, 4), (5, 4), (4, 5), (4, 6), (7, 8), (8, 8), (6, 9),
+                   (7, 9), (8, 9), (7, 10), (9, 5), (10, 5), (9, 6), (10, 6), (10, 7)]:
+        g.dot(x, y, "G")
+    outlined(g, arrow_pixels(9, 8, 3), "y")
+    return g
+
+
+def u_monitor():
+    """a small monitor with a white down arrow on its screen."""
+    g = Grid(16)
+    g.solid(1, 1, 14, 11)
+    g.rect(3, 3, 10, 7, "n")
+    g.rect(3, 3, 10, 1, "d")
+    g.rect(3, 3, 1, 7, "d")
+    for (x, y) in arrow_pixels(5, 4, 1):
+        g.dot(x, y, "w")
+    g.rect(6, 12, 4, 1, "d")
+    g.solid(4, 13, 8, 2)
+    return g
+
+
+def u_cog():
+    """a grey cog with eight teeth and a yellow spark."""
+    g = Grid(16)
+    cx, cy = 6.5, 8.5
+    mask = {(x, y) for y in range(16) for x in range(16) if math.hypot(x - cx, y - cy) <= 4.1}
+    teeth = [(6, 3, 2, 2), (6, 13, 2, 2), (1, 8, 2, 2), (11, 8, 2, 2),
+             (2, 4, 2, 2), (10, 4, 2, 2), (2, 12, 2, 2), (10, 12, 2, 2)]
+    for (x, y, w, h) in teeth:
+        mask |= {(x + i, y + j) for i in range(w) for j in range(h)}
+    outlined(g, mask, "g")
+    for (x, y) in mask:
+        t = (x - cx) + (y - cy)
+        if t < -3.0:
+            g.dot(x, y, "w")
+        elif t > 3.0:
+            g.dot(x, y, "d")
+    disc(g, cx, cy, 1.9, "t")
+    spark = {(13, 0), (13, 1), (13, 2), (13, 3), (13, 4), (11, 2), (12, 2), (14, 2), (15, 2)}
+    outlined(g, spark, "y")
+    g.dot(13, 2, "w")
+    return g
+
+
+def u_mail():
+    """an envelope with a red notification dot."""
+    g = Grid(16)
+    g.rect(1, 4, 13, 10, "k")
+    g.rect(2, 5, 11, 8, "w")
+    g.rect(2, 12, 11, 1, "d")
+    g.rect(12, 5, 1, 8, "d")
+    for i in range(5):
+        g.dot(2 + i, 5 + i, "d")
+        g.dot(12 - i, 5 + i, "d")
+    g.dot(7, 10, "d")
+    disc(g, 12.5, 3.5, 3.2, "r", lo="m")
+    g.dot(11, 2, "w")
+    return g
+
+
+def u_package():
+    """a blue square with a white up arrow above a box."""
+    g = Grid(16)
+    g.rect(1, 1, 14, 14, "k")
+    g.rect(2, 2, 12, 12, "b")
+    g.rect(2, 2, 12, 1, "c")
+    g.rect(2, 2, 1, 12, "c")
+    g.rect(2, 13, 12, 1, "n")
+    g.rect(13, 2, 1, 12, "n")
+    for (x, y) in arrow_pixels(5, 3, 3, down=False):
+        g.dot(x, y, "w")
+    g.rect(4, 10, 1, 2, "w")
+    g.rect(11, 10, 1, 2, "w")
+    g.rect(4, 12, 8, 1, "w")
+    return g
+
+
+def u_window():
+    """a window in four of our own colours: blue, teal, yellow and white panes."""
+    g = Grid(16)
+    g.solid(1, 1, 14, 14)
+    g.rect(3, 3, 10, 2, "n")
+    for (x, y, c) in [(3, 6, "b"), (9, 6, "t"), (3, 10, "y"), (9, 10, "w")]:
+        g.rect(x, y, 4, 3, c)
+        g.rect(x, y + 2, 4, 1, {"b": "n", "t": "G", "y": "o", "w": "d"}[c])
+    return g
+
+
+def u_round():
+    """a round windows blue button with a white down arrow, lit from the top left."""
     rows = [
         "................",
         "....kkkkkkkk....",
@@ -518,6 +684,97 @@ def s_update():
         for x, c in enumerate(row):
             g.dot(x, y, c)
     return g
+
+
+UPDATE_CANDIDATES = {
+    "balloon": ("BALLOON", u_balloon),
+    "info": ("INFO", u_info),
+    "globe": ("GLOBE", u_globe),
+    "monitor": ("MONITOR", u_monitor),
+    "cog": ("COG", u_cog),
+    "mail": ("MAIL", u_mail),
+    "package": ("PACKAGE", u_package),
+    "window": ("WINDOW", u_window),
+    "round": ("ROUND", u_round),
+}
+
+
+def s_update():
+    """the update notice in the tray: the candidate UPDATE_ICON names."""
+    return UPDATE_CANDIDATES[UPDATE_ICON][1]()
+
+
+# a 3x5 font, just enough for the labels on the contact sheet
+FONT = {
+    "A": [".X.", "X.X", "XXX", "X.X", "X.X"], "B": ["XX.", "X.X", "XX.", "X.X", "XX."],
+    "C": [".XX", "X..", "X..", "X..", ".XX"], "D": ["XX.", "X.X", "X.X", "X.X", "XX."],
+    "E": ["XXX", "X..", "XX.", "X..", "XXX"], "F": ["XXX", "X..", "XX.", "X..", "X.."],
+    "G": [".XX", "X..", "X.X", "X.X", ".XX"], "I": ["XXX", ".X.", ".X.", ".X.", "XXX"],
+    "K": ["X.X", "X.X", "XX.", "X.X", "X.X"], "L": ["X..", "X..", "X..", "X..", "XXX"],
+    "M": ["X.X", "XXX", "XXX", "X.X", "X.X"], "N": ["XX.", "X.X", "X.X", "X.X", "X.X"],
+    "O": [".X.", "X.X", "X.X", "X.X", ".X."], "P": ["XX.", "X.X", "XX.", "X..", "X.."],
+    "R": ["XX.", "X.X", "XX.", "X.X", "X.X"], "T": ["XXX", ".X.", ".X.", ".X.", ".X."],
+    "U": ["X.X", "X.X", "X.X", "X.X", "XXX"], "W": ["X.X", "X.X", "XXX", "XXX", "X.X"],
+    "1": [".X.", "XX.", ".X.", ".X.", "XXX"], "2": ["XX.", "..X", ".X.", "X..", "XXX"],
+    "3": ["XX.", "..X", ".X.", "..X", "XX."], "4": ["X.X", "X.X", "XXX", "..X", "..X"],
+    "5": ["XXX", "X..", "XX.", "..X", "XX."], "6": [".XX", "X..", "XX.", "X.X", ".X."],
+    "7": ["XXX", "..X", ".X.", ".X.", ".X."], "8": [".X.", "X.X", ".X.", "X.X", ".X."],
+    "9": [".X.", "X.X", ".XX", "..X", "XX."], "X": ["X.X", "X.X", ".X.", "X.X", "X.X"],
+    " ": ["...", "...", "...", "...", "..."],
+}
+
+
+def update_sheet(path):
+    """eight candidates for the tray icon: each at 8x, then a 1x and a 2x copy on the taskbar gray."""
+    gray = RGB["g"]
+    zoom, pad, cell_w, cell_h = 8, 14, 214, 190
+    names = [k for k in UPDATE_CANDIDATES if k != "round"]
+    cols, rows = 4, 2
+    w, h = cols * cell_w + pad, rows * cell_h + pad
+    img = [[gray] * w for _ in range(h)]
+
+    def put(x, y, c):
+        if 0 <= x < w and 0 <= y < h:
+            img[y][x] = c
+
+    def block(x, y, art, z):
+        for j, row in enumerate(art):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(z):
+                        for dx in range(z):
+                            put(x + i * z + dx, y + j * z + dy, RGB[c])
+
+    def text(x, y, label, z=3):
+        for ch in label:
+            for j, row in enumerate(FONT.get(ch, FONT[" "])):
+                for i, bit in enumerate(row):
+                    if bit == "X":
+                        for dy in range(z):
+                            for dx in range(z):
+                                put(x + i * z + dx, y + j * z + dy, (0, 0, 0))
+            x += 4 * z
+
+    for n, key in enumerate(names):
+        label, fn = UPDATE_CANDIDATES[key]
+        art = fn().rows()
+        ox = pad + (n % cols) * cell_w
+        oy = pad + (n // cols) * cell_h
+        # the 8x zoom, on a sunken frame
+        for i in range(16 * zoom + 4):
+            put(ox - 2 + i, oy - 2, RGB["d"])
+            put(ox - 2, oy - 2 + i, RGB["d"])
+            put(ox - 2 + i, oy + 16 * zoom + 1, RGB["w"])
+            put(ox + 16 * zoom + 1, oy - 2 + i, RGB["w"])
+        block(ox, oy, art, zoom)
+        # a 1x and a 2x copy beside it, where they would sit in the tray
+        block(ox + 16 * zoom + 14, oy + 6, art, 1)
+        block(ox + 16 * zoom + 14, oy + 40, art, 2)
+        text(ox + 16 * zoom + 12, oy + 28, "1X", 2)
+        text(ox + 16 * zoom + 12, oy + 76, "2X", 2)
+        text(ox, oy + 16 * zoom + 12, f"{n + 1} {label}", 3)
+    with open(path, "wb") as f:
+        f.write(png(w, h, img))
 
 
 BIG = {
@@ -584,6 +841,7 @@ def preview(path, zoom):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--preview", help="write a zoomed contact sheet png here")
+    ap.add_argument("--update-sheet", help="write a contact sheet of the update icon candidates here")
     ap.add_argument("--zoom", type=int, default=6)
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
@@ -591,3 +849,5 @@ if __name__ == "__main__":
         emit(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "crates", "ui", "src", "icon_data.rs"))
     if a.preview:
         preview(a.preview, a.zoom)
+    if a.update_sheet:
+        update_sheet(a.update_sheet)

@@ -10,7 +10,7 @@ use lanlord_core::update::{Runner, Source, Update};
 use eframe::egui;
 
 use super::harness::{click_at, desktop, frames, press, screen, until, SCREEN};
-use super::menu::Action;
+use super::menu::{Action, Confirm};
 use super::{theme, Desktop, TASKBAR};
 use crate::login::fake::{id, FakeAuth};
 use crate::update_panel::Updates;
@@ -53,8 +53,13 @@ fn dev(name: &str, build_ok: bool) -> (Desktop, egui::Context, std::path::PathBu
         if build_ok { "exit 0" } else { "exit 1" },
     );
     let exe = repo.join("Fake.app/Contents/MacOS/lanlord-bin");
-    script(&exe, "exit 0");
+    // the new build stays up for a moment, as a real one would
+    script(&exe, "sleep 1");
     let (mut desktop, ctx, _) = desktop();
+    desktop.relaunch_grace = lanlord_core::update::Grace {
+        total: std::time::Duration::from_millis(150),
+        poll: std::time::Duration::from_millis(10),
+    };
     desktop.watch_updates(
         Updates::new(Arc::new(Level), None, true),
         Some(repo.clone()),
@@ -161,6 +166,14 @@ fn a_rebuild_streams_into_the_console_and_starts_the_new_build() {
     );
     assert!(said.iter().any(|l| l.contains("rebuilt")), "{said:?}");
     assert!(
+        said.iter().any(|l| l.contains("the new build is running")),
+        "{said:?}"
+    );
+    assert!(
+        desktop.confirm.is_none(),
+        "a working rebuild shows no error"
+    );
+    assert!(
         desktop
             .windows
             .iter()
@@ -180,11 +193,90 @@ fn a_failed_rebuild_says_why_and_stays_open() {
     desktop.start_rebuild(false);
     until(&mut desktop, &ctx, |d| !d.is_rebuilding());
     let said = lines(&seen);
+    let here = repo.display().to_string();
     assert!(
-        said.iter().any(|l| l.contains("the rebuild failed")),
+        said.iter()
+            .any(|l| l.contains("the rebuild failed") && l.contains(&here)),
         "{said:?}"
     );
-    assert!(!said.iter().any(|l| l.contains("rebuilt;")), "{said:?}");
+    assert!(matches!(desktop.confirm, Some((Confirm::Failure, _))));
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+/// the path of the fake installed app the `dev` desktop starts.
+#[cfg(unix)]
+fn fake_exe(repo: &Path) -> std::path::PathBuf {
+    repo.join("Fake.app/Contents/MacOS/lanlord-bin")
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_checkout_is_caught_before_a_build_starts() {
+    let (mut desktop, ctx, repo) = dev("gone", true);
+    let seen = log::subscribe();
+    std::fs::remove_dir_all(&repo).unwrap();
+    desktop.start_rebuild(true);
+    frames(&mut desktop, &ctx, 2);
+    assert!(!desktop.is_rebuilding(), "nothing was started");
+    let said = lines(&seen);
+    let here = repo.display().to_string();
+    assert!(
+        said.iter()
+            .any(|l| l.contains("is gone") && l.contains(&here)),
+        "{said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|l| l.starts_with("$ ") && l.contains(&here)),
+        "no command ran"
+    );
+    assert!(matches!(desktop.confirm, Some((Confirm::Failure, _))));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_new_build_that_exits_at_once_leaves_this_window_open_and_says_why() {
+    let (mut desktop, ctx, repo) = dev("dies", true);
+    let seen = log::subscribe();
+    script(&fake_exe(&repo), "echo no display >&2; exit 4");
+    desktop.start_rebuild(false);
+    until(&mut desktop, &ctx, |d| !d.is_rebuilding());
+    let said = lines(&seen);
+    assert!(
+        said.iter().any(|l| l.contains("exited at once")),
+        "{said:?}"
+    );
+    assert!(said.iter().any(|l| l.contains("no display")), "{said:?}");
+    assert!(!said.iter().any(|l| l.contains("the new build is running")));
+    assert!(matches!(desktop.confirm, Some((Confirm::Failure, _))));
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_build_that_leaves_no_program_behind_leaves_this_window_open() {
+    let (mut desktop, ctx, repo) = dev("nobin", true);
+    let seen = log::subscribe();
+    std::fs::remove_file(fake_exe(&repo)).unwrap();
+    desktop.start_rebuild(false);
+    until(&mut desktop, &ctx, |d| !d.is_rebuilding());
+    let said = lines(&seen);
+    assert!(said.iter().any(|l| l.contains("is missing")), "{said:?}");
+    assert!(matches!(desktop.confirm, Some((Confirm::Failure, _))));
+    let _ = std::fs::remove_dir_all(repo);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_failure_box_closes_with_ok() {
+    let (mut desktop, ctx, repo) = dev("box", false);
+    desktop.start_rebuild(false);
+    until(&mut desktop, &ctx, |d| !d.is_rebuilding());
+    assert!(desktop.confirm.is_some());
+    assert!(press(&mut desktop, &ctx, "OK"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.confirm.is_none());
     let _ = std::fs::remove_dir_all(repo);
 }
 
