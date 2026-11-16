@@ -755,6 +755,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// `base` with each part joined on, the way the plan builds its paths.
+    fn under(base: &Path, parts: &[&str]) -> PathBuf {
+        parts
+            .iter()
+            .fold(base.to_path_buf(), |p, part| p.join(part))
+    }
+
     fn text(out: Vec<u8>) -> String {
         String::from_utf8(out).unwrap()
     }
@@ -763,7 +770,11 @@ mod tests {
     fn a_dry_run_writes_nothing_and_says_what_would_stop_it() {
         let root = scratch("dry");
         let env = env_in(&root);
-        let entry = root.join("home/.local/share/applications/lanlord.desktop");
+        // joined part by part, like the plan, so the printed path matches on windows too
+        let entry = under(
+            &root,
+            &["home", ".local", "share", "applications", "lanlord.desktop"],
+        );
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         std::fs::write(&entry, "hand made").unwrap();
         let exe = Path::new("/opt/lanlord");
@@ -892,7 +903,7 @@ mod tests {
         let env = env_in(Path::new("/r"));
         let files = plan(Os::Linux, &env, Path::new("/opt/lanlord")).unwrap();
         let commands = cache_commands(&files);
-        let share = Path::new("/r/home/.local/share");
+        let share = under(Path::new("/r"), &["home", ".local", "share"]);
         assert_eq!(
             commands[0],
             (
@@ -904,7 +915,11 @@ mod tests {
             commands[1],
             (
                 "gtk-update-icon-cache",
-                vec!["-q".into(), "-t".into(), share.join("icons/hicolor").into()]
+                vec![
+                    "-q".into(),
+                    "-t".into(),
+                    under(&share, &["icons", "hicolor"]).into()
+                ]
             )
         );
         assert_eq!(
