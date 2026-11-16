@@ -8,6 +8,7 @@ use crate::controls;
 use crate::dialogs;
 use crate::remote::RED;
 use crate::theme::{self, WHITE};
+use crate::view_wizard;
 use crate::widgets::Table;
 
 /// draw `nodes` top to bottom; the message of a click, if there was one.
@@ -124,5 +125,16 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             });
             None
         }
+        Node::Row(nodes) => ui.horizontal(|ui| show(ui, nodes)).inner,
+        Node::Banner(banner) => {
+            view_wizard::banner(ui, banner);
+            None
+        }
+        Node::CheckList(list) => view_wizard::check_list(ui, list),
+        Node::Description(text) => {
+            view_wizard::description(ui, text);
+            None
+        }
+        Node::KeyedInput(input) => view_wizard::keyed_input(ui, input),
     }
 }

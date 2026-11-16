@@ -6,6 +6,7 @@ mod admin_setup;
 mod artwork;
 mod clock_panel;
 mod command_panel;
+mod components_window;
 mod console;
 mod controls;
 mod desktop;
@@ -28,6 +29,7 @@ mod theme;
 mod update_panel;
 mod users_panel;
 mod view;
+mod view_wizard;
 mod widgets;
 mod windows;
 

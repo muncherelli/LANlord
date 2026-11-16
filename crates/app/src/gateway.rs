@@ -144,8 +144,9 @@ impl Gateway for Ssh {
 
     fn load_document(&self, host: &str, ask: AskPassword) -> Result<Document> {
         if demo() {
+            let saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()).clone();
             return Ok(Document {
-                plain: DEMO_SETTINGS.to_string(),
+                plain: saved.unwrap_or_else(|| DEMO_SETTINGS.to_string()),
                 ..Document::default()
             });
         }
@@ -159,6 +160,11 @@ impl Gateway for Ssh {
         updates: &[(String, String)],
         ask: AskPassword,
     ) -> Result<()> {
+        if demo() {
+            // the made-up server keeps what was saved until the app quits
+            *DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plain.to_string());
+            return Ok(());
+        }
         settings::save_document(host, &key()?, plain, updates, ask)
     }
 
@@ -297,7 +303,10 @@ fn demo() -> bool {
     std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1")
 }
 
-const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
+const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
+
+/// what the made-up server's settings were last saved as.
+static DEMO_SAVED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 const DEMO_LEASES: &str = "1795000000 02:00:00:00:00:01 172.16.120.101 ws1 *\n1795000000 02:00:00:00:00:02 172.16.120.102 ws2 *\n1795000000 02:00:00:00:00:03 172.16.120.103 nt4pc *\n";
 
@@ -672,6 +681,17 @@ mod fake {
             );
             Ok(*self.exit.lock().unwrap())
         }
+    }
+
+    #[test]
+    fn the_demo_server_switches_on_a_valid_set_of_components() {
+        use lanlord_model::components::{networks_from_settings, Selection};
+        let settings = Settings::parse(DEMO_SETTINGS).unwrap();
+        let selection = Selection::from_settings(&settings).unwrap();
+        let errors = selection.validate(&networks_from_settings(&settings));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(selection.is_enabled("nt4-domain") && !selection.is_enabled("web-proxy"));
+        assert_eq!(selection.enabled["dns"].subcomponents, ["dns", "dhcp"]);
     }
 
     #[test]

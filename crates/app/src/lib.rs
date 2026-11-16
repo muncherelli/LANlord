@@ -3,6 +3,7 @@
 //! the actions; each front end only draws that description and turns input back into
 //! actions.
 
+pub mod components;
 pub mod demo_clock;
 pub mod desktop;
 pub mod gateway;
@@ -13,4 +14,5 @@ pub mod remote;
 pub mod services;
 pub mod tasks;
 pub mod view;
+pub mod view_wizard;
 pub mod wake;
