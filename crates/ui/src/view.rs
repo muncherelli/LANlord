@@ -49,7 +49,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             widths: &table.widths,
             rows: &table.rows,
             selected: table.selected,
-            bad: &[],
+            bad: &table.bad,
             height: table.height,
         }
         .show(ui)
@@ -299,6 +299,11 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             .body_returned
             .flatten(),
         Node::Disabled(body) => ui.add_enabled_ui(false, |ui| show(ui, body)).inner,
+        Node::Labelled { label, body } => controls::row(ui, label, |ui| show(ui, body)),
+        Node::FieldError(text) => {
+            ui.label(RichText::new(text.as_str()).color(RED).small());
+            None
+        }
         Node::Warning(text) => {
             ui.colored_label(egui::Color32::from_rgb(160, 0, 0), text.as_str());
             None

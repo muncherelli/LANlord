@@ -171,6 +171,7 @@ impl LogonPanel {
                         widths: vec![160.0, 200.0],
                         rows,
                         selected: names.iter().position(|n| *n == self.selected),
+                        bad: Vec::new(),
                         height: 80.0,
                         select: Msg::Pick,
                     }),

@@ -15,6 +15,7 @@ pub mod logon_panel;
 pub mod menu;
 pub mod module_window;
 pub mod my_server;
+pub mod nt4_panel;
 pub mod prompt;
 pub mod remote;
 pub mod services;
