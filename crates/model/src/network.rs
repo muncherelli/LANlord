@@ -45,6 +45,7 @@ const VIRTUAL: &[&str] = &[
     "ip_vti",
 ];
 
+#[doc(hidden)]
 pub fn is_virtual(name: &str) -> bool {
     VIRTUAL.iter().any(|prefix| name.starts_with(prefix))
 }

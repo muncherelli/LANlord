@@ -10,7 +10,7 @@ use serde_yaml_ng::{Mapping, Value};
 /// the settings as a yaml mapping. text that came from a file is kept
 /// verbatim, so saving it again keeps the comments, until a typed edit
 /// replaces it.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Settings {
     root: Mapping,
     raw: Option<String>,
@@ -74,6 +74,7 @@ fn name_of(value: &Value) -> Option<&str> {
     value.get("name").and_then(Value::as_str)
 }
 
+#[doc(hidden)]
 pub fn parse_value(bytes: &[u8]) -> Result<Value> {
     match serde_yaml_ng::from_slice::<Value>(bytes)? {
         Value::Mapping(map) => Ok(Value::Mapping(map)),
@@ -82,10 +83,12 @@ pub fn parse_value(bytes: &[u8]) -> Result<Value> {
     }
 }
 
+#[doc(hidden)]
 pub fn text_of_bytes(bytes: Vec<u8>) -> Result<String> {
     String::from_utf8(bytes).map_err(|_| anyhow!("the stored settings are not text"))
 }
 
+#[doc(hidden)]
 pub fn dump(value: &Value) -> Result<String> {
     Ok(serde_yaml_ng::to_string(value)?)
 }

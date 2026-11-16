@@ -6,6 +6,7 @@
 use anyhow::{anyhow, bail, Result};
 use serde_yaml_ng::{Mapping, Value};
 
+#[doc(hidden)]
 pub const MODULE: &str = "nt4-domain";
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -31,7 +32,7 @@ impl User {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     /// create the user, or set the password of an existing one.
     SetPassword {
@@ -183,7 +184,7 @@ pub fn secret_path(name: &str) -> String {
 }
 
 /// the result of `edit_split`.
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Edited {
     /// the new plain settings: no passwords in them.
     pub plain: String,

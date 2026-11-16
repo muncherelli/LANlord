@@ -163,6 +163,7 @@ pub fn valid_time(text: &str) -> Result<String> {
         .map_err(|_| anyhow::anyhow!("the time must look like 2026-11-15 17:30:00"))
 }
 
+#[doc(hidden)]
 pub fn parse_offset(text: &str) -> Option<i32> {
     let text = text.trim();
     let sign = match text.chars().next()? {

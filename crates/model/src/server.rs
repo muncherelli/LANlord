@@ -90,6 +90,7 @@ fn after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     words.next()
 }
 
+#[doc(hidden)]
 pub fn parse_links(text: &str) -> Vec<Iface> {
     text.lines()
         .filter_map(|line| {

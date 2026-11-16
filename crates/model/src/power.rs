@@ -7,6 +7,7 @@ pub enum Power {
 }
 
 impl Power {
+    #[doc(hidden)]
     pub fn script(self) -> &'static str {
         match self {
             Self::Reboot => "systemctl reboot\n",

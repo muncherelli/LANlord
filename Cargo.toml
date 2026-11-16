@@ -10,3 +10,4 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+lanlord-model = { path = "crates/model", version = "0.1.0" }
