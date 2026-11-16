@@ -51,9 +51,9 @@
         dns_nt4_name: >-
           {{ (dns_nt4.netbios_name | default(ansible_facts['hostname']) | lower)
              if dns_nt4 | length > 0 else '' }}
+        # the web ui is on the normal network only, so its name stays out of the retronet zone
         dns_proxy_hosts: >-
-          {{ ((dns_proxy.sites | default([])) + ([dns_proxy.webui] if dns_proxy.webui is defined else []))
-             | map(attribute='host') | map('lower') | list }}
+          {{ (dns_proxy.sites | default([])) | map(attribute='host') | map('lower') | list }}
       when: dns is defined
 
     - name: set the dhcp settings when there are any

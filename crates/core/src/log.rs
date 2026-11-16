@@ -5,23 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// stdout of a remote command.
-    Out,
-    /// stderr of a remote command.
-    Err,
-    /// progress worth showing every time.
-    Info,
-    /// what lanlord is doing, shown with --verbose or in a console.
-    Debug,
-}
-
-#[derive(Clone, Debug)]
-pub struct Line {
-    pub kind: Kind,
-    pub text: String,
-}
+pub use lanlord_model::log::*;
 
 static SUBSCRIBERS: Mutex<Vec<Sender<Line>>> = Mutex::new(Vec::new());
 static VERBOSE: AtomicBool = AtomicBool::new(false);

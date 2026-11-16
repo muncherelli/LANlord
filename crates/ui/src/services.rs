@@ -48,6 +48,15 @@ impl Services {
         })
     }
 
+    /// run a small read with the gateway in the background, without marking any host busy.
+    pub fn quiet<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&dyn Gateway) -> Result<T> + Send + 'static,
+    ) -> Job<T> {
+        let gateway = self.gateway.clone();
+        self.tasks.quiet(&self.ctx, move || work(&*gateway))
+    }
+
     /// bootstrap `host` in the background; progress goes to the console.
     pub fn bootstrap(&self, host: &str) -> bool {
         let target = host.to_string();
