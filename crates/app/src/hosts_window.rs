@@ -30,7 +30,7 @@ pub fn view(hosts: &HostList, services: &Services, local: bool) -> Vec<Node<Msg>
         )];
     }
     let busy = hosts.selected().is_some_and(|h| services.busy(h));
-    let ready = hosts.selected().is_some() && !busy;
+    let ready = ready(hosts, services);
     vec![
         Node::Group {
             title: "Gateways lanlord manages".into(),
@@ -57,21 +57,54 @@ pub fn view(hosts: &HostList, services: &Services, local: bool) -> Vec<Node<Msg>
     ]
 }
 
+/// a host is selected and nothing runs on it: Remove and Bootstrap may go ahead.
+pub fn ready(hosts: &HostList, services: &Services) -> bool {
+    hosts.selected().is_some_and(|h| !services.busy(h))
+}
+
 /// act on a click; what the front end must do next, if anything.
 pub fn update(msg: Msg, hosts: &mut HostList, services: &Services) -> Option<Ask> {
+    // the same rules as the buttons: a front end may send any message
+    let ready = ready(hosts, services);
     match msg {
         Msg::Pick(i) => hosts.select(i),
         Msg::Add => return Some(Ask::AddHost),
-        Msg::Remove => {
+        Msg::Remove if ready => {
             if let Err(error) = hosts.remove_selected() {
                 emit(Kind::Err, error);
             }
         }
-        Msg::Bootstrap => {
+        Msg::Bootstrap if ready => {
             if let Some(host) = hosts.selected() {
                 services.bootstrap(host);
             }
         }
+        Msg::Remove | Msg::Bootstrap => {}
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{mpsc, Arc};
+
+    use super::*;
+    use crate::gateway::Fake;
+    use crate::wake::Wake;
+
+    #[test]
+    fn a_busy_host_is_neither_removed_nor_bootstrapped() {
+        let services = Services::new(Arc::new(Fake::new()), Wake::none());
+        let mut hosts = HostList::new(None);
+        hosts.add("me@gw").unwrap();
+        let (release, wait) = mpsc::channel::<()>();
+        let held = services.spawn("me@gw", move |_, _| {
+            let _ = wait.recv();
+            Ok(())
+        });
+        assert!(held.is_some() && !ready(&hosts, &services));
+        update(Msg::Remove, &mut hosts, &services);
+        assert_eq!(hosts.hosts(), ["me@gw"]);
+        drop(release);
+    }
 }

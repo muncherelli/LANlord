@@ -152,6 +152,14 @@ impl DnsPanel {
         self.remote.track(host, job, doing, done, false);
     }
 
+    /// the settings may be saved: nothing runs, they pass their checks and are `host`'s own.
+    pub fn can_save(&self, services: &Services, host: &str) -> bool {
+        !services.busy(host)
+            && !self.remote.busy()
+            && self.errors().is_empty()
+            && self.remote.belongs_to(host)
+    }
+
     /// the panel for `host`; loads the settings when it shows another host's.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
@@ -170,7 +178,7 @@ impl DnsPanel {
             3 => self.current_page(),
             _ => self.settings_page(&errors),
         };
-        let ok = idle && errors.is_empty();
+        let ok = self.can_save(services, host);
         let mut nodes = vec![
             Node::Tabs {
                 titles: vec![
@@ -366,6 +374,19 @@ impl DnsPanel {
 
     /// act on a click or keystroke for `host`.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
+        // the same rules as the buttons: a front end may send any message
+        let free = self.form.is_none();
+        let allowed = match msg {
+            Msg::AddLease => free && self.draft.dhcp.is_some(),
+            Msg::EditLease | Msg::AddRecord | Msg::EditRecord => free,
+            Msg::MakeStatic => free && self.draft.dhcp.is_some(),
+            Msg::Reload => !services.busy(host) && !self.remote.busy(),
+            Msg::Save | Msg::SaveAndApply => self.can_save(services, host),
+            _ => true,
+        };
+        if !allowed {
+            return;
+        }
         let dhcp = self.draft.dhcp.as_mut();
         match msg {
             Msg::Tab(tab) => self.tab = tab,
@@ -586,6 +607,24 @@ mod tests {
         let text = expiry_text(1_700_000_000);
         assert!(text.contains("Nov") && text.contains(':'), "{text}");
         assert_eq!(expiry_text(u64::MAX), u64::MAX.to_string());
+    }
+
+    #[test]
+    fn unloaded_settings_are_not_saved_and_leases_need_dhcp() {
+        use std::sync::Arc;
+
+        use crate::gateway::Fake;
+        use crate::wake::Wake;
+
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut panel = DnsPanel::default();
+        panel.update(Msg::Save, &services, "a@b");
+        panel.update(Msg::SaveAndApply, &services, "a@b");
+        assert!(fake.calls().is_empty(), "the draft is not a@b's");
+        panel.draft.dhcp = None;
+        panel.update(Msg::AddLease, &services, "a@b");
+        assert!(panel.form_mut().is_none(), "no lease box with dhcp off");
     }
 
     #[test]

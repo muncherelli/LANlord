@@ -298,6 +298,8 @@ impl AdminSetup {
                     ));
                 }
             }
+            // the same rule as the buttons: nothing while a task or the warning is open
+            Msg::Skip | Msg::Create if self.job.is_some() || self.warning.is_some() => {}
             Msg::Skip => return Some(Outcome::Skipped),
             Msg::Create => self.create(services, host),
         }
@@ -395,5 +397,23 @@ mod tests {
     fn the_warning_explains_the_sudo_timeout() {
         assert!(PASSWORDLESS_WARNING.contains("15 minutes"));
         assert!(PASSWORDLESS_WARNING.contains("dangerous"));
+    }
+
+    #[test]
+    fn skip_and_create_wait_for_the_warning() {
+        let services = Services::new(
+            std::sync::Arc::new(crate::gateway::Fake::new()),
+            Wake::none(),
+        );
+        let mut setup = AdminSetup::with_test_keys(&[]);
+        setup.update(Msg::TogglePasswordless, &services, "root@gw");
+        assert!(setup.warning_open());
+        assert_eq!(setup.update(Msg::Skip, &services, "root@gw"), None);
+        setup.answer_warning(1);
+        assert!(!setup.passwordless());
+        assert_eq!(
+            setup.update(Msg::Skip, &services, "root@gw"),
+            Some(Outcome::Skipped)
+        );
     }
 }
