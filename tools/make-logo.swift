@@ -267,130 +267,6 @@ func stars(_ ctx: CGContext, _ w: CGFloat, _ h: CGFloat, count: Int, scale: CGFl
     }
 }
 
-/// the dark navy of the nt setup screens: a vertical gradient, a glow, and a fine dither.
-func navy(_ ctx: CGContext, _ w: CGFloat, _ h: CGFloat, scale: CGFloat, glow: CGPoint?) {
-    ctx.drawLinearGradient(
-        gradient([(0, 0x00007E), (0.55, 0x00004A), (1, 0x000014)]),
-        start: .zero, end: CGPoint(x: 0, y: h), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-    if let glow = glow {
-        let g = CGGradient(
-            colorsSpace: space, colors: [rgb(0x3345E0, 0.55), rgb(0x3345E0, 0)] as CFArray, locations: [0, 1])!
-        ctx.drawRadialGradient(
-            g, startCenter: glow, startRadius: 0, endCenter: glow, endRadius: h * 0.9, options: [])
-    }
-    // a 2 pixel checker, barely there, like the dithered backdrops of the time
-    let step = max(2, 2 * scale)
-    ctx.setFillColor(rgb(0x000000, 0.10))
-    var y: CGFloat = 0
-    var row = 0
-    while y < h {
-        var x: CGFloat = row % 2 == 0 ? 0 : step
-        while x < w {
-            ctx.fill(CGRect(x: x, y: y, width: step, height: step))
-            x += 2 * step
-        }
-        y += step
-        row += 1
-    }
-}
-
-// MARK: the word
-
-func wordPath(_ text: String, size: CGFloat, italic: Bool = false, spacing: CGFloat = 0.01) -> CGPath {
-    let name = italic ? "TimesNewRomanPS-ItalicMT" : "TimesNewRomanPS-BoldMT"
-    let font = CTFontCreateWithName(name as CFString, size, nil)
-    let attr = NSAttributedString(
-        string: text,
-        attributes: [
-            NSAttributedString.Key(rawValue: kCTFontAttributeName as String): font,
-            NSAttributedString.Key(rawValue: kCTKernAttributeName as String): size * spacing,
-        ])
-    let line = CTLineCreateWithAttributedString(attr)
-    let path = CGMutablePath()
-    for run in CTLineGetGlyphRuns(line) as! [CTRun] {
-        let runFont = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] as! CTFont
-        let n = CTRunGetGlyphCount(run)
-        var glyphs = [CGGlyph](repeating: 0, count: n)
-        var pos = [CGPoint](repeating: .zero, count: n)
-        CTRunGetGlyphs(run, CFRange(location: 0, length: n), &glyphs)
-        CTRunGetPositions(run, CFRange(location: 0, length: n), &pos)
-        for i in 0..<n {
-            if let g = CTFontCreatePathForGlyph(runFont, glyphs[i], nil) {
-                path.addPath(g, transform: CGAffineTransform(translationX: pos[i].x, y: pos[i].y))
-            }
-        }
-    }
-    return path
-}
-
-/// puts a glyph path (y up, baseline at 0) at (x, baseline) in a y-down context.
-func place(_ p: CGPath, _ x: CGFloat, _ baseline: CGFloat) -> CGPath {
-    var t = CGAffineTransform(translationX: x, y: baseline).scaledBy(x: 1, y: -1)
-    return p.copy(using: &t)!
-}
-
-/// the wordmark: a clean title with a faint lit edge and a soft, low shadow.
-func wordmark(_ ctx: CGContext, _ text: CGPath, light: Bool, size: CGFloat) {
-    let box = text.boundingBox
-    let px = size / 188
-    ctx.saveGState()
-    ctx.setShadow(
-        offset: CGSize(width: 0, height: 3 * px), blur: 9 * px, color: rgb(light ? 0x000040 : 0x000000, light ? 0.18 : 0.4))
-    ctx.addPath(text)
-    ctx.setFillColor(rgb(light ? 0x1C2A9A : 0x00002A))
-    ctx.fillPath()
-    ctx.restoreGState()
-    // a faint 1 pixel lit edge up and to the left
-    var up = CGAffineTransform(translationX: -1.2 * px, y: -1.2 * px)
-    ctx.addPath(text.copy(using: &up)!)
-    ctx.setFillColor(rgb(0xFFFFFF, light ? 0.55 : 0.45))
-    ctx.fillPath()
-    let face = light
-        ? gradient([(0, 0x4A5CE8), (0.5, 0x0A1A8C), (1, 0x00004A)])
-        : gradient([(0, 0xFFFFFF), (0.45, 0xD2E0FF), (1, 0x6F8FE0)])
-    fill(ctx, text, face, CGPoint(x: 0, y: box.minY), CGPoint(x: 0, y: box.maxY))
-}
-
-// MARK: the banner
-
-/// a thin gold rule with a small diamond in the middle.
-func goldRule(_ ctx: CGContext, _ x1: CGFloat, _ x2: CGFloat, _ y: CGFloat, _ scale: CGFloat, light: Bool) {
-    let color = light ? goldDark : gold
-    let mid = (x1 + x2) / 2
-    ctx.setFillColor(rgb(color))
-    ctx.fill(CGRect(x: x1, y: y - scale, width: (x2 - x1) / 2 - 16 * scale, height: 2 * scale))
-    ctx.fill(CGRect(x: mid + 16 * scale, y: y - scale, width: (x2 - x1) / 2 - 16 * scale, height: 2 * scale))
-    flat(ctx, poly([(mid, y - 7 * scale), (mid + 9 * scale, y), (mid, y + 7 * scale), (mid - 9 * scale, y)]), color)
-}
-
-func banner(_ scale: CGFloat, light: Bool) -> CGContext {
-    let w = 1280 * scale
-    let h = 400 * scale
-    let ctx = canvas(Int(w), Int(h))
-    if !light {
-        navy(ctx, w, h, scale: scale, glow: CGPoint(x: 250 * scale, y: 190 * scale))
-        stars(
-            ctx, w, h, count: 70, scale: scale, seed: 7,
-            avoid: CGRect(x: 420 * scale, y: 60 * scale, width: 800 * scale, height: 300 * scale))
-    }
-    shadowAlpha = light ? 0.10 : 0.28
-    emblem(ctx, 52 * scale, 30 * scale, 340 * scale)
-    shadowAlpha = 0.28
-    let size = 176 * scale
-    let word = place(wordPath("LANlord", size: size), 436 * scale, 238 * scale)
-    wordmark(ctx, word, light: light, size: size)
-    goldRule(ctx, 436 * scale, 1160 * scale, 76 * scale, scale, light: light)
-    goldRule(ctx, 436 * scale, 1160 * scale, 268 * scale, scale, light: light)
-    // the tagline in small capitals, italic and widely spaced
-    let tag = place(
-        wordPath("ALL YOUR LAN ARE BELONG TO YOU", size: 30 * scale, italic: true, spacing: 0.16), 446 * scale,
-        326 * scale)
-    ctx.addPath(tag)
-    ctx.setFillColor(rgb(light ? 0x6A5210 : 0xE6D59A, 0.95))
-    ctx.fillPath()
-    return ctx
-}
-
 // MARK: the setup panel (the tall starry strip beside the nt setup wizard)
 
 func setupPanel(_ scale: CGFloat) -> CGContext {
@@ -435,6 +311,222 @@ func tile(_ size: CGFloat, margin: CGFloat, thick: CGFloat = 1) -> CGContext {
     ctx.restoreGState()
     let e = box.width * 0.8
     emblem(ctx, box.midX - e / 2, box.minY + box.height * 0.1, e, thick: thick)
+    return ctx
+}
+
+// MARK: the social avatar
+
+/// the same emblem on the starry navy, full bleed, with everything inside the inscribed circle.
+func social(_ size: CGFloat) -> CGContext {
+    let ctx = canvas(Int(size), Int(size))
+    ctx.drawLinearGradient(
+        gradient([(0, 0x2A3CD4), (0.35, 0x0A1A96), (1, 0x00001E)]), start: .zero,
+        end: CGPoint(x: size * 0.8, y: size), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+    stars(ctx, size, size, count: 30, scale: size / 1024, seed: 5)
+    let e = size * 0.86
+    emblem(ctx, size / 2 - e / 2, size / 2 - e * 0.54, e)
+    return ctx
+}
+
+// MARK: a preview of the icon at every size, on light gray and on dark
+
+/// draws `src` at (x, y), scaled, upright; `smooth` is off for the pixel icons.
+func blit(_ dst: CGContext, _ src: CGContext, _ x: CGFloat, _ y: CGFloat, scale: CGFloat = 1, smooth: Bool = true) {
+    let w = CGFloat(src.width) * scale
+    let h = CGFloat(src.height) * scale
+    dst.saveGState()
+    dst.interpolationQuality = smooth ? .high : .none
+    dst.translateBy(x: x, y: y + h)
+    dst.scaleBy(x: 1, y: -1)
+    dst.draw(src.makeImage()!, in: CGRect(x: 0, y: 0, width: w, height: h))
+    dst.restoreGState()
+}
+
+func iconStrip() -> CGContext {
+    let ctx = canvas(1600, 560)
+    ctx.setFillColor(rgb(0xC0C0C0))
+    ctx.fill(CGRect(x: 0, y: 0, width: 1600, height: 560))
+    ctx.setFillColor(rgb(0x14141C))
+    ctx.fill(CGRect(x: 560, y: 280, width: 1040, height: 280))
+    blit(ctx, tile(512, margin: 0.098), 24, 24)
+    for row in [0, 1] as [CGFloat] {
+        let y = row * 280
+        blit(ctx, tile(256, margin: 0.098), 590, y + 12)
+        blit(ctx, tile(64, margin: 0.04), 890, y + 100)
+        blit(ctx, pixelIcon32(), 980, y + 116, smooth: false)
+        blit(ctx, pixelIcon16(), 1040, y + 124, smooth: false)
+        blit(ctx, pixelIcon32(), 1100, y + 92, scale: 3, smooth: false)
+        blit(ctx, pixelIcon16(), 1230, y + 108, scale: 4, smooth: false)
+        blit(ctx, tile(48, margin: 0.03, thick: 2.2), 1330, y + 116)
+        blit(ctx, tile(48, margin: 0.03, thick: 2.2), 1400, y + 92, scale: 2)
+    }
+    return ctx
+}
+
+// MARK: the installer's wallpaper: a faded damask, navy on navy
+
+let wallBase: UInt32 = 0x00004E
+let wallInk: UInt32 = 0x0C1064
+let wallN: CGFloat = 384
+
+/// draws `motif` at each spot and at the neighbouring copies, so the tile wraps without a seam.
+func repeatMotif(_ ctx: CGContext, _ spots: [(CGFloat, CGFloat)], _ motif: (CGContext) -> Void) {
+    for (x, y) in spots {
+        for dx in [-wallN, 0, wallN] {
+            for dy in [-wallN, 0, wallN] {
+                ctx.saveGState()
+                ctx.translateBy(x: x + dx, y: y + dy)
+                motif(ctx)
+                ctx.restoreGState()
+            }
+        }
+    }
+}
+
+/// the faintest hint of gold, on the crown only.
+func goldHint(_ ctx: CGContext, _ path: CGPath) {
+    ctx.addPath(path)
+    ctx.setFillColor(rgb(gold, 0.10))
+    ctx.fillPath()
+}
+
+func smallCrown() -> CGPath {
+    poly([(-24, -128), (-28, -156), (-11, -142), (0, -162), (11, -142), (28, -156), (24, -128)])
+}
+
+/// pattern a: a classic damask motif: an ogee frame round a small flower, four leaves and a crown above.
+func damask(_ ctx: CGContext) {
+    ctx.scaleBy(x: 0.8, y: 0.8)
+    let ogee = CGMutablePath()
+    ogee.move(to: CGPoint(x: 0, y: -122))
+    ogee.addCurve(to: CGPoint(x: 64, y: 0), control1: CGPoint(x: 40, y: -94), control2: CGPoint(x: 64, y: -48))
+    ogee.addCurve(to: CGPoint(x: 0, y: 122), control1: CGPoint(x: 64, y: 48), control2: CGPoint(x: 38, y: 92))
+    ogee.addCurve(to: CGPoint(x: -64, y: 0), control1: CGPoint(x: -38, y: 92), control2: CGPoint(x: -64, y: 48))
+    ogee.addCurve(to: CGPoint(x: 0, y: -122), control1: CGPoint(x: -64, y: -48), control2: CGPoint(x: -40, y: -94))
+    ogee.closeSubpath()
+    flat(ctx, ogee, wallInk)
+    var inner = CGAffineTransform(scaleX: 0.62, y: 0.62)
+    flat(ctx, ogee.copy(using: &inner)!, wallBase)
+    flat(ctx, circle(0, 0, 14), wallInk)
+    for a in 0..<4 {
+        let angle = CGFloat(a) * .pi / 2
+        flat(ctx, ellipse(cos(angle) * 26, sin(angle) * 26, a % 2 == 0 ? 12 : 7, a % 2 == 0 ? 7 : 12), wallInk)
+    }
+    // four leaves round the frame, two up and two down
+    for m in [1, -1] as [CGFloat] {
+        for v in [1, -1] as [CGFloat] {
+            let leaf = CGMutablePath()
+            leaf.move(to: CGPoint(x: 58 * m, y: 22 * v))
+            leaf.addCurve(to: CGPoint(x: 88 * m, y: 128 * v), control1: CGPoint(x: 98 * m, y: 34 * v), control2: CGPoint(x: 106 * m, y: 88 * v))
+            leaf.addCurve(to: CGPoint(x: 58 * m, y: 22 * v), control1: CGPoint(x: 70 * m, y: 90 * v), control2: CGPoint(x: 54 * m, y: 64 * v))
+            leaf.closeSubpath()
+            flat(ctx, leaf, wallInk)
+        }
+    }
+    flat(ctx, smallCrown(), wallInk)
+    goldHint(ctx, smallCrown())
+    flat(ctx, poly([(0, 128), (14, 142), (0, 156), (-14, 142)]), wallInk)
+}
+
+/// pattern b: a fleur-de-lis: a pointed centre petal, two curling side petals, a band and a lower petal.
+func fleur(_ ctx: CGContext) {
+    ctx.scaleBy(x: 0.7, y: 0.7)
+    let petal = CGMutablePath()
+    petal.move(to: CGPoint(x: 0, y: -124))
+    petal.addCurve(to: CGPoint(x: 0, y: 14), control1: CGPoint(x: 36, y: -84), control2: CGPoint(x: 34, y: -30))
+    petal.addCurve(to: CGPoint(x: 0, y: -124), control1: CGPoint(x: -34, y: -30), control2: CGPoint(x: -36, y: -84))
+    flat(ctx, petal, wallInk)
+    flat(ctx, ellipse(0, -60, 5, 34), wallBase)
+    for m in [1, -1] as [CGFloat] {
+        let side = CGMutablePath()
+        side.move(to: CGPoint(x: 8 * m, y: -10))
+        side.addCurve(to: CGPoint(x: 92 * m, y: -56), control1: CGPoint(x: 34 * m, y: -64), control2: CGPoint(x: 76 * m, y: -86))
+        side.addCurve(to: CGPoint(x: 78 * m, y: 8), control1: CGPoint(x: 112 * m, y: -30), control2: CGPoint(x: 104 * m, y: 0))
+        side.addCurve(to: CGPoint(x: 12 * m, y: 22), control1: CGPoint(x: 56 * m, y: 22), control2: CGPoint(x: 30 * m, y: 16))
+        side.closeSubpath()
+        flat(ctx, side, wallInk)
+    }
+    flat(ctx, box(-40, 16, 80, 16), wallInk)
+    let low = CGMutablePath()
+    low.move(to: CGPoint(x: 0, y: 38))
+    low.addCurve(to: CGPoint(x: 0, y: 108), control1: CGPoint(x: 18, y: 56), control2: CGPoint(x: 16, y: 80))
+    low.addCurve(to: CGPoint(x: 0, y: 38), control1: CGPoint(x: -16, y: 80), control2: CGPoint(x: -18, y: 56))
+    flat(ctx, low, wallInk)
+}
+
+/// a pair of mirrored scrolls, the scrollwork between the fleurs.
+func scrolls(_ ctx: CGContext) {
+    ctx.scaleBy(x: 0.7, y: 0.7)
+    for m in [1, -1] as [CGFloat] {
+        let spiral = CGMutablePath()
+        var t: CGFloat = 0
+        var first = true
+        while t < 3.2 * .pi {
+            let r = 24 * (1 - t / (3.6 * .pi)) + 3
+            let pt = CGPoint(x: m * (22 + r * cos(t)), y: r * sin(t))
+            if first { spiral.move(to: pt); first = false } else { spiral.addLine(to: pt) }
+            t += 0.12
+        }
+        ctx.addPath(spiral)
+        ctx.setStrokeColor(rgb(wallInk))
+        ctx.setLineWidth(7)
+        ctx.setLineCap(.round)
+        ctx.strokePath()
+    }
+}
+
+func diamond(_ ctx: CGContext) {
+    flat(ctx, poly([(0, -16), (11, 0), (0, 16), (-11, 0)]), wallInk)
+}
+
+/// one seamless tile of the wallpaper in pattern "a" (damask, half-drop repeat) or "b" (fleur-de-lis grid).
+func wallTile(_ style: String) -> CGContext {
+    let ctx = canvas(Int(wallN), Int(wallN))
+    ctx.setFillColor(rgb(wallBase))
+    ctx.fill(CGRect(x: 0, y: 0, width: wallN, height: wallN))
+    if style == "b" {
+        repeatMotif(ctx, [(96, 96), (288, 96), (96, 288), (288, 288)], fleur)
+        repeatMotif(ctx, [(192, 96), (192, 288), (0, 96), (0, 288)], scrolls)
+        repeatMotif(ctx, [(192, 192), (0, 192), (192, 0), (0, 0)], diamond)
+    } else {
+        repeatMotif(ctx, [(96, 192), (288, 0)], damask)
+        repeatMotif(ctx, [(96, 0), (288, 192)], diamond)
+    }
+    return ctx
+}
+
+/// the full 1920 x 1080 wallpaper: the tile repeated, a soft darker vignette toward the edges, a slight dither.
+func wallpaper(_ tile: CGContext) -> CGContext {
+    let w: CGFloat = 1920
+    let h: CGFloat = 1080
+    let ctx = canvas(1920, 1080)
+    var y: CGFloat = 0
+    while y < h {
+        var x: CGFloat = 0
+        while x < w {
+            blit(ctx, tile, x, y)
+            x += wallN
+        }
+        y += wallN
+    }
+    let vignette = CGGradient(
+        colorsSpace: space, colors: [rgb(0x000010, 0), rgb(0x000010, 0.6)] as CFArray, locations: [0, 1])!
+    let centre = CGPoint(x: w / 2, y: h / 2)
+    ctx.drawRadialGradient(
+        vignette, startCenter: centre, startRadius: h * 0.3, endCenter: centre, endRadius: w * 0.62,
+        options: [.drawsAfterEndLocation])
+    ctx.setFillColor(rgb(0x000000, 0.07))
+    var row = 0
+    var yy: CGFloat = 0
+    while yy < h {
+        var xx: CGFloat = row % 2 == 0 ? 0 : 2
+        while xx < w {
+            ctx.fill(CGRect(x: xx, y: yy, width: 2, height: 2))
+            xx += 4
+        }
+        yy += 2
+        row += 1
+    }
     return ctx
 }
 
@@ -627,19 +719,28 @@ func ico(_ images: [(Int, Data)]) -> Data {
 }
 
 emblemStyle = ProcessInfo.processInfo.environment["EMBLEM"] ?? "b"
+let wallStyle = ProcessInfo.processInfo.environment["BACKGROUND"] ?? "b"
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "assets"
 let ui = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : "crates/ui/assets"
 
-save(banner(1, light: false), "\(out)/logo.png")
-save(banner(1, light: true), "\(out)/logo-light.png")
 save(setupPanel(1), "\(out)/setup-panel.png")
 save(setupPanel(2), "\(out)/setup-panel@2x.png")
 save(setupPanel(2), "\(ui)/setup-panel.png")
+
+// the installer's wallpaper: the chosen pattern as a seamless tile and as a full screen
+let chosen = wallTile(wallStyle)
+save(chosen, "\(out)/setup-tile.png")
+save(chosen, "\(ui)/setup-tile.png")
+save(wallpaper(chosen), "\(out)/setup-background.png")
 
 // the macos icon has a margin around the tile; the windows and window icons nearly fill it
 save(tile(512, margin: 0.098), "\(out)/icon-512.png")
 save(tile(512, margin: 0.04), "\(ui)/icon.png")
 save(pixelIcon32(), "\(out)/icon-32.png")
+
+// the same art as a social avatar: square, with everything inside the inscribed circle
+save(social(1024), "\(out)/social.png")
+save(social(400), "\(out)/social-400.png")
 
 let iconset = "\(out)/icon.iconset"
 try? FileManager.default.removeItem(atPath: iconset)
@@ -662,10 +763,14 @@ entries.append((32, pngData(pixelIcon32())))
 entries.append((48, pngData(tile(48, margin: 0.03, thick: 2.2))))
 entries.append((256, pngData(tile(256, margin: 0.03))))
 try? ico(entries).write(to: URL(fileURLWithPath: "\(out)/icon.ico"))
+
+// optional: a folder to leave previews in (the icon at every size, both wallpaper patterns)
 if CommandLine.arguments.count > 3 {
     let prev = CommandLine.arguments[3]
     save(scaled(pixelIcon16(), to: 256), "\(prev)/zoom-16.png")
     save(scaled(pixelIcon32(), to: 256), "\(prev)/zoom-32.png")
-    save(tile(48, margin: 0.03, thick: 2.2), "\(prev)/icon-48.png")
+    save(iconStrip(), "\(prev)/icon-preview.png")
+    save(wallpaper(wallTile("a")), "\(prev)/setup-bg-a.png")
+    save(wallpaper(wallTile("b")), "\(prev)/setup-bg-b.png")
 }
-print("wrote the logo and icons to \(out)")
+print("wrote the icons and the setup artwork to \(out)")
