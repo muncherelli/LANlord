@@ -114,6 +114,7 @@ impl Form {
                 room: if field.secret { 176.0 } else { 10.0 },
                 masked: field.secret && !field.shown,
                 focus: i == 0 && !self.focused,
+                hint: String::new(),
                 edit: Box::new(move |text| FormMsg::Edit(i, text)),
                 enter: None,
             }];

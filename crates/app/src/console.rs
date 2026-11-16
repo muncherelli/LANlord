@@ -55,6 +55,7 @@ impl Console {
                 .iter()
                 .map(|l| (l.kind, l.text.clone()))
                 .collect(),
+            height: None,
         }]
     }
 }

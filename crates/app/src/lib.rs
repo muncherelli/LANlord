@@ -3,6 +3,7 @@
 //! the actions; each front end only draws that description and turns input back into
 //! actions.
 
+pub mod command_panel;
 pub mod console;
 pub mod demo_clock;
 pub mod desktop;

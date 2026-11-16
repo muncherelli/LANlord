@@ -55,6 +55,7 @@ impl Prompt {
                 room: 10.0,
                 masked: self.masked,
                 focus: !self.focused,
+                hint: String::new(),
                 edit: Box::new(PromptMsg::Edit),
                 enter: Some(PromptMsg::Ok),
             },

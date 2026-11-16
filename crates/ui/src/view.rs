@@ -130,17 +130,23 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             });
             None
         }
-        Node::Log { id, lines } => {
-            let height = controls::fill_height(ui);
+        Node::Log { id, lines, height } => {
+            let (max, min) = match height {
+                Some(height) => (*height, height - 20.0),
+                None => {
+                    let fill = controls::fill_height(ui);
+                    (fill, fill)
+                }
+            };
             theme::sunken(ui, BLACK, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt(*id)
                     .stick_to_bottom(true)
-                    .max_height(height)
+                    .max_height(max)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.set_min_height(height);
+                        ui.set_min_height(min);
                         for (kind, text) in lines {
                             let line = RichText::new(text.as_str())
                                 .monospace()
@@ -262,6 +268,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             room,
             masked,
             focus,
+            hint,
             edit,
             enter,
         } => {
@@ -271,6 +278,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 ui.add(
                     TextEdit::singleline(&mut text)
                         .password(*masked)
+                        .hint_text(hint.as_str())
                         .desired_width(width)
                         .frame(egui::Frame::new())
                         .margin(egui::Margin::ZERO),
@@ -290,6 +298,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             .show(ui, |ui| show(ui, body))
             .body_returned
             .flatten(),
+        Node::Disabled(body) => ui.add_enabled_ui(false, |ui| show(ui, body)).inner,
         Node::Warning(text) => {
             ui.colored_label(egui::Color32::from_rgb(160, 0, 0), text.as_str());
             None

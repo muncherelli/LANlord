@@ -58,10 +58,12 @@ pub enum Node<M> {
         lines: Vec<String>,
         height: f32,
     },
-    /// the black console: coloured lines that fill the window and follow the newest one.
+    /// the black console: coloured lines that follow the newest one, `height` tall or filling
+    /// the window when `None`.
     Log {
         id: &'static str,
         lines: Vec<(Kind, String)>,
+        height: Option<f32>,
     },
     /// a one-column list in a white box; clicking an item sends `select(index)`. `empty` is
     /// shown when there are no items.
@@ -109,6 +111,8 @@ pub enum Node<M> {
         room: f32,
         masked: bool,
         focus: bool,
+        /// grey text shown while the field is empty.
+        hint: String,
         edit: Box<dyn Fn(String) -> M>,
         /// what pressing Enter in the field sends, if anything.
         enter: Option<M>,
@@ -120,6 +124,8 @@ pub enum Node<M> {
         title: String,
         body: Vec<Node<M>>,
     },
+    /// nodes shown greyed out and not clickable.
+    Disabled(Vec<Node<M>>),
     /// a line of red text, for input that was refused.
     Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.
