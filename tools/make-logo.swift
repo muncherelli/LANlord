@@ -279,24 +279,24 @@ func topHat(_ ctx: CGContext) {
 }
 
 /// a thin gold monocle round a light on the front, with a short chain and a bead.
-func monocle(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat) {
+func monocle(_ ctx: CGContext, _ x: CGFloat, _ y: CGFloat, chain length: CGFloat = 1) {
     stroke(ctx, CGPath(ellipseIn: CGRect(x: x - 46, y: y - 46, width: 92, height: 92), transform: nil), gold, 11)
     let chain = CGMutablePath()
     chain.move(to: CGPoint(x: x + 33, y: y + 33))
-    chain.addQuadCurve(to: CGPoint(x: x + 70, y: y + 100), control: CGPoint(x: x + 82, y: y + 52))
+    chain.addQuadCurve(to: CGPoint(x: x + 33 + 37 * length, y: y + 33 + 67 * length), control: CGPoint(x: x + 33 + 49 * length, y: y + 33 + 19 * length))
     stroke(ctx, chain, gold, 6)
-    flat(ctx, circle(x + 70, y + 105, 9), gold)
+    flat(ctx, circle(x + 33 + 37 * length, y + 33 + 72 * length, 9), gold)
 }
 
 /// a gold watch chain draped across the front, with the watch hanging at the lowest point.
 func watchChain(_ ctx: CGContext) {
     let chain = CGMutablePath()
-    chain.move(to: CGPoint(x: 352, y: 524))
-    chain.addQuadCurve(to: CGPoint(x: 508, y: 524), control: CGPoint(x: 430, y: 652))
+    chain.move(to: CGPoint(x: 362, y: 556))
+    chain.addQuadCurve(to: CGPoint(x: 500, y: 556), control: CGPoint(x: 430, y: 672))
     stroke(ctx, chain, gold, 6)
-    flat(ctx, circle(430, 592, 20), gold)
-    flat(ctx, circle(430, 592, 9), goldDark)
-    stroke(ctx, segment(430, 574, 430, 584), gold, 5)
+    flat(ctx, circle(430, 618, 20), gold)
+    flat(ctx, circle(430, 618, 9), goldDark)
+    stroke(ctx, segment(430, 600, 430, 610), gold, 5)
 }
 
 /// a walking cane leaning beside the tower, with a gold ball handle.
@@ -307,29 +307,62 @@ func cane(_ ctx: CGContext) {
     flat(ctx, circle(780, 386, 9), 0xF4DC86)
 }
 
-/// the tower in a velvet smoking jacket: lapel edges with gold piping, a shawl collar,
-/// a watch chain across the bays, a monocle, a top hat and a leaning cane.
+/// two flat, deadpan eyes on a recessed plate on the upper front, one eyebrow a little raised.
+func eyes(_ ctx: CGContext) {
+    flat(ctx, CGPath(roundedRect: CGRect(x: 368, y: 384, width: 124, height: 76), cornerWidth: 14, cornerHeight: 14, transform: nil), 0xB3B9CF)
+    for x in [396, 464] as [CGFloat] {
+        flat(ctx, circle(x, 422, 25), 0xFFFFFF)
+        flat(ctx, circle(x + 6, 426, 11), 0x1A1A26)
+    }
+    stroke(ctx, segment(438, 372, 492, 358), 0x2A2A3C, 8)
+}
+
+/// the tower in a loose velvet smoking jacket: it hangs open down the middle with a shawl collar
+/// piped in gold, uneven hems, one side slipping off the shoulder, and a gold cord with tassels.
 func jacketed(_ ctx: CGContext, _ jacket: Robe, shadow: Bool) {
     if shadow { ground(ctx) }
     flat(ctx, poly([(300, 330), (560, 330), (560, 900), (300, 900)]), 0xD7DBE8)
     flat(ctx, poly([(560, 330), (700, 268), (700, 838), (560, 900)]), jacket.side)
     flat(ctx, poly([(300, 330), (440, 268), (700, 268), (560, 330)]), jacket.top)
-    flat(ctx, box(300, 330, 50, 570), jacket.front)
-    flat(ctx, box(510, 330, 50, 570), jacket.front)
-    flat(ctx, box(346, 470, 6, 430), gold)
-    flat(ctx, box(508, 470, 6, 430), gold)
     for x in [600, 640, 676] as [CGFloat] {
         let top = 330 - (x - 560) * (62.0 / 140.0)
-        stroke(ctx, segment(x, top + 70, x, top + 520), jacket.top, 7, alpha: 0.55)
+        stroke(ctx, segment(x, top + 340, x, top + 560), jacket.front, 7, alpha: 0.45)
     }
-    bays(ctx, from: 504, step: 70, count: 3)
-    // the shawl collar: a V of velvet across the top, piped in gold
-    flat(ctx, poly([(300, 330), (560, 330), (430, 478)]), jacket.top)
-    stroke(ctx, segment(300, 332, 430, 478), gold, 8)
-    stroke(ctx, segment(560, 332, 430, 478), gold, 8)
-    flat(ctx, box(300, 326, 260, 8), gold)
+    bays(ctx, from: 520, step: 66, count: 3)
+    // the right side has slipped off the shoulder and hangs over the side face
+    flat(ctx, poly([(560, 338), (652, 304), (672, 410), (640, 520), (560, 566)]), jacket.front)
+    stroke(ctx, segment(560, 566, 640, 520), gold, 5)
+    stroke(ctx, segment(640, 520, 672, 410), gold, 5)
+    // the jacket hangs open: a panel down each side of the front with an uneven hem
+    flat(ctx, poly([(300, 330), (352, 330), (358, 520), (374, 700), (378, 884), (322, 898), (300, 888)]), jacket.front)
+    flat(ctx, poly([(560, 336), (508, 330), (504, 520), (490, 700), (486, 862), (540, 876), (560, 866)]), jacket.front)
+    stroke(ctx, segment(352, 330, 358, 520), gold, 6)
+    stroke(ctx, segment(358, 520, 378, 884), gold, 6)
+    stroke(ctx, segment(508, 330, 504, 520), gold, 6)
+    stroke(ctx, segment(504, 520, 486, 862), gold, 6)
+    stroke(ctx, segment(300, 890, 378, 886), gold, 6)
+    stroke(ctx, segment(486, 864, 560, 868), gold, 6)
+    // the shawl collar hangs open at the top, piped in gold
+    flat(ctx, poly([(300, 330), (374, 330), (360, 498), (300, 520)]), jacket.top)
+    flat(ctx, poly([(560, 330), (486, 330), (500, 498), (560, 520)]), jacket.top)
+    stroke(ctx, segment(374, 330, 360, 498), gold, 7)
+    stroke(ctx, segment(486, 330, 500, 498), gold, 7)
+    stroke(ctx, segment(360, 498, 300, 520), gold, 6)
+    stroke(ctx, segment(500, 498, 560, 520), gold, 6)
+    eyes(ctx)
+    // a loosely knotted gold cord with tassels, hanging to one side
+    let cord = CGMutablePath()
+    cord.move(to: CGPoint(x: 376, y: 704))
+    cord.addQuadCurve(to: CGPoint(x: 490, y: 710), control: CGPoint(x: 430, y: 734))
+    stroke(ctx, cord, gold, 9)
+    flat(ctx, circle(470, 718, 16), gold)
+    flat(ctx, circle(470, 718, 6), goldDark)
+    stroke(ctx, segment(470, 730, 482, 804), gold, 7)
+    stroke(ctx, segment(470, 730, 450, 794), gold, 7)
+    flat(ctx, poly([(476, 800), (490, 802), (496, 834), (472, 832)]), gold)
+    flat(ctx, poly([(443, 790), (457, 792), (460, 824), (438, 820)]), gold)
     watchChain(ctx)
-    monocle(ctx, 374, 671)
+    monocle(ctx, 396, 422, chain: 0.5)
     stroke(ctx, segment(300, 330, 440, 268), 0xFFFFFF, 6, alpha: 0.85)
     topHat(ctx)
     cane(ctx)
@@ -629,14 +662,16 @@ func tileBase(_ p: inout Pix) {
 }
 
 let towerFront: UInt32 = 0xD7DBE8
+let facePlate: UInt32 = 0xB3B9CF
 let bay: UInt32 = 0x1F2A6B
 let led: UInt32 = 0x3FD07A
 let ermine: UInt32 = 0xF6F6FA
 let spot: UInt32 = 0x1A1A26
 let hatBlack: UInt32 = 0x262634
 let hatBrim: UInt32 = 0x1A1A26
+let pupil: UInt32 = 0x1A1A26
 
-/// what the current style wears: the cloth, whether it is an ermine robe, and whether it has a hat.
+/// what the current style wears: the cloth, whether it is an ermine robe, and whether it has a hat and eyes.
 func look() -> (cloth: Robe, ermine: Bool, hat: Bool) {
     switch emblemStyle {
     case "purple": return (purple, true, false)
@@ -645,7 +680,7 @@ func look() -> (cloth: Robe, ermine: Bool, hat: Bool) {
     }
 }
 
-/// the 32 pixel tower: the cloth colour down both edges with gold trim, a collar, bays, a monocle and a hat.
+/// the 32 pixel tower: the cloth colour down both edges with gold trim, deadpan eyes, a monocle and a hat.
 func pixelIcon32() -> CGContext {
     let w = look()
     var p = Pix(32, 32)
@@ -657,33 +692,45 @@ func pixelIcon32() -> CGContext {
     for (x, y, width) in [(9, 10, 12), (10, 9, 13), (12, 8, 12)] { p.rect(x, y, width, 1, w.cloth.top) }
     p.rect(9, 11, 2, 17, w.cloth.front)
     p.rect(18, 11, 2, 17, w.cloth.front)
-    p.rect(11, 15, 1, 13, gold)
-    p.rect(18, 15, 1, 13, gold)
-    for y in [18, 21, 24] {
-        p.rect(12, y, 6, 2, bay)
-        p[12, y] = led
-    }
     if w.ermine {
+        p.rect(11, 14, 1, 14, gold)
+        p.rect(18, 14, 1, 14, gold)
+        for y in [18, 21, 24] {
+            p.rect(12, y, 6, 2, bay)
+            p[12, y] = led
+        }
         p.rect(9, 11, 11, 3, ermine)
         p.rect(20, 10, 4, 3, 0xD6D6E6)
         for x in [11, 14, 17] { p[x, 12] = spot }
         p.rect(9, 13, 11, 1, gold)
         p.rect(14, 12, 2, 3, gold)
         p[9, 10] = 0xFFFFFF
-    } else {
-        // a shawl collar: a V of cloth with a gold edge
-        for (i, y) in (11...16).enumerated() { p.rect(9 + i, y, 11 - 2 * i, 1, w.cloth.top) }
-        for (i, y) in (11...16).enumerated() {
-            p[9 + i, y] = gold
-            p[19 - i, y] = gold
-        }
-        // the watch chain across the bays
-        for (x, y) in [(11, 19), (12, 20), (13, 20), (14, 20), (15, 20), (16, 20), (17, 20), (18, 19)] { p[x, y] = gold }
+        return p.image()
     }
-    if emblemStyle != "purple" {
-        // the monocle round the lowest light
-        for (x, y) in [(11, 23), (12, 23), (13, 23), (11, 24), (13, 24), (11, 25), (12, 25), (13, 25)] { p[x, y] = gold }
+    // the collar hangs open: a short band of cloth at each top corner with a gold edge
+    p.rect(9, 11, 3, 1, w.cloth.top)
+    p.rect(9, 12, 2, 1, w.cloth.top)
+    p.rect(17, 11, 3, 1, w.cloth.top)
+    p.rect(18, 12, 2, 1, w.cloth.top)
+    p.rect(12, 11, 1, 3, gold)
+    p.rect(17, 11, 1, 3, gold)
+    // a recessed plate with two deadpan eyes: white with a dark pupil, both looking a little right
+    p.rect(12, 12, 6, 4, facePlate)
+    for x in [12, 15] {
+        p.rect(x, 13, 2, 2, 0xFFFFFF)
+        p[x + 1, 14] = pupil
     }
+    // the monocle round the left eye
+    for (x, y) in [(11, 12), (12, 12), (13, 12), (14, 12), (11, 13), (14, 13), (11, 14), (14, 14), (11, 15), (12, 15), (13, 15), (14, 15)] {
+        p[x, y] = gold
+    }
+    for y in [18, 21, 24] {
+        p.rect(12, y, 6, 2, bay)
+        p[12, y] = led
+    }
+    // a gold cord with a tassel hanging to one side
+    p.rect(12, 26, 6, 1, gold)
+    p[17, 27] = gold
     if w.hat {
         p.rect(10, 7, 12, 1, hatBrim)
         p.rect(12, 2, 8, 5, hatBlack)
@@ -709,23 +756,27 @@ func pixelIcon16() -> CGContext {
         p[7, 5] = spot
         p.rect(5, 7, 5, 1, gold)
         p[7, 6] = gold
-    } else {
-        p.rect(5, 5, 5, 1, w.cloth.top)
-        p.rect(6, 6, 3, 1, w.cloth.top)
-        p[7, 7] = gold
+        for y in [8, 10, 12] {
+            p.rect(6, y, 3, 1, bay)
+            p[6, y] = led
+        }
+        for (x, y) in [(5, 9), (6, 9), (7, 9), (5, 10), (7, 10), (5, 11), (6, 11), (7, 11)] { p[x, y] = gold }
+        return p.image()
     }
+    // two dark eye pixels on the light face, the hat above, the jacket as a colour block with gold trim
+    p[6, 6] = pupil
+    p[8, 6] = pupil
+    p[7, 5] = w.cloth.top
     for y in [8, 10, 12] {
         p.rect(6, y, 3, 1, bay)
         p[6, y] = led
     }
-    if w.hat {
-        p.rect(5, 3, 7, 1, hatBrim)
-        p.rect(6, 1, 5, 2, hatBlack)
-        p[6, 1] = 0xB8C2F0
-        p[6, 2] = 0xB8C2F0
-    } else {
-        for (x, y) in [(5, 9), (6, 9), (7, 9), (5, 10), (7, 10), (5, 11), (6, 11), (7, 11)] { p[x, y] = gold }
-    }
+    p[5, 8] = gold
+    p[9, 8] = gold
+    p.rect(5, 3, 7, 1, hatBrim)
+    p.rect(6, 1, 5, 2, hatBlack)
+    p[6, 1] = 0xB8C2F0
+    p[6, 2] = 0xB8C2F0
     return p.image()
 }
 
@@ -801,7 +852,7 @@ if CommandLine.arguments.count > 3 {
 }
 if CommandLine.arguments.count > 4 {
     let dir = CommandLine.arguments[4]
-    for (style, name) in [("purple", "f-royal-purple"), ("crimson", "f-royal-crimson"), ("crest", "f-royal-crest")] {
+    for (style, name) in [("crimson", "g-eyes-crimson"), ("crest", "g-eyes-crest")] {
         emblemStyle = style
         save(banner(1, light: false), "\(dir)/\(name).png")
     }
