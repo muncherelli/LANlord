@@ -59,6 +59,26 @@ jobs:
       - run: cargo check -p lanlord-app --target wasm32-unknown-unknown --no-default-features --features fake --locked
       - run: cargo clippy -p lanlord-app --target wasm32-unknown-unknown --no-default-features --features fake --locked -- -D warnings
 
+  web:
+    name: web ui builds for the browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - run: cargo clippy -p lanlord-web --target wasm32-unknown-unknown --locked -- -D warnings
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: trunk@0.22.1
+      - run: tools/build-web.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-dist
+          path: target/web-dist
+
   coverage:
     runs-on: ubuntu-latest
     env:

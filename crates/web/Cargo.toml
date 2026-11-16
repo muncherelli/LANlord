@@ -1,0 +1,19 @@
+[package]
+name = "lanlord-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+
+# the browser entry only; native builds compile the placeholder drawing and its tests
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = { version = "0.3.107", features = ["Document", "Element", "HtmlCanvasElement", "Window", "console"] }
