@@ -42,6 +42,8 @@ pub fn art(id: &str) -> &'static [&'static str] {
         "console" => &data::CONSOLE,
         "settings" => &data::SETTINGS,
         "folder" => &data::FOLDER,
+        "my-server" => &data::MYSERVER,
+        "networks" => &data::NETWORKS,
         _ => &data::HOSTS,
     }
 }
@@ -58,6 +60,8 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "console" => &data::SMALL_CONSOLE,
         "settings" => &data::SMALL_SETTINGS,
         "folder" => &data::SMALL_FOLDER,
+        "my-server" => &data::SMALL_MYSERVER,
+        "networks" => &data::SMALL_NETWORKS,
         "lanlord" => &data::SMALL_LANLORD,
         "update" => &data::SMALL_UPDATE,
         "datetime" => &SMALL_CLOCK,
@@ -102,7 +106,7 @@ pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
 mod tests {
     use super::*;
 
-    const IDS: [&str; 10] = [
+    const IDS: [&str; 12] = [
         "gateway",
         "docker",
         "nt4-domain",
@@ -113,6 +117,8 @@ mod tests {
         "hosts",
         "settings",
         "folder",
+        "my-server",
+        "networks",
     ];
 
     fn check(id: &str, icon: &[&str], size: usize) {

@@ -27,6 +27,8 @@ use crate::form::Form;
 use crate::hostlist::HostList;
 use crate::icons;
 use crate::login::{Auth, LoginBox, Outcome, SignedIn};
+use crate::my_server::MyServer;
+use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
 use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
@@ -48,6 +50,8 @@ const TRAY_ICON: f32 = 22.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
     Module(usize),
+    MyServer,
+    Networks,
     Console,
     Hosts,
     Settings,
@@ -59,6 +63,8 @@ impl Target {
     fn id(self) -> &'static str {
         match self {
             Self::Module(i) => MODULES[i].id,
+            Self::MyServer => "my-server",
+            Self::Networks => "networks",
             Self::Console => "console",
             Self::Hosts => "hosts",
             Self::Settings => "settings",
@@ -69,6 +75,8 @@ impl Target {
     fn title(self) -> &'static str {
         match self {
             Self::Module(i) => MODULES[i].name,
+            Self::MyServer => "My Server",
+            Self::Networks => "Networks",
             Self::Console => "Console",
             Self::Hosts => "Hosts",
             Self::Settings => "Settings",
@@ -95,6 +103,10 @@ pub struct Desktop {
     nt4: Nt4Window,
     dns: DnsPanel,
     commands: CommandPanel,
+    my_server: MyServer,
+    networks: Networks,
+    /// a window a window asked for; it opens once all the windows are drawn.
+    open_next: Option<Target>,
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
     clock: ClockPanel,
     feed: ClockFeed,
@@ -126,7 +138,8 @@ pub struct Desktop {
 impl Desktop {
     /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `services`.
     pub fn new(services: Services, hosts_path: Option<PathBuf>) -> Self {
-        let mut icons: Vec<Target> = (0..MODULES.len()).map(Target::Module).collect();
+        let mut icons = vec![Target::MyServer, Target::Networks];
+        icons.extend((0..MODULES.len()).map(Target::Module));
         icons.extend([Target::Settings, Target::Console, Target::Hosts]);
         Self {
             icons,
@@ -141,6 +154,9 @@ impl Desktop {
             nt4: Nt4Window::default(),
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
+            my_server: MyServer::default(),
+            networks: Networks::default(),
+            open_next: None,
             clock: ClockPanel::default(),
             feed: ClockFeed::default(),
             close_requests: Vec::new(),
@@ -164,6 +180,13 @@ impl Desktop {
         self.updates = updates;
         self.dev = dev;
         self.exe = exe;
+    }
+
+    /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
+    /// can be looked at without one; the host list lives in memory only.
+    pub fn use_demo_server(&mut self) {
+        self.hosts = HostList::new(None);
+        let _ = self.hosts.add("demo@testlord");
     }
 
     /// the logon box for `host`, signing in at once with whatever the agent offers.
@@ -226,6 +249,13 @@ impl Desktop {
                 self.dev_open = true;
             } else if let Some(target) = self.icons.iter().copied().find(|t| t.id() == id) {
                 self.open(target);
+                if id == "my-server" {
+                    // @1 is the Advanced tab, @2 also asks before a purge
+                    self.my_server.tab = usize::from(tab == "1" || tab == "2");
+                    if let (true, Some(host)) = (tab == "2", self.host()) {
+                        self.my_server.ask_to_purge(&self.services, &host);
+                    }
+                }
                 if id == "nt4-domain" {
                     self.nt4.tab = match tab {
                         "1" => crate::nt4_window::Tab::Logins,
@@ -376,6 +406,15 @@ impl Desktop {
         );
     }
 
+    /// lanlord was removed from `host`: forget it and go back to the logon box.
+    fn after_purge(&mut self, host: &str) {
+        if let Some(i) = self.hosts.hosts().iter().position(|h| h == host) {
+            self.hosts.select(i);
+            let _ = self.hosts.remove_selected();
+        }
+        self.log_off();
+    }
+
     /// back to the logon box, closing the connection that was kept open for this server.
     fn log_off(&mut self) {
         let last = self.signed_in.as_ref().map(|s| s.target.clone());
@@ -424,6 +463,11 @@ impl Desktop {
         let host = self.host();
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
+        self.networks.dialog(ctx);
+        self.my_server.dialog(ctx, &self.services);
+        if let Some(host) = self.my_server.take_purged() {
+            self.after_purge(&host);
+        }
         self.confirmation(ctx);
         self.update_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
@@ -712,6 +756,8 @@ fn window_size(target: Target) -> Vec2 {
             "remote-commands" => Vec2::new(580.0, 580.0),
             _ => Vec2::new(480.0, 320.0),
         },
+        Target::MyServer => Vec2::new(440.0, 480.0),
+        Target::Networks => Vec2::new(760.0, 340.0),
         Target::Console => Vec2::new(600.0, 300.0),
         Target::Hosts => Vec2::new(380.0, 280.0),
         Target::Settings => Vec2::new(600.0, 520.0),
@@ -762,6 +808,9 @@ impl Desktop {
         close.append(&mut self.close_requests);
         windows.retain(|w| !close.contains(&w.target));
         self.windows = windows;
+        if let Some(target) = self.open_next.take() {
+            self.open(target);
+        }
         if close.contains(&Target::DateTime) {
             // what the window changed shows on the taskbar clock, and so does the server's own drift
             self.feed.refresh();
@@ -771,6 +820,20 @@ impl Desktop {
     fn contents(&mut self, ui: &mut Ui, target: Target) {
         match target {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
+            Target::MyServer => {
+                let host = self.host();
+                self.my_server.show(ui, &self.services, host.as_deref());
+            }
+            Target::Networks => {
+                let host = self.host();
+                let ask = self.networks.show(ui, &self.services, host.as_deref());
+                if ask == Some(networks_window::Ask::Dns) {
+                    self.open_next = MODULES
+                        .iter()
+                        .position(|m| m.id == "dns")
+                        .map(Target::Module);
+                }
+            }
             Target::Console => self.console_window(ui),
             Target::Hosts => self.hosts_window(ui),
             Target::Settings => {
@@ -923,6 +986,8 @@ mod login_tests;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]
+mod server_tests;
+#[cfg(test)]
 mod update_tests;
 #[cfg(test)]
 mod window_tests;
@@ -936,7 +1001,7 @@ mod tests {
     fn the_empty_desktop_draws() {
         let (mut desktop, ctx, _) = desktop();
         frames(&mut desktop, &ctx, 3);
-        assert_eq!(desktop.icons.len(), MODULES.len() + 3);
+        assert_eq!(desktop.icons.len(), MODULES.len() + 5);
         assert!(desktop.windows.is_empty());
     }
 
