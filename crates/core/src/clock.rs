@@ -859,6 +859,8 @@ esac"#,
         }
     }
 
+    // the fake gateway is a shell script, so these run where there is a shell
+    #[cfg(unix)]
     mod session {
         use super::*;
         use crate::testgw::{identity, no_password, Gateway};

@@ -2,7 +2,7 @@
 //! server: set `LANLORD_FAKE_CLOCK=1`, or `LANLORD_FAKE_CLOCK=container` to see how a container
 //! (whose clock is its host's) looks. nothing is sent anywhere.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lanlord_core::clock::{Change, ClockState, Stored, Sync, ZoneNow};
@@ -42,7 +42,7 @@ fn now_secs() -> i64 {
 
 /// the demo server's clock now: real time, in whatever zone it was last set to.
 pub fn state(container: bool) -> ClockState {
-    let mut held = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut held = STATE.lock().unwrap_or_else(PoisonError::into_inner);
     let kept = held.get_or_insert_with(|| ClockState {
         timezone: "America/New_York".into(),
         utc_secs: 0,
@@ -105,7 +105,7 @@ pub fn apply(change: &Change, container: bool) -> (Vec<String>, Stored) {
         current.timezone.clone_from(zone);
         said.push(format!("time zone is {zone}"));
     }
-    *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(current);
+    *STATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(current);
     (said, Stored::Yes)
 }
 
