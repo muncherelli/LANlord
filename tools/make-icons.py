@@ -500,7 +500,7 @@ def s_lanlord():
 # whichever UPDATE_ICON names, so switching is a one-line change. run with --update-sheet FILE
 # to see them all side by side.
 
-UPDATE_ICON = "round"
+UPDATE_ICON = "globe"
 
 
 def disc(g, cx, cy, r, face, hi=None, lo=None, edge="k"):
@@ -567,15 +567,59 @@ def u_info():
     return g
 
 
-def u_globe():
-    """a small globe with a yellow down arrow, like the old windows update."""
+# a coarse world map: 24 columns of longitude from -180 and 12 rows of latitude from the north pole
+LAND = [
+    "........................",
+    "...XXX....XXXXXX.XX.....",
+    "...XXXX..XXXXXXXXXXXX...",
+    "....XXX...XXXXXXXXXXX...",
+    ".....XX....XXXXXXX.XX...",
+    ".....XXX...XXXX...XX....",
+    "......XXX...XXX.........",
+    "......XX....XXX....XX...",
+    ".......X.....X.....XXX..",
+    "........................",
+    "........................",
+    "..XXXXXXXXXXXXXXXXXXXX..",
+]
+GLOBE_FRAMES = 8
+# how far the arrow has dipped on each frame: down for four frames and back
+ARROW_BOB = [0, 0, 1, 1, 1, 1, 0, 0]
+
+
+def globe_frame(i):
+    """the globe turned `i` eighths of a turn, with the yellow arrow at its place in the bob."""
     g = Grid(16)
-    disc(g, 6.5, 6.5, 6, "b", hi="c", lo="n")
-    for (x, y) in [(4, 3), (5, 3), (3, 4), (4, 4), (5, 4), (4, 5), (4, 6), (7, 8), (8, 8), (6, 9),
-                   (7, 9), (8, 9), (7, 10), (9, 5), (10, 5), (9, 6), (10, 6), (10, 7)]:
-        g.dot(x, y, "G")
-    outlined(g, arrow_pixels(9, 8, 3), "y")
+    cx = cy = 6.5
+    turn = 2 * math.pi * i / GLOBE_FRAMES
+    light = (-0.5, -0.5, 0.7)
+    for y in range(16):
+        for x in range(16):
+            d = math.hypot(x - cx, y - cy)
+            if d > 6:
+                continue
+            if d > 5:
+                g.dot(x, y, "k")
+                continue
+            nx, ny = (x - cx) / 5.2, (y - cy) / 5.2
+            nz = math.sqrt(max(0.0, 1 - nx * nx - ny * ny))
+            lon = math.atan2(nx, nz) + turn
+            lat = math.asin(max(-1.0, min(1.0, -ny)))
+            col = int(((lon + math.pi) / (2 * math.pi)) * len(LAND[0])) % len(LAND[0])
+            row = min(len(LAND) - 1, int((math.pi / 2 - lat) / math.pi * len(LAND)))
+            land = LAND[row][col] == "X"
+            shade = nx * light[0] + ny * light[1] + nz * light[2]
+            if land:
+                g.dot(x, y, "l" if shade > 0.93 else "G")
+            else:
+                g.dot(x, y, "c" if shade > 0.95 else ("n" if shade < 0.0 else "b"))
+    outlined(g, arrow_pixels(9, 8 + ARROW_BOB[i], 3), "y")
     return g
+
+
+def u_globe():
+    """a small globe with a yellow down arrow, like the old windows update (the first frame)."""
+    return globe_frame(0)
 
 
 def u_monitor():
@@ -699,9 +743,21 @@ UPDATE_CANDIDATES = {
 }
 
 
+# candidates that turn: how many frames each has and how to draw frame `i`
+ANIMATED = {"globe": (GLOBE_FRAMES, globe_frame)}
+
+
 def s_update():
-    """the update notice in the tray: the candidate UPDATE_ICON names."""
+    """the update notice in the tray: the candidate UPDATE_ICON names (the first frame)."""
     return UPDATE_CANDIDATES[UPDATE_ICON][1]()
+
+
+def update_frames():
+    """every frame of the tray icon: just one unless the chosen candidate animates."""
+    if UPDATE_ICON in ANIMATED:
+        count, draw = ANIMATED[UPDATE_ICON]
+        return [draw(i) for i in range(count)]
+    return [s_update()]
 
 
 # a 3x5 font, just enough for the labels on the contact sheet
@@ -722,6 +778,35 @@ FONT = {
     "9": [".X.", "X.X", ".XX", "..X", "XX."], "X": ["X.X", "X.X", ".X.", "X.X", "X.X"],
     " ": ["...", "...", "...", "...", "..."],
 }
+
+
+def frames_sheet(path):
+    """every frame of the tray icon at 8x, then at 1x and 2x on the taskbar gray."""
+    gray = RGB["g"]
+    frames = update_frames()
+    zoom, pad = 8, 10
+    cell_w, cell_h = 16 * zoom + 40, 16 * zoom + 70
+    cols = 4
+    rows = (len(frames) + cols - 1) // cols
+    w, h = cols * cell_w + pad, rows * cell_h + pad
+    img = [[gray] * w for _ in range(h)]
+
+    def block(x, y, art, z):
+        for j, row in enumerate(art):
+            for i, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(z):
+                        for dx in range(z):
+                            img[y + j * z + dy][x + i * z + dx] = RGB[c]
+
+    for n, frame in enumerate(frames):
+        art = frame.rows()
+        ox, oy = pad + (n % cols) * cell_w, pad + (n // cols) * cell_h
+        block(ox, oy, art, zoom)
+        block(ox, oy + 16 * zoom + 8, art, 1)
+        block(ox + 30, oy + 16 * zoom + 8, art, 2)
+    with open(path, "wb") as f:
+        f.write(png(w, h, img))
 
 
 def update_sheet(path):
@@ -802,6 +887,13 @@ def emit(path):
         out.append(f"pub(crate) const SMALL_{name}: [&str; 16] = [\n")
         out += [f'    "{r}",\n' for r in rows]
         out.append("];\n\n")
+    frames = update_frames()
+    out.append(f"pub(crate) const SMALL_UPDATE_FRAMES: [[&str; 16]; {len(frames)}] = [\n")
+    for frame in frames:
+        out.append("    [\n")
+        out += [f'        "{r}",\n' for r in frame.rows()]
+        out.append("    ],\n")
+    out.append("];\n\n")
     with open(path, "w") as f:
         f.write("".join(out).rstrip() + "\n")
 
@@ -842,6 +934,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--preview", help="write a zoomed contact sheet png here")
     ap.add_argument("--update-sheet", help="write a contact sheet of the update icon candidates here")
+    ap.add_argument("--frames-sheet", help="write every frame of the chosen update icon here")
     ap.add_argument("--zoom", type=int, default=6)
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
@@ -851,3 +944,5 @@ if __name__ == "__main__":
         preview(a.preview, a.zoom)
     if a.update_sheet:
         update_sheet(a.update_sheet)
+    if a.frames_sheet:
+        frames_sheet(a.frames_sheet)

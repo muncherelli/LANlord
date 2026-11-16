@@ -64,6 +64,14 @@ pub fn small(id: &str) -> &'static [&'static str] {
     }
 }
 
+/// how many frames the update icon in the tray has: one full turn of its globe.
+pub const UPDATE_FRAMES: usize = data::SMALL_UPDATE_FRAMES.len();
+
+/// frame `i` of the update icon, wrapping round; frame 0 is the still `small("update")`.
+pub fn update_frame(i: usize) -> &'static [&'static str] {
+    &data::SMALL_UPDATE_FRAMES[i % UPDATE_FRAMES]
+}
+
 /// draw `art` with its top-left corner at `pos`, each pixel `scale` points wide.
 pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
     for (y, row) in art.iter().enumerate() {
@@ -92,6 +100,22 @@ mod tests {
         "settings",
         "folder",
     ];
+
+    #[test]
+    fn the_update_icon_has_a_full_turn_of_frames_that_differ() {
+        assert_eq!(UPDATE_FRAMES, 8);
+        for i in 0..UPDATE_FRAMES {
+            check("update frame", update_frame(i), 16);
+        }
+        assert_eq!(update_frame(0), small("update"), "the balloon uses frame 0");
+        assert_eq!(update_frame(UPDATE_FRAMES), update_frame(0), "it wraps");
+        // a spinning globe: no two frames of the turn are the same picture
+        for a in 0..UPDATE_FRAMES {
+            for b in (a + 1)..UPDATE_FRAMES {
+                assert_ne!(update_frame(a), update_frame(b), "frames {a} and {b}");
+            }
+        }
+    }
 
     fn check(id: &str, icon: &[&str], size: usize) {
         assert_eq!(icon.len(), size, "{id}: rows");

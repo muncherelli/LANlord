@@ -18,6 +18,8 @@ use crate::theme::{self, BLACK};
 /// how long the balloon stays up in full before it starts to fade, and how long the fade takes.
 const BALLOON_FOR: Duration = Duration::from_secs(8);
 const BALLOON_FADE: Duration = Duration::from_millis(600);
+/// how long each frame of the tray icon shows: about seven a second.
+const FRAME: Duration = Duration::from_millis(140);
 /// how long the tray tooltip takes to fade once the pointer has left the shield.
 const TIP_FADE: Duration = Duration::from_millis(250);
 /// the pale yellow of a classic tooltip.
@@ -35,6 +37,16 @@ impl Clock for RealClock {
     fn now(&self) -> Duration {
         self.0.elapsed()
     }
+}
+
+/// which frame of the tray icon shows `now` after the clock started.
+fn frame_at(now: Duration) -> usize {
+    (now.as_millis() / FRAME.as_millis()) as usize % icons::UPDATE_FRAMES
+}
+
+/// is it worth drawing the next frame? not when the window is minimised or hidden behind others.
+fn awake(minimized: Option<bool>, occluded: Option<bool>) -> bool {
+    minimized != Some(true) && occluded != Some(true)
 }
 
 /// how opaque the balloon is `age` after it went up: whole, then fading, then gone.
@@ -246,12 +258,20 @@ impl Updates {
         let (rect, response) = ui.allocate_exact_size(Vec2::new(22.0, 22.0), Sense::click());
         #[cfg(test)]
         theme::probe::record(ui, "shield", rect, true);
+        // the globe turns while an update is waiting, and only then: this runs only while the
+        // shield shows, and the next frame is asked for only when the window can be seen
         icons::draw(
             ui.painter(),
             rect.left_top() + Vec2::new(3.0, 3.0),
-            icons::small("update"),
+            icons::update_frame(frame_at(self.clock.now())),
             1.0,
         );
+        let (minimized, occluded) = ui
+            .ctx()
+            .input(|i| (i.viewport().minimized, i.viewport().occluded));
+        if awake(minimized, occluded) {
+            ui.ctx().request_repaint_after(FRAME);
+        }
         self.tip_over = response.hovered();
         if self.tip_over {
             self.tip_seen = Some(self.clock.now());
@@ -582,6 +602,42 @@ mod tests {
         click(&mut updates, &ctx, "balloon-close");
         assert!(updates.balloon_since.is_none() && updates.balloon_done);
         assert!(updates.visible(), "the shield stays");
+    }
+
+    #[test]
+    fn the_tray_icon_turns_one_frame_every_fraction_of_a_second_and_wraps() {
+        assert_eq!(frame_at(Duration::ZERO), 0);
+        assert_eq!(frame_at(FRAME - Duration::from_millis(1)), 0);
+        assert_eq!(frame_at(FRAME), 1);
+        assert_eq!(frame_at(FRAME * 3), 3);
+        assert_eq!(
+            frame_at(FRAME * icons::UPDATE_FRAMES as u32),
+            0,
+            "a full turn"
+        );
+        // about seven frames a second
+        assert!((6.0..=8.0).contains(&(1000.0 / FRAME.as_millis() as f32)));
+    }
+
+    #[test]
+    fn nothing_is_scheduled_for_a_hidden_window() {
+        assert!(awake(None, None));
+        assert!(awake(Some(false), Some(false)));
+        assert!(!awake(Some(true), None));
+        assert!(!awake(None, Some(true)));
+    }
+
+    #[test]
+    fn the_shield_draws_the_frame_the_clock_asks_for() {
+        let clock = Fake::at(0);
+        let mut updates = found().with_clock(clock.clone());
+        let ctx = egui::Context::default();
+        // the shield draws without error on every frame of a full turn
+        for i in 0..icons::UPDATE_FRAMES as u64 {
+            clock.set(i * FRAME.as_millis() as u64);
+            frame(&mut updates, &ctx, Vec::new());
+            assert!(theme::probe::find(&ctx, "shield").is_some());
+        }
     }
 
     #[test]
