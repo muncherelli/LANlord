@@ -7,7 +7,8 @@ use crate::view::{Button, Dialog, Node, Size};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
-    Ok(String),
+    /// what was typed; zeroized when dropped, since it may be a password.
+    Ok(Zeroizing<String>),
     Cancel,
 }
 
@@ -101,9 +102,9 @@ impl Prompt {
             }
             PromptMsg::Submit(text) => {
                 self.input = text;
-                Some(Answer::Ok(self.input.to_string()))
+                Some(Answer::Ok(self.input.clone()))
             }
-            PromptMsg::Ok => Some(Answer::Ok(self.input.to_string())),
+            PromptMsg::Ok => Some(Answer::Ok(self.input.clone())),
             PromptMsg::Cancel => Some(Answer::Cancel),
         }
     }
@@ -121,7 +122,10 @@ mod tests {
             prompt.update(PromptMsg::Edit(Zeroizing::new("pw".into()))),
             None
         );
-        assert_eq!(prompt.update(PromptMsg::Ok), Some(Answer::Ok("pw".into())));
+        assert_eq!(
+            prompt.update(PromptMsg::Ok),
+            Some(Answer::Ok(Zeroizing::new("pw".into())))
+        );
         assert_eq!(prompt.update(PromptMsg::Cancel), Some(Answer::Cancel));
     }
 
@@ -138,6 +142,6 @@ mod tests {
         assert_eq!(field(&prompt.view()), Some((false, true)));
         // text typed in the same frame as Enter arrives with it
         let answer = prompt.update(PromptMsg::Submit(Zeroizing::new("late".into())));
-        assert_eq!(answer, Some(Answer::Ok("late".into())));
+        assert_eq!(answer, Some(Answer::Ok(Zeroizing::new("late".into()))));
     }
 }

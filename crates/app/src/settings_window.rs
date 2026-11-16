@@ -4,6 +4,8 @@
 use lanlord_core::modules::{Status, MODULES};
 use lanlord_core::settings::{secret_fields, Document, SecretField, Settings};
 
+use zeroize::Zeroizing;
+
 use crate::services::Services;
 use crate::tasks::Job;
 use crate::view::{Button, Node};
@@ -205,9 +207,10 @@ impl SettingsWindow {
     }
 
     /// the answer to `asking`: the typed value, or `None` when it was cancelled.
-    pub fn answer_secret(&mut self, value: Option<String>) {
+    pub fn answer_secret(&mut self, value: Option<Zeroizing<String>>) {
         if let (Some(path), Some(value)) = (self.asking.take(), value) {
-            self.set_update(path, value);
+            // kept until Save with the other typed secrets
+            self.set_update(path, value.to_string());
         }
     }
 
@@ -505,7 +508,7 @@ mod tests {
         let (mut editor, _, _) = setup("");
         editor.ask_secret("a.password");
         assert_eq!(editor.asking(), Some("a.password"));
-        editor.answer_secret(Some("s3".into()));
+        editor.answer_secret(Some(Zeroizing::new("s3".into())));
         assert!(editor.pending_update("a.password"));
         assert_eq!(editor.asking(), None);
         editor.ask_secret("b.password");
