@@ -1,7 +1,7 @@
 //! draws the app's layout tree (`lanlord_app::view`) with egui, in the nt4 look, and returns
 //! the message of whatever was clicked.
 
-use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, Ui};
+use eframe::egui::{self, Frame, Margin, RichText, ScrollArea, Stroke, TextEdit, Ui};
 use lanlord_app::view::{Dialog, Node};
 
 use crate::console;
@@ -208,5 +208,62 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             controls::separator(ui);
             None
         }
+        Node::Row(body) => ui.horizontal(|ui| show(ui, body)).inner,
+        Node::TextArea {
+            id,
+            value,
+            height,
+            edit,
+        } => {
+            let mut text = value.clone();
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ScrollArea::vertical()
+                    .id_salt(*id)
+                    .max_height(*height)
+                    .show(ui, |ui| {
+                        ui.add_sized(
+                            [ui.available_width(), *height],
+                            TextEdit::multiline(&mut text)
+                                .font(egui::TextStyle::Monospace)
+                                .frame(egui::Frame::NONE)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+            });
+            (text != *value).then(|| edit(text))
+        }
+        Node::Choice {
+            id,
+            current,
+            width,
+            options,
+            pick,
+        } => {
+            let mut picked = None;
+            controls::dropdown(ui, id, current, *width, |ui| {
+                for (key, label) in options {
+                    if ui
+                        .selectable_label(*label == *current, label.as_str())
+                        .clicked()
+                    {
+                        picked = Some(*key);
+                    }
+                }
+            });
+            picked.map(pick)
+        }
+        Node::Scroll {
+            id,
+            max_height,
+            body,
+        } => theme::sunken(ui, WHITE, |ui| {
+            ui.set_width(ui.available_width());
+            ScrollArea::vertical()
+                .id_salt(*id)
+                .max_height(*max_height)
+                .show(ui, |ui| show(ui, body))
+                .inner
+        }),
     }
 }

@@ -85,6 +85,29 @@ pub enum Node<M> {
     Code(String),
     /// a thin etched line across the window.
     Separator,
+    /// nodes side by side, left to right; a `Gap` is horizontal space here.
+    Row(Vec<Node<M>>),
+    /// a box of editable fixed-width text, `height` tall; each change sends `edit(new text)`.
+    TextArea {
+        id: &'static str,
+        value: String,
+        height: f32,
+        edit: fn(String) -> M,
+    },
+    /// a drop-down list showing `current`; picking an option sends `pick(its key)`.
+    Choice {
+        id: &'static str,
+        current: String,
+        width: f32,
+        options: Vec<(usize, String)>,
+        pick: fn(usize) -> M,
+    },
+    /// a white box that scrolls once its contents are taller than `max_height`.
+    Scroll {
+        id: &'static str,
+        max_height: f32,
+        body: Vec<Node<M>>,
+    },
 }
 
 impl<M> Node<M> {

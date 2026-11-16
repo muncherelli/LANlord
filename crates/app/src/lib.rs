@@ -14,6 +14,7 @@ pub mod module_window;
 pub mod my_server;
 pub mod remote;
 pub mod services;
+pub mod settings_window;
 pub mod tasks;
 pub mod view;
 pub mod wake;
