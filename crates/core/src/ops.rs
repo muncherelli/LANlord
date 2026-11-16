@@ -9,7 +9,9 @@ use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
 use crate::ssh::Session;
-use crate::{account, apply, clock, crypto, leases, logon, network, nt4, power, purge, server};
+use crate::{
+    account, apply, clock, crypto, doctor, leases, logon, network, nt4, power, purge, server,
+};
 use crate::{settings, users};
 
 /// the message when there is no key to decrypt the secrets with.
@@ -132,6 +134,7 @@ pub(crate) fn execute_with(
             Reply::ClockApplied { lines, stored }
         }
         Op::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
+        Op::Doctor => Reply::Doctor(doctor::run_with(session, ask)?),
     })
 }
 

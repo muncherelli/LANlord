@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
+use crate::doctor::Report;
 use crate::leases::Lease;
 use crate::network::Internal;
 use crate::power::{Outcome, Power};
@@ -77,6 +78,8 @@ pub enum Op {
     ClockApply { change: ClockChange },
     /// ask the time service to synchronize now.
     ClockUpdateNow,
+    /// what the gateway can do for lanlord's networks, and how to fix what it cannot.
+    Doctor,
 }
 
 /// a secret setting to change: its path in the settings and the new value.
@@ -167,6 +170,7 @@ pub enum Reply {
         lines: Vec<String>,
         stored: Stored,
     },
+    Doctor(Report),
 }
 
 /// a reply, or why there is none; what `lanlord op` prints.
@@ -280,6 +284,7 @@ mod tests {
                 },
             },
             Op::ClockUpdateNow,
+            Op::Doctor,
         ]
     }
 
@@ -287,7 +292,7 @@ mod tests {
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 23);
+        assert_eq!(ops.len(), 24);
         for op in &ops {
             round_trip(op);
         }
@@ -356,6 +361,9 @@ mod tests {
                 lines: vec!["ok".into()],
                 stored: Stored::NoKey,
             },
+            Reply::Doctor(Report::parse(
+                "virt_container=none\nvirt_vm=none\nlink_bridge=ok\n",
+            )),
         ];
         for reply in &replies {
             round_trip(reply);

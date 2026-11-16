@@ -3,6 +3,7 @@
 //! so it also builds for the browser.
 
 pub mod clock;
+pub mod doctor;
 pub mod leases;
 pub mod log;
 pub mod logon;

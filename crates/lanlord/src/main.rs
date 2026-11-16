@@ -213,6 +213,13 @@ enum Command {
     },
     /// show what a server is: its system, uptime, memory and network interfaces
     Facts { host: String },
+    /// check what a gateway can do for lanlord's networks, and how to fix what it can't
+    Doctor {
+        host: String,
+        /// print the report as json
+        #[arg(long)]
+        json: bool,
+    },
     /// read one operation as json on stdin, run it and print the reply as json
     #[command(hide = true)]
     Op { host: String },
@@ -497,6 +504,48 @@ fn facts(host: &str) -> Result<()> {
     Ok(())
 }
 
+fn doctor(host: &str, json: bool) -> Result<()> {
+    let Reply::Doctor(report) = execute(host, &Op::Doctor, &mut ask)? else {
+        bail!("the server answered something other than a doctor report");
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        for line in doctor_lines(&report) {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+/// the doctor report as text: where the gateway runs, then one line per check with its fix
+/// indented under it.
+fn doctor_lines(report: &lanlord_core::doctor::Report) -> Vec<String> {
+    let mut lines = vec![
+        format!("runs on:  {}", report.environment.describe()),
+        format!("kernel:   {}", report.kernel),
+        String::new(),
+    ];
+    let width = report
+        .checks
+        .iter()
+        .map(|c| c.title.len())
+        .max()
+        .unwrap_or(0);
+    for check in &report.checks {
+        lines.push(format!(
+            "[{}] {:width$}  {}",
+            check.status.glyph(),
+            check.title,
+            check.detail
+        ));
+        if let Some(fix) = &check.fix {
+            lines.push(format!("    {:width$}  fix: {fix}", ""));
+        }
+    }
+    lines
+}
+
 /// the server's facts as labelled lines.
 fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
     let root = if facts.is_root { " (root)" } else { "" };
@@ -660,6 +709,7 @@ fn main() -> Result<()> {
             confirm,
         }) => power(&host, action, confirm),
         Some(Command::Facts { host }) => facts(&host),
+        Some(Command::Doctor { host, json }) => doctor(&host, json),
         Some(Command::Op { host }) => op(&host),
         Some(Command::Software { host, state }) => {
             let identity = crypto::load(&identity_path()?)?;
@@ -718,6 +768,13 @@ mod tests {
     fn leases_and_facts_take_a_host() {
         assert!(matches!(parse(&["leases", "gw"]), Command::Leases { host } if host == "gw"));
         assert!(matches!(parse(&["facts", "gw"]), Command::Facts { host } if host == "gw"));
+        assert!(
+            matches!(parse(&["doctor", "gw"]), Command::Doctor { host, json: false } if host == "gw")
+        );
+        assert!(matches!(
+            parse(&["doctor", "gw", "--json"]),
+            Command::Doctor { json: true, .. }
+        ));
     }
 
     #[test]
@@ -772,6 +829,27 @@ mod tests {
         let dropped = power_said("gw", Power::PowerOff, &Reply::Outcome(Outcome::Dropped)).unwrap();
         assert!(dropped.contains("dropped the connection") && dropped.contains("shutting down"));
         assert!(power_said("gw", Power::Reboot, &Reply::Done).is_err());
+    }
+
+    #[test]
+    fn the_doctor_report_shows_each_check_with_its_fix_under_it() {
+        let report = lanlord_core::doctor::Report::parse(
+            "kernel=6.1.0\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nlink_bridge=ok\ntun=missing\n",
+        );
+        let lines = doctor_lines(&report);
+        assert_eq!(lines[0], "runs on:  unprivileged lxc container on proxmox");
+        assert_eq!(lines[1], "kernel:   6.1.0");
+        assert!(
+            lines.iter().any(|l| l.starts_with("[+] bridges")),
+            "{lines:?}"
+        );
+        let tun = lines
+            .iter()
+            .position(|l| l.starts_with("[!] tun/tap device"))
+            .unwrap();
+        assert!(lines[tun + 1]
+            .trim_start()
+            .starts_with("fix: on the host: pct set <ctid> --dev0 /dev/net/tun"));
     }
 
     #[test]
