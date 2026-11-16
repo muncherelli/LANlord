@@ -285,6 +285,7 @@ impl MyServer {
                 masked: false,
                 focus: false,
                 edit: Msg::Typed,
+                enter: None,
             },
             Node::Gap(6.0),
             Node::Buttons(vec![

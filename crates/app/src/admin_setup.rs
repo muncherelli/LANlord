@@ -190,6 +190,7 @@ impl AdminSetup {
                 masked: true,
                 focus: false,
                 edit,
+                enter: None,
             }],
         };
         let mut key = vec![Node::TextArea {
@@ -237,6 +238,7 @@ impl AdminSetup {
                     masked: false,
                     focus: first,
                     edit: Msg::Name,
+                    enter: None,
                 }],
             },
             Node::Gap(4.0),

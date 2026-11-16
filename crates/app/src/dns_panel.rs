@@ -217,6 +217,7 @@ impl DnsPanel {
                 masked: false,
                 focus: false,
                 edit: msg,
+                enter: None,
             }],
         };
         let mut names = vec![edit("Zone", &self.draft.zone, Msg::Zone)];

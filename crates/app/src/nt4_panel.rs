@@ -181,6 +181,7 @@ impl Nt4Panel {
                 masked: false,
                 focus: false,
                 edit: Msg::Name,
+                enter: None,
             }],
         }];
         domain.extend(view::field_errors(&errors, "nt4-domain.name"));
@@ -193,6 +194,7 @@ impl Nt4Panel {
                     masked: false,
                     focus: false,
                     edit: Msg::ServerName,
+                    enter: None,
                 },
                 Node::Text("blank: the gateway's hostname".into()),
             ],

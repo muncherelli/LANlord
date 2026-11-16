@@ -19,6 +19,11 @@ impl MessageBox {
         }
     }
 
+    /// what the box says.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     /// the box; a click sends the number of its button, Escape the last one.
     pub fn view(&self) -> Dialog<usize> {
         // buttons line up from the right, so the first one is listed last to end up leftmost

@@ -13,6 +13,7 @@ pub mod form;
 pub mod gateway;
 pub mod hostlist;
 pub mod hosts_window;
+pub mod login;
 pub mod logon_panel;
 pub mod menu;
 pub mod message;

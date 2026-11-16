@@ -55,6 +55,8 @@ pub enum Node<M> {
         masked: bool,
         focus: bool,
         edit: fn(String) -> M,
+        /// what pressing Enter in the field sends, if anything.
+        enter: Option<M>,
     },
     /// a scrolling box of fixed-width text lines.
     Lines {
