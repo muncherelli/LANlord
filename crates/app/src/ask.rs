@@ -41,4 +41,26 @@ mod tests {
         drop(cached);
         assert_eq!(asked, 1);
     }
+
+    #[test]
+    fn a_cancelled_prompt_is_asked_again() {
+        let mut tries = 0;
+        let mut ask = |_: &str| {
+            tries += 1;
+            if tries == 1 {
+                Err(anyhow::anyhow!("cancelled"))
+            } else {
+                Ok("pw".to_string())
+            }
+        };
+        let mut cached = cached(&mut ask);
+        assert!(cached("sudo").is_err());
+        assert_eq!(cached("sudo").unwrap(), "pw");
+    }
+
+    #[test]
+    fn a_read_never_answers_a_prompt() {
+        let err = never("[sudo] password:").unwrap_err().to_string();
+        assert!(err.contains("[sudo] password:"), "{err}");
+    }
 }
