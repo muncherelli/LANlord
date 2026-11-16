@@ -191,6 +191,8 @@ enum Command {
         #[command(subcommand)]
         action: LogonCommand,
     },
+    /// say what kind of machine a server is and whether it can run docker and the modules
+    Check { host: String },
     /// show or change a server's time, time zone and internet time
     Clock {
         host: String,
@@ -522,6 +524,15 @@ fn main() -> Result<()> {
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
+        Some(Command::Check { host }) => {
+            let session = lanlord_core::ssh::Session::new(&host)?;
+            let env = lanlord_core::env::probe(&session, &mut ask)?;
+            print!("{}", env.render());
+            if env.has_errors() {
+                bail!("this server cannot run docker yet; see the fixes above");
+            }
+            Ok(())
+        }
         Some(Command::Clock { host, action }) => clock(&host, action),
         Some(Command::Purge {
             host,

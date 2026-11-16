@@ -47,6 +47,10 @@ The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh`
 
 Double-click the clock in the taskbar to open Date/Time Properties for the server you are signed in to (the taskbar clock shows the server's time, not your computer's). It has the familiar three tabs: Date & Time, Time Zone and Internet Time. From the command line, `lanlord clock HOST show`, `set-timezone ZONE`, `set-time 'YYYY-MM-DD HH:MM:SS'`, `ntp on|off [SERVERS...]` and `update` do the same. The time zone and the time servers are also kept in the `gateway` settings (`timezone`, `ntp`, `ntp_enabled`), so a later apply does not undo them; a time set by hand is a one-off. A server that is an LXC container takes its clock from the Proxmox host, so there only the time zone can be changed.
 
+## Checking a server
+
+`lanlord check HOST` says what kind of machine a server is (bare metal, a virtual machine, a privileged or unprivileged LXC container) and which features it has: nesting and keyctl for Docker in an LXC container, `/dev/net/tun`, nftables, and the link types LANlord's networks use. It marks each line OK, WARN or FAIL and gives the exact Proxmox fix, for example `pct set <CTID> --features nesting=1,keyctl=1`. `lanlord apply` runs the same check for the modules that use Docker (docker, nt4-domain, web-proxy and dns) and stops on a definite FAIL, never on something it could not tell. LANlord cannot change a container's features from inside it; the fix is made on the Proxmox host, followed by a restart of the container.
+
 ## Starting over
 
 `lanlord purge HOST` removes LANlord from a server: its containers and images, `/opt/lanlord`, the firewall rules, the `lanlord` service account, the `admins` group and the sudo rules. It first lists everything it would remove and the data you would lose, then asks you to type the host name. The Docker engine, `/etc/motd` and the accounts of people stay unless you pass `--remove-admins` (root login only). Note that `settings.age` is the only copy of the stored secrets.
