@@ -16,7 +16,7 @@ if ! command -v trunk >/dev/null 2>&1; then
   echo "missing trunk; install it with:"
   echo "  cargo install trunk --version $trunk_version --locked"
   missing=1
-elif ! trunk --version | grep -q " $trunk_version"; then
+elif ! trunk --version | grep -qx "trunk $trunk_version"; then
   echo "trunk $(trunk --version | awk '{print $2}') is installed, but this build is pinned to $trunk_version:"
   echo "  cargo install trunk --version $trunk_version --locked"
   missing=1

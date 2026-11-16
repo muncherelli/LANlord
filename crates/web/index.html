@@ -21,9 +21,29 @@
         width: 100%;
         height: 100%;
       }
+      .status {
+        position: absolute;
+        top: 50%;
+        left: 0;
+        right: 0;
+        margin: 0;
+        text-align: center;
+        color: #ffffff;
+        font: 13px sans-serif;
+      }
     </style>
   </head>
   <body>
     <canvas id="lanlord"></canvas>
+    <!-- the app removes this once it runs, or writes why it could not start -->
+    <p id="status" class="status">Loading LANlord…</p>
+    <noscript>
+      <style>
+        #status {
+          display: none;
+        }
+      </style>
+      <p class="status">LANlord needs JavaScript and WebGL.</p>
+    </noscript>
   </body>
 </html>
