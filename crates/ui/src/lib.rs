@@ -24,6 +24,7 @@ mod tasks;
 #[cfg(test)]
 mod testkit;
 mod theme;
+mod update_panel;
 mod users_panel;
 mod widgets;
 mod windows;
@@ -32,7 +33,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use eframe::egui;
-use lanlord_core::hosts;
+use lanlord_core::{hosts, prefs, update};
 
 /// open the window and block until it is closed.
 pub fn run() -> Result<()> {
@@ -57,6 +58,22 @@ pub fn run() -> Result<()> {
             if std::env::var("LANLORD_SCREEN").as_deref() != Ok("desktop") {
                 desktop.require_login(Arc::new(login::SystemAuth::new()));
             }
+            // a rebuilt dev build comes back to the server it was on and tries the agent again
+            if let Ok(host) = std::env::var("LANLORD_LAST_HOST") {
+                if std::env::var("LANLORD_RELAUNCHED").as_deref() == Ok("1") {
+                    desktop.resume(&host);
+                }
+            }
+            let prefs = prefs::path().map(|p| prefs::load(&p)).unwrap_or_default();
+            desktop.watch_updates(
+                update_panel::Updates::new(
+                    Arc::new(update::System),
+                    prefs::path(),
+                    prefs.check_updates,
+                ),
+                update::dev_repo(),
+                std::env::current_exe().ok(),
+            );
             if let Ok(spec) = std::env::var("LANLORD_OPEN") {
                 desktop.open_spec(&spec);
             }
