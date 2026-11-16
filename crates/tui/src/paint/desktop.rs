@@ -1,22 +1,22 @@
-//! the teal desktop and its icons, laid out in columns from the top-left like the gui: each
-//! icon is 8 by 4 cells (a cell holds two pixels stacked, so 8 by 8 pixels) with its label
-//! under it, wrapped to two lines like the gui wraps "Remote Cmds". at that size the
-//! hand-drawn 16 by 16 art (`art::small`) halved keeps its outlines far better than the
-//! 32 by 32 art quartered, so desktop icons are drawn from the small art.
+//! the teal desktop and its icons, laid out in columns from the top-left like the gui. an
+//! icon is a small raised gray tile with its glyph in the accent colour and the label under
+//! it, wrapped to two lines like the gui wraps "Remote Cmds"; a selected icon has its label
+//! on navy.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
-use super::art::Icon;
-use super::palette::{Palette, NAVY, TEAL, WHITE};
-use super::{fill, style, text};
+use super::chrome::Bevel;
+use super::glyphs::glyph_for;
+use super::palette::{Palette, GRAY, NAVY, TEAL, WHITE};
+use super::{bold, fill, style, text};
 
-/// the space one desktop icon takes: (columns, rows), in the gui's proportions.
-pub const ICON_CELL: (u16, u16) = (13, 7);
+/// the size of the raised tile: (columns, rows), edge included.
+pub const TILE: (u16, u16) = (6, 3);
 
-/// how much the 16 by 16 art is shrunk by on the desktop.
-pub const ICON_STEP: usize = 2;
+/// the space one desktop icon takes: (columns, rows): the tile, two label lines and a gap.
+pub const ICON_CELL: (u16, u16) = (12, 6);
 
 /// the plain teal background.
 pub struct Desktop {
@@ -43,7 +43,8 @@ pub fn icon_rect(area: Rect, index: usize) -> Rect {
     .intersection(area)
 }
 
-/// split `label` into at most two lines of `width`, breaking at a space when it can.
+/// split `label` into at most two lines of `width` characters, breaking at a space when it
+/// can.
 fn wrap(label: &str, width: usize) -> Vec<String> {
     let chars: Vec<char> = label.chars().collect();
     if chars.len() <= width {
@@ -65,35 +66,54 @@ fn wrap(label: &str, width: usize) -> Vec<String> {
     }
 }
 
-/// one desktop icon, from the 16 by 16 art; a selected icon has its label in navy like the gui.
-pub struct DesktopIcon<'a> {
-    pub art: &'a [&'a str],
+/// one desktop icon: a raised tile with the id's glyph, the label centred under it.
+pub struct GlyphTile<'a> {
+    pub id: &'a str,
     pub label: &'a str,
     pub selected: bool,
     pub palette: Palette,
 }
 
-impl Widget for DesktopIcon<'_> {
+impl GlyphTile<'_> {
+    /// where the tile itself sits inside the icon's `area`: centred at the top.
+    pub fn tile(area: Rect) -> Rect {
+        Rect::new(
+            area.x + area.width.saturating_sub(TILE.0) / 2,
+            area.y,
+            TILE.0.min(area.width),
+            TILE.1.min(area.height),
+        )
+    }
+}
+
+impl Widget for GlyphTile<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
-        let icon = Icon {
-            art: self.art,
-            step: ICON_STEP,
+        let tile = GlyphTile::tile(area);
+        Bevel {
+            sunken: false,
             palette,
-        };
-        let (w, h) = icon.size();
-        let x = area.x + area.width.saturating_sub(w) / 2;
-        icon.render(Rect::new(x, area.y, w, h).intersection(area), buf);
+        }
+        .render(tile, buf);
+        let glyph = glyph_for(self.id);
+        let face = Bevel::inner(tile);
+        let width = glyph.tile.chars().count() as u16;
+        text(
+            buf,
+            face.x + face.width.saturating_sub(width) / 2,
+            face.y,
+            face.width,
+            glyph.tile,
+            bold(style(palette, glyph.accent, GRAY)),
+        );
         let bg = if self.selected { NAVY } else { TEAL };
-        for (i, line) in wrap(self.label, (area.width as usize).saturating_sub(1))
-            .iter()
-            .enumerate()
-        {
+        let lines = wrap(self.label, (area.width as usize).saturating_sub(1));
+        for (i, line) in lines.iter().enumerate() {
             let width = line.chars().count() as u16;
-            let lx = area.x + area.width.saturating_sub(width) / 2;
-            let ly = area.y + h + i as u16;
-            if ly < area.bottom() {
-                text(buf, lx, ly, width, line, style(palette, WHITE, bg));
+            let x = area.x + area.width.saturating_sub(width) / 2;
+            let y = area.y + TILE.1 + i as u16;
+            if y < area.bottom() {
+                text(buf, x, y, width, line, style(palette, WHITE, bg));
             }
         }
     }
@@ -102,30 +122,22 @@ impl Widget for DesktopIcon<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paint::art::small;
+    use crate::paint::lines;
     use crate::paint::palette::Depth;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Modifier};
 
-    #[test]
-    fn a_zero_width_icon_draws_nothing_and_does_not_panic() {
-        let palette = Palette::new(Depth::TrueColor);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
-        DesktopIcon {
-            art: small("dns"),
-            label: "DNS",
-            selected: false,
-            palette,
-        }
-        .render(Rect::new(0, 0, 0, 4), &mut buf);
+    fn palette() -> Palette {
+        Palette::new(Depth::TrueColor)
     }
 
     #[test]
     fn icons_fill_columns_from_the_top_left() {
         let area = Rect::new(0, 0, 80, 24);
-        assert_eq!(icon_rect(area, 0), Rect::new(1, 1, 13, 7));
-        assert_eq!(icon_rect(area, 1), Rect::new(1, 8, 13, 7));
-        assert_eq!(icon_rect(area, 2), Rect::new(1, 15, 13, 7));
-        assert_eq!(icon_rect(area, 3), Rect::new(14, 1, 13, 7));
+        assert_eq!(icon_rect(area, 0), Rect::new(1, 1, 12, 6));
+        assert_eq!(icon_rect(area, 1), Rect::new(1, 7, 12, 6));
+        assert_eq!(icon_rect(area, 2), Rect::new(1, 13, 12, 6));
+        // three fit in 24 rows; the fourth starts the next column
+        assert_eq!(icon_rect(area, 3), Rect::new(13, 1, 12, 6));
     }
 
     #[test]
@@ -139,27 +151,52 @@ mod tests {
     }
 
     #[test]
-    fn an_icon_is_eight_by_four_cells_with_its_label_under_it() {
-        let palette = Palette::new(Depth::TrueColor);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 13, 7));
-        Desktop { palette }.render(buf.area, &mut buf);
-        DesktopIcon {
-            art: small("my-server"),
-            label: "My Server",
+    fn a_tile_shows_the_glyph_on_a_raised_face_with_the_label_under_it() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 6));
+        Desktop { palette: palette() }.render(buf.area, &mut buf);
+        GlyphTile {
+            id: "remote-commands",
+            label: "Remote Cmds",
             selected: true,
-            palette,
+            palette: palette(),
         }
         .render(buf.area, &mut buf);
-        let row =
-            |y: u16| -> String { (0..13).map(|x| buf[(x, y)].symbol().to_string()).collect() };
-        assert_eq!(row(4), "  My Server  ");
-        assert_eq!(buf[(5, 4)].bg, Color::Rgb(0, 0, 128));
-        assert_eq!(buf[(0, 4)].bg, Color::Rgb(0, 128, 128));
-        let drawn = (2..10)
-            .flat_map(|x| (0..4).map(move |y| (x, y)))
-            .filter(|p| buf[*p].symbol() != " ")
-            .count();
-        assert!(drawn > 12, "the art is drawn ({drawn} cells)");
-        assert!((0..2).all(|x| (0..4).all(|y| buf[(x, y)].symbol() == " ")));
+        assert_eq!(
+            lines(&buf),
+            [
+                "   ▔▔▔▔▔▕   ",
+                "   ▏ ▶_ ▕   ",
+                "   ▏▁▁▁▁▁   ",
+                "Remote Cmds ",
+                "            ",
+                "            ",
+            ]
+        );
+        // the glyph in its accent colour on the gray face, bold
+        assert_eq!(buf[(5, 1)].fg, Color::Rgb(0, 128, 0));
+        assert_eq!(buf[(5, 1)].bg, Color::Rgb(192, 192, 192));
+        assert!(buf[(5, 1)].modifier.contains(Modifier::BOLD));
+        // selected: the label sits on navy, the desktop stays teal
+        assert_eq!(buf[(4, 3)].bg, Color::Rgb(0, 0, 128));
+        assert_eq!(buf[(11, 3)].bg, Color::Rgb(0, 128, 128));
+    }
+
+    #[test]
+    fn a_zero_width_icon_draws_nothing_and_does_not_panic() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
+        GlyphTile {
+            id: "dns",
+            label: "DNS",
+            selected: false,
+            palette: palette(),
+        }
+        .render(Rect::new(0, 0, 0, 4), &mut buf);
+        GlyphTile {
+            id: "dns",
+            label: "DNS",
+            selected: false,
+            palette: palette(),
+        }
+        .render(Rect::new(2, 2, 12, 6), &mut buf);
     }
 }

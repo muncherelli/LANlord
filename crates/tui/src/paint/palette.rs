@@ -1,5 +1,4 @@
-//! the gui's colours for the terminal: the same rgb values as crates/ui/src/theme.rs and the
-//! sixteen pixel-art colours, written as truecolor when the terminal says it can, or as the
+//! the gui's colours for the terminal: the same rgb values as crates/ui/src/theme.rs, written as truecolor when the terminal says it can, or as the
 //! nearest 256-colour or 16-colour entry when it cannot.
 
 use ratatui::style::Color;
@@ -21,30 +20,6 @@ pub const NAVY: Rgb = (0, 0, 128);
 pub const WHITE: Rgb = (255, 255, 255);
 /// text and the outer shadow.
 pub const BLACK: Rgb = (0, 0, 0);
-
-/// one pixel-art palette letter, the sixteen windows colours (see crates/ui/src/icons.rs);
-/// `.` and anything unknown is transparent.
-pub fn art_rgb(letter: char) -> Option<Rgb> {
-    Some(match letter {
-        'k' => BLACK,
-        'w' => WHITE,
-        'g' => GRAY,
-        'd' => SHADOW,
-        'n' => NAVY,
-        'b' => (0, 0, 255),
-        'c' => (0, 255, 255),
-        't' => TEAL,
-        'G' => (0, 128, 0),
-        'l' => (0, 255, 0),
-        'y' => (255, 255, 0),
-        'o' => (128, 128, 0),
-        'r' => (255, 0, 0),
-        'm' => (128, 0, 0),
-        'p' => (128, 0, 128),
-        'f' => (255, 0, 255),
-        _ => return None,
-    })
-}
 
 /// how many colours the terminal can show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,13 +233,5 @@ mod tests {
         assert_eq!(palette.color(GRAY), Color::Indexed(250));
         // the ramp rounds: 14 is nearer the ramp's 18 than its 8
         assert_eq!(palette.color((14, 14, 14)), Color::Indexed(233));
-    }
-
-    #[test]
-    fn every_art_letter_has_a_colour_and_dot_is_transparent() {
-        for letter in "kwgdnbctGlyormpf".chars() {
-            assert!(art_rgb(letter).is_some(), "{letter}");
-        }
-        assert_eq!(art_rgb('.'), None);
     }
 }
