@@ -96,8 +96,10 @@ pub struct Desktop {
     updates: Updates,
     /// the checkout a development build rebuilds from, and the build that is running.
     dev: Option<PathBuf>,
+    #[cfg(feature = "native")]
     exe: Option<PathBuf>,
     /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
+    #[cfg(feature = "native")]
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// how long the new build must stay alive before this window may close.
     #[cfg(feature = "native")]
@@ -106,6 +108,8 @@ pub struct Desktop {
     dev_open: bool,
     /// the title the window has been given, so it is only sent when it changes.
     window_title: String,
+    /// the made-up demo server, not a real gateway: the title and the taskbar say so.
+    demo: bool,
 }
 
 impl Desktop {
@@ -148,12 +152,15 @@ impl Desktop {
             #[cfg(feature = "native")]
             updates: Updates::quiet(),
             dev: None,
+            #[cfg(feature = "native")]
             exe: None,
+            #[cfg(feature = "native")]
             rebuilding: None,
             #[cfg(feature = "native")]
             relaunch_grace: update::Grace::default(),
             dev_open: false,
             window_title: "LANlord".into(),
+            demo: false,
         }
     }
 
@@ -170,12 +177,21 @@ impl Desktop {
 
     /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
     /// can be looked at without one; the host list lives in memory only.
+    /// this desktop shows the made-up demo server (the browser demo); say so in the title and
+    /// the taskbar, so nobody mistakes it for a real gateway.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn mark_demo(&mut self) {
+        self.demo = true;
+    }
+
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn use_demo_server(&mut self) {
         self.hosts = HostList::new(None);
         let _ = self.hosts.add("demo@gateway");
     }
 
     /// the logon box for `host`, signing in at once with whatever the agent offers.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn resume(&mut self, host: &str) {
         let Some(auth) = self.auth.clone() else {
             return;
@@ -186,6 +202,7 @@ impl Desktop {
     }
 
     /// start at the logon box. lanlord on the gateway itself has one server and no logon.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
         if self.services.is_local() {
             return;
@@ -253,7 +270,11 @@ impl Desktop {
     /// is signed in.
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let host = self.signed_in.as_ref().and(self.host());
-        let title = lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
+        let mut title =
+            lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
+        if self.demo {
+            title.push_str(" (demo)");
+        }
         if title != self.window_title {
             crate::platform::set_title(ctx, &title);
             self.window_title = title;
@@ -747,6 +768,19 @@ impl Desktop {
                 if clock_hit.double_clicked() {
                     self.open(Target::DateTime);
                 }
+                if self.demo {
+                    // a sunken note beside the tray: the data here is made up
+                    let note = "Demo: made-up data";
+                    let (at, _) = ui.allocate_exact_size(Vec2::new(124.0, 22.0), Sense::hover());
+                    controls::thin_bevel(ui, at, false);
+                    ui.painter().text(
+                        at.center(),
+                        Align2::CENTER_CENTER,
+                        note,
+                        theme::font(),
+                        BLACK,
+                    );
+                }
                 if shield {
                     let icon_at = Rect::from_min_size(
                         Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
@@ -789,12 +823,12 @@ impl Desktop {
         false
     }
 
-    /// are automatic updates on?
-    fn updates_enabled(&self) -> bool {
+    /// are automatic updates on? `None` where there are no updates to turn on (the browser).
+    fn updates_enabled(&self) -> Option<bool> {
         #[cfg(feature = "native")]
-        return self.updates.enabled();
+        return Some(self.updates.enabled());
         #[cfg(not(feature = "native"))]
-        false
+        None
     }
 }
 

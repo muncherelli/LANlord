@@ -23,6 +23,7 @@ pub enum Confirm {
     /// rebuild and relaunch; the box has one tick for pulling trunk first.
     Rebuild,
     /// a rebuild that did not work; the box only says why.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     Failure,
 }
 

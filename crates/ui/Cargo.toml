@@ -8,8 +8,8 @@ license.workspace = true
 default = ["native"]
 # the desktop window: ssh sign-in, updates and the prefs file; none of it builds for the browser
 native = ["dep:lanlord-core", "lanlord-app/native"]
-# the in-memory demo gateway, for tests and the browser demo
-fake = ["lanlord-app/fake"]
+# the browser demo: the made-up in-memory server instead of the gateway the page came from
+demo = ["lanlord-app/fake"]
 
 [dependencies]
 anyhow.workspace = true

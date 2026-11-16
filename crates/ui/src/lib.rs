@@ -1,10 +1,6 @@
 //! the LANlord desktop, drawn with egui so it looks the same in a native window on every
 //! platform and in a browser.
 
-// the browser build leaves out the desktop-only parts (sign-in, updates, rebuilds), so some of
-// what they share goes unused there
-#![cfg_attr(not(feature = "native"), allow(dead_code))]
-
 mod admin_setup;
 #[cfg(test)]
 mod artwork;
@@ -16,6 +12,8 @@ mod desktop;
 mod dialogs;
 mod dns_panel;
 mod form;
+// generated art; the update animations in it are only drawn where lanlord updates itself
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 mod icon_data;
 mod icons;
 mod login;
@@ -104,28 +102,97 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// start the desktop on the page's canvas. the browser build is lanlord on the gateway itself
-/// (server mode: one server, no logon box); until the web ui talks to the gateway it shows the
-/// demo server.
+/// (server mode: one server, no logon box) and talks to it through `/api/op`; a build with the
+/// `demo` feature shows the made-up demo server instead, and says so.
 #[cfg(target_arch = "wasm32")]
 pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bindgen::JsValue> {
-    use std::sync::Arc;
-
     eframe::WebRunner::new()
         .start(
             canvas,
             eframe::WebOptions::default(),
             Box::new(|cc| {
-                let gateway = lanlord_app::gateway::Fake::new();
-                *gateway.local.lock().unwrap() = true;
-                let mut desktop = desktop::Desktop::new(Arc::new(gateway), &cc.egui_ctx, None);
-                // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop
+                let mut desktop = desktop::Desktop::new(web_gateway(), &cc.egui_ctx, None);
+                if cfg!(feature = "demo") {
+                    desktop.mark_demo();
+                }
+                // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop,
+                // but only the ones that are safe to open from a link
                 if let Some(spec) = query("open") {
-                    desktop.open_spec(&spec);
+                    desktop.open_spec(&safe_open_spec(&spec));
                 }
                 Ok(Box::new(desktop))
             }),
         )
         .await
+}
+
+/// the made-up demo server in a demo build, the gateway the page came from otherwise.
+#[cfg(target_arch = "wasm32")]
+fn web_gateway() -> std::sync::Arc<dyn lanlord_app::gateway::Gateway> {
+    #[cfg(feature = "demo")]
+    {
+        let gateway = lanlord_app::gateway::Fake::new();
+        *gateway.local.lock().unwrap() = true;
+        std::sync::Arc::new(gateway)
+    }
+    #[cfg(not(feature = "demo"))]
+    std::sync::Arc::new(lanlord_app::gateway::http::Http::default())
+}
+
+/// the windows a link may open in the browser: no tab that asks before doing something (the
+/// purge prompt is My Server's `@2`), and nothing else but these ids.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn safe_open_spec(spec: &str) -> String {
+    const SAFE: [&str; 13] = [
+        "menu",
+        "datetime",
+        "my-server",
+        "networks",
+        "settings",
+        "console",
+        "hosts",
+        "gateway",
+        "docker",
+        "nt4-domain",
+        "web-proxy",
+        "remote-commands",
+        "dns",
+    ];
+    spec.split(',')
+        .map(str::trim)
+        .filter_map(|item| {
+            let (id, tab) = item.split_once('@').unwrap_or((item, ""));
+            if !SAFE.contains(&id) {
+                return None;
+            }
+            let tab_ok = !tab.is_empty()
+                && tab.len() == 1
+                && tab != "2"
+                && tab.chars().all(|c| c.is_ascii_digit());
+            Some(if tab_ok {
+                format!("{id}@{tab}")
+            } else {
+                id.to_string()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_open_spec;
+
+    #[test]
+    fn links_open_only_known_windows_and_never_the_purge_prompt() {
+        assert_eq!(safe_open_spec("my-server@2,networks"), "my-server,networks");
+        assert_eq!(
+            safe_open_spec("my-server@1, nt4-domain@2"),
+            "my-server@1,nt4-domain"
+        );
+        assert_eq!(safe_open_spec("developer,unknown,menu"), "menu");
+        assert_eq!(safe_open_spec("dns@12,hosts@x"), "dns,hosts");
+    }
 }
 
 /// the value of `name` in the page address's query string.

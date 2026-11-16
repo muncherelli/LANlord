@@ -364,6 +364,18 @@ fn log_off_does_nothing_without_a_logon() {
 }
 
 #[test]
+fn a_demo_desktop_says_so_in_its_title() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.local.lock().unwrap() = true;
+    desktop.mark_demo();
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(
+        desktop.window_title,
+        format!("LANlord Server v{} (demo)", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn the_local_mode_never_shows_the_box() {
     let (mut desktop, ctx, fake) = desktop();
     *fake.local.lock().unwrap() = true;
