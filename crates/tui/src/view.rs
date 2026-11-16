@@ -5,10 +5,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use chrono::{Datelike, NaiveDate};
 use lanlord_app::view::{Button, Kind, Node, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 use zeroize::Zeroizing;
 
@@ -57,6 +58,13 @@ pub enum Part {
     Scroll,
     /// a fold's title, which opens and closes it.
     Fold,
+    /// the up (`1`) or down (`-1`) arrow of a spin box; the box itself is `Spin(0)`, for the
+    /// keyboard and the wheel.
+    Spin(i32),
+    /// day `n` of a calendar's grid, counted from the top left; the whole grid is `Days`.
+    Day(usize),
+    /// a calendar's grid, for the keyboard and the wheel.
+    Days,
 }
 
 /// a part of a drawn tree: where it is, which node it belongs to (its path through the tree)
@@ -137,6 +145,10 @@ pub enum Input {
     Text(String),
     /// Enter in a one-line field, with its final text.
     Enter(String),
+    /// a spin box stepped up (`1`) or down (`-1`).
+    Step(i32),
+    /// day `n` of a calendar's grid picked.
+    Day(usize),
     /// a secret field's whole new text.
     SecretText(Zeroizing<String>),
     /// Enter in a secret field, with its final text.
@@ -147,6 +159,15 @@ pub enum Input {
 pub enum FieldValue {
     Plain { text: String, multi: bool },
     Secret(Zeroizing<String>),
+}
+
+/// how many nodes a column may hold in a path step: a step into columns is
+/// `column * COLUMN + node`.
+const COLUMN: usize = 1000;
+
+/// the days of the month shown, as a grid of seven columns starting on Sunday.
+fn month_days(year: i32, month: u32) -> Vec<NaiveDate> {
+    lanlord_app::clock_window::month_days(year, month)
 }
 
 /// the node at `path`, going down through groups, tabs, rows and scroll boxes.
@@ -161,6 +182,14 @@ fn find<'a, M>(nodes: &'a [Node<M>], path: &[usize]) -> Option<&'a Node<M>> {
             find(body, rest)
         }
         Node::Danger(body) | Node::Row(body) | Node::Disabled(body) => find(body, rest),
+        // the next step of a path through columns packs the column and the node in it
+        Node::Columns(columns) => {
+            let (step, rest) = rest.split_first()?;
+            let (_, body) = columns.get(step / COLUMN)?;
+            let mut inside = vec![step % COLUMN];
+            inside.extend_from_slice(rest);
+            find(body, &inside)
+        }
         Node::Fold { body, .. } | Node::Labelled { body, .. } => find(body, rest),
         _ => None,
     }
@@ -211,6 +240,24 @@ pub fn act<M: Clone>(nodes: &[Node<M>], path: &[usize], input: Input) -> Option<
             },
             Input::Enter(text),
         ) => Some(enter(text)),
+        (
+            Node::Spin {
+                enabled: true,
+                step,
+                ..
+            },
+            Input::Step(dir),
+        ) => Some(step(dir)),
+        (
+            Node::Calendar {
+                year,
+                month,
+                enabled: true,
+                pick,
+                ..
+            },
+            Input::Day(n),
+        ) => month_days(*year, *month).get(n).map(|day| pick(*day)),
         (Node::Secret { value, edit, .. }, Input::SecretText(text)) => {
             (*text != **value).then(|| edit(text))
         }
@@ -236,6 +283,20 @@ pub fn field_value<M>(nodes: &[Node<M>], path: &[usize]) -> Option<FieldValue> {
             multi: true,
         }),
         Node::Secret { value, .. } => Some(FieldValue::Secret(value.clone())),
+        _ => None,
+    }
+}
+
+/// a calendar's month, selected day and whether it can be picked from.
+pub fn calendar_state<M>(nodes: &[Node<M>], path: &[usize]) -> Option<(i32, u32, NaiveDate, bool)> {
+    match find(nodes, path)? {
+        Node::Calendar {
+            year,
+            month,
+            selected,
+            enabled,
+            ..
+        } => Some((*year, *month, *selected, *enabled)),
         _ => None,
     }
 }
@@ -405,12 +466,16 @@ impl<'a> Painter<'a> {
             }
             Node::Header { lines, .. } => (1 + lines.len() as u16).max(3) + 1,
             Node::Code(text) => text.lines().count() as u16 + 2,
-            Node::Row(body) => body
+            Node::Row(body) => self
+                .row_lines(body, width)
                 .iter()
-                .enumerate()
-                .map(|(i, n)| self.node_height(n, width, &child(path, i)))
-                .max()
-                .unwrap_or(0),
+                .map(|line| {
+                    line.iter()
+                        .map(|(i, _)| self.node_height(&body[*i], width, &child(path, *i)))
+                        .max()
+                        .unwrap_or(0)
+                })
+                .sum(),
             Node::TextArea { height, .. } => rows(*height).max(3) + 2,
             Node::Scroll {
                 max_height, body, ..
@@ -425,6 +490,19 @@ impl<'a> Painter<'a> {
             Node::Disabled(body) => inner(body, width),
             Node::Labelled { body, .. } => inner(body, width.saturating_sub(LABEL)).max(1),
             Node::Alert(text) => wrap(text, width.saturating_sub(5)).len() as u16,
+            Node::Spin { .. } => 1,
+            Node::ClockFace { .. } => 1,
+            Node::Calendar { .. } => 9,
+            Node::Columns(columns) => {
+                let widths = self.column_widths(columns, width);
+                columns
+                    .iter()
+                    .zip(widths)
+                    .enumerate()
+                    .map(|(c, ((_, body), w))| self.height_in(body, w, &child(path, c), c))
+                    .max()
+                    .unwrap_or(0)
+            }
             _ => 1,
         }
     }
@@ -615,6 +693,137 @@ impl<'a> Painter<'a> {
             } => {
                 let rect = Rect::new(area.x, area.y, size_cells(size, area.width), 1);
                 self.field(value, !shown, rect, buf, path);
+            }
+            Node::Spin {
+                text,
+                width,
+                enabled,
+                ..
+            } => {
+                let _ = width;
+                let w = spin_cells(text);
+                let field = Rect::new(area.x, area.y, w.min(area.width), 1).intersection(buf.area);
+                if field.is_empty() {
+                    return;
+                }
+                fill(buf, field, p, WHITE);
+                let ink = if *enabled { BLACK } else { SHADOW };
+                let shown = text.chars().count() as u16;
+                text_at(
+                    buf,
+                    field.x + field.width.saturating_sub(shown) / 2,
+                    field.y,
+                    field.width,
+                    text,
+                    self.st(ink, WHITE),
+                );
+                // two arrows beside it, up then down, like the gui's spin buttons
+                let mut x = field.right();
+                for (dir, glyph) in [(1, "▲"), (-1, "▼")] {
+                    let arrow = Rect::new(x, area.y, 2, 1).intersection(buf.area);
+                    if arrow.is_empty() {
+                        break;
+                    }
+                    fill(buf, arrow, p, GRAY);
+                    let face = if *enabled { BLACK } else { SHADOW };
+                    text_at(buf, arrow.x, arrow.y, 2, glyph, self.st(face, GRAY));
+                    if *enabled {
+                        self.push(arrow, path, Part::Spin(dir), false);
+                    }
+                    x = arrow.right();
+                }
+                let whole = Rect::new(field.x, field.y, x - field.x, 1);
+                if *enabled {
+                    self.push(whole, path, Part::Spin(0), true);
+                    if self.focused(path, Part::Spin(0)) {
+                        recolour(buf, field, self.st(WHITE, NAVY));
+                    }
+                }
+            }
+            Node::ClockFace {
+                hour,
+                minute,
+                second,
+                ..
+            } => {
+                let t = format!("{hour:02}:{minute:02}:{second:02}");
+                text_at(
+                    buf,
+                    area.x,
+                    area.y,
+                    area.width,
+                    &t,
+                    bold(self.st(BLACK, GRAY)),
+                );
+            }
+            Node::Calendar {
+                year,
+                month,
+                selected,
+                today,
+                enabled,
+                ..
+            } => {
+                // a day is as wide as the room allows, from 5 cells down to 3
+                let cell_w = (area.width.saturating_sub(2) / 7).clamp(3, CELL_W);
+                let grid = Rect::new(
+                    area.x,
+                    area.y,
+                    (7 * cell_w + 2).min(area.width),
+                    9.min(area.height),
+                );
+                self.sunken(grid, buf, WHITE);
+                let top = grid.y + 1;
+                for (i, name) in lanlord_app::clock_window::WEEKDAYS.iter().enumerate() {
+                    let x = grid.x + 1 + i as u16 * cell_w;
+                    text_at(buf, x + cell_w / 2, top, 1, name, self.st(SHADOW, WHITE));
+                }
+                let focused = self.focused(path, Part::Days);
+                for (i, day) in month_days(*year, *month).into_iter().enumerate() {
+                    let x = grid.x + 1 + (i % 7) as u16 * cell_w;
+                    let y = top + 1 + (i / 7) as u16;
+                    if y >= grid.bottom().saturating_sub(1) {
+                        break;
+                    }
+                    let cell = Rect::new(x, y, cell_w, 1).intersection(buf.area);
+                    let (is_selected, in_month) = (day == *selected, day.month() == *month);
+                    let (fg, bg) = match (is_selected, in_month) {
+                        (true, _) => (WHITE, if focused { NAVY } else { SHADOW }),
+                        (false, true) => (BLACK, WHITE),
+                        (false, false) => (SHADOW, WHITE),
+                    };
+                    fill(buf, cell, p, bg);
+                    let label = day.day().to_string();
+                    let width = label.chars().count() as u16;
+                    let mut mark = self.st(fg, bg);
+                    if day == *today && !is_selected {
+                        // today is outlined in the gui; here it is bold and underlined
+                        mark = bold(mark).add_modifier(Modifier::UNDERLINED);
+                    }
+                    text_at(
+                        buf,
+                        cell.x + cell.width.saturating_sub(width) / 2,
+                        y,
+                        cell.width,
+                        &label,
+                        mark,
+                    );
+                    if *enabled {
+                        self.push(cell, path, Part::Day(i), false);
+                    }
+                }
+                if *enabled {
+                    self.push(grid, path, Part::Days, true);
+                }
+            }
+            Node::Columns(columns) => {
+                let widths = self.column_widths(columns, area.width);
+                let mut x = area.x;
+                for (c, ((_, body), width)) in columns.iter().zip(widths).enumerate() {
+                    let rect = Rect::new(x, area.y, width, area.height);
+                    self.draw_in(body, rect, buf, &child(path, c), c);
+                    x = x.saturating_add(width).saturating_add(1);
+                }
             }
             Node::Alert(t) => {
                 // the message box's warning sign: a black "!" on yellow
@@ -963,14 +1172,20 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Row(body) => {
-                let widths = self.row_widths(body, area.width);
-                let mut x = area.x;
-                for (n, (child, width)) in body.iter().zip(widths).enumerate() {
-                    let mut here = path.to_vec();
-                    here.push(n);
-                    let rect = Rect::new(x, area.y, width, area.height);
-                    self.node(child, rect, buf, &here);
-                    x = x.saturating_add(width).saturating_add(1);
+                // a row that does not fit goes on to a second line, like text
+                let mut y = area.y;
+                for line in self.row_lines(body, area.width) {
+                    let mut x = area.x;
+                    let mut tallest = 1;
+                    for (n, width) in line {
+                        let here = child(path, n);
+                        let height = self.node_height(&body[n], width, &here);
+                        let rect = Rect::new(x, y, width, height);
+                        self.node(&body[n], rect, buf, &here);
+                        tallest = tallest.max(height);
+                        x = x.saturating_add(width).saturating_add(1);
+                    }
+                    y = y.saturating_add(tallest);
                 }
             }
             Node::Scroll { body, .. } => {
@@ -1007,6 +1222,108 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// a row's nodes broken into lines that fit `width`: each is its index and its width. a
+    /// node that cannot fit starts a new line; the flexible ones share what a line has left.
+    fn row_lines<M>(&self, body: &[Node<M>], width: u16) -> Vec<Vec<(usize, u16)>> {
+        let natural = self.row_widths(body, u16::MAX);
+        let flexible = |n: &Node<M>| {
+            !matches!(
+                n,
+                Node::Text(_)
+                    | Node::Heading(_)
+                    | Node::Warning(_)
+                    | Node::Gap(_)
+                    | Node::Button(_)
+                    | Node::Buttons(_)
+                    | Node::Toolbar(_)
+                    | Node::Check { .. }
+                    | Node::Choice { .. }
+                    | Node::Field { .. }
+                    | Node::Icon(_)
+                    | Node::Spin { .. }
+                    | Node::ClockFace { .. }
+                    | Node::Input {
+                        size: Size::Points(_),
+                        ..
+                    }
+                    | Node::Secret {
+                        size: Size::Points(_),
+                        ..
+                    }
+            )
+        };
+        let mut lines: Vec<Vec<(usize, u16)>> = vec![Vec::new()];
+        let mut used = 0u16;
+        for (i, node) in body.iter().enumerate() {
+            let w = if flexible(node) { 0 } else { natural[i] };
+            let gap = u16::from(used > 0);
+            if used > 0 && used + gap + w > width && !flexible(node) {
+                lines.push(Vec::new());
+                used = 0;
+            }
+            let gap = u16::from(used > 0);
+            lines.last_mut().expect("a line").push((i, w));
+            used += gap + w;
+        }
+        // a flexible node takes what its line has left
+        for line in &mut lines {
+            let fixed: u16 =
+                line.iter().map(|(_, w)| *w).sum::<u16>() + line.len().saturating_sub(1) as u16;
+            let open = line.iter().filter(|(i, _)| flexible(&body[*i])).count() as u16;
+            let share = width.saturating_sub(fixed).checked_div(open).unwrap_or(0);
+            for (i, w) in line.iter_mut() {
+                if flexible(&body[*i]) {
+                    *w = share;
+                }
+            }
+        }
+        lines
+    }
+
+    /// how wide each column is: one that asks for a width gets it, the rest share what is left.
+    fn column_widths<M>(&self, columns: &[(Option<f32>, Vec<Node<M>>)], width: u16) -> Vec<u16> {
+        let asked: Vec<Option<u16>> = columns.iter().map(|(w, _)| w.map(cols)).collect();
+        let used: u16 =
+            asked.iter().flatten().sum::<u16>() + columns.len().saturating_sub(1) as u16;
+        let open = asked.iter().filter(|w| w.is_none()).count() as u16;
+        let share = width.saturating_sub(used).checked_div(open).unwrap_or(0);
+        asked.into_iter().map(|w| w.unwrap_or(share)).collect()
+    }
+
+    /// `nodes` of column `c`, one under another, with `c` packed into every node's path step.
+    fn height_in<M>(&self, nodes: &[Node<M>], width: u16, path: &[usize], c: usize) -> u16 {
+        // path already ends in the column's index (`child(path, c)`); the nodes under it step
+        // as column * COLUMN + node, so replace that last element
+        let mut base = path.to_vec();
+        base.pop();
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(n, node)| self.node_height(node, width, &child(&base, packed(c, n))))
+            .sum()
+    }
+
+    /// draw the nodes of column `c` one under another.
+    fn draw_in<M>(
+        &mut self,
+        nodes: &[Node<M>],
+        area: Rect,
+        buf: &mut Buffer,
+        path: &[usize],
+        c: usize,
+    ) {
+        let mut base = path.to_vec();
+        base.pop();
+        let mut y = area.y;
+        for (n, node) in nodes.iter().enumerate() {
+            let here = child(&base, packed(c, n));
+            let height = self.node_height(node, area.width, &here);
+            let rect = Rect::new(area.x, y, area.width, height);
+            self.node(node, rect, buf, &here);
+            y = y.saturating_add(height);
+        }
+    }
+
     /// how wide each node of a row is: fixed things their own width, fields what is left.
     fn row_widths<M>(&self, body: &[Node<M>], width: u16) -> Vec<u16> {
         let natural: Vec<Option<u16>> = body
@@ -1030,6 +1347,8 @@ impl<'a> Painter<'a> {
                     ..
                 } => Some(cols(*w)),
                 Node::Icon(_) => Some(1),
+                Node::Spin { text, .. } => Some(spin_cells(text) + 4),
+                Node::ClockFace { .. } => Some(8),
                 Node::Choice { current, width, .. } => {
                     Some(cols(*width).max(current.chars().count() as u16 + 4))
                 }
@@ -1144,6 +1463,25 @@ fn size_cells(size: &Size, room: u16) -> u16 {
 
 /// the yellow of the warning sign.
 const YELLOW: Rgb = (255, 255, 0);
+
+/// the step of a path into node `n` of column `c`.
+fn packed(c: usize, n: usize) -> usize {
+    c * COLUMN + n
+}
+
+/// how wide a spin box's field is: its text with a cell of room each side. the gui's widths
+/// are in points for its font; in cells the text is all that matters.
+fn spin_cells(text: &str) -> u16 {
+    text.chars().count() as u16 + 2
+}
+
+/// the width of a calendar day, in cells.
+const CELL_W: u16 = 5;
+
+/// write `s` at (`x`, `y`) cut to `width`.
+fn text_at(buf: &mut Buffer, x: u16, y: u16, width: u16, s: &str, st: Style) {
+    text(buf, x, y, width, s, st);
+}
 
 /// the width of the label column in a form row, like the gui's.
 const LABEL: u16 = 18;
@@ -1527,6 +1865,196 @@ mod tests {
             .unwrap() as u16;
         let x = lines(&buf)[y as usize].find("not").unwrap() as u16;
         assert_eq!(buf[(x, y)].fg, Palette::default().color(RED));
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Pick {
+        Step(i32),
+        Day(NaiveDate),
+        Press,
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn calendar(enabled: bool) -> Vec<Node<Pick>> {
+        vec![Node::Calendar {
+            id: "cal",
+            year: 2026,
+            month: 11,
+            selected: day(2026, 11, 16),
+            today: day(2026, 11, 20),
+            enabled,
+            pick: Pick::Day,
+        }]
+    }
+
+    fn spin(enabled: bool) -> Vec<Node<Pick>> {
+        vec![Node::Spin {
+            id: "hour",
+            text: "11".into(),
+            width: 56.0,
+            enabled,
+            step: Pick::Step,
+        }]
+    }
+
+    fn painted<M>(nodes: &[Node<M>]) -> (String, Vec<Region>) {
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        fill(&mut buf, area, Palette::default(), GRAY);
+        let state = ViewState::default();
+        let mut painter = Painter::new(Palette::default(), &state, true);
+        painter.draw(nodes, area, &mut buf, &[]);
+        (lines(&buf).join("\n"), painter.regions)
+    }
+
+    #[test]
+    fn a_spin_box_shows_its_value_and_steps_with_its_arrows() {
+        let nodes = spin(true);
+        let (text, regions) = painted(&nodes);
+        assert!(
+            text.contains("11") && text.contains('▲') && text.contains('▼'),
+            "{text}"
+        );
+        let up = regions
+            .iter()
+            .find(|r| r.part == Part::Spin(1))
+            .expect("up arrow");
+        let down = regions
+            .iter()
+            .find(|r| r.part == Part::Spin(-1))
+            .expect("down arrow");
+        assert!(up.rect.x < down.rect.x, "the up arrow comes first");
+        assert_eq!(act(&nodes, &up.path, Input::Step(1)), Some(Pick::Step(1)));
+        assert_eq!(
+            act(&nodes, &down.path, Input::Step(-1)),
+            Some(Pick::Step(-1))
+        );
+        // the box itself takes the keyboard and the wheel
+        assert!(regions
+            .iter()
+            .any(|r| r.part == Part::Spin(0) && r.focusable));
+        // a greyed-out spin box sends nothing and takes no clicks
+        let off = spin(false);
+        let (_, regions) = painted(&off);
+        assert!(regions.iter().all(|r| !matches!(r.part, Part::Spin(_))));
+        assert_eq!(act(&off, &[0], Input::Step(1)), None);
+    }
+
+    #[test]
+    fn a_calendar_draws_the_month_marks_today_and_picks_a_day() {
+        let nodes = calendar(true);
+        let (text, regions) = painted(&nodes);
+        // today (the 20th) is underlined, the selected day (the 16th) is highlighted
+        let area = Rect::new(0, 0, 60, 14);
+        let mut buf = Buffer::empty(area);
+        let state = ViewState::default();
+        let mut painter = Painter::new(Palette::default(), &state, true);
+        painter.draw(&nodes, area, &mut buf, &[]);
+        let today = painter
+            .regions
+            .iter()
+            .find(|r| r.part == Part::Day(19))
+            .unwrap()
+            .rect;
+        assert!(buf[(today.x + 1, today.y)]
+            .modifier
+            .contains(Modifier::UNDERLINED));
+        let chosen = painter
+            .regions
+            .iter()
+            .find(|r| r.part == Part::Day(15))
+            .unwrap()
+            .rect;
+        assert_ne!(buf[(chosen.x, chosen.y)].bg, buf[(today.x, today.y)].bg);
+        for needle in ["S", "M", "T", "W", "F", "16", "30", "20"] {
+            assert!(text.contains(needle), "{needle} missing:\n{text}");
+        }
+        // the grid starts on the Sunday before the 1st: Nov 1 2026 is a Sunday, so cell 0
+        let first = regions.iter().find(|r| r.part == Part::Day(0)).unwrap();
+        assert_eq!(
+            act(&nodes, &first.path, Input::Day(0)),
+            Some(Pick::Day(day(2026, 11, 1)))
+        );
+        assert_eq!(
+            act(&nodes, &first.path, Input::Day(15)),
+            Some(Pick::Day(day(2026, 11, 16)))
+        );
+        assert_eq!(
+            regions
+                .iter()
+                .filter(|r| matches!(r.part, Part::Day(_)))
+                .count(),
+            42
+        );
+        // read-only: no day takes a click
+        let (_, regions) = painted(&calendar(false));
+        assert!(regions
+            .iter()
+            .all(|r| !matches!(r.part, Part::Day(_) | Part::Days)));
+        assert_eq!(act(&calendar(false), &[0], Input::Day(3)), None);
+    }
+
+    #[test]
+    fn a_clock_face_prints_the_time_as_digits() {
+        let nodes: Vec<Node<Pick>> = vec![Node::ClockFace {
+            hour: 9,
+            minute: 5,
+            second: 7,
+            size: 100.0,
+        }];
+        let (text, _) = painted(&nodes);
+        assert!(text.contains("09:05:07"), "{text}");
+    }
+
+    #[test]
+    fn columns_sit_side_by_side_and_their_buttons_still_send_their_messages() {
+        let nodes: Vec<Node<Pick>> = vec![Node::Columns(vec![
+            (
+                Some(210.0),
+                vec![
+                    Node::Text("left side".into()),
+                    Node::Calendar {
+                        id: "c",
+                        year: 2026,
+                        month: 11,
+                        selected: day(2026, 11, 16),
+                        today: day(2026, 11, 20),
+                        enabled: true,
+                        pick: Pick::Day,
+                    },
+                ],
+            ),
+            (
+                None,
+                vec![
+                    Node::Text("right side".into()),
+                    Node::Button(Button::new("Go", true, Pick::Press)),
+                ],
+            ),
+        ])];
+        let (text, regions) = painted(&nodes);
+        let rows: Vec<&str> = text.lines().collect();
+        let both = rows.iter().find(|l| l.contains("left side")).unwrap();
+        assert!(both.contains("right side"), "tops aligned:\n{text}");
+        assert!(both.find("left side") < both.find("right side"));
+        // a node inside the second column is found again through its packed path
+        let go = regions
+            .iter()
+            .find(|r| r.part == Part::Press(0))
+            .expect("the button");
+        assert_eq!(act(&nodes, &go.path, Input::Press(0)), Some(Pick::Press));
+        // and so is a day inside the first
+        let day0 = regions
+            .iter()
+            .find(|r| r.part == Part::Day(15))
+            .expect("a day");
+        assert_eq!(
+            act(&nodes, &day0.path, Input::Day(15)),
+            Some(Pick::Day(day(2026, 11, 16)))
+        );
     }
 
     #[test]

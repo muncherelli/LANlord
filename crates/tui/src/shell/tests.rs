@@ -431,3 +431,270 @@ fn the_nt4_window_switches_tabs_and_dns_and_commands_draw_from_their_trees() {
         );
     }
 }
+
+fn settle_clock(shell: &mut Shell) {
+    // the Date/Time window reads the server once; give the job a moment, drawing as we go
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(3) {
+        let text = frame(shell);
+        if text.contains("Date & Time") && !text.contains("Reading the server") {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// a demo server whose clock can be set by hand (automatic synchronization off).
+fn editable_clock() -> Shell {
+    let fake = Fake::new();
+    fake.clock.lock().unwrap().ntp = false;
+    let mut shell = shell_with(fake);
+    shell.use_demo_server();
+    frame(&mut shell);
+    shell.open(Target::DateTime);
+    settle_clock(&mut shell);
+    shell
+}
+
+const DATE_TIME: Owner = Owner::Window(Target::DateTime);
+
+#[test]
+fn date_time_is_a_tree_window_with_spin_boxes_and_a_calendar() {
+    let mut shell = editable_clock();
+    let text = frame(&mut shell);
+    assert!(!text.contains("not available in the text view"), "{text}");
+    for needle in [
+        "Date & Time",
+        "Time Zone",
+        "Internet Time",
+        "Date",
+        "Time",
+        "OK",
+        "Cancel",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    let regions = shell.regions_of(DATE_TIME);
+    assert_eq!(
+        regions
+            .iter()
+            .filter(|r| matches!(r.part, Part::Day(_)))
+            .count(),
+        42,
+        "a month grid"
+    );
+    // year, hour, minute, second and am/pm each have an up arrow
+    assert_eq!(
+        regions.iter().filter(|r| r.part == Part::Spin(1)).count(),
+        5
+    );
+    // the digital clock prints hh:mm:ss
+    assert!(
+        text.lines().any(|l| l.matches(':').count() >= 2),
+        "a hh:mm:ss clock:\n{text}"
+    );
+}
+
+#[test]
+fn a_read_only_clock_takes_no_clicks_on_its_calendar_or_spin_boxes() {
+    let mut shell = demo();
+    frame(&mut shell);
+    shell.open(Target::DateTime);
+    settle_clock(&mut shell);
+    let text = frame(&mut shell);
+    assert!(text.contains("Automatic synchronization is on"), "{text}");
+    let regions = shell.regions_of(DATE_TIME);
+    assert!(regions
+        .iter()
+        .all(|r| !matches!(r.part, Part::Day(_) | Part::Spin(_))));
+}
+
+fn up_arrow(shell: &Shell, row: usize) -> Rect {
+    let mut ups: Vec<Rect> = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .filter(|r| r.part == Part::Spin(1))
+        .map(|r| r.rect)
+        .collect();
+    ups.sort_by_key(|r| (r.y, r.x));
+    ups[row]
+}
+
+/// the text of the spin box whose up arrow is `up`: the cells just left of it.
+fn spin_text(shell: &mut Shell, up: Rect) -> String {
+    let text = frame(shell);
+    let line = text.lines().nth(usize::from(up.y)).unwrap_or_default();
+    let before: String = line.chars().take(usize::from(up.x)).collect();
+    before
+        .trim()
+        .rsplit(' ')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// the selected day: the day cell drawn with the selection colour.
+fn selected_day(shell: &mut Shell) -> Option<usize> {
+    frame(shell);
+    let mut buf = Buffer::empty(SIZE);
+    shell.render(SIZE, &mut buf);
+    let white = Palette::default().color((255, 255, 255));
+    let regions = shell.regions_of(DATE_TIME);
+    (0..42).find(|n| {
+        regions
+            .iter()
+            .find(|r| r.part == Part::Day(*n))
+            .is_some_and(|r| {
+                buf[(r.rect.x + 1, r.rect.y)].fg == white
+                    && buf[(r.rect.x + 1, r.rect.y)].bg != white
+            })
+    })
+}
+
+#[test]
+fn clicking_a_spin_arrow_steps_the_hour_and_apply_lights_up() {
+    let mut shell = editable_clock();
+    let hour_up = up_arrow(&shell, 1);
+    let before = spin_text(&mut shell, hour_up);
+    click(&mut shell, middle(hour_up));
+    let hour_up = up_arrow(&shell, 1);
+    let after = spin_text(&mut shell, hour_up);
+    assert_ne!(before, after, "the hour moved from {before}");
+    let buttons = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .filter(|r| matches!(r.part, Part::Press(_)))
+        .count();
+    assert_eq!(buttons, 3, "Apply lights up once the hour changed");
+}
+
+#[test]
+fn the_wheel_and_arrow_keys_step_a_spin_box() {
+    let mut shell = editable_clock();
+    let minute_up = up_arrow(&shell, 2);
+    let start = spin_text(&mut shell, minute_up);
+    // the wheel over the box steps it: up counts up
+    let boxes: Vec<Rect> = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .filter(|r| r.part == Part::Spin(0) && r.rect.y == minute_up.y)
+        .map(|r| r.rect)
+        .collect();
+    let over = boxes
+        .iter()
+        .find(|r| r.right() >= minute_up.x && r.x <= minute_up.x)
+        .copied()
+        .expect("the minute box");
+    mouse(
+        &mut shell,
+        MouseEventKind::ScrollUp,
+        middle(over),
+        Instant::now(),
+    );
+    let minute_up = up_arrow(&shell, 2);
+    let wheeled = spin_text(&mut shell, minute_up);
+    assert_ne!(start, wheeled, "the wheel stepped the minute from {start}");
+    // Tab onto a spin box, then Up steps it
+    for _ in 0..60 {
+        key(&mut shell, KeyCode::Tab);
+        if shell
+            .view_of(DATE_TIME)
+            .focus
+            .as_deref()
+            .is_some_and(|f| f.contains("Spin"))
+        {
+            break;
+        }
+    }
+    let focus = shell.view_of(DATE_TIME).focus.clone().unwrap_or_default();
+    assert!(
+        focus.contains("Spin"),
+        "the keyboard reached a spin box: {focus}"
+    );
+    let at = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .find(|r| r.key == focus)
+        .expect("the focused box")
+        .rect;
+    let line = frame(&mut shell)
+        .lines()
+        .nth(usize::from(at.y))
+        .unwrap()
+        .to_string();
+    key(&mut shell, KeyCode::Up);
+    let moved = frame(&mut shell)
+        .lines()
+        .nth(usize::from(at.y))
+        .unwrap()
+        .to_string();
+    assert_ne!(line, moved, "Up stepped the focused spin box");
+}
+
+#[test]
+fn clicking_a_day_picks_it_and_the_arrow_keys_move_the_selection() {
+    let mut shell = editable_clock();
+    frame(&mut shell);
+    let picked = selected_day(&mut shell);
+    let target = if picked == Some(10) { 11 } else { 10 };
+    let day = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .find(|r| r.part == Part::Day(target))
+        .expect("a day")
+        .rect;
+    click(&mut shell, middle(day));
+    assert_eq!(
+        selected_day(&mut shell),
+        Some(target),
+        "the clicked day is selected"
+    );
+    // the calendar takes the keyboard: Tab onto it, then Right moves the selection a day
+    for _ in 0..60 {
+        key(&mut shell, KeyCode::Tab);
+        if shell
+            .view_of(DATE_TIME)
+            .focus
+            .as_deref()
+            .is_some_and(|f| f.contains("Days"))
+        {
+            break;
+        }
+    }
+    key(&mut shell, KeyCode::Right);
+    assert_eq!(
+        selected_day(&mut shell),
+        Some(target + 1),
+        "Right moved it a day"
+    );
+    key(&mut shell, KeyCode::Down);
+    assert_eq!(
+        selected_day(&mut shell),
+        Some(target + 8),
+        "Down moved it a week"
+    );
+    // the taskbar clock still shows a time from the feed
+    let text = frame(&mut shell);
+    assert!(text.contains("AM") || text.contains("PM"), "{text}");
+}
+
+#[test]
+fn cancel_closes_the_date_time_window() {
+    let mut shell = editable_clock();
+    let regions = shell.regions_of(DATE_TIME);
+    let mut buttons: Vec<&Region> = regions
+        .iter()
+        .filter(|r| matches!(r.part, Part::Press(_)))
+        .collect();
+    // the row is drawn Apply, Cancel, OK from the right: sort left to right
+    buttons.sort_by_key(|r| r.rect.x);
+    // Apply is greyed out until something changes, so it takes no clicks: OK and Cancel
+    assert_eq!(buttons.len(), 2, "Cancel and OK are live");
+    let cancel = buttons[0].rect;
+    click(&mut shell, middle(cancel));
+    frame(&mut shell);
+    assert!(
+        shell.windows.iter().all(|w| w.target != Target::DateTime),
+        "Cancel closed it"
+    );
+}

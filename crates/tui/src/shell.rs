@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lanlord_app::admin_setup::{self, AdminSetup};
+use lanlord_app::clock_window::{ClockFeed, ClockPanel};
 use lanlord_app::command_panel::CommandPanel;
 use lanlord_app::console::Console;
 use lanlord_app::desktop::{self, Target};
@@ -31,6 +32,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::Widget;
+use zeroize::Zeroizing;
 
 use crate::paint::chrome::{
     Menu, MenuRow, TaskButton, Taskbar, TaskbarLayout, WindowFrame, WindowLayout,
@@ -117,6 +119,8 @@ struct Answer {
     choice: Option<(Vec<(usize, String)>, String)>,
     /// the field at the queried path sends its own message on Enter.
     enters: bool,
+    /// the calendar at the queried path: its month, selected day and whether it can be picked.
+    calendar: Option<(i32, u32, chrono::NaiveDate, bool)>,
     height: u16,
 }
 
@@ -196,6 +200,7 @@ fn drive_at<M: Clone>(
                 answer.tab = view::tab_state(nodes, &path);
                 answer.choice = view::choice_state(nodes, &path);
                 answer.enters = view::field_enters(nodes, &path);
+                answer.calendar = view::calendar_state(nodes, &path);
             }
             (answer, None)
         }
@@ -221,6 +226,9 @@ pub struct Shell {
     commands: CommandPanel,
     /// the open tab of the NT4 Domain window: Settings, Logins or Logon scripts.
     nt4_tab: usize,
+    /// the Date/Time Properties window, and the server's time shown in the taskbar.
+    clock_panel: ClockPanel,
+    feed: ClockFeed,
     /// how to sign in; `None` when lanlord runs on the gateway itself (or in a test).
     auth: Option<Arc<dyn Auth>>,
     /// the logon box, shown instead of the desktop until someone is signed in.
@@ -242,6 +250,8 @@ pub struct Shell {
     dialog_id: Option<&'static str>,
     /// a window being dragged by its title bar, and where in the bar it was grabbed.
     drag: Option<(Target, u16, u16)>,
+    /// windows that asked to be closed from inside (OK or Cancel).
+    close_requests: Vec<Target>,
     mouse: Mouse,
     hits: Hits,
     /// the clock text; the local time unless a test sets it.
@@ -265,6 +275,8 @@ impl Shell {
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             nt4_tab: 0,
+            clock_panel: ClockPanel::default(),
+            feed: ClockFeed::default(),
             auth: None,
             login: None,
             signed_in: None,
@@ -279,6 +291,7 @@ impl Shell {
             dialog_view: ViewState::default(),
             dialog_id: None,
             drag: None,
+            close_requests: Vec::new(),
             mouse: Mouse::new(),
             hits: Hits::default(),
             clock: None,
@@ -403,6 +416,10 @@ impl Shell {
             win.minimized = false;
             self.windows.push(win);
         } else {
+            if target == Target::DateTime {
+                // a fresh reading of the server every time the window opens
+                self.clock_panel.reset();
+            }
             let rect = self.place(target);
             self.windows.push(Win {
                 target,
@@ -427,7 +444,12 @@ impl Shell {
             .map(|i| icon_rect(area, i).right())
             .max()
             .unwrap_or(0);
-        let (w, h) = target.size();
+        let (w, mut h) = target.size();
+        if target == Target::DateTime {
+            // the Date/Time tree is two columns of groups, a calendar of six weeks and a button
+            // row: taller than the gui's pixel height says once cells are 16 high
+            h = h.max(33.0 * 16.0);
+        }
         let n = self.windows.len() as u16;
         let x = (icons_right + 1 + n * 2).min(area.right().saturating_sub(20));
         let y = area.y + (n % 6);
@@ -531,6 +553,13 @@ impl Shell {
 // background work, once per frame
 impl Shell {
     pub fn poll(&mut self) {
+        for target in std::mem::take(&mut self.close_requests) {
+            self.close(target);
+            if target == Target::DateTime {
+                // what the window changed shows on the taskbar clock
+                self.feed.refresh();
+            }
+        }
         self.console.drain();
         self.settings.poll();
         self.users.poll();
@@ -538,6 +567,7 @@ impl Shell {
         self.logon.poll();
         self.dns.poll();
         self.commands.poll();
+        self.poll_clock();
         self.my_server.refresh_purge();
         if let Some(host) = self.my_server.take_purged() {
             self.after_purge(&host);
@@ -651,15 +681,35 @@ impl Shell {
                     }
                 }
             }
-            Target::Networks | Target::DateTime => {
-                drive::<()>(&not_yet(), &mut pass, &state, palette).0
+            Target::DateTime => {
+                let nodes = self.clock_panel.view(&self.services, host.as_deref());
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    if self.clock_panel.update(msg, &self.services, host) {
+                        self.close_requests.push(Target::DateTime);
+                    }
+                } else if self.clock_panel.closing() {
+                    self.close_requests.push(Target::DateTime);
+                }
+                answer
             }
+            Target::Networks => drive::<()>(&not_yet(), &mut pass, &state, palette).0,
         };
         if state.focus.is_none() {
             state.focus = answer.want_focus.clone();
         }
         self.views.insert(key, state);
         answer
+    }
+
+    /// keep the taskbar clock on the server's time: read it once, and take what the Date/Time
+    /// window reads or changes.
+    fn poll_clock(&mut self) {
+        let host = self.host();
+        self.feed.watch(&self.services, host.as_deref());
+        if let (Some(state), Some(host)) = (self.clock_panel.poll(), host.as_deref()) {
+            self.feed.set(host, state);
+        }
     }
 
     /// the NT4 Domain window: its header and tab strip, and the open tab's page under them.
@@ -961,7 +1011,9 @@ impl Shell {
                 self.services.power(&host, power);
             }
             (Modal::Password(request, form), answer) => {
-                let password = (answer == FormAnswer::Ok).then(|| form.value(0).to_string());
+                // the password goes back zeroized, and is wiped here once the task has it
+                let password =
+                    (answer == FormAnswer::Ok).then(|| Zeroizing::new(form.value(0).to_string()));
                 let _ = request.reply.send(password);
             }
             (Modal::AddHost(mut form), FormAnswer::Ok) => {
@@ -972,7 +1024,8 @@ impl Shell {
                 }
             }
             (Modal::Secret(form), answer) => {
-                let value = (answer == FormAnswer::Ok).then(|| form.value(0).to_string());
+                let value =
+                    (answer == FormAnswer::Ok).then(|| Zeroizing::new(form.value(0).to_string()));
                 self.settings.answer_secret(value);
             }
             _ => {}
@@ -1078,10 +1131,7 @@ impl Shell {
     }
 
     fn render_taskbar(&mut self, area: Rect, buf: &mut Buffer) {
-        let clock = self
-            .clock
-            .clone()
-            .unwrap_or_else(|| chrono::Local::now().format("%-I:%M %p").to_string());
+        let clock = self.clock.clone().unwrap_or_else(|| self.feed.text());
         let shown: Vec<(Target, bool)> = self
             .windows
             .iter()
@@ -1514,6 +1564,8 @@ impl Shell {
                 self.toggle_fold(owner, &region.key);
                 return;
             }
+            Part::Spin(dir) if dir != 0 => Input::Step(dir),
+            Part::Day(n) => Input::Day(n),
             _ => return,
         };
         self.send(owner, region.path, input);
@@ -1534,6 +1586,30 @@ impl Shell {
             .max_by_key(|(y, n, _)| (*y, *n));
         if let Some((_, n, path)) = default {
             self.send(owner, path, Input::Press(n));
+        }
+    }
+
+    /// move a calendar's selected day by `days`; the calendar's own message does the rest
+    /// (a day in the next month moves the month with it).
+    fn day_step(&mut self, owner: Owner, region: &Region, days: i32) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        let Some((year, month, selected, enabled)) = answer.calendar else {
+            return;
+        };
+        if !enabled {
+            return;
+        }
+        let target = selected + chrono::TimeDelta::days(i64::from(days));
+        let grid = lanlord_app::clock_window::month_days(year, month);
+        // a day off the shown grid only exists in another month, which the window's spin boxes
+        // change; the selection stays on the last day shown
+        if let Some(n) = grid.iter().position(|d| *d == target) {
+            self.send(owner, region.path.clone(), Input::Day(n));
         }
     }
 
@@ -1575,7 +1651,13 @@ impl Shell {
         };
         let Some(region) = regions
             .iter()
-            .filter(|r| r.rect.contains(at) && matches!(r.part, Part::Scroll | Part::List))
+            .filter(|r| {
+                r.rect.contains(at)
+                    && matches!(
+                        r.part,
+                        Part::Scroll | Part::List | Part::Spin(0) | Part::Days
+                    )
+            })
             .min_by_key(|r| u32::from(r.rect.width) * u32::from(r.rect.height))
             .cloned()
         else {
@@ -1585,6 +1667,16 @@ impl Shell {
         if region.part == Part::List {
             // the wheel moves a list's selection, like the arrow keys
             self.list_step(owner, &region, i32::from(lines));
+            return;
+        }
+        if region.part == Part::Spin(0) {
+            // the wheel steps a spin box: up (negative lines) counts up
+            let dir = if lines < 0 { 1 } else { -1 };
+            self.send(owner, region.path, Input::Step(dir));
+            return;
+        }
+        if region.part == Part::Days {
+            self.day_step(owner, &region, 7 * i32::from(lines));
             return;
         }
         self.view_mut(owner)
@@ -1742,6 +1834,16 @@ impl Shell {
             }
             (Part::List, KeyCode::Up) => self.list_step(owner, &region, -1),
             (Part::List, KeyCode::Down) => self.list_step(owner, &region, 1),
+            (Part::Spin(0), KeyCode::Up | KeyCode::Right) => {
+                self.send(owner, region.path, Input::Step(1));
+            }
+            (Part::Spin(0), KeyCode::Down | KeyCode::Left) => {
+                self.send(owner, region.path, Input::Step(-1));
+            }
+            (Part::Days, KeyCode::Left) => self.day_step(owner, &region, -1),
+            (Part::Days, KeyCode::Right) => self.day_step(owner, &region, 1),
+            (Part::Days, KeyCode::Up) => self.day_step(owner, &region, -7),
+            (Part::Days, KeyCode::Down) => self.day_step(owner, &region, 7),
             (Part::TabBar, KeyCode::Left | KeyCode::Right) => {
                 let answer = self.pass(
                     owner,
