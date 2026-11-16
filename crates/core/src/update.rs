@@ -358,19 +358,32 @@ fn own_group(command: &mut Command) {
     let _ = command;
 }
 
+/// signal a whole process group through the shell's own `kill`, which understands `--` and a
+/// negative group id the same way everywhere; never a group below 2, which could be everything.
+#[cfg(unix)]
+fn signal_group(signal: &str, leader: u32) {
+    if leader < 2 {
+        return;
+    }
+    let _ = Command::new("sh")
+        .args(["-c", "kill -s \"$1\" -- \"$2\" 2>/dev/null", "sh"])
+        .arg(signal)
+        .arg(format!("-{leader}"))
+        .status();
+}
+
 /// stop a step and whatever it started: politely first, then for good.
 fn stop(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
-        let group = format!("-{}", child.id());
-        let _ = Command::new("kill").args(["-TERM", &group]).status();
+        signal_group("TERM", child.id());
         for _ in 0..20 {
             if matches!(child.try_wait(), Ok(Some(_))) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = Command::new("kill").args(["-KILL", &group]).status();
+        signal_group("KILL", child.id());
     }
     let _ = child.kill();
     let _ = child.wait();
@@ -429,9 +442,8 @@ pub fn run_step_with(step: &Step, cancel: &Cancel, beat: &Beat) -> Result<(), St
     let status = loop {
         if cancel.is_cancelled() {
             stop(&mut child);
-            for reader in readers {
-                let _ = reader.join();
-            }
+            // the readers end by themselves once the pipes close; never wait for them here
+            drop(readers);
             return Err(StepFault::Cancelled);
         }
         match child.try_wait() {
@@ -1130,7 +1142,7 @@ mod tests {
             program: "sh".into(),
             args: vec![
                 "-c".into(),
-                format!("sleep 30 & echo $! > '{}'; wait", pid.display()),
+                format!("sleep 5 & echo $! > '{}'; wait", pid.display()),
             ],
             dir: dir.clone(),
         };
@@ -1155,6 +1167,7 @@ mod tests {
         for _ in 0..40 {
             let alive = Command::new("kill")
                 .args(["-0", child.trim()])
+                .stderr(Stdio::null())
                 .status()
                 .unwrap();
             if !alive.success() {

@@ -47,10 +47,36 @@ fn script(path: &Path, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+/// every test that runs a rebuild writes to the process-wide log, and several read it back, so
+/// they take turns: a line from one test must never reach another test's assertions.
+#[cfg(unix)]
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+thread_local! {
+    /// the turn this test thread holds until it ends.
+    static HELD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// wait for a turn; it lasts until the test thread ends.
+#[cfg(unix)]
+fn take_turn() {
+    HELD.with(|held| {
+        if held.borrow().is_none() {
+            let guard = ONE_AT_A_TIME
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *held.borrow_mut() = Some(guard);
+        }
+    });
+}
+
 /// a desktop that is a development build: a scratch checkout whose app build script succeeds
 /// or fails as asked, and a fake installed app to start afterwards.
 #[cfg(unix)]
 fn dev(name: &str, build_ok: bool) -> (Desktop, egui::Context, std::path::PathBuf) {
+    take_turn();
     let repo = scratch(name);
     script(
         &repo.join("tools/build-app.sh"),
@@ -164,8 +190,10 @@ fn a_rebuild_streams_into_the_console_and_starts_the_new_build() {
     assert!(press(&mut desktop, &ctx, "OK"));
     until(&mut desktop, &ctx, |d| !d.is_rebuilding());
     let said = lines(&seen);
+    let here = repo.display().to_string();
     assert!(
-        said.iter().any(|l| l.contains("tools/build-app.sh")),
+        said.iter()
+            .any(|l| l.contains("tools/build-app.sh") && l.contains(&here)),
         "{said:?}"
     );
     assert!(said.iter().any(|l| l.contains("rebuilt")), "{said:?}");
