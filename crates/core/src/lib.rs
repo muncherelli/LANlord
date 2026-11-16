@@ -18,6 +18,7 @@ pub use lanlord_model::modules;
 pub mod network;
 pub use lanlord_model::networks;
 pub mod nt4;
+pub mod ops;
 pub mod passwords;
 pub mod paths;
 pub mod payload;

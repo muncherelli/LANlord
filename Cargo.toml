@@ -11,3 +11,4 @@ license = "MIT"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 lanlord-model = { path = "crates/model", version = "0.1.0" }
+serde_json = "1"
