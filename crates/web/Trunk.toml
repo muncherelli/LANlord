@@ -1,0 +1,11 @@
+# the browser build; tools/build-web.sh runs it. `lanlord webui --static target/web-dist`
+# serves the result.
+trunk-version = "^0.22.1"
+
+[build]
+target = "index.html"
+dist = "../../target/web-dist"
+
+[tools]
+# must match the wasm-bindgen version in Cargo.lock
+wasm_bindgen = "0.2.130"
