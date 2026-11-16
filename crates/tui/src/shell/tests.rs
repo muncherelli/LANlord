@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use lanlord_app::gateway::Fake;
+use lanlord_app::login::fake::{id, FakeAuth};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 use super::*;
@@ -274,15 +275,112 @@ fn the_menu_works_from_the_keyboard() {
 #[test]
 fn the_client_and_server_titles_match_the_gui() {
     let version = env!("CARGO_PKG_VERSION");
+    // like the gui, the server joins the title once someone has signed in to it
     let client = demo();
-    assert_eq!(
-        client.title(),
-        format!("LANlord Client v{version} - demo@gateway")
-    );
+    assert_eq!(client.title(), format!("LANlord Client v{version}"));
     let fake = Fake::new();
     *fake.local.lock().unwrap() = true;
     let server = shell_with(fake);
-    assert_eq!(server.title(), format!("LANlord Server v{version} - local"));
+    assert_eq!(server.title(), format!("LANlord Server v{version}"));
+}
+
+fn fake_auth() -> Arc<FakeAuth> {
+    Arc::new(FakeAuth::default())
+}
+
+#[test]
+fn client_mode_starts_at_the_logon_box() {
+    let mut shell = shell_with(Fake::new());
+    shell.require_login(fake_auth());
+    let text = frame(&mut shell);
+    assert!(shell.login.is_some());
+    assert!(text.contains("Logon Information"), "{text}");
+    assert!(
+        !text.contains("12:00 PM"),
+        "no taskbar before the logon:\n{text}"
+    );
+    assert!(shell.hits.icons.is_empty());
+}
+
+#[test]
+fn server_mode_skips_the_logon_box() {
+    let fake = Fake::new();
+    *fake.local.lock().unwrap() = true;
+    let mut shell = shell_with(fake);
+    shell.require_login(fake_auth());
+    let text = frame(&mut shell);
+    assert!(shell.login.is_none());
+    assert!(
+        text.contains("12:00 PM") && text.contains("My Server"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_demo_sign_in_reaches_the_desktop() {
+    let mut shell = shell_with(Fake::new());
+    let auth = fake_auth();
+    auth.push(Ok(id("demo", 1000)));
+    shell.require_login(auth.clone());
+    shell.use_demo_server();
+    frame(&mut shell);
+    // the agent is tried first, so the box only needs the server: user and host
+    let login = shell.login.as_mut().unwrap();
+    login.user = "demo".into();
+    login.host = "gateway".into();
+    frame(&mut shell);
+    let ok = shell
+        .regions_of(Owner::Dialog)
+        .into_iter()
+        .filter(|r| matches!(r.part, Part::Press(_)))
+        .max_by_key(|r| (r.rect.y, r.rect.x))
+        .map(|r| r.rect);
+    // press the box's default button with Enter in its first field
+    key(&mut shell, KeyCode::Enter);
+    let started = Instant::now();
+    while shell.signed_in.is_none() && started.elapsed() < Duration::from_secs(5) {
+        if shell.login.as_ref().is_some_and(|l| !l.busy()) && auth.calls().is_empty() {
+            if let Some(ok) = ok {
+                click(&mut shell, middle(ok));
+            }
+        }
+        frame(&mut shell);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let text = frame(&mut shell);
+    assert!(shell.signed_in.is_some(), "{:?}\n{text}", auth.calls());
+    assert!(shell.login.is_none() && shell.admin_setup.is_none());
+    assert!(
+        text.contains("12:00 PM") && text.contains("My Server"),
+        "{text}"
+    );
+    assert_eq!(
+        shell.title(),
+        format!(
+            "LANlord Client v{} - demo@gateway",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+}
+
+#[test]
+fn root_signs_in_to_the_administrator_screen_first() {
+    let mut shell = shell_with(Fake::new());
+    let auth = fake_auth();
+    auth.push(Ok(id("root", 0)));
+    shell.require_login(auth.clone());
+    let login = shell.login.as_mut().unwrap();
+    login.user = "root".into();
+    login.host = "gateway".into();
+    login.submit();
+    let started = Instant::now();
+    while shell.signed_in.is_none() && started.elapsed() < Duration::from_secs(5) {
+        frame(&mut shell);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let text = frame(&mut shell);
+    assert!(shell.admin_setup.is_some(), "{text}");
+    assert!(!text.contains("12:00 PM"), "{text}");
 }
 
 #[test]

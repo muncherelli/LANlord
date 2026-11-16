@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use lanlord_app::gateway::{Gateway, Ssh};
 use lanlord_app::hostlist::HostList;
+use lanlord_app::login::SystemAuth;
 use lanlord_core::hosts;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event};
@@ -56,6 +57,10 @@ pub fn run() -> Result<()> {
         HostList::new(hosts::config_path()),
         paint::palette::Palette::detect(),
     );
+    // the logon box comes first, like the gui; LANLORD_SCREEN=desktop skips it
+    if std::env::var("LANLORD_SCREEN").as_deref() != Ok("desktop") {
+        shell.require_login(Arc::new(SystemAuth::new()));
+    }
     if std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1") {
         shell.use_demo_server();
     }

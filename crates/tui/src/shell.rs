@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lanlord_app::admin_setup::{self, AdminSetup};
 use lanlord_app::command_panel::CommandPanel;
 use lanlord_app::console::Console;
 use lanlord_app::desktop::{self, Target};
@@ -12,6 +13,7 @@ use lanlord_app::dns_panel::DnsPanel;
 use lanlord_app::form::{Form, FormAnswer};
 use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
+use lanlord_app::login::{self, Auth, LoginBox, SignedIn};
 use lanlord_app::logon_panel::LogonPanel;
 use lanlord_app::menu::{self, Action, Row};
 use lanlord_app::my_server::MyServer;
@@ -219,6 +221,13 @@ pub struct Shell {
     commands: CommandPanel,
     /// the open tab of the NT4 Domain window: Settings, Logins or Logon scripts.
     nt4_tab: usize,
+    /// how to sign in; `None` when lanlord runs on the gateway itself (or in a test).
+    auth: Option<Arc<dyn Auth>>,
+    /// the logon box, shown instead of the desktop until someone is signed in.
+    login: Option<LoginBox>,
+    signed_in: Option<SignedIn>,
+    /// the screen root lands on to create the first administrator, before the desktop.
+    admin_setup: Option<AdminSetup>,
     icons: Vec<Target>,
     selected: Option<usize>,
     /// bottom to top; the last visible one has the keyboard.
@@ -256,6 +265,10 @@ impl Shell {
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             nt4_tab: 0,
+            auth: None,
+            login: None,
+            signed_in: None,
+            admin_setup: None,
             icons: desktop::icons(),
             selected: None,
             windows: Vec::new(),
@@ -291,8 +304,97 @@ impl Shell {
 
     /// the title of the whole app, as the gui sets it: "LANlord Client v…" or "LANlord Server v…".
     pub fn title(&self) -> String {
-        let host = self.host();
+        let host = self.signed_in.as_ref().and(self.host());
         desktop::window_title(self.services.is_local(), host.as_deref())
+    }
+
+    /// start at the logon box, like the gui. lanlord on the gateway itself has one server and
+    /// no logon.
+    pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
+        if self.services.is_local() {
+            return;
+        }
+        let last = self.hosts.selected().map(String::from);
+        self.login = Some(LoginBox::new(auth.clone(), Wake::none(), last.as_deref()));
+        self.auth = Some(auth);
+    }
+
+    /// the logon box or the first-administrator screen is up instead of the desktop.
+    fn before_desktop(&self) -> bool {
+        self.login.is_some() || self.admin_setup.is_some()
+    }
+
+    /// someone signed in: the server joins the list and every action targets it. root goes to
+    /// the screen that creates the first administrator before anything else.
+    fn finish_login(&mut self, signed_in: SignedIn) {
+        self.login = None;
+        if let Err(error) = self.hosts.add(&signed_in.target) {
+            lanlord_core::log::emit(lanlord_core::log::Kind::Err, error);
+        }
+        self.windows.clear();
+        self.active = None;
+        self.selected = None;
+        self.menu = None;
+        if signed_in.identity.is_root() {
+            self.admin_setup = Some(AdminSetup::new());
+        }
+        self.signed_in = Some(signed_in);
+    }
+
+    fn admin_outcome(&mut self, outcome: admin_setup::Outcome) {
+        let Some(target) = self.signed_in.as_ref().map(|s| s.target.clone()) else {
+            self.admin_setup = None;
+            return;
+        };
+        match outcome {
+            admin_setup::Outcome::Skipped => self.admin_setup = None,
+            admin_setup::Outcome::Created(name) => {
+                // forget the root entry and ask for a logon as the new account
+                self.admin_setup = None;
+                if self.hosts.selected() == Some(target.as_str()) {
+                    let _ = self.hosts.remove_selected();
+                }
+                let host = target.split_once('@').map_or(target.as_str(), |(_, h)| h);
+                self.return_to_login(
+                    Some(format!("{name}@{host}")),
+                    Some(format!("Created {name}. Log on with it.")),
+                );
+            }
+        }
+    }
+
+    /// lanlord was removed from `host`: forget it and go back to the logon box.
+    fn after_purge(&mut self, host: &str) {
+        if let Some(i) = self.hosts.hosts().iter().position(|h| h == host) {
+            self.hosts.select(i);
+            let _ = self.hosts.remove_selected();
+        }
+        self.log_off();
+    }
+
+    /// back to the logon box, closing the connection that was kept open for this server.
+    fn log_off(&mut self) {
+        let last = self.signed_in.as_ref().map(|s| s.target.clone());
+        self.return_to_login(last, None);
+    }
+
+    /// show the logon box again with `last` filled in and `note` in its status bar.
+    fn return_to_login(&mut self, last: Option<String>, note: Option<String>) {
+        let Some(auth) = self.auth.clone() else {
+            return;
+        };
+        if let Some(target) = self.signed_in.take().map(|s| s.target) {
+            let closer = auth.clone();
+            std::thread::spawn(move || closer.sign_out(&target));
+        }
+        self.windows.clear();
+        self.active = None;
+        self.menu = None;
+        let mut login = LoginBox::new(auth, Wake::none(), last.as_deref());
+        if let Some(note) = note {
+            login.note(&note);
+        }
+        self.login = Some(login);
     }
 
     pub fn open(&mut self, target: Target) {
@@ -390,7 +492,7 @@ impl Shell {
         let host = self.host();
         menu::rows(&menu::State {
             host: host.as_deref(),
-            signed_in: None,
+            signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
             updates: false,
             developer: false,
@@ -419,6 +521,7 @@ impl Shell {
                 self.modal = Some(Modal::About(Form::new("about", "About LANlord", &about)));
             }
             Action::Quit => self.quit = true,
+            Action::SwitchServer | Action::LogOff => self.log_off(),
             // the logon box, updates and the developer menu live in the gui for now
             _ => {}
         }
@@ -437,7 +540,13 @@ impl Shell {
         self.commands.poll();
         self.my_server.refresh_purge();
         if let Some(host) = self.my_server.take_purged() {
-            let _ = host;
+            self.after_purge(&host);
+        }
+        if let Some(signed_in) = self.login.as_mut().and_then(LoginBox::poll) {
+            self.finish_login(signed_in);
+        }
+        if let Some(outcome) = self.admin_setup.as_mut().and_then(AdminSetup::poll) {
+            self.admin_outcome(outcome);
         }
         if self.modal.is_none() {
             if let Some(request) = self.services.next_request() {
@@ -699,6 +808,12 @@ impl Shell {
                 Modal::Secret(_) => "secret",
             });
         }
+        if let Some(login) = &self.login {
+            return Some(login.overlay().map_or("logon", |d| d.id));
+        }
+        if let Some(setup) = &self.admin_setup {
+            return Some(setup.warning().map_or("admin-setup", |d| d.id));
+        }
         if let Some(dialog) = self.users.dialog() {
             return Some(dialog.id);
         }
@@ -744,6 +859,43 @@ impl Shell {
             self.modal = Some(modal);
             if let Some(result) = done {
                 self.answer_modal(result);
+            }
+            (title, answer)
+        } else if let Some(overlay) = self.login.as_ref().and_then(LoginBox::overlay) {
+            let (answer, msg) = drive_dialog(&overlay, &mut pass, &state, palette, escape);
+            if let (Some(button), Some(login)) = (msg, self.login.as_mut()) {
+                login.answer_overlay(button);
+            }
+            (overlay.title.clone(), answer)
+        } else if let Some(login) = self.login.as_mut() {
+            let known = self.hosts.hosts().to_vec();
+            let nodes = login.view(&known);
+            let title = login.title().to_string();
+            let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+            match msg.and_then(|msg| login.update(msg, &known)) {
+                Some(login::Outcome::SignedIn(signed_in)) => self.finish_login(signed_in),
+                Some(login::Outcome::ShutDown) => self.quit = true,
+                None => {}
+            }
+            (title, answer)
+        } else if let Some(warning) = self.admin_setup.as_ref().and_then(AdminSetup::warning) {
+            let (answer, msg) = drive_dialog(&warning, &mut pass, &state, palette, escape);
+            if let (Some(button), Some(setup)) = (msg, self.admin_setup.as_mut()) {
+                setup.answer_warning(button);
+            }
+            (warning.title.clone(), answer)
+        } else if self.admin_setup.is_some() {
+            let target = self
+                .signed_in
+                .as_ref()
+                .map(|s| s.target.clone())
+                .unwrap_or_default();
+            let setup = self.admin_setup.as_mut().expect("checked above");
+            let nodes = setup.view();
+            let title = setup.title().to_string();
+            let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+            if let Some(outcome) = msg.and_then(|msg| setup.update(msg, &self.services, &target)) {
+                self.admin_outcome(outcome);
             }
             (title, answer)
         } else if let Some(dialog) = self.users.dialog() {
@@ -852,6 +1004,15 @@ impl Shell {
             desktop,
             ..Hits::default()
         };
+        if self.before_desktop() {
+            // the logon box and the first-administrator screen sit on the bare desktop colour,
+            // with no icons or taskbar until someone is signed in
+            Teal { palette }.render(area, buf);
+            self.hits.desktop = area;
+            self.render_dialog(area, buf);
+            self.render_dropdown(buf);
+            return;
+        }
         Teal { palette }.render(desktop, buf);
         for (i, target) in self.icons.clone().into_iter().enumerate() {
             let rect = icon_rect(desktop, i);
@@ -982,7 +1143,12 @@ impl Shell {
     }
 
     fn render_dialog(&mut self, desktop: Rect, buf: &mut Buffer) {
-        let width = 60.min(desktop.width.saturating_sub(4)).max(20);
+        let wide = if self.admin_setup.is_some() && self.login.is_none() {
+            72
+        } else {
+            60
+        };
+        let width = wide.min(desktop.width.saturating_sub(4)).max(20);
         let Some((title, measured)) = self.run_dialog(Pass::Measure { width: width - 4 }) else {
             return;
         };
