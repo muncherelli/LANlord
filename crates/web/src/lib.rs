@@ -1,10 +1,5 @@
-//! the browser build: the egui app on a canvas, served by `lanlord webui` on the gateway. for now
-//! it draws a placeholder; the real desktop (lanlord-ui rendering the shared lanlord-app view
-//! tree) drops in here once those crates build for wasm.
-
-mod placeholder;
-
-pub use placeholder::{draw, title};
+//! the browser build: the LANlord desktop from lanlord-ui on a canvas, served by `lanlord webui`
+//! on the gateway. the desktop, its windows and its look are the same code as the native window.
 
 #[cfg(target_arch = "wasm32")]
 mod web;
