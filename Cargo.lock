@@ -2869,6 +2869,8 @@ name = "lanlord-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "lanlord-app",
  "lanlord-core",
  "ratatui",
 ]
