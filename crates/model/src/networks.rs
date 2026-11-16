@@ -7,13 +7,13 @@ use serde_yaml_ng::Value;
 use crate::server::Iface;
 use crate::settings::{DnsSettings, Settings};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     External,
     Lanlord,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NetworkRow {
     pub name: String,
     pub role: Role,

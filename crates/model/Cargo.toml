@@ -1,0 +1,11 @@
+[package]
+name = "lanlord-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_yaml_ng = "0.10.0"
