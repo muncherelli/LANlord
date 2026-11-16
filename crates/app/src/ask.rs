@@ -1,19 +1,21 @@
 //! asking the person for a sudo password while a task runs.
 
 use anyhow::Result;
+use zeroize::Zeroizing;
 
 /// asks for the sudo password, showing the prompt; the same shape as the cli's, so the two
 /// can be passed to each other.
 pub type AskPassword<'a> = &'a mut dyn FnMut(&str) -> Result<String>;
 
-/// remembers the first password it is given, so one task asks once.
+/// remembers the first password it is given, so one task asks once; the remembered copy is
+/// wiped when the task is done.
 pub fn cached<'a>(ask: AskPassword<'a>) -> impl FnMut(&str) -> Result<String> + 'a {
-    let mut saved: Option<String> = None;
+    let mut saved: Option<Zeroizing<String>> = None;
     move |what| {
         if saved.is_none() {
-            saved = Some(ask(what)?);
+            saved = Some(Zeroizing::new(ask(what)?));
         }
-        Ok(saved.clone().unwrap_or_default())
+        Ok(saved.as_deref().cloned().unwrap_or_default())
     }
 }
 

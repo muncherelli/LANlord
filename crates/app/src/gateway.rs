@@ -291,7 +291,7 @@ fn text(reply: Reply, op: &str) -> Result<Option<String>> {
 }
 
 #[cfg(feature = "native")]
-pub use native::{Local, Ssh, NO_KEY};
+pub use native::{Ssh, NO_KEY};
 
 #[cfg(feature = "native")]
 mod native {
@@ -319,15 +319,16 @@ mod native {
         }
     }
 
-    /// lanlord running on the gateway itself (server mode): one server, the local one.
-    pub struct Local;
+    /// lanlord running on the gateway itself (server mode): one server, the local one. nothing
+    /// uses it yet: core runs every op through an ssh session, and server mode needs a local
+    /// path and a privilege model (a root helper, or a socket daemon only the admins group may
+    /// use) first.
+    #[allow(dead_code)] // server mode is not built yet
+    pub(super) struct Local;
 
     impl Gateway for Local {
-        fn call(&self, _host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
-            // todo: core runs every op through an ssh session for now, so server mode reaches
-            // itself over localhost until there is a local path and a privilege model
-            // (a root helper, or a socket daemon only the admins group may use)
-            execute("localhost", &op, ask)
+        fn call(&self, _host: &str, _op: Op, _ask: AskPassword) -> Result<Reply> {
+            Err(anyhow!("server mode backend not built yet"))
         }
 
         fn is_local(&self) -> bool {
@@ -462,15 +463,20 @@ mod native {
         }
 
         #[test]
-        fn the_local_gateway_is_the_one_server() {
+        fn the_local_gateway_is_the_one_server_and_not_built_yet() {
             assert!(Local.is_local());
             assert!(!Ssh.is_local());
+            let err = Local
+                .call("ignored", Op::Leases, &mut crate::ask::never)
+                .unwrap_err();
+            assert_eq!(err.to_string(), "server mode backend not built yet");
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub mod http;
+pub mod round_trip;
 
 #[cfg(any(test, feature = "fake"))]
 pub use fake::Fake;

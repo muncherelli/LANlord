@@ -134,7 +134,7 @@ fn background(work: impl FnOnce() + Send + 'static) {
 
 /// in the browser there are no threads: the work runs on the page's event loop once the
 /// current frame is done. a task that talks to the server sends its op with
-/// `gateway::http::Http::send`, which does not block.
+/// `gateway::http::Http::run`, which does not block.
 #[cfg(target_arch = "wasm32")]
 fn background(work: impl FnOnce() + Send + 'static) {
     wasm_bindgen_futures::spawn_local(async move { work() });
@@ -162,7 +162,7 @@ fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> R
 
 /// in the browser a task runs on the page's only thread, so waiting for the dialog would wait
 /// forever. a prompt fails at once instead; the web ui asks for the password itself when the
-/// server answers an op with `Reply::NeedsPassword` (see `gateway::http::Http::send`).
+/// server answers an op with `Reply::NeedsPassword` (see `gateway::http::Http::run`).
 #[cfg(target_arch = "wasm32")]
 fn asker(_requests: Sender<PasswordRequest>, _wake: Wake) -> impl FnMut(&str) -> Result<String> {
     |what: &str| Err(anyhow!("{PROMPT_IN_BROWSER} ({what})"))
