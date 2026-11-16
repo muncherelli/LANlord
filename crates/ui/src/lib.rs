@@ -45,7 +45,7 @@ use lanlord_core::{hosts, prefs, update};
 pub fn run() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("LANlord")
+            .with_title(concat!("LANlord Client v", env!("CARGO_PKG_VERSION")))
             .with_app_id("lanlord")
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
