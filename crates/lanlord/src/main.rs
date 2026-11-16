@@ -159,6 +159,16 @@ enum Command {
         #[command(subcommand)]
         action: LogonCommand,
     },
+    /// remove lanlord from a server: containers, files, service account and sudo rules
+    Purge {
+        host: String,
+        /// also remove the administrator accounts (needs a root login)
+        #[arg(long)]
+        remove_admins: bool,
+        /// skip the prompt by repeating the host name (for scripts)
+        #[arg(long, value_name = "HOST")]
+        confirm: Option<String>,
+    },
     /// turn the nt4-domain software share (S: at logon) on or off, and apply it
     Software {
         host: String,
@@ -287,6 +297,36 @@ fn logon(host: &str, action: LogonCommand) -> Result<()> {
     }
 }
 
+fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()> {
+    use lanlord_core::purge::{preview, purge, PurgeOptions};
+    let session = lanlord_core::ssh::Session::new(host)?;
+    let options = PurgeOptions { remove_admins };
+    println!("this would remove from {host}:");
+    for line in preview(&session, options, &mut ask)? {
+        println!("  {line}");
+    }
+    let typed = match confirm {
+        Some(typed) => typed,
+        None => {
+            print!("type the host name to remove lanlord from it: ");
+            std::io::stdout().flush()?;
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            line.trim().to_string()
+        }
+    };
+    if typed != host {
+        bail!("the host name does not match; nothing was removed");
+    }
+    for line in purge(&session, host, options, &mut ask)? {
+        println!("{line}");
+    }
+    if let Some(path) = lanlord_core::hosts::config_path() {
+        let _ = lanlord_core::hosts::remove(&path, host);
+    }
+    Ok(())
+}
+
 fn admin(host: &str, action: AdminCommand) -> Result<()> {
     use lanlord_core::admins::{change, list, Action};
     let action = match action {
@@ -376,6 +416,11 @@ fn main() -> Result<()> {
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
+        Some(Command::Purge {
+            host,
+            remove_admins,
+            confirm,
+        }) => purge(&host, remove_admins, confirm),
         Some(Command::Software { host, state }) => {
             let identity = crypto::load(&identity_path()?)?;
             let session = lanlord_core::ssh::Session::new(&host)?;

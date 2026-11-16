@@ -43,6 +43,10 @@ lanlord gui                                 # The desktop window.
 
 The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh` client, so your `~/.ssh/config`, jump hosts and SSH agent (including 1Password) all work.
 
+## Starting over
+
+`lanlord purge HOST` removes LANlord from a server: its containers and images, `/opt/lanlord`, the firewall rules, the `lanlord` service account, the `admins` group and the sudo rules. It first lists everything it would remove and the data you would lose, then asks you to type the host name. The Docker engine, `/etc/motd` and the accounts of people stay unless you pass `--remove-admins` (root login only). Note that `settings.age` is the only copy of the stored secrets.
+
 ## Supported platforms
 
 The gateway is the machine LANlord manages. The client is where you run `lanlord`.
