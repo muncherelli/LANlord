@@ -113,6 +113,13 @@ pub enum Node<M> {
         /// what pressing Enter in the field sends, if anything.
         enter: Option<M>,
     },
+    /// a section under a title that opens and closes when the title is clicked; the front end
+    /// remembers whether it is open.
+    Fold {
+        id: &'static str,
+        title: String,
+        body: Vec<Node<M>>,
+    },
     /// a line of red text, for input that was refused.
     Warning(String),
     /// a white box that scrolls once its contents are taller than `max_height`.

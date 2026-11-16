@@ -10,6 +10,7 @@ pub mod form;
 pub mod gateway;
 pub mod hostlist;
 pub mod hosts_window;
+pub mod logon_panel;
 pub mod menu;
 pub mod module_window;
 pub mod my_server;

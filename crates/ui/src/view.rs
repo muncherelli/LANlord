@@ -285,6 +285,11 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             }
             (text != *value).then(|| edit(text))
         }
+        Node::Fold { id, title, body } => egui::CollapsingHeader::new(title.as_str())
+            .id_salt(*id)
+            .show(ui, |ui| show(ui, body))
+            .body_returned
+            .flatten(),
         Node::Warning(text) => {
             ui.colored_label(egui::Color32::from_rgb(160, 0, 0), text.as_str());
             None
