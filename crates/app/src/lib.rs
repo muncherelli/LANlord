@@ -13,6 +13,7 @@ pub mod hosts_window;
 pub mod menu;
 pub mod module_window;
 pub mod my_server;
+pub mod prompt;
 pub mod remote;
 pub mod services;
 pub mod settings_window;

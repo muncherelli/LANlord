@@ -110,6 +110,8 @@ pub enum Node<M> {
         masked: bool,
         focus: bool,
         edit: Box<dyn Fn(String) -> M>,
+        /// what pressing Enter in the field sends, if anything.
+        enter: Option<M>,
     },
     /// a line of red text, for input that was refused.
     Warning(String),

@@ -115,6 +115,7 @@ impl Form {
                 masked: field.secret && !field.shown,
                 focus: i == 0 && !self.focused,
                 edit: Box::new(move |text| FormMsg::Edit(i, text)),
+                enter: None,
             }];
             if field.secret {
                 let reveal = if field.shown { "Hide" } else { "Show" };
