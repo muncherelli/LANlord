@@ -1,76 +1,56 @@
 //! the browser's backend: every op goes to the web ui's `/api/op` as json.
 //!
-//! a browser cannot wait for an answer, so [`Http::run`] hands the reply to a callback. the
-//! synchronous [`Gateway::call`] the desktop uses only says so.
+//! a browser cannot wait for an answer, so ops are awaited with [`Http::exchange`]; tasks run
+//! on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says so.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use lanlord_model::ops::{Op, Reply, Request, Response};
+use lanlord_model::ops::{Op, Reply, Request};
 use lanlord_model::secret::Secret;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use zeroize::Zeroizing;
 
-use super::round_trip::{self, Step, CANCELLED};
+use super::round_trip::{self, SessionEnded};
 use super::Gateway;
 use crate::ask::AskPassword;
-
-/// how long one request may take before it is given up, in milliseconds.
-pub const TIMEOUT_MS: i32 = 30_000;
-
-/// shows the sudo prompt and calls back with the password, or `None` when cancelled.
-pub type AskOnce = Box<dyn FnOnce(String, Box<dyn FnOnce(Option<Secret>)>)>;
 
 /// the gateway this page was served from.
 #[derive(Clone)]
 pub struct Http {
     /// where ops are posted, `/api/op` on the page's own server.
     pub endpoint: String,
+    /// set once the server answered that the session is gone; shared by every clone.
+    ended: Arc<AtomicBool>,
 }
 
 impl Default for Http {
     fn default() -> Self {
         Self {
             endpoint: "/api/op".into(),
+            ended: Arc::default(),
         }
     }
 }
 
 impl Http {
-    /// send `op` and call `done` with the reply. when the server needs the sudo password, `ask`
-    /// shows the prompt once and the op is sent again with it; a second request for it is
-    /// reported as a wrong password.
-    pub fn run(&self, op: Op, ask: AskOnce, done: impl FnOnce(Result<Reply>) + 'static) {
-        let http = self.clone();
-        let retry = op.clone();
-        self.send(op, None, move |answer| match round_trip::first(answer) {
-            Step::Done(result) => done(result),
-            Step::Ask(prompt) => ask(
-                prompt,
-                Box::new(move |password| match password {
-                    None => done(Err(anyhow!(CANCELLED))),
-                    Some(password) => http.send(retry, Some(password), move |answer| {
-                        done(round_trip::retried(answer))
-                    }),
-                }),
-            ),
-        });
-    }
-
-    /// post one request; the password is wiped once it has been handed to the browser.
-    fn send(&self, op: Op, password: Option<Secret>, done: impl FnOnce(Result<Reply>) + 'static) {
-        let endpoint = self.endpoint.clone();
-        let request = Request { op, password };
-        wasm_bindgen_futures::spawn_local(async move {
-            let answer = post(&endpoint, request).await;
-            done(answer);
-        });
+    /// post one op, with the sudo password once the server has asked for it. an answer that
+    /// says the session is over also raises the flag [`Gateway::session_ended`] reads.
+    pub async fn exchange(&self, op: Op, password: Option<Secret>) -> Result<Reply> {
+        let answer = post(&self.endpoint, Request { op, password }).await;
+        if matches!(&answer, Err(err) if err.is::<SessionEnded>()) {
+            self.ended.store(true, Ordering::SeqCst);
+        }
+        answer
     }
 }
 
 impl Gateway for Http {
     fn call(&self, _host: &str, _op: Op, _ask: AskPassword) -> Result<Reply> {
         Err(anyhow!(
-            "the browser cannot wait for the server; the web ui sends ops with Http::run"
+            "the browser cannot wait for the server; tasks send ops with Http::exchange"
         ))
     }
 
@@ -78,10 +58,23 @@ impl Gateway for Http {
         // the web ui only runs on the gateway itself
         true
     }
+
+    fn http(&self) -> Option<&Http> {
+        Some(self)
+    }
+
+    fn session_ended(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
+    fn session_restored(&self) {
+        self.ended.store(false, Ordering::SeqCst);
+    }
 }
 
 async fn post(endpoint: &str, request: Request) -> Result<Reply> {
     // the body holds the password in plain text: keep it only until the browser has its copy
+    let op = request.op.clone();
     let body = Zeroizing::new(serde_json::to_string(&request)?);
     drop(request);
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
@@ -96,14 +89,15 @@ async fn post(endpoint: &str, request: Request) -> Result<Reply> {
         .headers()
         .set("content-type", "application/json")
         .map_err(js)?;
+    let timeout = round_trip::timeout_ms(&op);
     let abort = Closure::once(move || controller.abort());
     let timer = window
         .set_timeout_with_callback_and_timeout_and_arguments_0(
             abort.as_ref().unchecked_ref(),
-            TIMEOUT_MS,
+            timeout,
         )
         .map_err(js)?;
-    let timed_out = || anyhow!("no answer from the server within {} s", TIMEOUT_MS / 1000);
+    let timed_out = || anyhow!("no answer from the server within {} s", timeout / 1000);
     // the abort timer stays armed until the body is read, so a stalled body also times out
     let fetched = async {
         let answer: web_sys::Response =
@@ -124,13 +118,7 @@ async fn post(endpoint: &str, request: Request) -> Result<Reply> {
     window.clear_timeout_with_handle(timer);
     drop(abort);
     let (status, text) = fetched?;
-    if !(200..300).contains(&status) {
-        return Err(anyhow!("the server answered {status}: {}", text.trim()));
-    }
-    match serde_json::from_str::<Response>(&text)? {
-        Response::Ok(reply) => Ok(reply),
-        Response::Error(message) => Err(anyhow!(message)),
-    }
+    round_trip::answer(status, &text)
 }
 
 fn js(value: wasm_bindgen::JsValue) -> anyhow::Error {

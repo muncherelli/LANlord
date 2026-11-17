@@ -76,7 +76,7 @@ impl CommandPanel {
         let lines = log::subscribe();
         let (target, shell) = (host.to_string(), command.clone());
         let job = services.spawn(host, move |gateway, _ask| {
-            gateway.run(&target, &["sh".into(), "-c".into(), shell])
+            gateway.run(&target, &["sh".into(), "-c".into(), shell.clone()])
         });
         match job {
             Some(job) => {

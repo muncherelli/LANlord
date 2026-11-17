@@ -168,8 +168,9 @@ mod tests {
     fn a_busy_host_is_reported() {
         let services = Services::new(Arc::new(Fake::new()), Wake::none());
         let (hold, release) = std::sync::mpsc::channel::<()>();
+        let release = std::sync::Mutex::new(release);
         let first = services.spawn("a", move |_, _| {
-            let _ = release.recv();
+            let _ = release.lock().unwrap().recv();
             Ok(1u32)
         });
         let mut remote = Remote::<u32>::default();

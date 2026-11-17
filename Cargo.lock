@@ -2986,6 +2986,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "js-sys",
  "lanlord-core",
  "lanlord-model",
  "serde_json",

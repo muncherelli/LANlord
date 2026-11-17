@@ -43,6 +43,21 @@ pub trait Gateway: Send + Sync {
         false
     }
 
+    /// the browser's backend, when this is it: its ops cannot be waited for, so tasks on it
+    /// are run in passes (see `replay`).
+    #[cfg(target_arch = "wasm32")]
+    fn http(&self) -> Option<&http::Http> {
+        None
+    }
+
+    /// has the server said the login is over? only the browser's backend can tell.
+    fn session_ended(&self) -> bool {
+        false
+    }
+
+    /// forget that the session ended, once the person has signed in again.
+    fn session_restored(&self) {}
+
     /// set the gateway up for lanlord.
     fn bootstrap(&self, host: &str, ask: AskPassword) -> Result<()> {
         done(self.call(host, Op::Bootstrap, ask)?, "bootstrap")

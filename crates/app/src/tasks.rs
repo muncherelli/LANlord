@@ -128,6 +128,58 @@ impl Tasks {
     }
 }
 
+/// the browser's tasks: the work is run in passes over http (see `browser`), and ends the same
+/// way a thread's does, with the result on the job's channel and a wake.
+#[cfg(target_arch = "wasm32")]
+impl Tasks {
+    /// like [`Tasks::spawn`], for a gateway whose ops go over http.
+    pub fn spawn_web<T: 'static>(
+        &self,
+        wake: &Wake,
+        host: &str,
+        http: crate::gateway::http::Http,
+        work: impl Fn(&dyn crate::gateway::Gateway, AskPassword) -> Result<T> + 'static,
+    ) -> Option<Job<T>> {
+        if !self.busy.lock().ok()?.insert(host.to_string()) {
+            return None;
+        }
+        let guard = Busy {
+            hosts: self.busy.clone(),
+            host: host.to_string(),
+        };
+        let (done, result) = mpsc::channel();
+        let (requests, wake) = (self.requests.clone(), wake.clone());
+        wasm_bindgen_futures::spawn_local(async move {
+            let outcome = crate::browser::run(&http, Some(&requests), &wake, work).await;
+            let outcome = outcome.map_err(|err| err.to_string());
+            if let Err(message) = &outcome {
+                emit(Kind::Err, message.clone());
+            }
+            drop(guard);
+            let _ = done.send(outcome);
+            wake.wake();
+        });
+        Some(Job { result })
+    }
+
+    /// like [`Tasks::quiet`], for a gateway whose ops go over http.
+    pub fn quiet_web<T: 'static>(
+        &self,
+        wake: &Wake,
+        http: crate::gateway::http::Http,
+        work: impl Fn(&dyn crate::gateway::Gateway) -> Result<T> + 'static,
+    ) -> Job<T> {
+        let (done, result) = mpsc::channel();
+        let wake = wake.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let outcome = crate::browser::run(&http, None, &wake, |gateway, _| work(gateway)).await;
+            let _ = done.send(outcome.map_err(|err| err.to_string()));
+            wake.wake();
+        });
+        Job { result }
+    }
+}
+
 /// start `work` off the ui thread: a plain thread on the desktop.
 #[cfg(not(target_arch = "wasm32"))]
 fn background(work: impl FnOnce() + Send + 'static) {

@@ -4,7 +4,8 @@
 //! was wrong; there is no third try.
 
 use anyhow::{anyhow, Result};
-use lanlord_model::ops::Reply;
+use lanlord_model::ops::{Op, Reply, Response};
+use lanlord_model::secret::Secret;
 
 /// what a retry with a password that still did not work says.
 pub const WRONG_PASSWORD: &str = "wrong password";
@@ -37,9 +38,126 @@ pub fn retried(answer: Result<Reply>) -> Result<Reply> {
     }
 }
 
+/// the server no longer knows this login: sign in again. the page keeps a shared flag so the
+/// desktop can show its logon box.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SessionEnded;
+
+impl std::fmt::Display for SessionEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("your session has ended; sign in again")
+    }
+}
+
+impl std::error::Error for SessionEnded {}
+
+/// how long one request may take before it is given up, in milliseconds: the ops that run for
+/// minutes get longer than the server's own 15 minute limit, so its answer is the one shown.
+pub fn timeout_ms(op: &Op) -> i32 {
+    match op {
+        Op::Apply { .. }
+        | Op::Power { .. }
+        | Op::ClockApply { .. }
+        | Op::Purge { .. }
+        | Op::Run { .. }
+        | Op::Bootstrap => 16 * 60 * 1000,
+        _ => 30_000,
+    }
+}
+
+/// what the server's http answer means: a reply, a message, or the end of the session.
+pub fn answer(status: u16, body: &str) -> Result<Reply> {
+    if status == 401 && is_session_error(body) {
+        return Err(SessionEnded.into());
+    }
+    if !(200..300).contains(&status) {
+        return Err(anyhow!("the server answered {status}: {}", body.trim()));
+    }
+    match serde_json::from_str::<Response>(body)? {
+        Response::Ok(reply) => Ok(reply),
+        Response::Error(message) => Err(anyhow!(message)),
+    }
+}
+
+fn is_session_error(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .is_some_and(|v| v.get("error").and_then(|e| e.as_str()) == Some("session"))
+}
+
+/// the answer to the retry that carried `given`, and the password to keep for the task's later
+/// ops: only one the server did not ask for again, so a wrong one is never sent twice.
+pub fn after_retry(given: Secret, again: Result<Reply>) -> (Option<Secret>, Result<Reply>) {
+    let keep = !matches!(again, Ok(Reply::NeedsPassword { .. }));
+    (keep.then_some(given), retried(again))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrong_password_is_not_kept_for_later_ops() {
+        let asked = || Ok(Reply::NeedsPassword { prompt: "x".into() });
+        let (kept, answer) = after_retry(Secret::from("bad"), asked());
+        assert!(kept.is_none());
+        assert_eq!(answer.unwrap_err().to_string(), WRONG_PASSWORD);
+        // the next op has no password, so it asks again
+        assert!(matches!(first(asked()), Step::Ask(_)));
+        let (kept, answer) = after_retry(Secret::from("good"), Ok(Reply::Done));
+        assert_eq!(kept, Some(Secret::from("good")));
+        assert!(answer.is_ok());
+        let (kept, _) = after_retry(Secret::from("pw"), Err(anyhow!("down")));
+        assert!(kept.is_some());
+    }
+
+    #[test]
+    fn a_401_session_answer_is_typed_and_other_401s_are_not() {
+        let err = answer(401, r#"{"error":"session"}"#).unwrap_err();
+        assert!(err.is::<SessionEnded>());
+        let other = answer(401, r#"{"error":"password"}"#).unwrap_err();
+        assert!(!other.is::<SessionEnded>() && other.to_string().contains("401"));
+        // the same words under another status are just an error
+        assert!(!answer(500, r#"{"error":"session"}"#)
+            .unwrap_err()
+            .is::<SessionEnded>());
+    }
+
+    #[test]
+    fn replies_and_errors_come_out_of_the_body() {
+        assert!(matches!(
+            answer(200, r#"{"ok":{"reply":"done"}}"#),
+            Ok(Reply::Done)
+        ));
+        assert_eq!(
+            answer(200, r#"{"error":"no key"}"#)
+                .unwrap_err()
+                .to_string(),
+            "no key"
+        );
+        assert!(answer(200, "not json").is_err());
+    }
+
+    #[test]
+    fn long_ops_wait_longer() {
+        let short = timeout_ms(&Op::Leases);
+        assert_eq!(short, 30_000);
+        for op in [
+            Op::Apply { modules: vec![] },
+            Op::Power {
+                power: lanlord_model::power::Power::Reboot,
+            },
+            Op::Purge {
+                remove_admins: false,
+            },
+            Op::Run {
+                command: vec!["true".into()],
+            },
+            Op::Bootstrap,
+        ] {
+            assert!(timeout_ms(&op) > 15 * 60 * 1000);
+        }
+    }
 
     #[test]
     fn a_prompt_is_shown_once_and_a_second_one_is_a_wrong_password() {

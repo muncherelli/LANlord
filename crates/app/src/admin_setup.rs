@@ -359,8 +359,9 @@ mod tests {
         let services = Services::new(fake.clone(), Wake::none());
         // a task that does not finish holds the host
         let (release, wait) = mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
         let held = services.spawn("root@gw", move |_, _| {
-            let _ = wait.recv();
+            let _ = wait.lock().unwrap().recv();
             Ok(())
         });
         assert!(held.is_some());
