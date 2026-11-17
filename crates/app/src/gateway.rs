@@ -617,9 +617,9 @@ mod fake {
     use lanlord_model::{clock, logon, server, users};
 
     use super::{
-        anyhow, AskPassword, Change, ClockChange, ClockState, Document, Gateway, InterfaceStatus,
-        Internal, Lease, NewAdmin, Op, Outcome, Power, Reply, Report, Result, ServerFacts,
-        Settings, Stored, ZoneNow,
+        anyhow, Access, AccountInfo, AskPassword, Change, ClockChange, ClockState, Document,
+        Gateway, InterfaceStatus, Internal, Lease, NewAdmin, Op, Outcome, PasswordReport, Power,
+        Reply, Report, Result, ServerFacts, Settings, Stored, ZoneNow,
     };
 
     /// a gateway that records what it was asked and answers from memory.
