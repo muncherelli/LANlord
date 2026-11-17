@@ -65,6 +65,8 @@ pub enum Part {
     Day(usize),
     /// a calendar's grid, for the keyboard and the wheel.
     Days,
+    /// the tick box of row `n` of a check list.
+    Mark(usize),
 }
 
 /// a part of a drawn tree: where it is, which node it belongs to (its path through the tree)
@@ -149,6 +151,8 @@ pub enum Input {
     Step(i32),
     /// day `n` of a calendar's grid picked.
     Day(usize),
+    /// the tick box of row `n` of a check list clicked.
+    Mark(usize),
     /// a secret field's whole new text.
     SecretText(Zeroizing<String>),
     /// Enter in a secret field, with its final text.
@@ -214,6 +218,15 @@ pub fn act<M: Clone>(nodes: &[Node<M>], path: &[usize], input: Input) -> Option<
         ) => enabled.then(|| toggle.clone()),
         (Node::Table(table), Input::Row(n)) if n < table.rows.len() => Some((table.select)(n)),
         (Node::List { items, select, .. }, Input::Row(n)) if n < items.len() => Some(select(n)),
+        (Node::CheckList(list), Input::Row(n)) if n < list.rows.len() => Some((list.select)(n)),
+        (Node::CheckList(list), Input::Mark(n)) => list
+            .rows
+            .get(n)
+            .filter(|row| row.enabled)
+            .map(|_| (list.toggle)(n)),
+        (Node::KeyedInput(input), Input::Text(text)) => {
+            (text != input.value).then(|| (input.edit)(input.key, text))
+        }
         (
             Node::Tabs {
                 titles,
@@ -283,6 +296,10 @@ pub fn field_value<M>(nodes: &[Node<M>], path: &[usize]) -> Option<FieldValue> {
             multi: true,
         }),
         Node::Secret { value, .. } => Some(FieldValue::Secret(value.clone())),
+        Node::KeyedInput(input) => Some(FieldValue::Plain {
+            text: input.value.clone(),
+            multi: false,
+        }),
         _ => None,
     }
 }
@@ -316,6 +333,7 @@ pub fn list_state<M>(nodes: &[Node<M>], path: &[usize]) -> Option<(Option<usize>
         Node::List {
             items, selected, ..
         } => Some((*selected, items.len())),
+        Node::CheckList(list) => Some((list.selected, list.rows.len())),
         _ => None,
     }
 }
@@ -492,6 +510,10 @@ impl<'a> Painter<'a> {
             Node::Alert(text) => wrap(text, width.saturating_sub(5)).len() as u16,
             Node::Spin { .. } => 1,
             Node::ClockFace { .. } => 1,
+            Node::KeyedInput(_) => 1,
+            Node::Banner(_) => 3,
+            Node::CheckList(list) => rows(list.height).max(3) + 2,
+            Node::Description(text) => wrap(text, width.saturating_sub(2)).len() as u16 + 2,
             Node::Calendar { .. } => 9,
             Node::Columns(columns) => {
                 let widths = self.column_widths(columns, width);
@@ -846,6 +868,73 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Icon(id) => chip(buf, area.x, area.y, id, p),
+            Node::Banner(banner) => {
+                let band = Rect::new(area.x, area.y, area.width, 2);
+                fill(buf, band, p, WHITE);
+                let room = area.width.saturating_sub(5);
+                let title = bold(self.st(BLACK, WHITE));
+                text(buf, area.x + 1, area.y, room, &banner.title, title);
+                let sub = self.st(BLACK, WHITE);
+                text(buf, area.x + 3, area.y + 1, room, &banner.subtitle, sub);
+                chip(buf, area.right().saturating_sub(3), area.y, banner.icon, p);
+                let line = "─".repeat(usize::from(area.width));
+                let under = self.st(SHADOW, GRAY);
+                text(buf, area.x, area.y + 2, area.width, &line, under);
+            }
+            Node::CheckList(list) => {
+                let inner = self.sunken(area, buf, WHITE);
+                self.push(inner, path, Part::List, true);
+                let focused = self.focused(path, Part::List);
+                let offset = controls::List::offset(list.selected, inner.height);
+                for (n, row) in list
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .skip(offset)
+                    .take(usize::from(inner.height))
+                {
+                    let y = inner.y + (n - offset) as u16;
+                    let line = Rect::new(inner.x, y, inner.width, 1);
+                    let (fg, bg) = if list.selected == Some(n) {
+                        (WHITE, if focused { NAVY } else { SHADOW })
+                    } else {
+                        (BLACK, WHITE)
+                    };
+                    fill(buf, line, p, bg);
+                    let mark = match (row.partial, row.checked) {
+                        (true, _) => "[-]",
+                        (_, true) => "[x]",
+                        _ => "[ ]",
+                    };
+                    let mark_fg = if row.enabled { fg } else { SHADOW };
+                    text(buf, inner.x, y, inner.width, mark, self.st(mark_fg, bg));
+                    chip(buf, inner.x + 4, y, row.icon, p);
+                    let detail = row.detail.chars().count() as u16;
+                    let label_room = inner.width.saturating_sub(7 + detail + 1);
+                    text(buf, inner.x + 6, y, label_room, &row.label, self.st(fg, bg));
+                    let at = inner.right().saturating_sub(detail + 1).max(inner.x);
+                    text(buf, at, y, detail + 1, &row.detail, self.st(fg, bg));
+                    self.push(line, path, Part::Row(n), false);
+                    if row.enabled {
+                        let box_rect = Rect::new(inner.x, y, 3.min(inner.width), 1);
+                        self.push(box_rect, path, Part::Mark(n), false);
+                    }
+                }
+            }
+            Node::Description(description) => {
+                let inner = self.sunken(area, buf, WHITE);
+                for (n, line) in wrap(description, inner.width).iter().enumerate() {
+                    if n as u16 >= inner.height {
+                        break;
+                    }
+                    let style = self.st(BLACK, WHITE);
+                    text(buf, inner.x, inner.y + n as u16, inner.width, line, style);
+                }
+            }
+            Node::KeyedInput(input) => {
+                let rect = Rect::new(area.x, area.y, cols(input.width).min(area.width), 1);
+                self.field(&input.value, false, rect, buf, path);
+            }
             Node::FieldError(t) => {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
@@ -1242,6 +1331,7 @@ impl<'a> Painter<'a> {
                     | Node::Icon(_)
                     | Node::Spin { .. }
                     | Node::ClockFace { .. }
+                    | Node::KeyedInput(_)
                     | Node::Input {
                         size: Size::Points(_),
                         ..
@@ -1349,6 +1439,7 @@ impl<'a> Painter<'a> {
                 Node::Icon(_) => Some(1),
                 Node::Spin { text, .. } => Some(spin_cells(text) + 4),
                 Node::ClockFace { .. } => Some(8),
+                Node::KeyedInput(input) => Some(cols(input.width)),
                 Node::Choice { current, width, .. } => {
                     Some(cols(*width).max(current.chars().count() as u16 + 4))
                 }
@@ -2076,5 +2167,75 @@ mod tests {
             text.contains("line 49") && !text.contains("line 0 "),
             "{text}"
         );
+    }
+
+    #[test]
+    fn wizard_nodes_draw_and_their_parts_send_messages() {
+        use lanlord_app::view_wizard::{Banner, CheckList, CheckRow, KeyedInput};
+        let row = |label: &str, checked, partial, enabled| CheckRow {
+            icon: "dns",
+            label: label.into(),
+            detail: "1 MB".into(),
+            checked,
+            partial,
+            enabled,
+        };
+        let nodes: Vec<Node<Msg>> = vec![
+            Node::Banner(Banner {
+                title: "Setup".into(),
+                subtitle: "Pick the parts.".into(),
+                icon: "settings",
+            }),
+            Node::CheckList(CheckList {
+                id: "parts",
+                rows: vec![
+                    row("Gateway", true, false, false),
+                    row("Proxy", false, false, true),
+                    row("Domain", true, true, true),
+                ],
+                selected: Some(1),
+                height: 64.0,
+                select: Msg::Pick,
+                toggle: |n| Msg::Typed(format!("toggle {n}")),
+            }),
+            Node::Description("A sunken box of text.".into()),
+            Node::KeyedInput(KeyedInput {
+                key: (2, 3),
+                value: "192.0.2.5".into(),
+                width: 120.0,
+                edit: |key, text| Msg::Typed(format!("{key:?} {text}")),
+            }),
+        ];
+        let (text, regions) = painted(&nodes);
+        for needle in [
+            "Setup",
+            "Pick the parts.",
+            "[x] ",
+            "[ ] ",
+            "[-] ",
+            "Proxy",
+            "1 MB",
+            "A sunken box of text.",
+            "192.0.2.5",
+        ] {
+            assert!(text.contains(needle), "{needle}:\n{text}");
+        }
+        assert_eq!(act(&nodes, &[1], Input::Row(2)), Some(Msg::Pick(2)));
+        assert_eq!(
+            act(&nodes, &[1], Input::Mark(1)),
+            Some(Msg::Typed("toggle 1".into()))
+        );
+        assert_eq!(act(&nodes, &[1], Input::Mark(0)), None, "greyed rows stay");
+        assert!(regions.iter().any(|r| r.part == Part::Mark(2)));
+        assert!(regions.iter().all(|r| r.part != Part::Mark(0)));
+        assert_eq!(list_state(&nodes, &[1]), Some((Some(1), 3)));
+        assert_eq!(
+            act(&nodes, &[3], Input::Text("192.0.2.6".into())),
+            Some(Msg::Typed("(2, 3) 192.0.2.6".into()))
+        );
+        assert!(matches!(
+            field_value(&nodes, &[3]),
+            Some(FieldValue::Plain { multi: false, .. })
+        ));
     }
 }
