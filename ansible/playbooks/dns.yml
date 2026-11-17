@@ -1,10 +1,12 @@
-# the dns module: dnsmasq in docker on the host network, answering local-only
-# dns and gatewayless dhcp on the internal (retro) network. it never resolves
-# names outside the zone. the docker module must have been applied first. it
-# does nothing until your settings have a `dns:` section; `dns: {}` means defaults.
+# the dns module: one dnsmasq in docker for every lanlord network, each on the host network but
+# pinned to its own interface and address, answering local-only dns and gatewayless dhcp there.
+# a dnsmasq never resolves names outside its zone. the docker module must have been applied first.
+# the networks are in your settings (see networks.yml); settings with only a `dns:` section still
+# work, as one network called retronet. it does nothing without either.
 #
-# dns:
-#   zone: retronet                # a plain label like a tld; default: retronet
+# the dns settings of one network, in its entry under `networks:` (or in the `dns:` section):
+#
+#   zone: retronet                # a plain label like a tld; default: the network's name
 #   records:                      # extra names in the zone
 #     - {name: ntsrv1, address: 172.16.120.10}
 #   dhcp:                         # optional; no dhcp server without it
@@ -13,9 +15,10 @@
 #     hosts:                      # static leases by mac
 #       - {name: ntsrv1, mac: "aa:bb:cc:dd:ee:ff", address: 172.16.120.10}
 #
-# lanlord.<zone>, the gateway's hostname, the nt4-domain netbios name and the
-# web-proxy hosts ending in .<zone> all point at the internal address. the
-# leases are in /opt/lanlord/dns/dnsmasq.leases.
+# lanlord.<zone>, the gateway's hostname, the nt4-domain netbios name and the web-proxy hosts
+# ending in .<zone> all point at the network's address. each network has its own container,
+# lanlord-dns-<name>, and its own folder, /opt/lanlord/dns/<name>, with the leases in
+# dnsmasq.leases. a network that is taken out of the settings has its container and folder removed.
 - name: lanlord dns
   hosts: localhost
   connection: local
@@ -25,102 +28,27 @@
   vars:
     image: lanlord-dns
     image_dir: /opt/lanlord/playbooks/dns/image
-    container: lanlord-dns
-    state_dir: /opt/lanlord/dns
+    state_root: /opt/lanlord/dns
     label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
-    ipv4_re: '^((25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'
   tasks:
-    - name: work out the dns settings and the names it answers for
-      ansible.builtin.set_fact:
-        dns_cfg: "{{ dns }}"
-        dns_proxy: "{{ lookup('ansible.builtin.vars', 'web-proxy', default={}) }}"
-        dns_nt4: "{{ lookup('ansible.builtin.vars', 'nt4-domain', default={}) }}"
-      when: dns is defined
+    - name: work out the lanlord networks
+      ansible.builtin.include_tasks: networks.yml
+      when: dns is defined or networks is defined
 
-    - name: work out the internal network interface and its address
-      ansible.builtin.include_tasks: network.yml
-      when: dns is defined
-
-    - name: work out the defaults
-      ansible.builtin.set_fact:
-        dns_zone: "{{ dns_cfg.zone | default('retronet') | lower }}"
-        dns_records: "{{ dns_cfg.records | default([]) }}"
-        dns_lease: "{{ (dns_cfg.dhcp | default({})).lease | default('7d') | string | lower }}"
-        dns_hosts: "{{ (dns_cfg.dhcp | default({})).hosts | default([]) }}"
-        dns_host: "{{ ansible_facts['hostname'] | lower }}"
-        dns_nt4_name: >-
-          {{ (dns_nt4.netbios_name | default(ansible_facts['hostname']) | lower)
-             if dns_nt4 | length > 0 else '' }}
-        # the web ui is on the normal network only, so its name stays out of the retronet zone
-        dns_proxy_hosts: >-
-          {{ (dns_proxy.sites | default([])) | map(attribute='host') | map('lower') | list }}
-      when: dns is defined
-
-    - name: set the dhcp settings when there are any
-      ansible.builtin.set_fact:
-        dns_dhcp: "{{ dns_cfg.dhcp }}"
-      when: dns is defined and dns_cfg.dhcp is defined
-
-    # these values end up in dnsmasq.conf, so only plain names and addresses are accepted
-    - name: check the settings
-      ansible.builtin.assert:
-        that:
-          - dns_zone is match(label_re)
-          - dns_records is sequence and dns_records is not string
-          - dns_records | map(attribute='name') | map('lower') | select('match', label_re) | list | length == dns_records | length
-          - dns_records | map(attribute='address') | select('match', ipv4_re) | list | length == dns_records | length
-          - dns_host is match(label_re)
-          - dns_nt4_name == '' or dns_nt4_name is match(label_re)
-          - internal_ip is match(ipv4_re)
-          - dns_dhcp is not defined or (dns_dhcp.range is sequence and dns_dhcp.range | length == 2
-            and dns_dhcp.range | select('match', ipv4_re) | list | length == 2 and internal_netmask is match(ipv4_re))
-          - dns_lease is match('^([0-9]{1,5}[mhd]|infinite)$')
-          - dns_hosts | map(attribute='name') | map('lower') | select('match', label_re) | list | length == dns_hosts | length
-          - dns_hosts | map(attribute='mac') | select('match', '(?i)^([0-9a-f]{2}:){5}[0-9a-f]{2}$') | list | length == dns_hosts | length
-          - dns_hosts | map(attribute='address') | select('match', ipv4_re) | list | length == dns_hosts | length
-        fail_msg: >-
-          dns settings: zone is a plain label like retronet; records need a plain name and an ipv4 address;
-          dhcp.range is two ipv4 addresses (and the internal interface needs an ipv4 address), lease looks like
-          30m, 12h, 7d or infinite; dhcp.hosts need a plain name, a mac like aa:bb:cc:dd:ee:ff and an ipv4 address
-      when: dns is defined
-
-    - name: work out the names that point at this machine
-      ansible.builtin.set_fact:
-        dns_names: >-
-          {{ (['lanlord.' ~ dns_zone, dns_host ~ '.' ~ dns_zone]
-              + ([dns_nt4_name ~ '.' ~ dns_zone] if dns_nt4_name != '' else [])
-              + (dns_proxy_hosts | select('match', '^[a-z0-9.-]+\.' ~ dns_zone ~ '$') | list)) | unique | list }}
-      when: dns is defined
+    - name: work out which networks get a dnsmasq and the names they answer for
+      ansible.builtin.include_tasks: dns-facts.yml
 
     - name: check that docker is installed
       ansible.builtin.command: docker info --format '{% raw %}{{.ServerVersion}}{% endraw %}'
       changed_when: false
-      when: dns is defined
+      when: dns_networks | length > 0
 
     - name: make the state directory
       ansible.builtin.file:
-        path: "{{ state_dir }}"
+        path: "{{ state_root }}"
         state: directory
         mode: "0750"
-      when: dns is defined
-
-    - name: write the dnsmasq configuration
-      ansible.builtin.template:
-        src: dns/dnsmasq.conf.j2
-        dest: "{{ state_dir }}/dnsmasq.conf"
-        mode: "0640"
-      register: dnsmasq_conf
-      when: dns is defined
-
-    # dnsmasq writes the leases in place, so the file has to exist to be bind mounted
-    - name: make sure the leases file exists
-      ansible.builtin.file:
-        path: "{{ state_dir }}/dnsmasq.leases"
-        state: touch
-        mode: "0640"
-        modification_time: preserve
-        access_time: preserve
-      when: dns is defined
+      when: dns_networks | length > 0
 
     - name: work out the image tag from the files it is built from
       ansible.builtin.shell: cat Dockerfile | sha256sum | cut -c1-12
@@ -128,55 +56,37 @@
         chdir: "{{ image_dir }}"
       register: image_hash
       changed_when: false
-      when: dns is defined
+      when: dns_networks | length > 0
 
-    - name: see which image the container uses
-      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Config.Image}}{% endraw %}' {{ container }}"
-      register: current
+    - name: see whether the image is built
+      ansible.builtin.command: "docker image inspect {{ image }}:{{ image_hash.stdout }}"
+      register: image_present
       changed_when: false
       failed_when: false
-      when: dns is defined
+      when: dns_networks | length > 0
 
-    - name: replace the container when it is new, stopped or out of date
-      when: >-
-        dns is defined and (current.stdout != 'true ' ~ image ~ ':' ~ image_hash.stdout
-        or dnsmasq_conf is changed)
-      block:
-        - name: build the image here
-          ansible.builtin.command: "docker build --quiet -t {{ image }}:{{ image_hash.stdout }} {{ image_dir }}"
-          changed_when: true
+    - name: build the image here
+      ansible.builtin.command: "docker build --quiet -t {{ image }}:{{ image_hash.stdout }} {{ image_dir }}"
+      changed_when: true
+      when: dns_networks | length > 0 and image_present.rc != 0
 
-        - name: let dnsmasq check the configuration
-          ansible.builtin.command: >-
-            docker run --rm -v {{ state_dir }}/dnsmasq.conf:/etc/dnsmasq.conf:ro
-            {{ image }}:{{ image_hash.stdout }} --test
-          changed_when: false
+    - name: move a single dnsmasq from before there was one per network
+      ansible.builtin.include_tasks: dns-migrate.yml
+      when: dns_networks | length > 0
 
-        - name: replace the container, keeping the old one until the new one is healthy
-          ansible.builtin.include_tasks: replace-container.yml
-          vars:
-            rc_name: "{{ container }}"
-            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true"
-            rc_run: >-
-              docker run -d --name {{ container }} --network host --restart unless-stopped
-              --cap-add NET_ADMIN --cap-add NET_RAW
-              -v {{ state_dir }}/dnsmasq.conf:/etc/dnsmasq.conf:ro
-              -v {{ state_dir }}/dnsmasq.leases:/var/lib/misc/dnsmasq.leases
-              {{ image }}:{{ image_hash.stdout }}
+    - name: set up a dnsmasq for every network
+      ansible.builtin.include_tasks: dns-network.yml
+      loop: "{{ dns_networks }}"
+      loop_control:
+        loop_var: net
+        label: "{{ net.name }}"
 
-    - name: wait for dnsmasq to run
-      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }}"
-      register: dnsmasq_running
-      until: dnsmasq_running.stdout == 'true'
-      retries: 10
-      delay: 2
-      changed_when: false
-      when: dns is defined
+    - name: remove the dnsmasq of networks that are gone
+      ansible.builtin.include_tasks: dns-cleanup.yml
+      when: networks is defined
 
     - name: report
       ansible.builtin.debug:
         msg: >-
-          dnsmasq answers for .{{ dns_zone }} on {{ internal_ip }} ({{ internal_interface }}),
-          {{ dns_names | length + dns_records | length }} names,
-          {{ ('dhcp ' ~ dns_dhcp.range[0] ~ ' to ' ~ dns_dhcp.range[1]) if dns_dhcp is defined else 'no dhcp' }}
-      when: dns is defined
+          {{ dns_networks | length }} dnsmasq: {{ dns_networks | map(attribute='name') | join(', ') }}
+      when: dns_networks | length > 0
