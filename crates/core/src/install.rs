@@ -93,7 +93,7 @@ pub(crate) fn status_with(session: &Session, ask_password: AskPassword) -> Resul
 fn record(session: &Session, step: Step, ask_password: AskPassword) -> Result<()> {
     let admin = login_user(session)?;
     let script = format!(
-        "printf '%s\\n' {} > {MARKER}\nchmod 0644 {MARKER}\n",
+        "printf '%s\\n' {} > {MARKER}.tmp && chmod 0644 {MARKER}.tmp && mv -f {MARKER}.tmp {MARKER}\n",
         marker_word(step)
     );
     match run_as_root(session, &admin.name, script, ask_password)? {
@@ -232,6 +232,11 @@ pub(crate) fn reinstall_with(
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
+    // refuse before anything is removed when the server would fail the install's check
+    let report = doctor::run_with(session, &mut *ask_password)?;
+    if let Some(why) = env::blocking(&report, BASE_MODULES) {
+        bail!("{why}\nnothing was removed");
+    }
     let lines = purge::purge(
         session,
         &options.host,
@@ -500,6 +505,24 @@ esac"#
         assert_eq!(seen[0], Event::Line("remove /opt/lanlord".into()));
         assert_eq!(seen[1], Event::StepStarted(Step::Check));
         assert_eq!(server.marker(), "installed");
+    }
+
+    #[test]
+    fn reinstall_of_a_server_that_fails_the_check_removes_nothing() {
+        let server = Server::new("reinstall-blocked", Some("installed"), NO_NESTING);
+        let mut seen = Vec::new();
+        let err = reinstall_with(&server.session, &options(), &mut no_password, &mut |e| {
+            seen.push(e)
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("pct set") && err.contains("nothing was removed"),
+            "{err}"
+        );
+        assert!(server.log().is_empty());
+        assert_eq!(server.marker(), "installed");
+        assert!(seen.is_empty());
     }
 
     #[test]

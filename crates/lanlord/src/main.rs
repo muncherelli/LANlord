@@ -642,8 +642,9 @@ fn print_install(event: lanlord_core::install::Event) {
         }
         Event::Line(line) => println!("  {line}"),
         Event::StepDone(step) => println!("[{}/{}] done", number(step), Step::ALL.len()),
-        Event::Failed { step, message } => {
-            eprintln!("[{}/{}] failed: {message}", number(step), Step::ALL.len())
+        // the error itself is printed once, by the caller
+        Event::Failed { step, .. } => {
+            eprintln!("[{}/{}] failed", number(step), Step::ALL.len())
         }
     }
 }

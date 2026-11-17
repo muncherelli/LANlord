@@ -91,7 +91,17 @@ fn read_lines(
     tx: mpsc::Sender<(bool, String)>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(stream).split(b'\n').map_while(|l| l.ok()) {
+        for line in BufReader::new(stream).split(b'\n') {
+            let line = match line {
+                Ok(line) => line,
+                Err(err) => {
+                    emit(
+                        Kind::Err,
+                        format!("could not read the remote output: {err}"),
+                    );
+                    break;
+                }
+            };
             if tx
                 .send((is_err, String::from_utf8_lossy(&line).into_owned()))
                 .is_err()
@@ -204,10 +214,6 @@ impl Session {
             }
         }
         let mut child = cmd.spawn().map_err(spawn_error)?;
-        if let (Input::Bytes(input), Some(mut stdin)) = (input, child.stdin.take()) {
-            // dropping stdin closes it so the remote shell sees end of input
-            stdin.write_all(input)?;
-        }
         // both streams are read on their own threads and merged here, so the sink and the log
         // see the lines in the order they arrive and neither pipe can fill up and stall
         let (tx, rx) = mpsc::channel::<(bool, String)>();
@@ -219,6 +225,12 @@ impl Session {
             readers.push(read_lines(stderr, true, tx.clone()));
         }
         drop(tx);
+        // the readers already run, so a script that prints a lot while it is still being sent
+        // cannot fill a pipe and stall both sides
+        if let (Input::Bytes(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            // dropping stdin closes it so the remote shell sees end of input
+            stdin.write_all(input)?;
+        }
         let mut captured = String::new();
         for (is_err, line) in rx {
             if is_err {
@@ -321,6 +333,21 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn output_larger_than_a_pipe_does_not_stall_a_large_script() {
+        // the fake prints a megabyte before it reads its input, which is also a megabyte
+        let session =
+            Session::fake("head -c 1000000 /dev/zero | tr '\\0' 'x'; echo; cat > /dev/null");
+        let input = vec![b'y'; 1_000_000];
+        let mut lines = 0;
+        let code = session
+            .run_with_stdin_lines(&["sh".into()], &input, &mut |_| lines += 1)
+            .unwrap();
+        assert_eq!(code, 0);
+        assert!(lines >= 1);
+    }
 
     #[test]
     fn quotes_only_when_needed() {
