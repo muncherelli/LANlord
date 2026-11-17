@@ -5,6 +5,8 @@
 //! the files come from one of two places: a local build (`--server-binary`, `--web-dist` and
 //! `--auth-helper`, for development) that is uploaded over ssh, or the release assets of the cli's
 //! own version, which the gateway downloads and checks against their sha256 before it unpacks them.
+//! that check is integrity only (the sums come from the same release as the files); there is no
+//! signature check yet.
 
 use std::path::{Path, PathBuf};
 
@@ -171,7 +173,7 @@ mkdir -p "$S/web" "$S/dl"
 chmod 0700 "$S"
 cd "$S/dl"
 fetch() {
-  if ! curl -fsSL --retry 2 -o "$1" "@BASE@/$1" || ! curl -fsSL --retry 2 -o "$1.sha256" "@BASE@/$1.sha256"; then
+  if ! curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 -o "$1" "@BASE@/$1" || ! curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 2 -o "$1.sha256" "@BASE@/$1.sha256"; then
     echo "could not download @BASE@/$1" >&2
     rm -rf "$S"
     exit 20
@@ -297,12 +299,20 @@ pub fn upload_command(is_root: bool, command: &str) -> Vec<String> {
     cmd
 }
 
+/// unpack the uploaded browser build, once its hash has been checked.
+pub fn extract_script() -> String {
+    with_root(
+        "set -eu\ntar -C @STAGE@/web -xf @STAGE@/web.tar\nrm -f @STAGE@/web.tar\n",
+        "",
+    )
+}
+
 /// what each upload writes on the gateway.
 pub fn upload_commands() -> [(&'static str, String); 3] {
     [
         ("server binary", format!("cat > {STAGE}/lanlord")),
         ("login helper", format!("cat > {STAGE}/lanlord-auth-helper")),
-        ("browser build", format!("tar -C {STAGE}/web -xf -")),
+        ("browser build", format!("cat > {STAGE}/web.tar")),
     ]
 }
 
@@ -347,15 +357,12 @@ fn upload(
             bail!("the upload of the {what} failed (status {code})");
         }
     }
-    let want = [
-        sha256_file(&local.server_binary)?,
-        sha256_file(&local.auth_helper)?,
-    ];
+    let want: Vec<String> = parts.iter().map(|b| sha256_bytes(b)).collect();
     let admin = login_user(session)?;
     let got = capture_as_root(
         session,
         &admin.name,
-        format!("sha256sum '{STAGE}/lanlord' '{STAGE}/lanlord-auth-helper'\n"),
+        format!("sha256sum {STAGE}/lanlord {STAGE}/lanlord-auth-helper {STAGE}/web.tar\n"),
         &mut *ask,
     )?;
     let got: Vec<&str> = got
@@ -367,6 +374,10 @@ fn upload(
             Ok(String::new())
         });
         bail!("the uploaded files do not match the local ones (sha256); nothing was installed");
+    }
+    // the browser build is unpacked only now that its hash matched
+    if root(session, extract_script(), &mut *ask)? != 0 {
+        bail!("could not unpack the browser build on the server");
     }
     Ok(())
 }
@@ -673,7 +684,11 @@ mod tests {
         let [(_, bin), (_, helper), (_, web)] = upload_commands();
         assert_eq!(bin, "cat > /opt/lanlord/web-stage/lanlord");
         assert_eq!(helper, "cat > /opt/lanlord/web-stage/lanlord-auth-helper");
-        assert_eq!(web, "tar -C /opt/lanlord/web-stage/web -xf -");
+        assert_eq!(web, "cat > /opt/lanlord/web-stage/web.tar");
+        assert!(extract_script()
+            .contains("tar -C /opt/lanlord/web-stage/web -xf /opt/lanlord/web-stage/web.tar"));
+        assert!(fetch_script("", &release_assets("v1", "arm64"))
+            .contains("--proto '=https' --proto-redir '=https' --tlsv1.2"));
         assert_eq!(upload_command(true, &bin), ["sh", "-c", bin.as_str()]);
         assert_eq!(
             upload_command(false, &bin),

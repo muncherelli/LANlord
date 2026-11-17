@@ -371,7 +371,7 @@ case "$last" in
   "uname -m") echo x86_64 ;;
   *"cat > /opt/lanlord/web-stage/lanlord'") echo upload >> "$D/log"; cat > "$D/up-server" ;;
   *"cat > /opt/lanlord/web-stage/lanlord-auth-helper'") echo upload >> "$D/log"; cat > "$D/up-helper" ;;
-  *"tar -C /opt/lanlord/web-stage/web -xf -'") echo upload >> "$D/log"; cat > "$D/up-web" ;;
+  *"cat > /opt/lanlord/web-stage/web.tar'") echo upload >> "$D/log"; cat > "$D/up-web" ;;
   "sh -c "*) exit 0 ;;
   *)
     input=$(cat)
@@ -383,9 +383,11 @@ case "$last" in
         word=$(printf '%s' "$input" | head -n 1 | cut -d' ' -f3)
         printf '%s\n' "$word" > "$D/marker"
         echo "$word" >> "$D/log" ;;
+      "set -eu
+tar -C /opt/lanlord/web-stage/web -xf "*) ;;
       *'mkdir -p "$S/web"'*) echo web-prepare >> "$D/log" ;;
       "sha256sum "*)
-        for f in up-server up-helper; do
+        for f in up-server up-helper up-web; do
           printf '%s  x\n' "$(shasum -a 256 "$D/$f" | cut -d' ' -f1)"
         done
         if [ -f "$D/bad-upload" ]; then echo "0000  x"; fi ;;

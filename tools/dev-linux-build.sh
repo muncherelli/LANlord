@@ -4,6 +4,11 @@
 # missing it says how to get it. used by tools/dev.sh linux-build and tools/dev.sh deploy.
 #
 #   tools/dev-linux-build.sh [--target x86_64|aarch64] [--debug]
+#
+# this builds only the server binary. the web ui login helper (lanlord-auth-helper) links libpam,
+# which zig cannot provide without a sysroot of the target, so it is not built here: build it on a
+# linux machine of the same architecture with libpam0g-dev (or pam-devel) installed,
+# `cargo build --release -p lanlord-auth-helper`, and pass it to `lanlord install --auth-helper`.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -52,12 +57,10 @@ fi
 # the server needs no window: leaving the gui feature out also leaves out its graphics libraries
 # shellcheck disable=SC2086
 cargo zigbuild -q $profile -p lanlord --no-default-features --features webui --target "$triple.$glibc"
-# the web ui login helper that `lanlord install --auth-helper` puts on the server
-cargo zigbuild -q $profile -p lanlord-auth-helper --target "$triple.$glibc"
 
 target=${CARGO_TARGET_DIR:-$root/target}
 bin="$target/$triple/$dir/lanlord"
 [ -f "$bin" ] || { echo "the build finished but $bin is missing" >&2; exit 1; }
 echo "built $bin"
 echo "  $(wc -c < "$bin" | tr -d ' ') bytes, sha256 $(shasum -a 256 "$bin" | cut -d' ' -f1)"
-echo "built $target/$triple/$dir/lanlord-auth-helper"
+echo "note: the login helper is not built here (it links libpam); see the header of this script"
