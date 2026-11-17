@@ -129,4 +129,25 @@ mod tests {
         };
         assert_eq!(lines, &[(Kind::Err, "broken".to_string())]);
     }
+
+    #[test]
+    fn events_feed_the_progress_and_stay_out_of_the_lines() {
+        let mut console = Console::new(Wake::none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        console.incoming = rx;
+        tx.send(Line {
+            kind: Kind::Event,
+            text: r#"{"event":"total","n":3}"#.into(),
+        })
+        .unwrap();
+        tx.send(Line {
+            kind: Kind::Info,
+            text: "plain".into(),
+        })
+        .unwrap();
+        console.drain();
+        assert_eq!(console.apply.progress().total, 3);
+        assert_eq!(console.lines().len(), 1);
+        assert_eq!(console.lines()[0].text, "plain");
+    }
 }

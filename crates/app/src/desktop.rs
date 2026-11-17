@@ -187,4 +187,17 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn the_progress_window_has_no_icon_and_names_itself() {
+        assert_eq!(Target::Progress.id(), "apply-progress");
+        assert_eq!(Target::Progress.title(), "Applying Settings");
+        assert!(
+            Target::Progress.needs_admin(),
+            "applying is for administrators"
+        );
+        assert!(Target::Progress.size().0 > 0.0);
+        assert!(!icons(None).contains(&Target::Progress));
+        assert!(!windows(&icons(None)).contains(&Target::Progress));
+    }
 }

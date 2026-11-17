@@ -924,3 +924,26 @@ fn f8_opens_the_compatibility_tab_and_a_healthy_server_has_no_warning() {
     frame(&mut shell);
     assert!(shell.windows.iter().all(|w| w.target != Target::MyServer));
 }
+
+#[test]
+fn an_apply_opens_its_progress_dialog_and_close_ends_it() {
+    use lanlord_app::apply_progress::{ApplyEvent, Msg, Stats};
+    let mut shell = demo();
+    frame(&mut shell);
+    shell.console.apply.event(&ApplyEvent::Total { n: 2 });
+    shell.console.apply.event(&ApplyEvent::TaskStart {
+        name: "write the config".into(),
+    });
+    let text = frame(&mut shell);
+    assert!(text.contains("Task 1 of 2: write the config"), "{text}");
+    assert!(shell.windows.iter().any(|w| w.target == Target::Progress));
+    let finished = ApplyEvent::Finished {
+        stats: Stats::default(),
+    };
+    shell.console.apply.event(&finished);
+    frame(&mut shell);
+    shell.console.apply.update(Msg::Close);
+    frame(&mut shell);
+    frame(&mut shell);
+    assert!(!shell.windows.iter().any(|w| w.target == Target::Progress));
+}

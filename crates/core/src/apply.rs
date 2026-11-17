@@ -224,6 +224,9 @@ mod tests {
     use crate::crypto;
     use base64::Engine;
 
+    /// tests that look at the end of a run take turns: the log reaches every subscriber.
+    static ENDS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn temp(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("lanlord-apply-{}-{name}", std::process::id()))
     }
@@ -368,6 +371,7 @@ esac"#,
 
     #[test]
     fn plugin_lines_become_events_and_the_rest_stays_output() {
+        let _turn = ENDS.lock().unwrap_or_else(|e| e.into_inner());
         let record = temp("events");
         let events = [
             r#"LANLORD_EVENT {"event":"total","n":1}"#,
@@ -493,5 +497,122 @@ esac"#,
             err.to_string(),
             "LANlord is not installed on this server yet"
         );
+    }
+
+    fn done(name: &str, status: TaskStatus, changed: bool, msg: &str) -> ApplyEvent {
+        ApplyEvent::TaskDone {
+            name: name.into(),
+            status,
+            changed,
+            msg: msg.into(),
+        }
+    }
+
+    #[test]
+    fn every_task_result_reads_plainly_in_the_log() {
+        let rx = crate::log::subscribe();
+        for event in [
+            done("pub-ok", TaskStatus::Ok, false, ""),
+            done("pub-changed", TaskStatus::Ok, true, ""),
+            done("pub-skipped", TaskStatus::Skipped, false, ""),
+            done("pub-failed", TaskStatus::Failed, false, "no space"),
+            done("pub-down", TaskStatus::Unreachable, false, ""),
+            ApplyEvent::Log {
+                text: "pub-said".into(),
+            },
+            ApplyEvent::Total { n: 1 },
+        ] {
+            publish(&event);
+        }
+        let seen: Vec<(Kind, String)> = rx
+            .try_iter()
+            .filter(|l| l.text.contains("pub-"))
+            .map(|l| (l.kind, l.text))
+            .collect();
+        let info = |text: &str| (Kind::Info, text.to_string());
+        for expected in [
+            info("ok: pub-ok"),
+            info("changed: pub-changed"),
+            info("skipped: pub-skipped"),
+            info("FAILED: pub-failed: no space"),
+            info("UNREACHABLE: pub-down"),
+            (Kind::Out, "pub-said".to_string()),
+        ] {
+            assert!(seen.contains(&expected), "{expected:?} in {seen:?}");
+        }
+        let events = seen.iter().filter(|(k, _)| *k == Kind::Event).count();
+        assert_eq!(events, 6, "the total has no pub- in it; the others do");
+    }
+
+    /// a gateway whose apply prints `lines` and exits with `code`.
+    fn gateway_printing(lines: &[&str], code: i32) -> Session {
+        let echoes: String = lines.iter().map(|l| format!("echo '{l}'\n")).collect();
+        Session::fake(&format!(
+            r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit 0 ;;
+  "sh -c "*) ;;
+  *) cat >/dev/null; {echoes} exit {code} ;;
+esac"#
+        ))
+    }
+
+    fn finished_events(rx: &std::sync::mpsc::Receiver<crate::log::Line>) -> Vec<ApplyEvent> {
+        rx.try_iter()
+            .filter(|l| l.kind == Kind::Event)
+            .filter_map(|l| serde_json::from_str(&l.text).ok())
+            .filter(|e| matches!(e, ApplyEvent::Finished { .. }))
+            .collect()
+    }
+
+    /// one test for all three ends, because subscribers see every thread's events.
+    #[test]
+    fn a_run_ends_once_with_its_own_summary_or_a_synthetic_one() {
+        let _turn = ENDS.lock().unwrap_or_else(|e| e.into_inner());
+        let total = r#"LANLORD_EVENT {"event":"total","n":2}"#;
+        let end = r#"LANLORD_EVENT {"event":"finished","stats":{"ok":1,"changed":0,"failed":0,"skipped":0,"unreachable":0}}"#;
+        // cut short: the dialog is closed with a failure
+        let rx = crate::log::subscribe();
+        let err = apply_with(
+            &gateway_printing(&[total], 2),
+            "gw",
+            None,
+            &[],
+            &mut no_password,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("status 2"), "{err}");
+        let cut = finished_events(&rx);
+        assert!(matches!(
+            cut.as_slice(),
+            [ApplyEvent::Finished { stats }] if stats.failed == 1
+        ));
+        // its own end: not closed a second time
+        let rx = crate::log::subscribe();
+        apply_with(
+            &gateway_printing(&[total, end], 0),
+            "gw",
+            None,
+            &[],
+            &mut no_password,
+        )
+        .unwrap();
+        let own = finished_events(&rx);
+        assert!(matches!(
+            own.as_slice(),
+            [ApplyEvent::Finished { stats }] if stats.failed == 0 && stats.ok == 1
+        ));
+        // no events at all: nothing to close
+        let rx = crate::log::subscribe();
+        apply_with(
+            &gateway_printing(&["plain output"], 0),
+            "gw",
+            None,
+            &[],
+            &mut no_password,
+        )
+        .unwrap();
+        assert!(finished_events(&rx).is_empty());
     }
 }

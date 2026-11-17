@@ -370,4 +370,76 @@ mod tests {
         );
         assert_eq!(p.rows[2].detail, "(3 items)");
     }
+
+    #[test]
+    fn items_only_grow_and_a_failure_message_beats_the_item_count() {
+        let mut p = run(&[
+            ApplyEvent::Total { n: 1 },
+            start("loop"),
+            ApplyEvent::Item { n: 5 },
+            ApplyEvent::Item { n: 2 },
+        ]);
+        assert_eq!(p.items, 5);
+        p.apply(&ApplyEvent::TaskDone {
+            name: "loop".into(),
+            status: TaskStatus::Failed,
+            changed: true,
+            msg: "disk full".into(),
+        });
+        assert_eq!(p.rows[0].detail, "disk full");
+        assert_eq!(p.rows[0].mark, Mark::Failed);
+        assert_eq!(p.items, 0);
+    }
+
+    #[test]
+    fn an_unreachable_host_is_a_failure_too() {
+        let p = run(&[
+            ApplyEvent::Total { n: 2 },
+            done(TaskStatus::Unreachable, false),
+            ApplyEvent::Finished {
+                stats: Stats {
+                    unreachable: 1,
+                    ..Stats::default()
+                },
+            },
+        ]);
+        assert_eq!(p.rows[0].mark, Mark::Failed);
+        assert_eq!(p.percent(), 50);
+        assert!(p.caption().starts_with("Failed after"));
+    }
+
+    #[test]
+    fn a_run_with_no_total_stays_at_zero_until_it_ends() {
+        let mut p = run(&[start("a")]);
+        assert_eq!(p.percent(), 0);
+        assert_eq!(p.caption(), "Task 1 of 1: a");
+        p.apply(&ApplyEvent::Log { text: "x".into() });
+        assert_eq!(p.percent(), 0);
+        p.apply(&ApplyEvent::Finished {
+            stats: Stats::default(),
+        });
+        assert_eq!(p.percent(), 100);
+        assert_eq!(p.caption(), "Finished 0 tasks");
+    }
+
+    #[test]
+    fn json_with_missing_optional_fields_still_parses() {
+        let line = format!(
+            "{MARKER}{}",
+            r#"{"event":"task_done","name":"n","status":"ok"}"#
+        );
+        assert_eq!(
+            parse_line(&format!("{line}\r\n")),
+            Some(ApplyEvent::TaskDone {
+                name: "n".into(),
+                status: TaskStatus::Ok,
+                changed: false,
+                msg: String::new(),
+            })
+        );
+        assert_eq!(
+            parse_line(&format!("{MARKER}{}", r#"{"event":"nope"}"#)),
+            None
+        );
+    }
 }

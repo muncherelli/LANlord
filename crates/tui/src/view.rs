@@ -2333,4 +2333,19 @@ mod tests {
             Some(FieldValue::Plain { multi: false, .. })
         ));
     }
+
+    #[test]
+    fn a_progress_bar_fills_to_its_fraction_with_the_text_on_it() {
+        let nodes: Vec<Node<()>> = vec![Node::Bar {
+            fraction: 0.5,
+            text: "50%".into(),
+        }];
+        let (text, _) = painted(&nodes);
+        assert!(text.contains("50%"), "{text}");
+        let empty: Vec<Node<()>> = vec![Node::Bar {
+            fraction: 0.0,
+            text: "0%".into(),
+        }];
+        assert!(painted(&empty).0.contains("0%"));
+    }
 }

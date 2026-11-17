@@ -2,7 +2,8 @@
 //! tasks done so far and the raw output under Details. it follows the events the apply sends
 //! to the log (see `lanlord_model::apply`), so the gui, the tui and the web ui show the same.
 
-use lanlord_model::apply::{self, ApplyEvent, Mark, Progress};
+use lanlord_model::apply::{self, Mark, Progress};
+pub use lanlord_model::apply::{ApplyEvent, Stats};
 
 use crate::log::{Kind, Line};
 use crate::view::{Button, Node};
@@ -158,7 +159,7 @@ impl ApplyProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lanlord_model::apply::{Stats, TaskStatus};
+    use lanlord_model::apply::TaskStatus;
 
     fn event(p: &mut ApplyProgress, e: ApplyEvent) {
         p.line(&Line {
@@ -244,5 +245,147 @@ mod tests {
             text: format!("{}{{}}", apply::MARKER),
         });
         assert_eq!(p.raw, [(Kind::Debug, "plain output".to_string())]);
+    }
+
+    fn done(name: &str, status: TaskStatus, msg: &str) -> ApplyEvent {
+        ApplyEvent::TaskDone {
+            name: name.into(),
+            status,
+            changed: false,
+            msg: msg.into(),
+        }
+    }
+
+    fn task_lines(p: &ApplyProgress) -> Vec<(Kind, String)> {
+        match &p.view()[3] {
+            Node::Log { lines, .. } => lines.clone(),
+            _ => panic!("the task list is a log"),
+        }
+    }
+
+    #[test]
+    fn every_kind_of_task_has_its_own_mark_and_colour() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 4 });
+        event(&mut p, done("a", TaskStatus::Ok, ""));
+        event(&mut p, done("b", TaskStatus::Skipped, ""));
+        event(&mut p, done("c", TaskStatus::Failed, "no space"));
+        event(&mut p, done("d", TaskStatus::Unreachable, ""));
+        let kinds: Vec<Kind> = task_lines(&p).iter().map(|l| l.0).collect();
+        assert_eq!(kinds, [Kind::Out, Kind::Debug, Kind::Err, Kind::Err]);
+        assert_eq!(task_lines(&p)[2].1, "FAILED  c no space");
+    }
+
+    #[test]
+    fn a_failed_run_says_so_in_the_status_bar_and_can_be_closed() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 2 });
+        event(&mut p, done("a", TaskStatus::Failed, "boom"));
+        event(
+            &mut p,
+            ApplyEvent::Finished {
+                stats: Stats {
+                    failed: 1,
+                    ..Stats::default()
+                },
+            },
+        );
+        let view = p.view();
+        assert!(matches!(
+            view.last(),
+            Some(Node::Status { error: true, text }) if text.contains("failed")
+        ));
+        let Some(Node::Buttons(buttons)) = view.iter().find(|n| matches!(n, Node::Buttons(_)))
+        else {
+            panic!("a close button")
+        };
+        assert!(buttons[0].enabled);
+        assert!(!p.take_done());
+        p.update(Msg::Close);
+        assert!(p.take_done());
+        assert!(!p.take_done());
+    }
+
+    #[test]
+    fn a_clean_run_says_it_finished_and_a_running_one_says_it_works() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 1 });
+        assert!(matches!(
+            p.view().last(),
+            Some(Node::Status { error: false, text }) if text.contains("Applying")
+        ));
+        event(
+            &mut p,
+            ApplyEvent::Finished {
+                stats: Stats::default(),
+            },
+        );
+        assert!(matches!(
+            p.view().last(),
+            Some(Node::Status { error: false, text }) if text.contains("finished")
+        ));
+    }
+
+    #[test]
+    fn the_elapsed_time_counts_minutes_and_hours() {
+        let mut p = ApplyProgress::default();
+        p.tick(1.0);
+        assert_eq!(p.elapsed(), "0:00", "no run, no time");
+        event(&mut p, ApplyEvent::Total { n: 1 });
+        p.tick(100.0);
+        p.tick(100.0 + 3725.0);
+        assert_eq!(p.elapsed(), "1:02:05");
+        p.tick(50.0);
+        assert_eq!(
+            p.elapsed(),
+            "0:00",
+            "a clock that went back does not underflow"
+        );
+    }
+
+    #[test]
+    fn lines_that_are_not_events_or_are_malformed_change_nothing() {
+        let mut p = ApplyProgress::default();
+        p.line(&Line {
+            kind: Kind::Event,
+            text: "{not json".into(),
+        });
+        assert!(!p.running());
+        assert!(!p.take_started());
+        assert_eq!(p.progress().total, 0);
+    }
+
+    #[test]
+    fn the_details_keep_only_the_newest_lines() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 1 });
+        for n in 0..KEEP + 3 {
+            p.line(&Line {
+                kind: Kind::Out,
+                text: format!("line {n}"),
+            });
+        }
+        assert_eq!(p.raw.len(), KEEP);
+        assert_eq!(p.raw[0].1, "line 3");
+    }
+
+    #[test]
+    fn a_log_event_after_the_end_does_not_start_a_new_run() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 1 });
+        event(
+            &mut p,
+            ApplyEvent::Finished {
+                stats: Stats::default(),
+            },
+        );
+        event(
+            &mut p,
+            ApplyEvent::Log {
+                text: "late".into(),
+            },
+        );
+        assert!(!p.running());
+        assert_eq!(p.progress().percent(), 100);
     }
 }

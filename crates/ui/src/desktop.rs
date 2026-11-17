@@ -1757,4 +1757,25 @@ mod tests {
         });
         frames(&mut desktop, &ctx, 2);
     }
+
+    #[test]
+    fn an_apply_opens_its_progress_dialog_and_close_ends_it() {
+        use lanlord_app::apply_progress::{ApplyEvent, Msg, Stats};
+        let (mut desktop, ctx, _) = desktop();
+        let open = |d: &Desktop| d.windows.iter().any(|w| w.target == Target::Progress);
+        desktop.console.apply.event(&ApplyEvent::Total { n: 2 });
+        desktop.console.apply.event(&ApplyEvent::TaskStart {
+            name: "write the config".into(),
+        });
+        frames(&mut desktop, &ctx, 3);
+        assert!(open(&desktop), "the first event opens the dialog");
+        let finished = ApplyEvent::Finished {
+            stats: Stats::default(),
+        };
+        desktop.console.apply.event(&finished);
+        frames(&mut desktop, &ctx, 2);
+        desktop.console.apply.update(Msg::Close);
+        frames(&mut desktop, &ctx, 2);
+        assert!(!open(&desktop), "Close closes it");
+    }
 }
