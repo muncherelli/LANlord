@@ -83,10 +83,10 @@
     - name: list the names the web ui answers to
       ansible.builtin.set_fact:
         webui_names: >-
-          {{ ([webui_host] + ([host_address, ansible_facts['hostname'], ansible_facts['fqdn']]
-              if webui_tls == 'internal' else []))
-             | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
-             | reject('equalto', 'localhost') | unique | list }}
+          {{ ([webui_host] + (([host_address, ansible_facts['hostname'], ansible_facts['fqdn']]
+              if webui_tls == 'internal' else [])
+              | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+              | reject('equalto', 'localhost') | list)) | unique | list }}
       when: wp is defined
 
     - name: decide whether the web ui is served
