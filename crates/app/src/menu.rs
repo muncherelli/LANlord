@@ -112,6 +112,7 @@ pub fn rows(state: &State) -> Vec<Row> {
         let m = &MODULES[i];
         Row::Item(Item {
             art: Some(m.id),
+            enabled: state.admin,
             ..Item::new(m.name, Action::Open(Target::Module(i)))
         })
     }));
@@ -123,11 +124,12 @@ pub fn rows(state: &State) -> Vec<Row> {
     ] {
         rows.push(Row::Item(Item {
             art: Some(target.id()),
+            enabled: state.admin || !target.needs_admin(),
             ..Item::new(target.title(), Action::Open(target))
         }));
     }
     rows.push(Row::Item(Item {
-        enabled: state.host.is_some(),
+        enabled: state.host.is_some() && state.admin,
         ..Item::new("Add/Remove Components...", Action::Open(Target::Components))
     }));
     rows.push(Row::Separator);
@@ -237,12 +239,17 @@ mod tests {
                 .into_iter()
                 .filter_map(|r| match r {
                     Row::Item(i) if matches!(i.action, Action::Power(_)) => Some(i.enabled),
+                    Row::Item(i) if matches!(i.action, Action::Open(t) if t.needs_admin()) => {
+                        Some(i.enabled)
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(power(true), [true, true]);
-        assert_eq!(power(false), [false, false]);
+        // power, Networks, Settings, Console and Components follow the account
+        assert!(power(true).iter().all(|&on| on));
+        assert!(power(false).iter().all(|&on| !on));
+        assert!(power(true).len() >= 5);
     }
 
     #[test]

@@ -551,6 +551,48 @@ mod web {
     }
 
     #[test]
+    fn a_logout_that_could_not_ask_the_server_keeps_the_person_signed_in() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        *web.unreachable.lock().unwrap() = true;
+        desktop.do_action(&ctx, Action::LogOff);
+        frames(&mut desktop, &ctx, 3);
+        assert!(logged_on(&desktop), "the session may still be alive");
+        assert!(matches!(
+            desktop.confirm,
+            Some((crate::desktop::Confirm::Failure, _))
+        ));
+    }
+
+    #[test]
+    fn an_account_that_is_not_an_admin_cannot_open_the_windows_that_change_the_server() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        let mut user = id("carol", 1000);
+        user.admin = false;
+        web.logins.lock().unwrap().push_back(Ok(user));
+        sign_in(&mut desktop, &ctx, "carol", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        for target in [
+            Target::Console,
+            Target::Settings,
+            Target::Networks,
+            Target::Components,
+            Target::DateTime,
+        ] {
+            desktop.open(target);
+        }
+        let open = |d: &Desktop, t: Target| d.windows.iter().any(|w| w.target == t);
+        for target in [Target::Console, Target::Settings, Target::Networks] {
+            assert!(!open(&desktop, target), "{target:?}");
+        }
+        assert!(!open(&desktop, Target::Components) && !open(&desktop, Target::DateTime));
+        desktop.open(Target::MyServer);
+        assert!(open(&desktop, Target::MyServer), "reading is allowed");
+    }
+
+    #[test]
     fn a_link_to_windows_waits_for_the_logon() {
         let (mut desktop, ctx, web, _) = web_logon();
         desktop.open_spec_after_logon("console");

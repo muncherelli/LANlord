@@ -154,7 +154,7 @@ impl Desktop {
             signed_in: (self.auth.is_some() || self.web.is_some())
                 .then(|| who.as_deref().unwrap_or("")),
             switch_server: self.web.is_none(),
-            admin: self.signed_in.as_ref().is_none_or(|s| s.identity.admin),
+            admin: self.is_admin(),
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
             updates: self.updates_enabled(),
             developer: self.dev.is_some(),

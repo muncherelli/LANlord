@@ -127,6 +127,8 @@ pub struct MyServer {
     report_note: Option<(bool, String)>,
     /// the highlighted check on the Compatibility tab.
     picked: usize,
+    /// the signed-in account is not an administrator: nothing here changes the server.
+    read_only: bool,
 }
 
 impl MyServer {
@@ -149,11 +151,16 @@ impl MyServer {
         self.purge.as_ref()
     }
 
-    /// can a purge be asked for? lanlord is on the server, nothing runs against it and no box
-    /// is open already.
+    /// switch off what changes the server, for an account that is not an administrator.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// can a purge be asked for? the account is an administrator, lanlord is on the server,
+    /// nothing runs against it and no box is open already.
     fn can_purge(&self, idle: bool) -> bool {
         let installed = self.facts.data.as_ref().map(|f| f.lanlord_installed);
-        installed == Some(true) && idle && self.purge.is_none()
+        !self.read_only && installed == Some(true) && idle && self.purge.is_none()
     }
 
     /// the host whose purge just finished, once.
@@ -549,6 +556,26 @@ mod tests {
         assert!(!services.busy("me@gw"));
         assert_eq!(fake.calls().len(), 2, "the facts and the preview");
         window
+    }
+
+    #[test]
+    fn an_account_that_is_not_an_admin_cannot_ask_for_a_purge() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        window.refresh(&services, "me@gw");
+        let start = Instant::now();
+        while !window.facts.belongs_to("me@gw") {
+            window.refresh(&services, "me@gw");
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        window.set_read_only(true);
+        window.update(Msg::AskPurge, &services, "me@gw");
+        assert!(window.purge().is_none());
+        window.set_read_only(false);
+        window.update(Msg::AskPurge, &services, "me@gw");
+        assert!(window.purge().is_some());
     }
 
     #[test]

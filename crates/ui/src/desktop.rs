@@ -105,10 +105,10 @@ pub struct Desktop {
     /// how the browser logs on and off; `None` everywhere else.
     web: Option<Rc<dyn WebSession>>,
     signed_in: Option<SignedIn>,
-    /// the browser's logout, waiting for the server to say the session is gone.
     /// windows a `?open=` link asked for, opened once someone is logged on.
     open_after_logon: Option<String>,
-    logging_off: Option<std::sync::mpsc::Receiver<bool>>,
+    /// the browser's logout, waiting for the server to say the session is gone.
+    logging_off: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
@@ -253,7 +253,15 @@ impl Desktop {
 }
 
 impl Desktop {
+    /// is the account an administrator? one that signed in without the flag (local) is.
+    fn is_admin(&self) -> bool {
+        self.signed_in.as_ref().is_none_or(|s| s.identity.admin)
+    }
+
     fn open(&mut self, target: Target) {
+        if target.needs_admin() && !self.is_admin() {
+            return;
+        }
         match self.windows.iter_mut().find(|w| w.target == target) {
             Some(window) => window.minimized = false,
             None => {
@@ -299,9 +307,6 @@ impl Desktop {
         lanlord_app::compat::problems(&report, &enabled)
     }
 
-    /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
-    /// icons, and for the nt4 window the number of the tab. it lets the real desktop be opened
-    /// on a chosen view, for screenshots.
     /// like `open_spec`, but when the logon box is up the windows wait until someone is on.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn open_spec_after_logon(&mut self, spec: &str) {
@@ -312,6 +317,9 @@ impl Desktop {
         }
     }
 
+    /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
+    /// icons, and for the nt4 window the number of the tab. it lets the real desktop be opened
+    /// on a chosen view, for screenshots.
     pub fn open_spec(&mut self, spec: &str) {
         for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             let (id, tab) = item.split_once('@').unwrap_or((item, ""));
@@ -580,8 +588,13 @@ impl Desktop {
             let ctx = self.ctx.clone();
             lanlord_app::login::spawn_local(async move {
                 session.logout().await;
-                // the logout is done when the server no longer knows the session
-                let _ = tx.send(session.current().await.is_none());
+                // the logout is done when the server says it no longer knows the session; if it
+                // could not be asked, the session may well still be there
+                let answer = match session.current().await {
+                    Ok(now) => Ok(now.is_none()),
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = tx.send(answer);
                 ctx.request_repaint();
             });
             self.logging_off = Some(rx);
@@ -596,17 +609,22 @@ impl Desktop {
             return;
         };
         let ended = match rx.try_recv() {
-            Ok(ended) => ended,
+            Ok(answer) => answer,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(false),
         };
         self.logging_off = None;
-        if ended {
+        if ended == Ok(true) {
             if let Some(session) = self.web.clone() {
                 self.show_web_login(session, None);
             }
         } else {
-            let text = "The server did not end your session, so you are still logged on.";
+            let text = match ended {
+                Err(_) => {
+                    "Could not reach the server to end your session, so you are still logged on."
+                }
+                _ => "The server did not end your session, so you are still logged on.",
+            };
             emit(Kind::Err, text);
             self.confirm = Some((
                 Confirm::Failure,
@@ -1116,6 +1134,7 @@ impl Desktop {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
             Target::MyServer => {
                 let host = self.host();
+                self.my_server.set_read_only(!self.is_admin());
                 my_server::show(&mut self.my_server, ui, &self.services, host.as_deref());
             }
             Target::Networks => {

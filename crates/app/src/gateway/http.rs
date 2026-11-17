@@ -150,11 +150,13 @@ impl WebSession for HttpSession {
             login_status(status)?;
             session_now()
                 .await
+                .ok()
+                .flatten()
                 .ok_or_else(|| SigninError::Other("The server did not start a session.".into()))
         })
     }
 
-    fn current(&self) -> LocalFuture<Option<Identity>> {
+    fn current(&self) -> LocalFuture<anyhow::Result<Option<Identity>>> {
         Box::pin(session_now())
     }
 
@@ -167,17 +169,29 @@ impl WebSession for HttpSession {
 
 /// who `/api/session` says is logged on, and whether they are an admin. the api does not tell a
 /// uid, so one is made up (above root's, so nothing treats the account as root).
-async fn session_now() -> Option<Identity> {
-    let (status, text) = fetch("GET", "/api/session", None).await.ok()?;
-    if status != 200 {
-        return None;
+/// `Ok(None)` is the server saying there is no session; an error is not being able to ask.
+async fn session_now() -> Result<Option<Identity>> {
+    let (status, text) = fetch("GET", "/api/session", None).await?;
+    if status == 401 {
+        return Ok(None);
     }
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
-    Some(Identity {
-        user: value.get("user")?.as_str()?.to_string(),
+    if status != 200 {
+        return Err(anyhow!("the server answered {status}"));
+    }
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let field = |name: &str| anyhow!("the session answer has no {name}");
+    Ok(Some(Identity {
+        user: value
+            .get("user")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| field("user"))?
+            .to_string(),
         uid: 1000,
-        admin: value.get("admin")?.as_bool()?,
-    })
+        admin: value
+            .get("admin")
+            .and_then(|v| v.as_bool())
+            .ok_or_else(|| field("admin"))?,
+    }))
 }
 
 /// one request to the page's own server, answered with its status and body text. a post sends

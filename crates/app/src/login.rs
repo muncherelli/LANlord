@@ -43,8 +43,9 @@ pub trait WebSession {
         user: String,
         password: Zeroizing<String>,
     ) -> LocalFuture<Result<Identity, SigninError>>;
-    /// who is logged on already (the cookie is still good), if anyone.
-    fn current(&self) -> LocalFuture<Option<Identity>>;
+    /// who is logged on already (the cookie is still good): `Ok(None)` when the server says
+    /// nobody is, an error when it could not be asked.
+    fn current(&self) -> LocalFuture<anyhow::Result<Option<Identity>>>;
     /// end the session on the server.
     fn logout(&self) -> LocalFuture<()>;
 }
@@ -245,8 +246,8 @@ impl LoginBox {
         let wake = self.wake.clone();
         spawn_local(async move {
             let result = match session.current().await {
-                Some(identity) => Ok(identity),
-                None => Err(SigninError::NeedsPassword),
+                Ok(Some(identity)) => Ok(identity),
+                Ok(None) | Err(_) => Err(SigninError::NeedsPassword),
             };
             let _ = tx.send(Work::Attempt {
                 target: String::new(),
@@ -719,6 +720,8 @@ pub mod fake {
         pub calls: Mutex<Vec<String>>,
         /// the server keeps the session when asked to end it.
         pub keeps_session: Mutex<bool>,
+        /// `current` cannot reach the server.
+        pub unreachable: Mutex<bool>,
     }
 
     impl FakeWeb {
@@ -746,10 +749,16 @@ pub mod fake {
             Box::pin(async move { answer })
         }
 
-        fn current(&self) -> LocalFuture<Option<Identity>> {
+        fn current(&self) -> LocalFuture<anyhow::Result<Option<Identity>>> {
             self.calls.lock().unwrap().push("current".into());
             let now = self.current.lock().unwrap().clone();
-            Box::pin(async move { now })
+            let down = *self.unreachable.lock().unwrap();
+            Box::pin(async move {
+                if down {
+                    anyhow::bail!("no answer from the server");
+                }
+                Ok(now)
+            })
         }
 
         fn logout(&self) -> LocalFuture<()> {
