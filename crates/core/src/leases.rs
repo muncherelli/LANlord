@@ -10,8 +10,11 @@ pub use lanlord_model::leases::*;
 
 pub const FILE: &str = "/opt/lanlord/dns/dnsmasq.leases";
 
-const READ_DIRECT: &str = "if [ -r /opt/lanlord/dns/dnsmasq.leases ]; then echo present; cat /opt/lanlord/dns/dnsmasq.leases; fi\n";
-const READ_ROOT: &str = "cat /opt/lanlord/dns/dnsmasq.leases 2>/dev/null || true\n";
+/// every network has its own dnsmasq and leases file in /opt/lanlord/dns/<name>; the single file
+/// of a server from before that is read too.
+const READ_DIRECT: &str = "for f in /opt/lanlord/dns/*/dnsmasq.leases /opt/lanlord/dns/dnsmasq.leases; do if [ -r \"$f\" ]; then echo present; cat /opt/lanlord/dns/*/dnsmasq.leases /opt/lanlord/dns/dnsmasq.leases 2>/dev/null; break; fi; done\n";
+const READ_ROOT: &str =
+    "cat /opt/lanlord/dns/*/dnsmasq.leases /opt/lanlord/dns/dnsmasq.leases 2>/dev/null || true\n";
 
 /// the current leases on `host`; none when there is no dhcp server yet.
 pub fn read_on(host: &str, ask_password: AskPassword) -> Result<Vec<Lease>> {

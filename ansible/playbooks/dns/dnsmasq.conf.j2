@@ -1,37 +1,44 @@
-# written by lanlord; changes here are overwritten
+# written by lanlord for the network {{ net.name }}; changes here are overwritten
 # local names only: nothing is ever resolved outside the zone
 no-resolv
 domain-needed
 bogus-priv
-local=/{{ dns_zone }}/
-domain={{ dns_zone }}
+local=/{{ net.zone }}/
+domain={{ net.zone }}
 expand-hosts
-listen-address={{ internal_ip }}
+# this dnsmasq belongs to one network: its address and its interface, nothing else
+listen-address={{ net.ip }}
 bind-dynamic
-interface={{ internal_interface }}
+interface={{ net.interface }}
 except-interface={{ host_interface }}
+{% for other in dns_others %}
+except-interface={{ other }}
+{% endfor %}
 # root, so the leases file stays readable for the status page
 user=root
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases
 
 {% for name in dns_names %}
-host-record={{ name }},{{ internal_ip }}
+host-record={{ name }},{{ net.ip }}
 {% endfor %}
-{% for record in dns_records %}
-host-record={{ record.name }}.{{ dns_zone }},{{ record.address }}
+{% for record in net.records %}
+host-record={{ record.name }}.{{ net.zone }},{{ record.address }}
 {% endfor %}
-{% if dns_dhcp is defined %}
+{% if net.dhcp %}
 
 # dhcp without a router: the gateway is not a router for these clients
 dhcp-authoritative
 no-dhcp-interface={{ host_interface }}
-dhcp-range={{ dns_dhcp.range[0] }},{{ dns_dhcp.range[1] }},{{ internal_netmask }},{{ dns_lease }}
+{% for other in dns_others %}
+no-dhcp-interface={{ other }}
+{% endfor %}
+dhcp-range={{ net.dhcp.range[0] }},{{ net.dhcp.range[1] }},{{ net.netmask }},{{ net.dhcp.lease }}
 dhcp-option=3
-dhcp-option=6,{{ internal_ip }}
-dhcp-option=15,{{ dns_zone }}
-dhcp-option=44,{{ internal_ip }}
+dhcp-option=6,{{ net.ip }}
+dhcp-option=15,{{ net.zone }}
+dhcp-option=44,{{ net.ip }}
 dhcp-option=46,8
-{% for host in dns_hosts %}
+{% for host in net.dhcp.hosts %}
 dhcp-host={{ host.mac | lower }},{{ host.address }},{{ host.name }}
 {% endfor %}
 {% endif %}

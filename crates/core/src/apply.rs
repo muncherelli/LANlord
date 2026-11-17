@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 
 use crate::bootstrap::{run_as_root, AskPassword};
-use crate::config::wrap;
+use crate::config::{wrap, INSTALLED_GUARD, NOT_INSTALLED_MESSAGE, NOT_INSTALLED_STATUS};
 use crate::log::{emit, Kind};
 use crate::modules;
 use crate::payload;
@@ -34,7 +34,7 @@ chmod 0600 /run/lanlord/settings.yml
     };
     Ok(format!(
         r#"set -eu
-if [ ! -x /opt/lanlord/venv/bin/ansible-playbook ]; then
+{guard}if [ ! -x /opt/lanlord/venv/bin/ansible-playbook ]; then
   echo "ansible is not installed on the gateway; run lanlord bootstrap --ansible remote first" >&2
   exit 1
 fi
@@ -47,7 +47,8 @@ sudo -n -u lanlord env HOME=/opt/lanlord PYTHONDONTWRITEBYTECODE=1 ANSIBLE_NOCOL
   ANSIBLE_PYTHON_INTERPRETER=auto_silent ANSIBLE_LOCAL_TEMP=/opt/lanlord/.ansible/tmp \
   /opt/lanlord/venv/bin/ansible-playbook -i localhost,{vars}{tags} /opt/lanlord/playbooks/site.yml
 "#,
-        payload = payload::archive_base64()?
+        payload = payload::archive_base64()?,
+        guard = INSTALLED_GUARD
     ))
 }
 
@@ -111,6 +112,7 @@ pub(crate) fn apply_with(
             emit(Kind::Info, "apply finished");
             Ok(())
         }
+        NOT_INSTALLED_STATUS => bail!(NOT_INSTALLED_MESSAGE),
         code => bail!("apply failed with status {code}"),
     }
 }
@@ -332,5 +334,25 @@ esac"#,
         .unwrap_err();
         assert!(err.to_string().contains("unknown module"), "{err}");
         assert!(!record.exists());
+    }
+
+    #[test]
+    fn apply_stops_plainly_when_lanlord_is_not_installed() {
+        assert!(script(None, &[]).unwrap().contains("exit 66"));
+        // only the apply script itself stops with the guard's status
+        let session = Session::fake(
+            r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit 0 ;;
+  "sh -c "*) ;;
+  *) cat >/dev/null; exit 66 ;;
+esac"#,
+        );
+        let err = apply_with(&session, "gw", None, &[], &mut no_password).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "LANlord is not installed on this server yet"
+        );
     }
 }
