@@ -70,7 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A second network works on a NIC nothing else manages (#104)
+- The taskbar start button shows the logo with no separator after it (#106)
+- NT4 domain group mappings that drifted are repaired (#40)
+- Settings are read when the plain settings directory cannot be searched (#39)
+- A second network works on a NIC nothing else manages, and dnsmasq no longer listens on loopback (#104)
 - The browser desktop starts without threads or `std` time (#100)
 - The web interface installs on a fresh Arch gateway (#97)
 - Ansible is always put on the gateway, whatever is installed locally (#96)

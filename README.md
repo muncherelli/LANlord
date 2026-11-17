@@ -103,7 +103,7 @@ Other distributions and architectures will follow. Arch is a rolling release, so
 
 ## Development
 
-A pull request that changes what people see or do adds a line under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md), in Added, Changed or Fixed, ending with its PR number like `(#123)`. Nothing checks this; reviewers ask for it. Commit titles follow Conventional Commits, and release-plz writes the version's section from them when it cuts a release.
+A pull request that changes what people see or do adds a line under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md), in Added, Changed or Fixed, ending with its PR number like `(#123)`. Nothing checks this; reviewers ask for it. Commit titles follow Conventional Commits, but the changelog is hand-written, and the release pull request turns `## [Unreleased]` into the version's section.
 
 ```sh
 cargo fmt --check
