@@ -271,7 +271,11 @@ exit 1
 pub fn sha256_file(path: &Path) -> Result<String> {
     let bytes =
         std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
-    Ok(hex(&Sha256::digest(bytes)))
+    Ok(sha256_bytes(&bytes))
+}
+
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
 }
 
 fn hex(bytes: &[u8]) -> String {
