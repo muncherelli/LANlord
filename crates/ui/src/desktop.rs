@@ -376,6 +376,8 @@ impl Desktop {
                 self.open(Target::Components);
             } else if id == "welcome" {
                 self.open(Target::Welcome);
+            } else if id == "changelog" {
+                self.open(Target::Changelog);
             } else if let Some(target) = self
                 .icons
                 .iter()
@@ -454,18 +456,19 @@ impl Desktop {
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         self.sync_window_title(&ctx);
-        #[cfg(feature = "devtools")]
-        self.devtools_ui(ui);
-
         self.poll_log_off();
         if self.login.is_some() {
             self.show_login(ui, &ctx);
+            #[cfg(feature = "devtools")]
+            self.devtools_corner(&ctx);
             return;
         }
         if self.web.is_some() && self.services.session_ended() {
             // any call the server turned down for want of a login sends the person back to the box
             self.return_to_web_login(Some("Your session ended. Log on again."), false);
             self.show_login(ui, &ctx);
+            #[cfg(feature = "devtools")]
+            self.devtools_corner(&ctx);
             return;
         }
         if self.admin_setup.is_some() {
@@ -485,6 +488,8 @@ impl Desktop {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(TEAL))
             .show(ui, |ui| self.icons(ui));
+        #[cfg(feature = "devtools")]
+        self.devtools_menu(&ctx, TASKBAR + 2.0);
 
         self.console.drain();
         #[cfg(feature = "native")]
@@ -1000,7 +1005,12 @@ impl Desktop {
                 let width = 6.0
                     + CLOCK
                     + if shield { TRAY_ICON } else { 0.0 }
-                    + if warn { TRAY_ICON } else { 0.0 };
+                    + if warn { TRAY_ICON } else { 0.0 }
+                    + if cfg!(feature = "devtools") {
+                        TRAY_ICON
+                    } else {
+                        0.0
+                    };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
                 let clock_at = Rect::from_min_size(
@@ -1046,6 +1056,16 @@ impl Desktop {
                         self.open(Target::MyServer);
                         self.show_compat_tab();
                     }
+                }
+                #[cfg(feature = "devtools")]
+                {
+                    let shift =
+                        if warn { TRAY_ICON } else { 0.0 } + if shield { TRAY_ICON } else { 0.0 };
+                    let bug_at = Rect::from_min_size(
+                        Pos2::new(clock_at.left() - TRAY_ICON - shift, tray.top()),
+                        Vec2::splat(TRAY_ICON),
+                    );
+                    self.devtools_tray(ui, bug_at);
                 }
                 if shield {
                     let shift = if warn { TRAY_ICON } else { 0.0 };
@@ -1102,8 +1122,6 @@ impl Desktop {
 /// the part of the screen above the taskbar.
 fn desktop_area(ctx: &egui::Context) -> Rect {
     let screen = ctx.content_rect();
-    #[cfg(feature = "devtools")]
-    let screen = Rect::from_min_max(screen.min + Vec2::new(0.0, devtools::STRIP), screen.max);
     Rect::from_min_max(screen.min, screen.max - Vec2::new(0.0, TASKBAR))
 }
 

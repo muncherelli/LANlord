@@ -17,11 +17,10 @@ use lanlord_app::services::Services;
 use super::Desktop;
 use crate::admin_setup::AdminSetup;
 use crate::login::{Auth, LoginBox, SignedIn};
-use crate::theme::{self, GRAY, TEAL};
+use crate::theme::{self, GRAY};
 
-/// the height of the strip along the top that holds the bug, so the bug never covers a window,
-/// an icon or the taskbar.
-pub const STRIP: f32 = 22.0;
+/// the side of the bug button on the logon screen.
+const BUTTON: f32 = 22.0;
 
 /// what the desktop was showing before the demo took over; leaving the demo puts it back.
 pub struct Stash {
@@ -94,6 +93,12 @@ impl Desktop {
         self.devtools.wm_debug = on;
     }
 
+    /// show or hide the debug menu.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn set_menu(&mut self, on: bool) {
+        self.devtools.menu = on;
+    }
+
     /// open every window there is, for looking at the window manager.
     pub fn open_all(&mut self) {
         let mut targets = self.icons.clone();
@@ -108,45 +113,63 @@ impl Desktop {
         }
     }
 
-    /// the strip along the top with the bug in its right corner; the debug menu hangs below it.
-    pub(crate) fn devtools_ui(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        egui::Panel::top("devtools-strip")
-            .exact_size(STRIP)
-            .frame(Frame::new().fill(TEAL))
-            .show(ui, |ui| {
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), STRIP), Sense::hover());
-                let at = Rect::from_center_size(
-                    Pos2::new(rect.right() - STRIP / 2.0 - 4.0, rect.center().y),
-                    Vec2::splat(STRIP - 4.0),
-                );
-                let bug = ui
-                    .interact(at, response.id.with("bug"), Sense::click())
-                    .on_hover_text("Debug menu");
-                paint_bug(ui.painter(), at.center());
-                #[cfg(test)]
-                theme::probe::record(ui, "bug", at, true);
-                if bug.clicked() {
-                    self.devtools.menu = !self.devtools.menu;
-                }
-            });
-        if self.devtools.menu {
-            self.debug_menu(&ctx);
+    /// the bug as a tray icon in `rect` on the taskbar; a click opens the debug menu above it.
+    pub(crate) fn devtools_tray(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let bug = ui
+            .interact(rect, ui.scope_id().with("tray-bug"), Sense::click())
+            .on_hover_text("Debug menu");
+        paint_bug(ui.painter(), rect.center());
+        #[cfg(test)]
+        theme::probe::record(ui, "bug", rect, true);
+        if bug.clicked() {
+            self.devtools.menu = !self.devtools.menu;
         }
     }
 
-    fn debug_menu(&mut self, ctx: &egui::Context) {
+    /// the logon screen has no taskbar: a small red bug button in the lower right corner of the
+    /// screen opens the same menu.
+    pub(crate) fn devtools_corner(&mut self, ctx: &egui::Context) {
+        let screen = ctx.content_rect();
+        let at = Rect::from_min_size(
+            screen.right_bottom() - Vec2::splat(BUTTON + 6.0),
+            Vec2::splat(BUTTON),
+        );
+        Area::new(Id::unique("devtools-bug"))
+            .fixed_pos(at.min)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let (rect, response) = ui.allocate_exact_size(at.size(), Sense::click());
+                let down = response.is_pointer_button_down_on();
+                ui.painter().rect_filled(rect, 0.0, GRAY);
+                theme::bevel(ui.painter(), rect, !down);
+                paint_bug(ui.painter(), rect.center());
+                #[cfg(test)]
+                theme::probe::record(ui, "bug", rect, true);
+                if response.on_hover_text("Debug menu").clicked() {
+                    self.devtools.menu = !self.devtools.menu;
+                }
+            });
+        self.devtools_menu(ctx, BUTTON + 8.0);
+    }
+
+    /// the debug menu, when it is open, as a popup `lift` above the bottom of the screen.
+    pub(crate) fn devtools_menu(&mut self, ctx: &egui::Context, lift: f32) {
+        if self.devtools.menu {
+            self.debug_menu(ctx, lift);
+        }
+    }
+
+    fn debug_menu(&mut self, ctx: &egui::Context, lift: f32) {
         let mut demo = self.in_demo();
         let was_demo = demo;
         let mut open_all = false;
         Area::new(Id::unique("devtools-menu"))
-            .anchor(Align2::RIGHT_TOP, Vec2::new(-4.0, STRIP))
+            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-4.0, -lift))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                Frame::new()
+                let framed = Frame::new()
                     .fill(GRAY)
-                    .inner_margin(Margin::same(8))
+                    .inner_margin(Margin::same(6))
                     .show(ui, |ui| {
                         crate::controls::check(ui, &mut demo, "Demo desktop");
                         crate::controls::check(
@@ -156,6 +179,7 @@ impl Desktop {
                         );
                         open_all = theme::button(ui, "Open all windows", false).clicked();
                     });
+                theme::bevel(ui.painter(), framed.response.rect, true);
             });
         if demo && !was_demo {
             self.enter_demo();
@@ -267,26 +291,33 @@ mod tests {
     }
 
     #[test]
-    fn the_bug_never_overlaps_a_window_or_the_taskbar() {
+    fn the_bug_is_a_tray_icon_on_the_taskbar_and_never_overlaps_a_window() {
         for size in [Vec2::new(1280.0, 630.0), Vec2::new(800.0, 500.0)] {
             let (mut desktop, ctx, _) = desktop();
             desktop.open_all();
             frames_on(&mut desktop, &ctx, size, 4);
             let (bug, _) = theme::probe::find(&ctx, "bug").expect("the bug is drawn");
-            assert!(
-                bug.top() >= 0.0 && bug.bottom() <= STRIP,
-                "{bug:?} sits in the strip"
-            );
+            assert!(bug.top() >= size.y - 30.0, "{bug:?} is in the taskbar");
             assert!(!desktop.measured.is_empty());
             for (target, rect, _) in &desktop.measured {
-                assert!(
-                    !rect.intersects(bug),
-                    "{target:?} {rect:?} covers the bug {bug:?}"
-                );
-                assert!(rect.top() >= STRIP, "{target:?} starts below the strip");
+                assert!(!rect.intersects(bug), "{target:?} {rect:?} covers {bug:?}");
             }
-            assert!(bug.bottom() < size.y - 30.0, "the taskbar is clear of it");
         }
+    }
+
+    #[test]
+    fn the_logon_screen_has_a_bug_button_in_the_lower_right_corner() {
+        let size = Vec2::new(800.0, 500.0);
+        let (mut desktop, ctx, _) = desktop();
+        desktop.require_login(std::sync::Arc::new(crate::login::fake::FakeAuth::default()));
+        frames_on(&mut desktop, &ctx, size, 3);
+        let (bug, _) = theme::probe::find(&ctx, "bug").expect("the bug is drawn");
+        assert!(
+            bug.right() > size.x - 40.0 && bug.bottom() > size.y - 40.0,
+            "{bug:?}"
+        );
+        assert!(press(&mut desktop, &ctx, "bug"));
+        assert!(desktop.devtools.menu);
     }
 
     #[test]
