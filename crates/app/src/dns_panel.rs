@@ -374,20 +374,9 @@ impl DnsPanel {
 
     /// act on a click or keystroke for `host`.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
-        // the same rules as the buttons: a front end may send any message
-        let free = self.form.is_none();
-        let allowed = match msg {
-            Msg::AddLease => free && self.draft.dhcp.is_some(),
-            Msg::EditLease | Msg::AddRecord | Msg::EditRecord => free,
-            Msg::MakeStatic => free && self.draft.dhcp.is_some(),
-            Msg::Reload => !services.busy(host) && !self.remote.busy(),
-            Msg::Save | Msg::SaveAndApply => self.can_save(services, host),
-            _ => true,
-        };
-        if !allowed {
+        if !self.allowed(&msg, services, host) {
             return;
         }
-        let dhcp = self.draft.dhcp.as_mut();
         match msg {
             Msg::Tab(tab) => self.tab = tab,
             Msg::Zone(text) => self.draft.zone = text,
@@ -395,21 +384,9 @@ impl DnsPanel {
                 Some(dhcp) => self.stash = dhcp,
                 None => self.draft.dhcp = Some(self.stash.clone()),
             },
-            Msg::RangeStart(text) => {
-                if let Some(d) = dhcp {
-                    d.range_start = text;
-                }
-            }
-            Msg::RangeEnd(text) => {
-                if let Some(d) = dhcp {
-                    d.range_end = text;
-                }
-            }
-            Msg::Lease(text) => {
-                if let Some(d) = dhcp {
-                    d.lease = text;
-                }
-            }
+            Msg::RangeStart(text) => self.edit_dhcp(|d| d.range_start = text),
+            Msg::RangeEnd(text) => self.edit_dhcp(|d| d.range_end = text),
+            Msg::Lease(text) => self.edit_dhcp(|d| d.lease = text),
             Msg::PickLease(i) => self.lease_row = Some(i),
             Msg::AddLease => self.open_lease(
                 None,
@@ -419,21 +396,8 @@ impl DnsPanel {
                     address: String::new(),
                 },
             ),
-            Msg::EditLease => {
-                let hosts = self.hosts();
-                if let Some(i) = self.lease_row.filter(|i| *i < hosts.len()) {
-                    self.open_lease(Some(i), hosts[i].clone());
-                }
-            }
-            Msg::RemoveLease => {
-                let picked = self.lease_row;
-                if let (Some(i), Some(d)) = (picked, &mut self.draft.dhcp) {
-                    if i < d.hosts.len() {
-                        d.hosts.remove(i);
-                        self.lease_row = None;
-                    }
-                }
-            }
+            Msg::EditLease => self.edit_lease(),
+            Msg::RemoveLease => self.remove_lease(),
             Msg::PickRecord(i) => self.record_row = Some(i),
             Msg::AddRecord => self.open_record(
                 None,
@@ -442,40 +406,83 @@ impl DnsPanel {
                     address: String::new(),
                 },
             ),
-            Msg::EditRecord => {
-                if let Some(i) = self.record_row.filter(|i| *i < self.draft.records.len()) {
-                    self.open_record(Some(i), self.draft.records[i].clone());
-                }
-            }
-            Msg::RemoveRecord => {
-                if let Some(i) = self.record_row.filter(|i| *i < self.draft.records.len()) {
-                    self.draft.records.remove(i);
-                    self.record_row = None;
-                }
-            }
+            Msg::EditRecord => self.edit_record(),
+            Msg::RemoveRecord => self.remove_record(),
             Msg::PickCurrent(i) => self.current_row = Some(i),
-            Msg::MakeStatic => {
-                let leases = self.current();
-                if let Some(lease) = self.current_row.and_then(|i| leases.get(i)) {
-                    let name = if lanlord_model::settings::valid_label(&lease.name) {
-                        lease.name.clone()
-                    } else {
-                        String::new()
-                    };
-                    self.open_lease(
-                        None,
-                        StaticLease {
-                            name,
-                            mac: lease.mac.clone(),
-                            address: lease.address.clone(),
-                        },
-                    );
-                }
-            }
+            Msg::MakeStatic => self.make_static(),
             Msg::Reload => self.reload(services, host),
             Msg::SaveAndApply => self.save(services, host, true),
             Msg::Save => self.save(services, host, false),
         }
+    }
+
+    /// the same rules as the buttons: a front end may send any message.
+    fn allowed(&self, msg: &Msg, services: &Services, host: &str) -> bool {
+        let free = self.form.is_none();
+        match msg {
+            Msg::AddLease | Msg::MakeStatic => free && self.draft.dhcp.is_some(),
+            Msg::EditLease | Msg::AddRecord | Msg::EditRecord => free,
+            Msg::Reload => !services.busy(host) && !self.remote.busy(),
+            Msg::Save | Msg::SaveAndApply => self.can_save(services, host),
+            _ => true,
+        }
+    }
+
+    fn edit_dhcp(&mut self, edit: impl FnOnce(&mut Dhcp)) {
+        if let Some(dhcp) = self.draft.dhcp.as_mut() {
+            edit(dhcp);
+        }
+    }
+
+    fn edit_lease(&mut self) {
+        let hosts = self.hosts();
+        if let Some(i) = self.lease_row.filter(|i| *i < hosts.len()) {
+            self.open_lease(Some(i), hosts[i].clone());
+        }
+    }
+
+    fn remove_lease(&mut self) {
+        let picked = self.lease_row;
+        if let (Some(i), Some(d)) = (picked, &mut self.draft.dhcp) {
+            if i < d.hosts.len() {
+                d.hosts.remove(i);
+                self.lease_row = None;
+            }
+        }
+    }
+
+    fn edit_record(&mut self) {
+        if let Some(i) = self.record_row.filter(|i| *i < self.draft.records.len()) {
+            self.open_record(Some(i), self.draft.records[i].clone());
+        }
+    }
+
+    fn remove_record(&mut self) {
+        if let Some(i) = self.record_row.filter(|i| *i < self.draft.records.len()) {
+            self.draft.records.remove(i);
+            self.record_row = None;
+        }
+    }
+
+    /// open a box to turn the picked current lease into a static one.
+    fn make_static(&mut self) {
+        let leases = self.current();
+        let Some(lease) = self.current_row.and_then(|i| leases.get(i)) else {
+            return;
+        };
+        let name = if lanlord_model::settings::valid_label(&lease.name) {
+            lease.name.clone()
+        } else {
+            String::new()
+        };
+        self.open_lease(
+            None,
+            StaticLease {
+                name,
+                mac: lease.mac.clone(),
+                address: lease.address.clone(),
+            },
+        );
     }
 
     /// the box for a lease or a record, while one is open.
