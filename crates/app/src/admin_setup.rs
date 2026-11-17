@@ -2,7 +2,6 @@
 //! to sign in, but day-to-day work belongs to a personal account that is in `admins` and has
 //! sudo, preferably signed in with an ssh key.
 
-use lanlord_core::signin;
 use zeroize::Zeroizing;
 
 use crate::gateway::NewAdmin;
@@ -66,8 +65,15 @@ impl Default for AdminSetup {
 
 impl AdminSetup {
     /// the screen, with the keys your ssh agent offers.
+    #[cfg(feature = "native")]
     pub fn new() -> Self {
-        Self::with_keys(signin::agent_keys())
+        Self::with_keys(lanlord_core::signin::agent_keys())
+    }
+
+    /// the screen; the browser has no ssh agent to offer keys from.
+    #[cfg(not(feature = "native"))]
+    pub fn new() -> Self {
+        Self::with_keys(Vec::new())
     }
 
     fn with_keys(agent_keys: Vec<String>) -> Self {

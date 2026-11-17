@@ -1,8 +1,8 @@
 //! the Settings window: the plain settings as yaml text, and the secrets as write-only
 //! fields. nothing is stored or applied unless a button is clicked.
 
-use lanlord_core::modules::{Status, MODULES};
-use lanlord_core::settings::{secret_fields, Document, SecretField, Settings};
+use lanlord_model::modules::{Status, MODULES};
+use lanlord_model::settings::{secret_fields, Document, SecretField, Settings};
 
 use zeroize::Zeroizing;
 

@@ -3,6 +3,7 @@
 //! so it also builds for the browser.
 
 pub mod clock;
+pub mod doctor;
 pub mod lan_networks;
 pub mod leases;
 pub mod log;
@@ -12,9 +13,11 @@ pub mod network;
 pub mod networks;
 pub mod nt4;
 pub mod ops;
+pub mod passwords;
 pub mod power;
 pub mod secret;
 pub mod server;
 pub mod settings;
 pub mod signin;
+pub mod update;
 pub mod users;

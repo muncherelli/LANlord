@@ -1,8 +1,7 @@
 //! the box listing what is new in an update, and what its buttons do in each state of the
 //! updater.
 
-use lanlord_core::update::{Source, Update};
-use lanlord_core::updater::{Pause, State};
+use lanlord_model::update::{Pause, Source, State, Update};
 
 use crate::view::{Button, Dialog, Node};
 

@@ -6,9 +6,9 @@ use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
+use crate::ask::AskPassword;
+use crate::log::{emit, Kind};
 use anyhow::{anyhow, Result};
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::log::{emit, Kind};
 use zeroize::Zeroizing;
 
 use crate::wake::Wake;
@@ -134,15 +134,16 @@ fn background(work: impl FnOnce() + Send + 'static) {
     std::thread::spawn(work);
 }
 
-/// in the browser there are no threads, and running the work inline could wait forever on the
-/// password dialog it is drawn behind. tasks become requests to the backend there, which are
-/// not built yet.
+/// in the browser there are no threads: the work runs on the page's event loop once the
+/// current frame is done. a task that talks to the server sends its op with
+/// `gateway::http::Http::run`, which does not block.
 #[cfg(target_arch = "wasm32")]
-fn background(_work: impl FnOnce() + Send + 'static) {
-    unimplemented!("background tasks in the browser need wasm_bindgen_futures::spawn_local");
+fn background(work: impl FnOnce() + Send + 'static) {
+    wasm_bindgen_futures::spawn_local(async move { work() });
 }
 
 /// a password prompt that asks through the ui.
+#[cfg(not(target_arch = "wasm32"))]
 fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> Result<String> {
     move |what| {
         let (reply, answer) = mpsc::channel();
@@ -162,6 +163,18 @@ fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> R
             .ok_or_else(|| anyhow!("cancelled"))
     }
 }
+
+/// in the browser a task runs on the page's only thread, so waiting for the dialog would wait
+/// forever. a prompt fails at once instead; the web ui asks for the password itself when the
+/// server answers an op with `Reply::NeedsPassword` (see `gateway::http::Http::run`).
+#[cfg(target_arch = "wasm32")]
+fn asker(_requests: Sender<PasswordRequest>, _wake: Wake) -> impl FnMut(&str) -> Result<String> {
+    |what: &str| Err(anyhow!("{PROMPT_IN_BROWSER} ({what})"))
+}
+
+/// why a task in the browser cannot ask for a password in the middle of its work.
+pub const PROMPT_IN_BROWSER: &str =
+    "the browser cannot stop a task to ask for a password; send the op again with it";
 
 #[cfg(test)]
 mod tests {

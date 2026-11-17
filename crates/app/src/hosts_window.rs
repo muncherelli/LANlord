@@ -1,6 +1,6 @@
 //! the Hosts window: the gateways a client manages and which one every action targets.
 
-use lanlord_core::log::{emit, Kind};
+use crate::log::{emit, Kind};
 
 use crate::hostlist::HostList;
 use crate::services::Services;

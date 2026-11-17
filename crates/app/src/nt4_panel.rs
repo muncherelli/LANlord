@@ -1,7 +1,7 @@
 //! the nt4 domain's settings tab: domain, server name, machines, roaming profiles and the
 //! administrator password (which is only ever set, never shown).
 
-use lanlord_core::nt4::{valid_machine, Nt4Settings};
+use lanlord_model::nt4::{valid_machine, Nt4Settings};
 
 use crate::form::{Form, FormAnswer, FormMsg};
 use crate::remote::Remote;
@@ -19,10 +19,10 @@ pub struct Nt4Data {
 fn load(
     gateway: &dyn crate::gateway::Gateway,
     host: &str,
-    ask: lanlord_core::bootstrap::AskPassword,
+    ask: crate::ask::AskPassword,
 ) -> anyhow::Result<Nt4Data> {
     let document = gateway.load_document(host, ask)?;
-    let settings = lanlord_core::settings::Settings::parse(&document.plain)?;
+    let settings = lanlord_model::settings::Settings::parse(&document.plain)?;
     Ok(Nt4Data {
         settings: Nt4Settings::from_settings(&settings)?,
         admin_password_set: document.secrets_set.iter().any(|p| p == ADMIN_PASSWORD),
@@ -151,7 +151,7 @@ impl Nt4Panel {
             vec![]
         };
         let job = services.spawn(host, move |gateway, ask| {
-            let edit = |settings: &mut lanlord_core::settings::Settings| {
+            let edit = |settings: &mut lanlord_model::settings::Settings| {
                 draft.apply_to(settings);
                 Ok(())
             };

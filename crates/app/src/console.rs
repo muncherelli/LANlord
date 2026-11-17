@@ -2,7 +2,7 @@
 
 use std::sync::mpsc::{self, Receiver};
 
-use lanlord_core::log::{self, Line};
+use crate::log::{self, Line};
 
 use crate::view::Node;
 use crate::wake::Wake;
@@ -64,7 +64,7 @@ impl Console {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use lanlord_core::log::Kind;
+    use crate::log::Kind;
 
     use super::*;
 

@@ -5,7 +5,9 @@
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
-use lanlord_core::signin::{Attempt, Identity, Signin, SigninError};
+#[cfg(feature = "native")]
+use lanlord_core::signin::{Attempt, Signin};
+use lanlord_model::signin::{Identity, SigninError};
 use zeroize::Zeroizing;
 
 use crate::message::MessageBox;
@@ -26,14 +28,17 @@ pub trait Auth: Send + Sync {
     fn sign_out(&self, target: &str);
 }
 
+#[cfg(feature = "native")]
 pub struct SystemAuth(Signin);
 
+#[cfg(feature = "native")]
 impl Default for SystemAuth {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "native")]
 impl SystemAuth {
     /// sign in with the system ssh.
     pub fn new() -> Self {
@@ -41,6 +46,7 @@ impl SystemAuth {
     }
 }
 
+#[cfg(feature = "native")]
 impl Auth for SystemAuth {
     fn attempt(
         &self,

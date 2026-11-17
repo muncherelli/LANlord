@@ -2,8 +2,8 @@
 //! passwords in the encrypted ones. every change runs when you click, in the background, and
 //! applies the module.
 
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::users::{self, Change, User};
+use crate::ask::AskPassword;
+use lanlord_model::users::{self, Change, User};
 
 use crate::form::{Form, FormAnswer, FormMsg};
 use crate::gateway::Gateway;

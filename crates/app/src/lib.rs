@@ -4,6 +4,7 @@
 //! actions.
 
 pub mod admin_setup;
+pub mod ask;
 pub mod clock_window;
 pub mod command_panel;
 pub mod console;
@@ -14,6 +15,7 @@ pub mod form;
 pub mod gateway;
 pub mod hostlist;
 pub mod hosts_window;
+pub mod log;
 pub mod login;
 pub mod logon_panel;
 pub mod menu;

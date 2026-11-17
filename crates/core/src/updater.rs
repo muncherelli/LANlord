@@ -39,27 +39,7 @@ impl Clock for RealClock {
 /// how long downloading or installing may go without any output before it counts as stuck.
 pub const WATCHDOG: Duration = Duration::from_secs(600);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Pause {
-    /// the user paused it, and it stays paused until they resume.
-    Manual,
-    /// the network is gone; it tries again by itself, `attempt` times so far.
-    Offline { attempt: u32 },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum State {
-    /// nothing to install.
-    Idle,
-    /// an update is there and nothing was started.
-    Available,
-    Downloading,
-    Installing,
-    Paused(Pause),
-    Failed(String),
-    /// installed; the new build runs after a restart.
-    Done,
-}
+pub use lanlord_model::update::{Pause, State};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {

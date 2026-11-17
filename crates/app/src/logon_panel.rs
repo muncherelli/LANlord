@@ -1,9 +1,9 @@
 //! the logon scripts tab: the scripts every domain logon runs (`logon.bat` for everyone and
 //! `<login>.bat` for one login), edited here instead of in the netlogon share by hand.
 
+use crate::ask::AskPassword;
 use anyhow::Result;
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::logon::{self, valid_script_name};
+use lanlord_model::logon::{self, valid_script_name};
 
 use crate::form::{Form, FormAnswer, FormMsg};
 use crate::gateway::Gateway;

@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
-use lanlord_core::clock::{self, Change, ClockState, NtpChange, Stored, Sync, ZoneNow};
+use lanlord_model::clock::{self, Change, ClockState, NtpChange, Stored, Sync, ZoneNow};
 
 use crate::gateway::Gateway;
 use crate::remote::Remote;
