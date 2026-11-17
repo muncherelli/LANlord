@@ -687,6 +687,9 @@ impl Shell {
                 }
             },
             Target::Console => drive::<()>(&self.console.view(), &mut pass, &state, palette).0,
+            Target::Changelog => {
+                drive::<()>(&lanlord_app::changelog::view(), &mut pass, &state, palette).0
+            }
             Target::Hosts => {
                 let nodes =
                     hosts_window::view(&self.hosts, &self.services, self.services.is_local());

@@ -106,6 +106,13 @@ const TOPICS: &[Topic] = &[
         open: "Open Components",
         target: "components",
     },
+    Topic {
+        button: "Changelog",
+        title: "Changelog",
+        text: &["What changed in each version of LANlord, newest first."],
+        open: "Open Changelog",
+        target: "changelog",
+    },
 ];
 
 pub struct Welcome {
@@ -186,8 +193,10 @@ impl Welcome {
     }
 
     fn target(&self, id: &str, icons: &[Target]) -> Option<Target> {
-        if id == "components" {
-            return Some(Target::Components);
+        match id {
+            "components" => return Some(Target::Components),
+            "changelog" => return Some(Target::Changelog),
+            _ => {}
         }
         icons.iter().copied().find(|t| t.id() == id)
     }
@@ -244,7 +253,7 @@ impl Welcome {
         vec![
             Node::Header {
                 icon: "my-server",
-                title: "Welcome to LANlord".into(),
+                title: format!("Welcome to LANlord v{}", env!("CARGO_PKG_VERSION")),
                 lines: vec!["Retro networks, run from one desktop.".into()],
             },
             Node::Gap(8.0),
@@ -373,6 +382,25 @@ mod tests {
         assert_eq!(w.take_open(), Some(Target::Components));
         w.update(Msg::Close, &icons());
         assert!(w.take_done());
+    }
+
+    #[test]
+    fn the_heading_has_the_version_and_the_changelog_topic_opens_its_window() {
+        let mut w = Welcome::new(None);
+        let heading = w.view(&icons()).into_iter().find_map(|n| match n {
+            Node::Header { title, .. } => Some(title),
+            _ => None,
+        });
+        assert_eq!(
+            heading.unwrap(),
+            format!("Welcome to LANlord v{}", env!("CARGO_PKG_VERSION"))
+        );
+        let last = Welcome::topics() - 1;
+        w.update(Msg::Topic(last), &icons());
+        let text = texts(&w.view(&icons()));
+        assert!(text.contains("Changelog") && text.contains("Open Changelog"));
+        w.update(Msg::Open, &icons());
+        assert_eq!(w.take_open(), Some(Target::Changelog));
     }
 
     #[cfg(feature = "native")]

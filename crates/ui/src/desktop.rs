@@ -1029,6 +1029,9 @@ impl Desktop {
                 }
             }
             Target::Console => self.console_window(ui),
+            Target::Changelog => {
+                view::show(ui, &lanlord_app::changelog::view::<()>());
+            }
             Target::Hosts => self.hosts_window(ui),
             Target::Settings => {
                 let host = self.host();
@@ -1252,7 +1255,12 @@ mod tests {
             with_host(&mut desktop, &ctx);
             frames_on(&mut desktop, &ctx, size, 6);
             let mut targets = desktop.icons.clone();
-            targets.extend([Target::DateTime, Target::Components, Target::Welcome]);
+            targets.extend([
+                Target::DateTime,
+                Target::Components,
+                Target::Welcome,
+                Target::Changelog,
+            ]);
             for target in targets {
                 desktop.windows.clear();
                 desktop.open(target);
@@ -1290,6 +1298,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_welcome_window_opens_the_changelog_window() {
+        let (mut desktop, ctx, _) = desktop();
+        desktop.open(Target::Welcome);
+        frames(&mut desktop, &ctx, 3);
+        assert!(press(&mut desktop, &ctx, "Changelog"), "the topic button");
+        assert!(press(&mut desktop, &ctx, "Open Changelog"));
+        frames(&mut desktop, &ctx, 3);
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.target == Target::Changelog));
     }
 
     #[test]

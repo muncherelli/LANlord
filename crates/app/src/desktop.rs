@@ -19,6 +19,8 @@ pub enum Target {
     Components,
     /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
     Welcome,
+    /// the changelog, read only; opened from the Welcome window and the menu's help rows.
+    Changelog,
 }
 
 impl Target {
@@ -34,6 +36,7 @@ impl Target {
             Self::DateTime => "datetime",
             Self::Components => "components",
             Self::Welcome => "welcome",
+            Self::Changelog => "changelog",
         }
     }
 
@@ -48,6 +51,7 @@ impl Target {
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
+            Self::Changelog => "Changelog",
         }
     }
 
@@ -56,7 +60,8 @@ impl Target {
         matches!(self, Self::Welcome | Self::DateTime | Self::Components)
     }
 
-    /// how big the window opens, in layout units, before it is cut down to fit the desktop.
+    /// how big the window opens in the text view, in layout units. the gui uses the width only:
+    /// there a window is as tall as its contents.
     pub fn size(self) -> (f32, f32) {
         match self {
             Self::Module(i) => match MODULES[i].id {
@@ -70,10 +75,10 @@ impl Target {
             Self::Console => (600.0, 300.0),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
-            // the dialogs give a width only: they are as tall as their contents
-            Self::DateTime => (430.0, 0.0),
-            Self::Components => (500.0, 0.0),
-            Self::Welcome => (530.0, 0.0),
+            Self::DateTime => (430.0, 420.0),
+            Self::Components => (500.0, 470.0),
+            Self::Welcome => (530.0, 380.0),
+            Self::Changelog => (520.0, 400.0),
         }
     }
 }

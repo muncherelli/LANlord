@@ -7,6 +7,7 @@ pub mod admin_setup;
 pub mod ask;
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
+pub mod changelog;
 pub mod clock_window;
 pub mod command_panel;
 pub mod compat;
