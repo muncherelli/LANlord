@@ -20,6 +20,8 @@ const GRID: Color32 = Color32::from_rgb(0, 128, 0);
 const AMBER: Color32 = Color32::from_rgb(255, 255, 0);
 const RED: Color32 = Color32::from_rgb(255, 64, 64);
 const CORE_COLOURS: [Color32; 4] = [GREEN, AMBER, Color32::from_rgb(0, 255, 255), RED];
+const SCREEN_LIT: Color32 = Color32::from_rgb(0, 255, 255);
+const SCREEN_DARK: Color32 = Color32::from_rgb(0, 0, 96);
 const ROW: f32 = 17.0;
 const WIDTHS: [f32; 5] = [130.0, 50.0, 90.0, 45.0, 85.0];
 
@@ -406,15 +408,7 @@ pub fn tray_icon(ui: &mut Ui, at: Rect, receiving: bool, sending: bool) -> Respo
         painter.rect_filled(case, 0.0, theme::GRAY);
         painter.rect_stroke(case, 0.0, Stroke::new(1.0, BLACK), egui::StrokeKind::Inside);
         let screen = case.shrink(2.0);
-        painter.rect_filled(
-            screen,
-            0.0,
-            if lit {
-                Color32::from_rgb(0, 255, 255)
-            } else {
-                Color32::from_rgb(0, 0, 96)
-            },
-        );
+        painter.rect_filled(screen, 0.0, if lit { SCREEN_LIT } else { SCREEN_DARK });
         // the stand
         let foot = Rect::from_min_size(
             Pos2::new(case.center().x - 2.0, case.bottom()),
@@ -531,13 +525,40 @@ mod tests {
         m
     }
 
+    fn run_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        draw: impl FnMut(&mut Ui),
+    ) -> Vec<Shape> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, crate::testkit::SCREEN)),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, draw);
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    fn step(
+        ctx: &egui::Context,
+        manager: &mut TaskManager,
+        monitor: &Monitor,
+        admin: bool,
+        events: Vec<egui::Event>,
+    ) -> Option<Ask> {
+        let mut ask = None;
+        run_frame(ctx, events, |ui| {
+            ask = manager.show(ui, monitor, admin).or(ask.take());
+        });
+        ask
+    }
+
     fn frame(manager: &mut TaskManager, monitor: &Monitor, admin: bool) -> Option<Ask> {
         let ctx = egui::Context::default();
         let mut ask = None;
         for _ in 0..2 {
-            crate::testkit::run(&ctx, Vec::new(), |ui| {
-                ask = manager.show(ui, monitor, admin).or(ask.take());
-            });
+            ask = step(&ctx, manager, monitor, admin, Vec::new()).or(ask.take());
         }
         ask
     }
@@ -548,22 +569,113 @@ mod tests {
         let mut manager = TaskManager::default();
         for tab in 0..3 {
             manager.tab = tab;
-            frame(&mut manager, &monitor, true);
+            assert_eq!(frame(&mut manager, &monitor, true), None);
             manager.per_core = true;
-            frame(&mut manager, &monitor, false);
+            assert_eq!(frame(&mut manager, &monitor, false), None);
         }
         let mut empty = TaskManager::default();
-        frame(&mut empty, &Monitor::default(), false);
+        assert_eq!(frame(&mut empty, &Monitor::default(), false), None);
+    }
+
+    /// click the button the last frame drew under `text`; whether it was enabled.
+    fn press(
+        ctx: &egui::Context,
+        manager: &mut TaskManager,
+        monitor: &Monitor,
+        admin: bool,
+        text: &str,
+    ) -> (bool, Option<Ask>) {
+        let (rect, enabled) = theme::probe::find(ctx, text).unwrap_or_else(|| panic!("{text}"));
+        let ask = step(
+            ctx,
+            manager,
+            monitor,
+            admin,
+            crate::testkit::click(rect.center()),
+        );
+        (enabled, ask)
+    }
+
+    #[test]
+    fn only_an_administrator_can_end_a_process_and_only_after_the_warning() {
+        let monitor = filled();
+        let pid = monitor.history.procs.as_ref().unwrap().procs[1].pid;
+        for admin in [true, false] {
+            let ctx = egui::Context::default();
+            let mut manager = TaskManager::default();
+            manager.selected = Some(pid);
+            for _ in 0..2 {
+                step(&ctx, &mut manager, &monitor, admin, Vec::new());
+            }
+            let (enabled, ask) = press(&ctx, &mut manager, &monitor, admin, "End Process");
+            assert_eq!((enabled, ask), (admin, None));
+            // the warning is up for an administrator and never for anyone else
+            assert_eq!(manager.confirm.is_some(), admin);
+            if !admin {
+                continue;
+            }
+            for _ in 0..2 {
+                step(&ctx, &mut manager, &monitor, admin, Vec::new());
+            }
+            let (_, ask) = press(&ctx, &mut manager, &monitor, admin, "No");
+            assert_eq!(ask, None);
+            assert!(manager.confirm.is_none(), "No closes the warning");
+        }
+        // confirmed: End(pid) comes back
+        let ctx = egui::Context::default();
+        let mut manager = TaskManager::default();
+        manager.selected = Some(pid);
+        for _ in 0..2 {
+            step(&ctx, &mut manager, &monitor, true, Vec::new());
+        }
+        press(&ctx, &mut manager, &monitor, true, "End Process");
+        for _ in 0..2 {
+            step(&ctx, &mut manager, &monitor, true, Vec::new());
+        }
+        let (_, ask) = press(&ctx, &mut manager, &monitor, true, "Yes");
+        assert_eq!(ask, Some(Ask::End(pid)));
+    }
+
+    /// how many of the tray icon's two screens are lit, from what it painted.
+    fn lit_screens(receiving: bool, sending: bool) -> (usize, usize) {
+        let ctx = egui::Context::default();
+        let at = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::splat(16.0));
+        let shapes = run_frame(&ctx, Vec::new(), |ui| {
+            tray_icon(ui, at, receiving, sending);
+        });
+        let fills = |colour| {
+            shapes
+                .iter()
+                .filter(|s| matches!(s, Shape::Rect(r) if r.fill == colour))
+                .count()
+        };
+        (fills(SCREEN_LIT), fills(SCREEN_DARK))
     }
 
     #[test]
     fn the_tray_icon_lights_each_monitor_on_its_own() {
+        assert_eq!(lit_screens(false, false), (0, 2));
+        assert_eq!(lit_screens(true, false), (1, 1));
+        assert_eq!(lit_screens(false, true), (1, 1));
+        assert_eq!(lit_screens(true, true), (2, 0));
+    }
+
+    #[test]
+    fn the_window_opens_tall_enough_for_the_performance_tab_without_a_scrollbar() {
+        let monitor = filled();
+        let mut manager = TaskManager::default();
+        manager.tab = 1;
         let ctx = egui::Context::default();
-        crate::testkit::run(&ctx, Vec::new(), |ui| {
-            let at = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::splat(16.0));
-            for (rx, tx) in [(false, false), (true, false), (false, true), (true, true)] {
-                tray_icon(ui, at, rx, tx);
-            }
-        });
+        let mut used = 0.0;
+        for _ in 0..3 {
+            run_frame(&ctx, Vec::new(), |ui| {
+                manager.show(ui, &monitor, true);
+                used = ui.min_rect().height();
+            });
+        }
+        // the title bar, the gaps and the frame around the contents
+        const CHROME: f32 = 56.0;
+        let (_, height) = lanlord_app::desktop::Target::TaskManager.size();
+        assert!(used + CHROME <= height, "{used} + {CHROME} > {height}");
     }
 }

@@ -44,12 +44,30 @@ impl Backend {
 
 enum Msg {
     Sample(Result<Box<Sample>, String>),
+    /// the server turned a request down for want of a login.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    SignedOut,
     Ended(u32, Result<(), String>),
 }
 
 /// the seconds between samples while a window shows them, and while only the tray does.
 pub const FAST: f64 = 1.0;
-pub const SLOW: f64 = 2.0;
+/// slower in the browser, where every sample is a request to the gateway.
+pub const SLOW: f64 = if cfg!(target_arch = "wasm32") {
+    5.0
+} else {
+    2.0
+};
+
+/// how often to sample, and whether to ask for the process list: only a visible Task Manager
+/// needs the list and the quick pace, the tray alone takes the slow one.
+pub fn cadence(task_manager_shown: bool) -> (f64, bool) {
+    if task_manager_shown {
+        (FAST, true)
+    } else {
+        (SLOW, false)
+    }
+}
 
 pub struct Monitor {
     backend: Backend,
@@ -62,6 +80,7 @@ pub struct Monitor {
     rx: Receiver<Msg>,
     asked: bool,
     next_at: f64,
+    signed_out: bool,
 }
 
 impl Default for Monitor {
@@ -76,6 +95,7 @@ impl Default for Monitor {
             rx,
             asked: false,
             next_at: 0.0,
+            signed_out: false,
         }
     }
 }
@@ -101,6 +121,21 @@ impl Monitor {
         };
         self.backend = backend;
         self.next_at = 0.0;
+        // a fresh channel: replies still on their way from the old backend find no receiver
+        let (tx, rx) = channel();
+        (self.tx, self.rx) = (tx, rx);
+        self.asked = false;
+    }
+
+    /// did the server say the session is over? the desktop then returns to the logon box.
+    pub fn signed_out(&self) -> bool {
+        self.signed_out
+    }
+
+    /// the logon box is showing: forget the answer.
+    pub fn clear_signed_out(&mut self) {
+        self.signed_out = false;
+        self.asked = false;
     }
 
     /// is there a host being read?
@@ -137,6 +172,7 @@ impl Monitor {
                     self.next_at = 0.0;
                 }
                 Msg::Ended(_, Err(why)) => self.note = Some((true, why)),
+                Msg::SignedOut => self.signed_out = true,
             }
         }
         changed
@@ -154,10 +190,8 @@ impl Monitor {
         #[cfg(target_arch = "wasm32")]
         if matches!(backend, Backend::Web) {
             wasm_bindgen_futures::spawn_local(async move {
-                let result = crate::gateway::http::monitor_sample(procs)
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = tx.send(Msg::Sample(result.map(Box::new)));
+                let result = crate::gateway::http::monitor_sample(procs).await;
+                let _ = tx.send(sample_msg(result));
                 wake.wake();
             });
             return;
@@ -177,10 +211,8 @@ impl Monitor {
         #[cfg(target_arch = "wasm32")]
         if matches!(backend, Backend::Web) {
             wasm_bindgen_futures::spawn_local(async move {
-                let result = crate::gateway::http::monitor_end(pid)
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = tx.send(Msg::Ended(pid, result));
+                let result = crate::gateway::http::monitor_end(pid).await;
+                let _ = tx.send(ended_msg(pid, result));
                 wake.wake();
             });
             return;
@@ -190,6 +222,23 @@ impl Monitor {
             let _ = tx.send(Msg::Ended(pid, result));
             wake.wake();
         });
+    }
+}
+
+/// what a sample's answer from the server means: the person is signed out, or a sample or error.
+#[cfg(target_arch = "wasm32")]
+fn sample_msg(result: anyhow::Result<Sample>) -> Msg {
+    match result {
+        Err(e) if e.is::<crate::gateway::round_trip::SessionEnded>() => Msg::SignedOut,
+        other => Msg::Sample(other.map(Box::new).map_err(|e| e.to_string())),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ended_msg(pid: u32, result: anyhow::Result<()>) -> Msg {
+    match result {
+        Err(e) if e.is::<crate::gateway::round_trip::SessionEnded>() => Msg::SignedOut,
+        other => Msg::Ended(pid, other.map_err(|e| e.to_string())),
     }
 }
 
@@ -438,6 +487,77 @@ pub const ACTIVE: f64 = 1.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::demo_monitor::Synthetic;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// poll until something arrives, or fail after a few seconds.
+    fn wait(m: &mut Monitor) {
+        let start = Instant::now();
+        while !m.poll() {
+            assert!(start.elapsed() < Duration::from_secs(5), "no sample came");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn demo() -> Monitor {
+        let mut m = Monitor::default();
+        m.use_backend(Backend::Demo(Arc::new(Synthetic::default())));
+        m
+    }
+
+    #[test]
+    fn the_pace_and_the_process_list_follow_the_task_manager() {
+        assert_eq!(cadence(true), (FAST, true));
+        assert_eq!(cadence(false), (SLOW, false));
+    }
+
+    #[test]
+    fn a_sample_is_asked_for_only_when_due_and_none_is_on_its_way() {
+        let mut m = demo();
+        m.tick(10.0, 1.0, true, &Wake::none());
+        assert!(m.asked && m.next_at == 11.0);
+        // one is on its way: a later tick asks for nothing more
+        m.tick(12.0, 1.0, true, &Wake::none());
+        assert!(m.next_at == 11.0);
+        wait(&mut m);
+        assert!(m.history.procs.is_some(), "the list was asked for");
+        // not due yet
+        m.tick(10.5, 1.0, true, &Wake::none());
+        assert!(!m.asked);
+        std::thread::sleep(Duration::from_millis(5));
+        // due, without the list: the sample carries none
+        m.tick(11.0, 2.0, false, &Wake::none());
+        assert!(m.asked && m.next_at == 13.0);
+        wait(&mut m);
+        assert!(m.history.last.as_ref().is_some_and(|s| s.procs.is_empty()));
+    }
+
+    #[test]
+    fn a_reply_from_the_old_backend_is_dropped_after_a_switch() {
+        let mut m = demo();
+        m.tick(0.0, 1.0, false, &Wake::none());
+        assert!(m.asked);
+        m.use_backend(Backend::Off("elsewhere".into()));
+        assert!(!m.asked && m.history.last.is_none());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!m.poll(), "the old reply must not land");
+        assert!(m.history.last.is_none());
+        // and the new backend can be asked at once
+        m.use_backend(Backend::Demo(Arc::new(Synthetic::default())));
+        m.tick(0.0, 1.0, false, &Wake::none());
+        wait(&mut m);
+        assert!(m.history.last.is_some());
+    }
+
+    #[test]
+    fn a_signed_out_answer_is_kept_until_the_logon_box_clears_it() {
+        let mut m = demo();
+        m.tx.send(Msg::SignedOut).unwrap();
+        assert!(m.poll() && m.signed_out());
+        m.clear_signed_out();
+        assert!(!m.signed_out());
+    }
 
     fn row(pid: u32, name: &str, rss: u64) -> ProcessRow {
         ProcessRow {

@@ -457,8 +457,9 @@ impl Desktop {
             self.show_login(ui, &ctx);
             return;
         }
-        if self.web.is_some() && self.services.session_ended() {
+        if self.web.is_some() && (self.services.session_ended() || self.monitor.signed_out()) {
             // any call the server turned down for want of a login sends the person back to the box
+            self.monitor.clear_signed_out();
             self.return_to_web_login(Some("Your session ended. Log on again."), false);
             self.show_login(ui, &ctx);
             return;
@@ -1123,11 +1124,7 @@ impl Desktop {
             .windows
             .iter()
             .any(|w| w.target == Target::TaskManager && !w.minimized);
-        let (every, procs) = if shown {
-            (monitor::FAST, true)
-        } else {
-            (monitor::SLOW, false)
-        };
+        let (every, procs) = monitor::cadence(shown);
         let now = ctx.input(|i| i.time);
         self.monitor.tick(now, every, procs, &crate::wake(ctx));
     }

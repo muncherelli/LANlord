@@ -296,7 +296,8 @@ impl Sampler {
 /// end a process with SIGTERM through the `kill` program. the init process and this one are
 /// refused. the caller checks that whoever asked may.
 pub fn end_process(pid: u32) -> Result<()> {
-    if pid <= 1 || pid == std::process::id() {
+    // above i32::MAX a pid can reach kill as -1, which signals everything
+    if pid <= 1 || pid > i32::MAX as u32 || pid == std::process::id() {
         bail!("process {pid} cannot be ended from here");
     }
     let status = Command::new("kill")
@@ -314,6 +315,13 @@ pub fn end_process(pid: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pid_that_could_signal_everything_is_refused() {
+        for pid in [0, 1, std::process::id(), i32::MAX as u32 + 1, u32::MAX] {
+            assert!(end_process(pid).is_err(), "{pid}");
+        }
+    }
 
     const STAT: &str = "cpu  100 5 50 800 20 1 2 3 0 0\ncpu0 60 2 20 400 10 1 1 1 0 0\ncpu1 40 3 30 400 10 0 1 2 0 0\nintr 1\nctxt 5\n";
 

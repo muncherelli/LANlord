@@ -82,7 +82,7 @@ impl Target {
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
             Self::Welcome => (580.0, 380.0),
-            Self::TaskManager => (500.0, 440.0),
+            Self::TaskManager => (500.0, 490.0),
         }
     }
 }

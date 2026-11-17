@@ -11,7 +11,7 @@ use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use lanlord_core::monitor::{end_process, Sampler};
 
-use super::auth::{require, same_origin_json, Auth};
+use super::auth::{require, require_peek, same_origin_json, Auth};
 
 fn reply(status: StatusCode, body: String) -> Response {
     (
@@ -31,7 +31,8 @@ fn error(status: StatusCode, text: &str) -> Response {
 
 /// GET /api/monitor, or /api/monitor?procs=1 with the process list: one sample as json.
 pub async fn sample(State(auth): State<Arc<Auth>>, headers: HeaderMap, uri: Uri) -> Response {
-    if let Err(unauthorized) = require(&auth, &headers) {
+    // a poll the page makes on its own must not count as activity
+    if let Err(unauthorized) = require_peek(&auth, &headers) {
         return unauthorized;
     }
     let procs = uri
@@ -57,7 +58,9 @@ pub async fn sample(State(auth): State<Arc<Auth>>, headers: HeaderMap, uri: Uri)
 fn parse_end(body: &[u8]) -> Option<u32> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let object = value.as_object().filter(|o| o.len() == 1)?;
-    u32::try_from(object.get("pid")?.as_u64()?).ok()
+    let pid = u32::try_from(object.get("pid")?.as_u64()?).ok()?;
+    // 0 and anything above i32::MAX would reach kill as a process group or as -1
+    (1..=i32::MAX as u32).contains(&pid).then_some(pid)
 }
 
 /// POST /api/monitor/end {"pid":123}: end a process. administrators only, decided here.
@@ -99,11 +102,15 @@ mod tests {
     #[test]
     fn the_end_body_is_one_pid_and_nothing_else() {
         assert_eq!(parse_end(br#"{"pid":42}"#), Some(42));
+        assert_eq!(parse_end(br#"{"pid":2147483647}"#), Some(i32::MAX as u32));
         for bad in [
             &br#"{"pid":-1}"#[..],
             br#"{"pid":"4"}"#,
             br#"{"pid":4,"x":1}"#,
             br#"{"pid":99999999999}"#,
+            br#"{"pid":0}"#,
+            br#"{"pid":2147483648}"#,
+            br#"{"pid":4294967295}"#,
             b"[]",
             b"nope",
         ] {

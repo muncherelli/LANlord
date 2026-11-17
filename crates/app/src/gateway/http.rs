@@ -202,9 +202,7 @@ pub async fn monitor_sample(procs: bool) -> Result<lanlord_model::monitor::Sampl
         "/api/monitor"
     };
     let (status, text) = fetch("GET", url, None).await?;
-    if status != 200 {
-        return Err(anyhow!(error_text(status, &text)));
-    }
+    monitor_status(status, &text)?;
     Ok(serde_json::from_str(&text)?)
 }
 
@@ -212,10 +210,17 @@ pub async fn monitor_sample(procs: bool) -> Result<lanlord_model::monitor::Sampl
 pub async fn monitor_end(pid: u32) -> Result<()> {
     let body = Zeroizing::new(serde_json::json!({ "pid": pid }).to_string());
     let (status, text) = fetch("POST", "/api/monitor/end", Some(body)).await?;
-    if status != 200 {
-        return Err(anyhow!(error_text(status, &text)));
+    monitor_status(status, &text)
+}
+
+/// a monitor route answers 401 only for want of a login, so that is the session ending, the
+/// same as for an op: the desktop goes back to the logon box.
+fn monitor_status(status: u16, body: &str) -> Result<()> {
+    match status {
+        200 => Ok(()),
+        401 => Err(SessionEnded.into()),
+        _ => Err(anyhow!(error_text(status, body))),
     }
-    Ok(())
 }
 
 /// the server's `{"error":..}` text, or the status.
