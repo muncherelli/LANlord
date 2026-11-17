@@ -1,0 +1,34 @@
+# included by dns-network.yml (loop variable `net` is the network): write the files of one network's
+# dnsmasq, its configuration and its leases file. nothing here touches docker.
+- name: work out this network's names
+  ansible.builtin.set_fact:
+    dns_container: "lanlord-dns-{{ net.name }}"
+    dns_dir: "{{ state_root }}/{{ net.name }}"
+    # the interfaces of the other lanlord networks, where this dnsmasq must not serve dhcp
+    dns_others: "{{ lanlord_networks | rejectattr('name', 'equalto', net.name) | map(attribute='interface') | list }}"
+    dns_names: >-
+      {{ (['lanlord.' ~ net.zone, dns_host ~ '.' ~ net.zone]
+          + ([dns_nt4_name ~ '.' ~ net.zone] if dns_nt4_name != '' and dns_nt4_network == net.name else [])
+          + (dns_proxy_hosts | select('match', '^[a-z0-9.-]+\.' ~ net.zone ~ '$') | list)) | unique | list }}
+
+- name: make the folder
+  ansible.builtin.file:
+    path: "{{ dns_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: write the dnsmasq configuration
+  ansible.builtin.template:
+    src: dns/dnsmasq.conf.j2
+    dest: "{{ dns_dir }}/dnsmasq.conf"
+    mode: "0640"
+  register: dnsmasq_conf
+
+# dnsmasq writes the leases in place, so the file has to exist to be bind mounted
+- name: make sure the leases file exists
+  ansible.builtin.file:
+    path: "{{ dns_dir }}/dnsmasq.leases"
+    state: touch
+    mode: "0640"
+    modification_time: preserve
+    access_time: preserve

@@ -38,8 +38,9 @@
         wp: "{{ lookup('ansible.builtin.vars', 'web-proxy') }}"
       when: "lookup('ansible.builtin.varnames', '^web-proxy$', wantlist=True) | length > 0"
 
-    - name: work out the host and internal network interfaces
-      ansible.builtin.include_tasks: network.yml
+    # the status page is on the first lanlord network
+    - name: work out the host network and the first lanlord network
+      ansible.builtin.include_tasks: networks.yml
       when: wp is defined
 
     - name: work out the defaults
@@ -189,6 +190,7 @@
             content: |
               interface={{ internal_interface }}
               ip={{ internal_ip }}
+              leases={{ ('/opt/lanlord/dns/' ~ lanlord_networks[0].name ~ '/dnsmasq.leases') if lanlord_networks | length > 0 else '/opt/lanlord/dns/dnsmasq.leases' }}
               zone={{ status_zone }}
               host={{ status_host }}
               {% for site in proxy_sites %}

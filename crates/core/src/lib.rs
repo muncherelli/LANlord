@@ -11,6 +11,7 @@ pub mod crypto;
 pub mod env;
 pub mod exec;
 pub mod hosts;
+pub mod lan;
 pub mod leases;
 pub mod log;
 pub mod logon;
@@ -25,6 +26,8 @@ pub mod payload;
 pub mod power;
 pub mod prefs;
 pub mod purge;
+#[cfg(test)]
+mod render_tests;
 pub mod server;
 pub mod settings;
 pub mod signin;

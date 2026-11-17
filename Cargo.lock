@@ -2996,6 +2996,7 @@ dependencies = [
  "chrono",
  "getrandom 0.3.4",
  "lanlord-model",
+ "serde_json",
  "serde_yaml_ng",
  "tar",
  "zeroize",
