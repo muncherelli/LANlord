@@ -26,9 +26,10 @@
   become: true
   tags: [dns]
   vars:
-    image_repo: ghcr.io/muncherelli/lanlord/lanlord-server-component
-    image: "{{ image_repo }}:network-services"
     image_dir: /opt/lanlord/playbooks/dns/image
+    # the image is pinned to the X.Y.Z in its VERSION file, which ships with this playbook
+    image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
+    image: "ghcr.io/muncherelli/lanlord-network-services:{{ image_version }}"
     state_root: /opt/lanlord/dns
     label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
   tasks:
@@ -51,8 +52,8 @@
         mode: "0750"
       when: dns_networks | length > 0
 
-    # the image holds only dnsmasq; the configuration is mounted. pull first, which is how the
-    # rolling tag moves forward, and build the same Dockerfile here when it cannot be pulled
+    # the image holds only dnsmasq; the configuration is mounted. pull first, and build the same
+    # Dockerfile here when it cannot be pulled
     - name: pull the published image
       ansible.builtin.command:
         argv: [docker, pull, --quiet, "{{ image }}"]
@@ -63,7 +64,7 @@
 
     - name: build the image here when it could not be pulled
       ansible.builtin.command:
-        argv: [docker, build, --quiet, -t, "{{ image }}", "{{ image_dir }}"]
+        argv: [docker, build, --quiet, --build-arg, "IMAGE_VERSION={{ image_version }}", -t, "{{ image }}", "{{ image_dir }}"]
       changed_when: true
       when: dns_networks | length > 0 and image_pull.rc != 0
 

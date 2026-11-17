@@ -10,7 +10,6 @@
 #   netbios_name: LANLORD        # the server's name; default: this machine's hostname
 #   network: retronet            # which lanlord network it is on; default: the first (see networks.yml)
 #   address: 172.16.120.1/22     # default: that network's address
-#   samba_version: 4.22.11       # which samba to run (tag nt4-<version>, or a reissue like 4.22.11-r2); default: follow the rolling nt4 tag
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
 #   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
 #   software: false              # true adds a software share (S: at logon): domain users read it,
@@ -32,10 +31,10 @@
   tags: [nt4-domain]
   vars:
     # the image holds only samba; the scripts and config are mounted from here when it runs
-    image_repo: ghcr.io/muncherelli/lanlord/lanlord-server-component
-    samba_version: "{{ (lookup('ansible.builtin.vars', 'nt4-domain', default={})).samba_version | default('') }}"
-    image: "{{ image_repo }}:{{ ('nt4-' ~ samba_version) if samba_version | string | length > 0 else 'nt4' }}"
     image_dir: /opt/lanlord/playbooks/nt4-domain/image
+    # the image is pinned to the X.Y.Z in its VERSION file, which ships with this playbook
+    image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
+    image: "ghcr.io/muncherelli/lanlord-nt4-services:{{ image_version }}"
     container: lanlord-nt4
     state_dir: /opt/lanlord/nt4
   tasks:
@@ -63,7 +62,6 @@
       ansible.builtin.assert:
         that:
           - nt4_mode in ['domain', 'workgroup']
-          - samba_version | string is match('^([0-9]+(\\.[0-9]+)*(-r[0-9]+)?)?$')
           - nt4_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
           - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
           - nt4_address is match('^[0-9.]+/[0-9]{1,2}$')
@@ -72,7 +70,7 @@
         fail_msg: >-
           nt4-domain settings: mode must be domain or workgroup; name is the domain or workgroup
           (up to 15 letters, digits, - or _); address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
-          a domain needs an admin_password; samba_version looks like 4.22.11 or 4.22.11-r2
+          a domain needs an admin_password
       when: nt4 is defined
 
     - name: check that docker is installed
@@ -108,8 +106,8 @@
       register: smb_conf
       when: nt4 is defined
 
-    # the pull is how a rolling tag moves forward; when it cannot be pulled (offline, or the
-    # package is private) the same Dockerfile is built here, from the source tarball
+    # when the image cannot be pulled (offline, or the package is private) the same Dockerfile
+    # is built here, from the source tarball
     - name: pull the published image
       ansible.builtin.command:
         argv: [docker, pull, --quiet, "{{ image }}"]
@@ -120,10 +118,7 @@
 
     - name: build the image here when it could not be pulled
       ansible.builtin.command:
-        argv: >-
-          {{ ['docker', 'build', '--quiet', '-t', image]
-             + (['--build-arg', 'SAMBA_VERSION=' ~ (samba_version | string | regex_replace('-r[0-9]+$', ''))] if samba_version | string | length > 0 else [])
-             + [image_dir] }}
+        argv: [docker, build, --quiet, --build-arg, "IMAGE_VERSION={{ image_version }}", -t, "{{ image }}", "{{ image_dir }}"]
       changed_when: false
       when: nt4 is defined and image_pull.rc != 0
 

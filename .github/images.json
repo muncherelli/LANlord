@@ -1,0 +1,4 @@
+[
+  {"name": "nt4-services", "image": "lanlord-nt4-services", "dir": "ansible/playbooks/nt4-domain/image", "inputs": ["Dockerfile", "VERSION", "samba-pubkey.asc"]},
+  {"name": "network-services", "image": "lanlord-network-services", "dir": "ansible/playbooks/dns/image", "inputs": ["Dockerfile", "VERSION"]}
+]

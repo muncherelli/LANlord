@@ -20,9 +20,6 @@ pub struct Nt4Settings {
     /// a software share that maps to S: at logon.
     pub software: bool,
     pub machines: Vec<String>,
-    /// which samba image tag to run (`4.22.11`, or a reissue like `4.22.11-r2`); empty follows
-    /// the rolling `nt4` tag.
-    pub samba_version: String,
 }
 
 impl Default for Nt4Settings {
@@ -34,7 +31,6 @@ impl Default for Nt4Settings {
             roaming_profiles: false,
             software: false,
             machines: Vec::new(),
-            samba_version: String::new(),
         }
     }
 }
@@ -56,17 +52,6 @@ fn netbios_ok(name: &str) -> bool {
             .next()
             .is_some_and(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_' || c == '-')
-}
-
-/// `^[0-9]+(\.[0-9]+)*(-r[0-9]+)?$`, as the playbook checks `samba_version`; it ends up in
-/// image tags and docker commands, so nothing else is accepted.
-pub fn valid_samba_version(version: &str) -> bool {
-    let (numbers, revision) = match version.split_once("-r") {
-        Some((n, r)) => (n, Some(r)),
-        None => (version, None),
-    };
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    numbers.split('.').all(digits) && revision.is_none_or(digits)
 }
 
 /// `^[A-Za-z][A-Za-z0-9-]{0,14}$`
@@ -104,7 +89,6 @@ impl Nt4Settings {
             roaming_profiles: map.get("roaming_profiles").and_then(Value::as_bool) == Some(true),
             software: map.get("software").and_then(Value::as_bool) == Some(true),
             machines,
-            samba_version: text(map, "samba_version").unwrap_or_default(),
         })
     }
 
@@ -126,11 +110,6 @@ impl Nt4Settings {
         map.insert("software".into(), self.software.into());
         let machines = self.machines.iter().map(|m| m.as_str().into()).collect();
         map.insert("machines".into(), Value::Sequence(machines));
-        if self.samba_version.is_empty() {
-            map.remove("samba_version");
-        } else {
-            map.insert("samba_version".into(), self.samba_version.as_str().into());
-        }
         settings.set_section(SECTION, Value::Mapping(map));
     }
 
@@ -161,12 +140,6 @@ impl Nt4Settings {
                     "a letter, then up to 14 letters, digits or dashes",
                 );
             }
-        }
-        if !self.samba_version.is_empty() && !valid_samba_version(&self.samba_version) {
-            fail(
-                "nt4-domain.samba_version",
-                "digits and dots, optionally followed by -r and a number, like 4.22.11 or 4.22.11-r2",
-            );
         }
         if self.mode == "domain" && !admin_password_set {
             fail(
@@ -206,57 +179,4 @@ pub fn edit_machines(plain: &str, change: &MachineChange) -> Result<String> {
     }
     nt4.apply_to(&mut settings);
     Ok(settings.text())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn samba_versions_are_digits_dots_and_an_optional_reissue() {
-        for good in ["4", "4.22.11", "4.22.11-r2", "10.0-r12"] {
-            assert!(valid_samba_version(good), "{good}");
-        }
-        for bad in [
-            "",
-            "4.22.",
-            ".4",
-            "4..2",
-            "v4.22",
-            "4.22.11 -f /x",
-            "4.22.11-r",
-            "4.22.11-r2-r3",
-            "4.22.11\n",
-            "4.22.11;ls",
-            "latest",
-            "4.22-rc1",
-            "4.22.11-R2",
-        ] {
-            assert!(!valid_samba_version(bad), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn a_bad_samba_version_is_a_validation_error_and_a_good_one_round_trips() {
-        let mut nt4 = Nt4Settings {
-            samba_version: "4.22.11 -f /x".into(),
-            ..Nt4Settings::default()
-        };
-        let errors = nt4.validate(true);
-        assert!(errors.iter().any(|e| e.path == "nt4-domain.samba_version"));
-        nt4.samba_version = "4.22.11-r2".into();
-        assert!(nt4.validate(true).is_empty());
-        let mut settings = Settings::parse("nt4-domain:\n  mode: domain\n").unwrap();
-        nt4.apply_to(&mut settings);
-        assert_eq!(
-            Nt4Settings::from_settings(&settings).unwrap().samba_version,
-            "4.22.11-r2"
-        );
-        nt4.samba_version.clear();
-        nt4.apply_to(&mut settings);
-        assert!(settings
-            .section(SECTION)
-            .and_then(Value::as_mapping)
-            .is_some_and(|m| !m.contains_key("samba_version")));
-    }
 }

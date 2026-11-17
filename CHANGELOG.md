@@ -13,4 +13,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- NT4 domain and network services now run from published `lanlord-server-component` images (`nt4` with Samba built from source, `network-services` with dnsmasq). Pin a Samba version with `nt4-domain.samba_version`. The old `image` and `build_locally` settings are gone.
+- NT4 domain and network services now run from published `lanlord-nt4-services` (Samba built from source) and `lanlord-network-services` (dnsmasq) images, each versioned on its own (`X.Y.Z`, plus rolling `X.Y`, `X` and `latest`) and rebuilt only when it changes. The playbooks pin the image version they ship with. The old `image` and `build_locally` settings are gone.
