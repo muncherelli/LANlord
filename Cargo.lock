@@ -2979,20 +2979,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "lanlord-auth-helper"
-version = "0.1.0"
-dependencies = [
- "libc",
- "zeroize",
-]
-
-[[package]]
 name = "lanlord-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "lanlord-core",
  "lanlord-model",
+ "zeroize",
+]
+
+[[package]]
+name = "lanlord-auth-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "zeroize",
 ]
 
