@@ -121,7 +121,7 @@ jobs:
       - name: python tests
         run: |
           pip install coverage==7.6.10
-          python3 -m coverage run --branch -m unittest discover -s ansible/tests -t .
+          python3 -m coverage run --branch -m unittest discover -s ansible/tests
           python3 -m coverage xml -o coverage.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
