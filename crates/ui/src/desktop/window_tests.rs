@@ -837,3 +837,14 @@ fn no_welcome_topic_label_is_wider_than_its_button_and_no_paragraph_leaves_the_p
         }
     }
 }
+
+#[test]
+fn a_link_opens_the_changelog_the_welcome_and_the_start_menu() {
+    let (mut desktop, ctx, _fake) = desktop();
+    desktop.open_spec("changelog, welcome,menu,,developer");
+    frames(&mut desktop, &ctx, 2);
+    for target in [Target::Changelog, Target::Welcome] {
+        assert!(desktop.windows.iter().any(|w| w.target == target));
+    }
+    assert!(desktop.start_open && desktop.dev_open);
+}
