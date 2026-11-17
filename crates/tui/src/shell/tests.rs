@@ -592,6 +592,61 @@ fn the_wheel_does_nothing_behind_an_open_menu() {
 }
 
 #[test]
+fn the_wheel_does_nothing_behind_an_open_dialog() {
+    let mut shell = editable_clock();
+    let minute_up = up_arrow(&shell, 2);
+    let start = spin_text(&mut shell, minute_up);
+    let over = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .find(|r| r.part == Part::Spin(0) && r.rect.y == minute_up.y)
+        .map(|r| r.rect)
+        .expect("a spin box");
+    shell.do_action(Action::About);
+    assert!(shell.modal.is_some());
+    mouse(
+        &mut shell,
+        MouseEventKind::ScrollUp,
+        middle(over),
+        Instant::now(),
+    );
+    shell.modal = None;
+    let minute_up = up_arrow(&shell, 2);
+    assert_eq!(start, spin_text(&mut shell, minute_up));
+}
+
+#[test]
+fn f10_opens_no_menu_at_the_logon_box() {
+    let mut shell = shell_with(Fake::new());
+    shell.require_login(fake_auth());
+    frame(&mut shell);
+    key(&mut shell, KeyCode::F(10));
+    assert!(shell.menu.is_none());
+    assert!(shell.login.is_some());
+}
+
+#[test]
+fn f10_opens_no_menu_on_the_administrator_screen() {
+    let mut shell = shell_with(Fake::new());
+    let auth = fake_auth();
+    auth.push(Ok(id("root", 0)));
+    shell.require_login(auth.clone());
+    let login = shell.login.as_mut().unwrap();
+    login.user = "root".into();
+    login.host = "gateway".into();
+    login.submit();
+    let started = Instant::now();
+    while shell.signed_in.is_none() && started.elapsed() < Duration::from_secs(5) {
+        frame(&mut shell);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    frame(&mut shell);
+    assert!(shell.admin_setup.is_some());
+    key(&mut shell, KeyCode::F(10));
+    assert!(shell.menu.is_none());
+}
+
+#[test]
 fn the_wheel_and_arrow_keys_step_a_spin_box() {
     let mut shell = editable_clock();
     let minute_up = up_arrow(&shell, 2);
