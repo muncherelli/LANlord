@@ -602,8 +602,10 @@ mod tests {
         let pid = monitor.history.procs.as_ref().unwrap().procs[1].pid;
         for admin in [true, false] {
             let ctx = egui::Context::default();
-            let mut manager = TaskManager::default();
-            manager.selected = Some(pid);
+            let mut manager = TaskManager {
+                selected: Some(pid),
+                ..Default::default()
+            };
             for _ in 0..2 {
                 step(&ctx, &mut manager, &monitor, admin, Vec::new());
             }
@@ -623,8 +625,10 @@ mod tests {
         }
         // confirmed: End(pid) comes back
         let ctx = egui::Context::default();
-        let mut manager = TaskManager::default();
-        manager.selected = Some(pid);
+        let mut manager = TaskManager {
+            selected: Some(pid),
+            ..Default::default()
+        };
         for _ in 0..2 {
             step(&ctx, &mut manager, &monitor, true, Vec::new());
         }
@@ -663,8 +667,10 @@ mod tests {
     #[test]
     fn the_window_opens_tall_enough_for_the_performance_tab_without_a_scrollbar() {
         let monitor = filled();
-        let mut manager = TaskManager::default();
-        manager.tab = 1;
+        let mut manager = TaskManager {
+            tab: 1,
+            ..Default::default()
+        };
         let ctx = egui::Context::default();
         let mut used = 0.0;
         for _ in 0..3 {
