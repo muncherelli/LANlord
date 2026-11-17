@@ -118,6 +118,11 @@ jobs:
         run: cargo llvm-cov --workspace --features lanlord/webui --locked --lcov --output-path lcov.info
       - name: coverage summary
         run: cargo llvm-cov report --summary-only
+      - name: python tests with coverage
+        run: |
+          python3 -m pip install coverage
+          python3 -m coverage run --source=ansible -m unittest discover -s ansible/tests
+          python3 -m coverage xml -o coverage.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lcov
@@ -129,6 +134,7 @@ jobs:
           # wait for sonarcloud to finish so the gate and the issue check below see this analysis
           args: >
             -Dsonar.rust.lcov.reportPaths=${{ github.workspace }}/lcov.info
+            -Dsonar.python.coverage.reportPaths=${{ github.workspace }}/coverage.xml
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
       - name: no new sonarcloud issues
