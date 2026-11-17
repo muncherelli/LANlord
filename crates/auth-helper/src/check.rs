@@ -14,7 +14,7 @@ pub const ADMINS_GID: u32 = 9998;
 /// its name, for the journal.
 pub const ADMINS_GROUP: &str = "admins";
 
-/// every answer but `ok` takes this long (plus up to `JITTER`), counted from when the helper
+/// every answer but `ok` and `ok user` takes this long (plus up to `JITTER`), counted from when the helper
 /// started. it is the only delay: libpam's own failure delay is switched off, because it only
 /// applies to a wrong password and would tell that apart from a right password for an account
 /// that may not log in or is not an admin.
@@ -85,10 +85,11 @@ pub fn caller(args: &[String]) -> Result<Option<String>, &'static str> {
     }
 }
 
-/// whether a uid belongs to a person: below 1000 are system accounts (root among them) and 9000
-/// and up is lanlord's own range (its service accounts, such as the web ui's).
+/// whether a uid is no person's: below 1000 are system accounts (root among them), 9000-9999 is
+/// lanlord's own range (its service accounts, such as the web ui's at 9999) and 65534 is nobody.
+/// lanlord's people live from 10000 up, other accounts from 1000.
 pub fn reserved_uid(uid: u32) -> bool {
-    !(1000..9000).contains(&uid)
+    uid < 1000 || (9000..=9999).contains(&uid) || uid == 65534
 }
 
 /// pam first, always, so an unknown user costs the same as a known one; the group only after
@@ -206,9 +207,9 @@ pub fn answer(
 }
 
 /// how much longer to wait before answering `verdict`, `elapsed` after the helper started, with
-/// `jitter` (at most `JITTER`) added to every answer but `ok`.
+/// `jitter` (at most `JITTER`) added to every answer but a success.
 pub fn padding(verdict: Verdict, elapsed: Duration, jitter: Duration) -> Duration {
-    if verdict == Verdict::Ok {
+    if matches!(verdict, Verdict::Ok | Verdict::User) {
         Duration::ZERO
     } else {
         (FAIL_DELAY + jitter.min(JITTER)).saturating_sub(elapsed)
@@ -282,7 +283,7 @@ mod tests {
         fn uid_of(&self, user: &str) -> Result<Option<u32>, &'static str> {
             match user {
                 "lanlord" => self.lanlord,
-                "alice" => Ok(Some(1500)),
+                "alice" => Ok(Some(10000)),
                 "root" => Ok(Some(0)),
                 _ => Ok(None),
             }
@@ -342,7 +343,7 @@ mod tests {
         for uid in [0, 1, 999, 9000, 9999, 65534] {
             assert!(reserved_uid(uid), "{uid}");
         }
-        for uid in [1000, 1500, 8999] {
+        for uid in [1000, 1500, 8999, 10000, 20000] {
             assert!(!reserved_uid(uid), "{uid}");
         }
     }
@@ -559,6 +560,7 @@ mod tests {
             "{waits:?}"
         );
         assert_eq!(padding(Verdict::Ok, elapsed, jitter), Duration::ZERO);
+        assert_eq!(padding(Verdict::User, elapsed, jitter), Duration::ZERO);
     }
 
     #[test]
