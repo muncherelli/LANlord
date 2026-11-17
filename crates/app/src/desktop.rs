@@ -19,6 +19,8 @@ pub enum Target {
     Components,
     /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
     Welcome,
+    /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
+    TaskManager,
 }
 
 impl Target {
@@ -34,6 +36,7 @@ impl Target {
             Self::DateTime => "datetime",
             Self::Components => "components",
             Self::Welcome => "welcome",
+            Self::TaskManager => "taskmgr",
         }
     }
 
@@ -48,14 +51,18 @@ impl Target {
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
+            Self::TaskManager => "Task Manager",
         }
     }
 
     /// the window changes things on the server (settings, components, networks, users, the
     /// clock, commands), so only an administrator may open it. My Server stays open to anyone:
-    /// it reads, and its purge is switched off for the rest.
+    /// it reads, and its purge is switched off for the rest. the Task Manager is open to anyone too; ending a process is the part that needs an admin.
     pub fn needs_admin(self) -> bool {
-        !matches!(self, Self::MyServer | Self::Hosts | Self::Welcome)
+        !matches!(
+            self,
+            Self::MyServer | Self::Hosts | Self::Welcome | Self::TaskManager
+        )
     }
 
     /// how big the window opens, in layout units, before it is cut down to fit the desktop.
@@ -75,6 +82,7 @@ impl Target {
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
             Self::Welcome => (580.0, 380.0),
+            Self::TaskManager => (500.0, 440.0),
         }
     }
 }

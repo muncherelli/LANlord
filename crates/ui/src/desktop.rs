@@ -40,6 +40,7 @@ use lanlord_app::desktop::Target;
 use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::login::WebSession;
+use lanlord_app::monitor::{self, Backend, Monitor};
 use lanlord_app::services::Services;
 use lanlord_app::tasks::PasswordRequest;
 use lanlord_app::welcome::Welcome;
@@ -79,6 +80,11 @@ pub struct Desktop {
     /// the components wizard, and which components the server has switched on.
     components: Components,
     welcome: Welcome,
+    /// the host's live numbers, read all the time for the tray icon, and the Task Manager window.
+    monitor: Monitor,
+    task_manager: crate::task_manager::TaskManager,
+    /// made-up numbers for the demo desktop, instead of a host's.
+    synthetic: Option<std::sync::Arc<lanlord_app::demo_monitor::Synthetic>>,
     /// tests pin the switched-on components here instead of reading them from the server.
     #[cfg(test)]
     pinned: Option<lanlord_app::components::Selection>,
@@ -160,6 +166,9 @@ impl Desktop {
             networks: Networks::default(),
             components: Components::default(),
             welcome: Welcome::new(None),
+            monitor: Monitor::default(),
+            task_manager: crate::task_manager::TaskManager::default(),
+            synthetic: None,
             #[cfg(test)]
             pinned: None,
             open_next: None,
@@ -209,6 +218,7 @@ impl Desktop {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn mark_demo(&mut self) {
         self.demo = true;
+        self.synthetic = Some(Default::default());
     }
 
     /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
@@ -217,6 +227,7 @@ impl Desktop {
     pub fn use_demo_server(&mut self) {
         self.hosts = HostList::new(None);
         let _ = self.hosts.add("demo@gateway");
+        self.synthetic = Some(Default::default());
     }
 
     /// the logon box for `host`, signing in at once with whatever the agent offers.
@@ -279,6 +290,8 @@ impl Desktop {
         self.networks = Networks::default();
         self.components = Components::default();
         self.clock.reset();
+        self.monitor = Monitor::default();
+        self.task_manager = crate::task_manager::TaskManager::default();
     }
 
     fn open(&mut self, target: Target) {
@@ -361,6 +374,9 @@ impl Desktop {
                 self.open(Target::Components);
             } else if id == "welcome" {
                 self.open(Target::Welcome);
+            } else if id == "taskmgr" {
+                self.open(Target::TaskManager);
+                self.task_manager.tab = tab.parse().unwrap_or(0).min(2);
             } else if let Some(target) = self
                 .icons
                 .iter()
@@ -452,6 +468,7 @@ impl Desktop {
             return;
         }
         self.sync_components();
+        self.monitor_tick(&ctx);
         egui::Panel::bottom("taskbar")
             .exact_size(TASKBAR)
             .frame(
@@ -976,10 +993,12 @@ impl Desktop {
                 // text is flat inside it
                 let shield = self.update_shield();
                 let warn = !self.compat_problems().is_empty();
+                let net = self.monitor.now().is_some();
                 let width = 6.0
                     + CLOCK
                     + if shield { TRAY_ICON } else { 0.0 }
-                    + if warn { TRAY_ICON } else { 0.0 };
+                    + if warn { TRAY_ICON } else { 0.0 }
+                    + if net { TRAY_ICON } else { 0.0 };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
                 let clock_at = Rect::from_min_size(
@@ -1026,6 +1045,27 @@ impl Desktop {
                         self.show_compat_tab();
                     }
                 }
+                if net {
+                    // leftmost in the tray, so the icons that come and go do not move it around
+                    let shift = (u8::from(warn) + u8::from(shield)) as f32 * TRAY_ICON;
+                    let icon_at = Rect::from_min_size(
+                        Pos2::new(clock_at.left() - TRAY_ICON - shift, tray.top()),
+                        Vec2::splat(TRAY_ICON),
+                    );
+                    let rates = self.monitor.now();
+                    let (rx, tx) = rates.map_or((false, false), |r| {
+                        (
+                            r.rx_total() > monitor::ACTIVE,
+                            r.tx_total() > monitor::ACTIVE,
+                        )
+                    });
+                    let response = crate::task_manager::tray_icon(ui, icon_at, rx, tx)
+                        .on_hover_text(monitor::tooltip(rates));
+                    if response.double_clicked() {
+                        self.open(Target::TaskManager);
+                        self.task_manager.tab = crate::task_manager::NETWORKING;
+                    }
+                }
                 if shield {
                     let shift = if warn { TRAY_ICON } else { 0.0 };
                     let icon_at = Rect::from_min_size(
@@ -1048,6 +1088,48 @@ impl Desktop {
                 }
             });
         });
+    }
+}
+
+// the live numbers behind the tray icon and the Task Manager
+impl Desktop {
+    /// where this desktop's numbers come from.
+    fn monitor_backend(&self) -> Backend {
+        if let Some(demo) = &self.synthetic {
+            return Backend::Demo(demo.clone());
+        }
+        #[cfg(target_arch = "wasm32")]
+        return Backend::Web;
+        #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+        if self.services.is_local() {
+            return Backend::Local;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Backend::Off(
+            "Monitoring another server needs the bridge connection, which is not available yet."
+                .into(),
+        )
+    }
+
+    /// take in what the background read brought and ask for the next sample: every second while
+    /// the Task Manager is showing, every other second for the tray alone.
+    fn monitor_tick(&mut self, ctx: &egui::Context) {
+        let backend = self.monitor_backend();
+        self.monitor.use_backend(backend);
+        if self.monitor.poll() {
+            ctx.request_repaint();
+        }
+        let shown = self
+            .windows
+            .iter()
+            .any(|w| w.target == Target::TaskManager && !w.minimized);
+        let (every, procs) = if shown {
+            (monitor::FAST, true)
+        } else {
+            (monitor::SLOW, false)
+        };
+        let now = ctx.input(|i| i.time);
+        self.monitor.tick(now, every, procs, &crate::wake(ctx));
     }
 }
 
@@ -1176,6 +1258,17 @@ impl Desktop {
                 let host = self.host();
                 if self.clock.show(ui, &self.services, host.as_deref()) {
                     self.close_requests.push(Target::DateTime);
+                }
+            }
+            Target::TaskManager => {
+                let admin = self.is_admin();
+                if let Some(crate::task_manager::Ask::End(pid)) =
+                    self.task_manager.show(ui, &self.monitor, admin)
+                {
+                    // the server checks again; this only keeps a non-admin from asking
+                    if admin {
+                        self.monitor.end(pid, &crate::wake(ui.ctx()));
+                    }
                 }
             }
             Target::Welcome => {

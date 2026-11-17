@@ -676,6 +676,51 @@ mod tests {
         send(rig, builder.body(Body::from("{}")).unwrap()).await.0
     }
 
+    async fn get_monitor(rig: &Rig, cookie: Option<&str>) -> StatusCode {
+        let mut builder = Request::builder().uri("/api/monitor");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        send(rig, builder.body(Body::empty()).unwrap()).await.0
+    }
+
+    async fn post_end(rig: &Rig, cookie: &str, body: &str) -> StatusCode {
+        let request = page("POST", "/api/monitor/end", body)
+            .header(header::COOKIE, cookie)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        send(rig, request).await.0
+    }
+
+    #[test]
+    fn any_signed_in_user_may_watch_but_only_an_admin_may_end_a_process() {
+        runtime().block_on(async {
+            let rig = rig();
+            assert_eq!(get_monitor(&rig, None).await, StatusCode::UNAUTHORIZED);
+            let user = session_for(&rig, "carol").await;
+            let admin = session_for(&rig, "admin").await;
+            for cookie in [&user, &admin] {
+                let status = get_monitor(&rig, Some(cookie)).await;
+                // a host without /proc says so; one with it answers
+                assert!(
+                    status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+                    "{status}"
+                );
+            }
+            // refused for an ordinary user before the pid is even read
+            assert_eq!(
+                post_end(&rig, &user, r#"{"pid":1}"#).await,
+                StatusCode::FORBIDDEN
+            );
+            // an admin gets past the check; the init process is refused by the sampler
+            assert_eq!(
+                post_end(&rig, &admin, r#"{"pid":1}"#).await,
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(post_end(&rig, &admin, "[]").await, StatusCode::BAD_REQUEST);
+        });
+    }
+
     #[test]
     fn a_login_sets_a_locked_down_cookie() {
         runtime().block_on(async {
