@@ -118,6 +118,8 @@ case "$(get sudo)" in
     ;;
 esac
 sock=$(get socket)
+# the installed unit gives the socket relative to its working directory, which is /
+case "$sock" in /* | "") ;; *) sock="/$sock" ;; esac
 case "$sock" in /*[!A-Za-z0-9._/-]* | "") echo "the service reports an odd socket path: $sock" >&2; exit 1 ;; esac
 
 if [ "$rollback" = 1 ]; then
