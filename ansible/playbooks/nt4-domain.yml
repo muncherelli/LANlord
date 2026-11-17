@@ -176,6 +176,15 @@
               -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
               {{ image }}
 
+    # the content-hash tags of earlier versions, once nothing runs them
+    - name: remove the old hash-tagged images
+      ansible.builtin.shell: |
+        for img in $(docker image ls --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}' | grep -E '/lanlord-samba-nt4:|^lanlord-samba-nt4:'); do
+          docker ps -a --filter "ancestor=$img" -q | grep -q . || docker image rm "$img" >/dev/null 2>&1 || true
+        done
+      changed_when: false
+      when: nt4 is defined
+
     - name: wait for samba to answer
       ansible.builtin.command: "docker exec {{ container }} smbcontrol smbd ping"
       register: samba_ping

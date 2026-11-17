@@ -82,6 +82,15 @@
         loop_var: net
         label: "{{ net.name }}"
 
+    # the earlier locally built, hash-tagged image, once nothing runs it
+    - name: remove the old hash-tagged image
+      ansible.builtin.shell: |
+        for img in $(docker image ls --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}' | grep '^lanlord-dns:'); do
+          docker ps -a --filter "ancestor=$img" -q | grep -q . || docker image rm "$img" >/dev/null 2>&1 || true
+        done
+      changed_when: false
+      when: dns_networks | length > 0
+
     - name: remove the dnsmasq of networks that are gone
       ansible.builtin.include_tasks: dns-cleanup.yml
       when: networks is defined
