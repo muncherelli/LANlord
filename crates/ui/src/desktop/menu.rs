@@ -364,11 +364,10 @@ impl Desktop {
         } else {
             Vec2::ZERO
         };
-        icons::draw(
+        icons::draw_small(
             ui.painter(),
             rect.left_top() + Vec2::new(5.0, 3.0) + nudge,
-            icons::small("lanlord"),
-            1.0,
+            "lanlord",
         );
         ui.painter().text(
             rect.left_center() + Vec2::new(26.0, 0.0) + nudge,
