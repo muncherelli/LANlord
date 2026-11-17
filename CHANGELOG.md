@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The administrators group is renamed `admins`, one group for the gateway and the domain (#49)
-- NT4 domain and network services now run from published `lanlord-nt4-server-components` (Samba built from source) and `lanlord-network-server-components` (dnsmasq) images, tagged with the LANlord version (`X.Y.Z`, plus rolling `X.Y`, `X` and `latest`), published from trunk during development and frozen at release. The playbooks pin the version their build was made for. The old `image` and `build_locally` settings are gone.
+- NT4 domain and network services now run from published `lanlord-nt4-server-components` (Samba built from source) and `lanlord-network-server-components` (dnsmasq) images, tagged with the LANlord version (`X.Y.Z`; the rolling `X.Y`, `X` and `latest` move on releases), published from trunk during development and frozen at release. The playbooks pin the version their build was made for. The old `image` and `build_locally` settings are gone.
 
 ### Fixed
 

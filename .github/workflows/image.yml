@@ -23,7 +23,13 @@ name: image
 #   older version's manifest is retagged (no rebuild, the image files did not change in the cycle),
 #   or the image is built from the sources at the tag when there is no older version.
 # - a pull request that touches image files builds those images for amd64 and arm64 without pushing.
-# - the rolling X.Y, X and latest tags move to a version only when it is the newest in their range.
+# - every image records the commit it was built from (org.opencontainers.image.revision). a tag counts
+#   as published only when its image has that label and a version label equal to the tag (an image
+#   of the old per-image version scheme does not, so it is overwritten). a release keeps an existing
+#   X.Y.Z, or retags an older version, only when the image inputs are the same at that revision and at
+#   the release tag; otherwise it builds from the tag.
+# - the rolling X.Y, X and latest tags move only on a release, and only to a version that is the newest
+#   in their range. development builds publish just their exact X.Y.Z, which is what the playbooks pin.
 #   publishing only happens from trunk's copy of this workflow; forks never publish.
 # each architecture is built natively (amd64 and arm64 runners, no qemu) and the two are merged
 # into one multi-arch tag.
@@ -76,6 +82,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - id: read
         env:
           EVENT: ${{ github.event_name }}
@@ -109,20 +121,17 @@ jobs:
           if [ -n "$base" ] && ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
           changed=""
           [ -n "$base" ] && changed=$(git diff --name-only "$base" HEAD)
-          # the tags of a package; a 404 means the package does not exist yet. any other error
-          # (auth, registry) fails the job
-          tags_of() {
-            if out=$(gh api --paginate "/users/muncherelli/packages/container/$1/versions" -q '.[].metadata.container.tags[]' 2>&1); then
-              printf '%s\n' "$out"
-            elif ! grep -q 'HTTP 404' <<<"$out"; then
-              echo "$out" >&2; return 1
-            fi
+          # true when the image inputs are the same in commit $2 and the release tag of $1
+          unchanged() {
+            git cat-file -e "$2^{commit}" 2>/dev/null || return 1
+            git diff --quiet "$2" "v$version" -- $(jq -r --arg d "$(jq -r .dir <<<"$1")" '.inputs[] | $d + "/" + .' <<<"$1")
           }
           include='[]'
+          own=""
           if [ -n "$version" ]; then
             while read -r entry; do
               name=$(jq -r .name <<<"$entry"); dir=$(jq -r .dir <<<"$entry"); image=$(jq -r .image <<<"$entry")
-              action=build; from=""
+              action=build; from=""; own=""
               if [ "$mode" = release ] || [ "$EVENT" = workflow_dispatch ]; then
                 [ "$PICK" = all ] || [ "$PICK" = "$name" ] || continue
               else
@@ -134,19 +143,27 @@ jobs:
                     if grep -qxF "$dir/$f" <<<"$changed"; then hit=1; fi
                   done
                 fi
+                [ "$hit" = 1 ] || [ "$mode" = pr ] || own=$(tools/ghcr-own-versions.sh "$image")
                 # a push also catches up an image whose version was never published (an earlier run may
                 # have been cancelled)
-                if [ "$hit" = 0 ] && [ "$mode" = dev ] && ! grep -qxF "$version" <<<"$(tags_of "$image")"; then hit=1; fi
+                if [ "$hit" = 0 ] && [ "$mode" = dev ] && ! grep -q "^$version " <<<"$own"; then hit=1; fi
                 [ "$hit" = 1 ] || continue
               fi
+              revision=$(git rev-parse HEAD)
               if [ "$mode" = release ]; then
-                tags=$(tags_of "$image")
-                if grep -qxF "$version" <<<"$tags"; then echo "$image:$version is already published; skipping $name"; continue; fi
-                # nothing changed in the image since the newest older version: retag it, no rebuild
-                from=$(printf '%s\n' "$version" $(grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" || true) | sort -uV | sed "/^$version\$/,\$d" | tail -n1)
-                [ -z "$from" ] || action=retag
+                own=$(tools/ghcr-own-versions.sh "$image")
+                revision=$(git rev-list -n1 "v$version")
+                have=$(sed -n "s/^$version //p" <<<"$own")
+                if [ -n "$have" ] && unchanged "$entry" "$have"; then echo "$image:$version is already published; skipping $name"; continue; fi
+                # an older version whose image inputs equal the tag's is retagged, no rebuild; any change
+                # since (or an unknown revision) builds from the tag
+                from=$(printf '%s\n' "$version" $(cut -d' ' -f1 <<<"$own") | sort -uV | sed "/^$version\$/,\$d" | tail -n1)
+                if [ -n "$from" ]; then
+                  frev=$(sed -n "s/^$from //p" <<<"$own")
+                  if unchanged "$entry" "$frev"; then action=retag; revision=$frev; else from=""; fi
+                fi
               fi
-              include=$(jq -c --arg v "$version" --arg m "$mode" --arg a "$action" --arg f "$from" --argjson e "$entry" '. + [$e + {version: $v, mode: $m, action: $a, from: $f}]' <<<"$include")
+              include=$(jq -c --arg v "$version" --arg m "$mode" --arg a "$action" --arg f "$from" --arg r "$revision" --argjson e "$entry" '. + [$e + {version: $v, mode: $m, action: $a, from: $f, revision: $r}]' <<<"$include")
             done < <(jq -c '.[]' .github/images.json)
           fi
           # one job per image and architecture, each on a native runner; only builds need them
@@ -175,7 +192,9 @@ jobs:
           context: ${{ matrix.dir }}
           platforms: ${{ matrix.platform }}
           push: false
-          build-args: IMAGE_VERSION=${{ matrix.version }}
+          build-args: |
+            IMAGE_VERSION=${{ matrix.version }}
+            IMAGE_REVISION=${{ matrix.revision }}
 
   # one job per image and architecture that needs a build
   publish:
@@ -207,7 +226,9 @@ jobs:
         with:
           context: ${{ matrix.dir }}
           platforms: ${{ matrix.platform }}
-          build-args: IMAGE_VERSION=${{ matrix.version }}
+          build-args: |
+            IMAGE_VERSION=${{ matrix.version }}
+            IMAGE_REVISION=${{ matrix.revision }}
           outputs: type=image,name=${{ env.REPO }},push-by-digest=true,name-canonical=true,push=true
       - name: keep the digest
         env:
@@ -233,6 +254,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # one tagging at a time per image, whatever triggered it, so a dev and a release run cannot move
+    # latest backwards (a run that waits is replaced by a newer waiting one)
+    concurrency:
+      group: image-merge-${{ matrix.image }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.versions.outputs.images) }}
@@ -242,9 +268,12 @@ jobs:
       MODE: ${{ matrix.mode }}
       ACTION: ${{ matrix.action }}
       FROM: ${{ matrix.from }}
+      REVISION: ${{ matrix.revision }}
       IMAGE: ${{ matrix.image }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # only for tools/ghcr-own-versions.sh
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -265,28 +294,30 @@ jobs:
             # both architectures must have been built
             [ -d /tmp/digests ] && [ "$(ls /tmp/digests | wc -l)" = 2 ] || { echo "$IMAGE is missing a built architecture; nothing was tagged" >&2; exit 1; }
           fi
-          # look at the tags again right before tagging
-          if out=$(gh api --paginate "/users/muncherelli/packages/container/$IMAGE/versions" -q '.[].metadata.container.tags[]' 2>&1); then
-            tags="$out"
-          elif grep -q 'HTTP 404' <<<"$out"; then
-            tags=""
-          else
-            echo "$out" >&2; exit 1
-          fi
+          # look at the versions again right before tagging
+          own=$(tools/ghcr-own-versions.sh "$IMAGE")
           if [ "$MODE" = release ]; then
-            # a released X.Y.Z is never overwritten
-            if grep -qxF "$VERSION" <<<"$tags"; then echo "$REPO:$VERSION appeared meanwhile; leaving it alone"; exit 0; fi
-          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" >/dev/null 2>&1; then
-            # a development version may be overwritten until its release exists
-            echo "v$VERSION was released meanwhile; leaving $REPO:$VERSION alone"; exit 0
+            # the same content was published meanwhile (a repeated or concurrent run): leave it alone
+            if [ "$(sed -n "s/^$VERSION //p" <<<"$own")" = "$REVISION" ]; then echo "$REPO:$VERSION appeared meanwhile; leaving it alone"; exit 0; fi
+          else
+            # a development version may be overwritten until its release exists. only 404 means it does not
+            if out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" 2>&1); then
+              echo "v$VERSION was released meanwhile; leaving $REPO:$VERSION alone"; exit 0
+            elif ! grep -q 'HTTP 404' <<<"$out"; then
+              echo "$out" >&2; exit 1
+            fi
           fi
-          minor=${VERSION%.*}; major=${VERSION%%.*}
-          # a rolling tag only moves to this version when nothing newer exists in its range
-          newest() { local pattern=$1; printf '%s\n' "$VERSION" $(grep -E "$pattern" <<<"$tags" || true) | sort -V | tail -n1; }
+          # the rolling tags only move on a release, and only when nothing newer exists in their range
+          # (old-scheme tags that are not ours do not count). development builds get just their X.Y.Z
           args=""
-          [ "$(newest '^[0-9]+\.[0-9]+\.[0-9]+$')" = "$VERSION" ] && args="$args -t $REPO:latest"
-          [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
-          [ "$(newest "^$major\\.${minor#*.}\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$minor"
+          if [ "$MODE" = release ]; then
+            minor=${VERSION%.*}; major=${VERSION%%.*}
+            tags=$(cut -d' ' -f1 <<<"$own")
+            newest() { local pattern=$1; printf '%s\n' "$VERSION" $(grep -E "$pattern" <<<"$tags" || true) | sort -V | tail -n1; }
+            [ "$(newest '^[0-9]+\.[0-9]+\.[0-9]+$')" = "$VERSION" ] && args="$args -t $REPO:latest"
+            [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
+            [ "$(newest "^$major\\.${minor#*.}\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$minor"
+          fi
           if [ "$ACTION" = build ]; then
             cd /tmp/digests
             source=$(printf "$REPO@sha256:%s " *)

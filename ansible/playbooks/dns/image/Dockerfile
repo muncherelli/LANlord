@@ -7,10 +7,12 @@ ARG ALPINE_IMAGE=alpine@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb14
 FROM ${ALPINE_IMAGE}
 ARG DNSMASQ_VERSION=2.91
 ARG IMAGE_VERSION=dev
+ARG IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.title="lanlord-network-server-components" \
       org.opencontainers.image.description="dnsmasq for the LANlord networks (dhcp and dns, more network services later)" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
       io.lanlord.dnsmasq.version="${DNSMASQ_VERSION}"
 # dnsmasq-dnssec is not wanted: plain dnsmasq is smaller
 RUN apk add --no-cache "dnsmasq~=${DNSMASQ_VERSION}" && rm -rf /etc/dnsmasq.d /usr/share/doc /usr/share/man

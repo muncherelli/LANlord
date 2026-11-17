@@ -71,7 +71,7 @@ CI publishes two images, one package each, tagged with the LANlord release versi
 - `ghcr.io/muncherelli/lanlord-nt4-server-components`: samba built from the signature-checked source tarball as a classic (non-AD) server, with SMB1/NT1 still allowed. Its Dockerfile is in `playbooks/nt4-domain/image/`, next to the samba release key it checks the tarball against.
 - `ghcr.io/muncherelli/lanlord-network-server-components`: dnsmasq on Alpine, from `playbooks/dns/image/`.
 
-Tags are versions only. Both images are published under a LANlord version: an `X.Y.Z` tag plus rolling `X.Y`, `X` and `latest` tags that move to the newest version. The upstream versions are not tags: they are labels (`org.opencontainers.image.version` is the LANlord version; `io.lanlord.samba.version` and `io.lanlord.dnsmasq.version` are the upstream ones, set from the `ARG` in the Dockerfile).
+Tags are versions only. Both images are published under a LANlord version: an `X.Y.Z` tag plus rolling `X.Y`, `X` and `latest` tags that move only when a release is published (development builds publish just their exact `X.Y.Z`, which is what the playbooks pin). The upstream versions are not tags: they are labels (`org.opencontainers.image.version` is the LANlord version; `io.lanlord.samba.version` and `io.lanlord.dnsmasq.version` are the upstream ones, set from the `ARG` in the Dockerfile).
 
 The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf` and `dnsmasq.conf` are mounted into the container when it runs. LANlord passes the image version its build was made for to the playbooks (the `lanlord_image_version` extra var) and they pin that `X.Y.Z` (never `latest`), so a release keeps running the images of its own release and a trunk build the development images. Each apply pulls that tag; if the pull fails it builds the same Dockerfile on the gateway instead.
 
@@ -81,7 +81,7 @@ The version is the one in development: the next patch after the latest `v*` rele
 - Once `v<X.Y.Z>` is released its images are frozen: never rebuilt or overwritten. The next publish goes to the next version.
 - A release dispatches the workflow with its tag and makes sure both images have the released `X.Y.Z`. When none changed during the cycle, the newest older version's manifest is retagged (no rebuild); with no older version the image is built from the sources at the tag. A published release is never overwritten. The same run can be started by hand with a `tag` input (like `v0.1.0`), or without `tag` to publish the development version, with an `image` input to pick one.
 - A pull request that touches image files builds them (for amd64 and arm64, without pushing).
-- Each architecture is built natively (amd64 and arm64 runners, no emulation) and merged into one multi-arch tag. `X.Y`, `X` and `latest` move to a version only when it is the newest in their range.
+- Each architecture is built natively (amd64 and arm64 runners, no emulation) and merged into one multi-arch tag. `X.Y`, `X` and `latest` move only on a release, and only to a version that is the newest in their range. Each image records its commit in `org.opencontainers.image.revision`; a tag counts as published only when the image has that label and a matching version label, and a release reuses or retags an image only when its image files are unchanged since that commit (otherwise it builds from the tag).
 
 ## Joining NT4 machines
 

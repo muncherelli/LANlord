@@ -68,9 +68,11 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
 FROM ${ALPINE_IMAGE}
 ARG SAMBA_VERSION=4.22.11
 ARG IMAGE_VERSION=dev
+ARG IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.title="lanlord-nt4-server-components" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
       io.lanlord.samba.version="${SAMBA_VERSION}"
 # only what smbd and nmbd link against, plus bash and shadow for the mounted scripts
 RUN apk add --no-cache acl-libs bash gettext-libs gnutls libarchive libcap libtirpc lmdb readline shadow
