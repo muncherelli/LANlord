@@ -1,6 +1,8 @@
 //! the My Server window: what the signed-in server is (General) and the one dangerous thing you
 //! can do to it (Advanced): take lanlord back off.
 
+use lanlord_model::compat::{self, mark};
+use lanlord_model::doctor::{Report, Status};
 use lanlord_model::server::ServerFacts;
 
 use crate::log::{emit, Kind};
@@ -10,11 +12,17 @@ use crate::services::Services;
 use crate::view::{self, Button, Dialog, Node, Size};
 
 pub const GENERAL: usize = 0;
+pub const ADVANCED: usize = 1;
+pub const COMPATIBILITY: usize = 2;
 
 /// what a click or a keystroke in the window means.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
     Tab(usize),
+    /// highlight a check on the Compatibility tab.
+    Check(usize),
+    /// read the server's report again.
+    Recheck,
     AskPurge,
     /// the "also remove the administrator accounts" tick.
     ToggleAdmins,
@@ -113,11 +121,22 @@ pub struct MyServer {
     purge: Option<PurgeBox>,
     /// a purge finished on this host; the desktop logs off and forgets it.
     purged: Option<String>,
+    /// the doctor's report of this server, copied from the shared cache on each refresh.
+    report: Option<Report>,
+    checking: bool,
+    report_note: Option<(bool, String)>,
+    /// the highlighted check on the Compatibility tab.
+    picked: usize,
 }
 
 impl MyServer {
     pub fn tab(&self) -> usize {
         self.tab
+    }
+
+    /// the doctor's report of the server shown, once it is read.
+    pub fn report(&self) -> Option<&Report> {
+        self.report.as_ref()
     }
 
     /// the server's facts and the job reading them.
@@ -156,6 +175,9 @@ impl MyServer {
 
     /// pick up finished reads and start one when the window shows another server.
     pub fn refresh(&mut self, services: &Services, host: &str) {
+        self.report = services.compat().report(host);
+        self.checking = services.compat().busy();
+        self.report_note = services.compat().note();
         self.facts.poll();
         if self.facts.wants_load(host, false) {
             let target = host.to_string();
@@ -185,21 +207,114 @@ impl MyServer {
 
     /// the window's contents; `idle` when nothing runs against the server.
     pub fn view(&self, idle: bool) -> Vec<Node<Msg>> {
-        let page = if self.tab == GENERAL {
-            self.general()
-        } else {
-            self.advanced(idle)
+        let page = match self.tab {
+            GENERAL => self.general(),
+            COMPATIBILITY => self.compatibility(idle),
+            _ => self.advanced(idle),
         };
         vec![
             Node::Tabs {
-                titles: vec!["General", "Advanced"],
+                titles: vec!["General", "Advanced", "Compatibility"],
                 current: self.tab,
                 pick: Msg::Tab,
                 body: page,
             },
             Node::Gap(6.0),
-            view::status(&self.facts),
+            if self.tab == COMPATIBILITY {
+                let (error, text) = self.report_note.clone().unwrap_or_default();
+                Node::Status { text, error }
+            } else {
+                view::status(&self.facts)
+            },
         ]
+    }
+
+    /// the Compatibility page: what the server is, each check with its mark and what needs it,
+    /// and for the highlighted one the exact fix.
+    fn compatibility(&self, idle: bool) -> Vec<Node<Msg>> {
+        let recheck = Node::Button(Button::new(
+            "Re-check",
+            idle && !self.checking,
+            Msg::Recheck,
+        ));
+        let Some(report) = &self.report else {
+            let text = if self.checking {
+                "Checking what this server can do..."
+            } else {
+                "This server has not been checked yet."
+            };
+            return vec![
+                Node::Gap(4.0),
+                Node::Text(text.into()),
+                Node::Gap(4.0),
+                recheck,
+            ];
+        };
+        let what = report.environment.describe();
+        let article = if what.starts_with(['a', 'e', 'i', 'o', 'u']) {
+            "an"
+        } else {
+            "a"
+        };
+        let picked = self.picked.min(report.checks.len().saturating_sub(1));
+        let rows = report
+            .checks
+            .iter()
+            .map(|c| {
+                vec![
+                    mark(c.status).to_string(),
+                    c.title.clone(),
+                    compat::needed_for(&c.id).join(", "),
+                ]
+            })
+            .collect();
+        let mut page = vec![
+            Node::Text(format!("This server is {article} {what}.")),
+            Node::Gap(4.0),
+            Node::Table(view::Table {
+                id: "compat-checks",
+                headings: vec!["", "Check", "Needed for"],
+                widths: vec![36.0, 150.0],
+                rows,
+                selected: Some(picked),
+                bad: report
+                    .checks
+                    .iter()
+                    .map(|c| c.status == Status::Fail)
+                    .collect(),
+                height: 150.0,
+                select: Msg::Check,
+            }),
+            Node::Gap(4.0),
+        ];
+        if let Some(check) = report.checks.get(picked) {
+            let mut body = vec![Node::Text(check.detail.clone())];
+            if let Some(fix) = &check.fix {
+                body.push(Node::Gap(4.0));
+                body.push(Node::Text("To fix it (you can copy this):".into()));
+                body.push(Node::Lines {
+                    id: "compat-fix",
+                    lines: fix.lines().map(str::to_string).collect(),
+                    height: 90.0,
+                });
+                if report.environment.is_lxc() {
+                    body.push(Node::Gap(4.0));
+                    body.push(Node::Text(
+                        "These changes are made on the Proxmox host, and the host must restart \
+                         this container before they take effect. LANlord cannot do it from \
+                         inside."
+                            .into(),
+                    ));
+                }
+            }
+            page.push(Node::Group {
+                title: check.title.clone(),
+                body,
+            });
+            page.push(Node::Gap(4.0));
+        }
+        page.push(recheck);
+        page
     }
 
     fn general(&self) -> Vec<Node<Msg>> {
@@ -355,7 +470,14 @@ impl MyServer {
     /// end sends: no purge without the typed host name, no cancelling a purge that runs.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
         match msg {
-            Msg::Tab(tab) => self.tab = tab,
+            Msg::Tab(tab) => {
+                self.tab = tab;
+                if tab == COMPATIBILITY && self.report.is_none() && !self.checking {
+                    services.compat().recheck(services, host);
+                }
+            }
+            Msg::Check(row) => self.picked = row,
+            Msg::Recheck => services.compat().recheck(services, host),
             Msg::AskPurge => {
                 if self.can_purge(!services.busy(host)) {
                     self.ask_to_purge(services, host);
@@ -490,5 +612,119 @@ mod tests {
         assert_eq!(dialog.title, "Remove LANlord");
         window.update(Msg::Cancel, &services, "me@gw");
         assert!(!window.purging());
+    }
+
+    const UNPRIVILEGED: &str = "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\nkeyctl=yes\ntun=missing\nlink_bridge=ok\n";
+
+    /// the page of the open tab.
+    fn page(nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
+        match nodes.into_iter().next() {
+            Some(Node::Tabs { body, .. }) => body,
+            _ => panic!("no tabs"),
+        }
+    }
+
+    fn compat_window(probe: &str) -> (MyServer, Services, Arc<Fake>) {
+        let fake = Arc::new(Fake::default());
+        *fake.probe.lock().unwrap() = probe.into();
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        window.update(Msg::Tab(COMPATIBILITY), &services, "me@gw");
+        let start = Instant::now();
+        while window.report().is_none() {
+            window.refresh(&services, "me@gw");
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        (window, services, fake)
+    }
+
+    #[test]
+    fn the_compatibility_tab_marks_each_check_and_shows_the_fix_of_the_picked_one() {
+        let (mut window, services, _) = compat_window(UNPRIVILEGED);
+        let body = page(window.view(true));
+        assert!(
+            matches!(&body[0], Node::Text(t) if t == "This server is an unprivileged lxc container on proxmox.")
+        );
+        let Some(Node::Table(table)) = body.iter().find(|n| matches!(n, Node::Table(_))) else {
+            panic!("no table");
+        };
+        let row = |title: &str| {
+            let at = table.rows.iter().position(|r| r[1] == title).unwrap();
+            (table.rows[at].clone(), table.bad[at])
+        };
+        let (nesting, bad) = row("container nesting");
+        assert_eq!((nesting[0].as_str(), bad), ("X", true));
+        assert!(nesting[2].contains("NT4") && nesting[2].contains("Network services"));
+        assert_eq!(row("container keyctl").0[0], "OK");
+        let (tun, bad) = row("tun/tap device");
+        assert_eq!((tun[0].as_str(), bad), ("!", false));
+        assert!(tun[2].contains("VDE"));
+        // a failing check shows the pct command in the copyable box
+        let nesting_at = table
+            .rows
+            .iter()
+            .position(|r| r[1] == "container nesting")
+            .unwrap();
+        window.update(Msg::Check(nesting_at), &services, "me@gw");
+        let body = page(window.view(true));
+        let fix = body
+            .iter()
+            .find_map(|n| match n {
+                Node::Group { body, .. } => body.iter().find_map(|n| match n {
+                    Node::Lines { lines, .. } => Some(lines.join("\n")),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .expect("the fix box");
+        assert!(fix.contains("pct set <CTID> --features nesting=1,keyctl=1"));
+        // the tun fix gives the two config lines too
+        let tun_at = table
+            .rows
+            .iter()
+            .position(|r| r[1] == "tun/tap device")
+            .unwrap();
+        window.update(Msg::Check(tun_at), &services, "me@gw");
+        let body = page(window.view(true));
+        let text = body
+            .iter()
+            .filter_map(|n| match n {
+                Node::Group { body, .. } => Some(
+                    body.iter()
+                        .filter_map(|n| match n {
+                            Node::Lines { lines, .. } => Some(lines.join("\n")),
+                            Node::Text(t) => Some(t.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("lxc.cgroup2.devices.allow: c 10:200 rwm"));
+        assert!(text.contains("host must restart"));
+    }
+
+    #[test]
+    fn recheck_reads_the_server_again() {
+        let (mut window, services, fake) = compat_window(UNPRIVILEGED);
+        *fake.probe.lock().unwrap() = "virt_container=none\nvirt_vm=none\n".into();
+        window.update(Msg::Recheck, &services, "me@gw");
+        let start = Instant::now();
+        while !window.report().is_some_and(|r| !r.environment.is_lxc()) {
+            window.refresh(&services, "me@gw");
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            fake.calls()
+                .iter()
+                .filter(|c| c.starts_with("doctor"))
+                .count(),
+            2
+        );
     }
 }

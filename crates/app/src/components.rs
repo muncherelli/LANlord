@@ -9,10 +9,12 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 
+use lanlord_model::compat::{self, mark};
 pub use lanlord_model::components::Selection;
 use lanlord_model::components::{
     catalogue, networks_from_settings, Attachment, Choice, Component, Network,
 };
+use lanlord_model::doctor::{Check, Report, Status};
 use lanlord_model::settings::Settings;
 
 use crate::remote::Remote;
@@ -44,6 +46,8 @@ pub enum Msg {
     ToggleNet(usize, usize),
     /// the address field `key` now holds this text.
     Address((usize, usize), String),
+    /// open the Compatibility tab of My Server.
+    Compat,
     Back,
     Next,
     Finish,
@@ -75,6 +79,10 @@ pub struct Components {
     saving: Remote<Settings>,
     /// the wizard finished or was cancelled; the window closes.
     done: bool,
+    /// the doctor's report of the server, copied from the shared cache on each refresh.
+    report: Option<Report>,
+    /// the Details link asked for the Compatibility tab.
+    show_compat: bool,
 }
 
 impl Components {
@@ -116,6 +124,28 @@ impl Components {
         self.stale = true;
     }
 
+    /// the Details link was clicked, once: the desktop opens the Compatibility tab.
+    pub fn take_compat(&mut self) -> bool {
+        std::mem::take(&mut self.show_compat)
+    }
+
+    /// what stops `component` on this server: the checks that definitely fail for it (and for
+    /// docker, which it brings along). empty while the report is not read.
+    fn blockers(&self, component: &Component) -> Vec<&Check> {
+        let Some(report) = &self.report else {
+            return Vec::new();
+        };
+        let mut found = compat::blockers(report, component.id());
+        if component.requires_docker {
+            for check in compat::blockers(report, "docker") {
+                if !found.iter().any(|c| c.id == check.id) {
+                    found.push(check);
+                }
+            }
+        }
+        found
+    }
+
     /// the wizard finished or was cancelled, once.
     pub fn take_done(&mut self) -> bool {
         std::mem::take(&mut self.done)
@@ -144,6 +174,17 @@ impl Components {
 
     /// pick up finished reads and saves; read `host` when the window shows another server.
     pub fn refresh(&mut self, services: &Services, host: &str) {
+        self.report = services.compat().report(host);
+        // the server is probed once something needs the answer: a switched-on component that
+        // has requirements, or the wizard being open
+        let needed = self.draft.is_some()
+            || self
+                .current
+                .as_ref()
+                .is_some_and(|c| c.enabled.keys().any(|m| compat::needs_probe(m)));
+        if needed && self.current.is_some() {
+            services.compat().background(services, host);
+        }
         if self.settings.poll() {
             if let Some(settings) = self.settings.data.clone() {
                 self.take_settings(&settings, host);
@@ -241,6 +282,10 @@ impl Components {
                 if component.required {
                     return;
                 }
+                let on = self.draft().is_enabled(component.id());
+                if !on && !self.blockers(component).is_empty() {
+                    return;
+                }
                 let first = self
                     .networks
                     .iter()
@@ -279,6 +324,7 @@ impl Components {
                     );
                 }
             }
+            Msg::Compat => self.show_compat = true,
             Msg::Details => {
                 self.details = catalogue.get(self.row).is_some_and(|c| {
                     !c.subcomponents.is_empty() && self.draft().is_enabled(c.id())
@@ -447,17 +493,18 @@ impl Components {
                 CheckRow {
                     icon: c.id(),
                     label: c.name().to_string(),
-                    detail: c.needs(),
+                    detail: self.detail(c),
                     checked: choice.is_some(),
                     partial: choice.is_some_and(|ch| {
                         !c.subcomponents.is_empty()
                             && ch.subcomponents.len() < c.subcomponents.len()
                     }),
-                    enabled: !c.required,
+                    enabled: !c.required && (choice.is_some() || self.blockers(c).is_empty()),
                 }
             })
             .collect();
         let highlighted = catalogue.get(self.row);
+        let blocked: Vec<&Check> = highlighted.map_or(Vec::new(), |c| self.blockers(c));
         let description = highlighted.map_or(String::new(), |c| {
             let ports = c.ports();
             if ports.is_empty() {
@@ -468,7 +515,7 @@ impl Components {
         });
         let details =
             highlighted.is_some_and(|c| !c.subcomponents.is_empty() && draft.is_enabled(c.id()));
-        vec![
+        let mut page = vec![
             Node::banner(
                 "LANlord Components",
                 "You can add or remove components of LANlord.",
@@ -493,13 +540,48 @@ impl Components {
             }),
             Node::Gap(4.0),
             Node::Description(description),
-            Node::Gap(4.0),
-            Node::Row(vec![Node::Button(Button::new(
-                "Details...",
-                details,
-                Msg::Details,
-            ))]),
-        ]
+        ];
+        if !blocked.is_empty() {
+            page.push(Node::Gap(4.0));
+            page.push(Node::Warning(
+                "This server cannot run it yet, so it cannot be switched on:".into(),
+            ));
+            for check in &blocked {
+                page.push(Node::Text(format!("  - {}", check.detail)));
+            }
+        }
+        page.push(Node::Gap(4.0));
+        page.push(Node::Row(vec![
+            Node::Button(Button::new("Details...", details, Msg::Details)),
+            Node::Gap(6.0),
+            Node::Button(Button::new(
+                "Compatibility...",
+                !blocked.is_empty(),
+                Msg::Compat,
+            )),
+        ]));
+        page
+    }
+
+    /// the right-hand column of a component: what the server says about its requirements, then
+    /// what it needs.
+    fn detail(&self, component: &Component) -> String {
+        let needs = component.needs();
+        let Some(report) = &self.report else {
+            return needs;
+        };
+        if !compat::needs_probe(component.id()) {
+            return needs;
+        }
+        let worst = compat::problems(report, component.id())
+            .into_iter()
+            .map(|c| c.status)
+            .max_by_key(|s| match s {
+                Status::Fail => 3,
+                Status::Warn => 2,
+                _ => 1,
+            });
+        format!("{}  {needs}", mark(worst.unwrap_or(Status::Ok)))
     }
 
     fn attach(&self) -> Vec<Node<Msg>> {
@@ -941,5 +1023,100 @@ mod tests {
         window.update(Msg::Cancel, &services, "gw");
         assert!(window.take_done());
         assert!(!window.draft().is_enabled("web-proxy"));
+    }
+
+    const UNPRIVILEGED: &str = "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\nkeyctl=no\n";
+
+    /// a window on the unprivileged container, with the report read and nothing switched on.
+    fn blocked() -> (Components, Services) {
+        let fake = Arc::new(Fake::default());
+        *fake.probe.lock().unwrap() = UNPRIVILEGED.into();
+        *fake.stored.lock().unwrap() = SETTINGS.replace("docker: {}\ndns: {}\n", "");
+        let services = Services::new(fake, Wake::none());
+        let mut window = Components::default();
+        window.take_settings(
+            &Settings::parse(&SETTINGS.replace("docker: {}\ndns: {}\n", "")).unwrap(),
+            "gw",
+        );
+        window.open();
+        let start = std::time::Instant::now();
+        while window.report.is_none() {
+            window.refresh(&services, "gw");
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        (window, services)
+    }
+
+    #[test]
+    fn a_component_whose_requirements_fail_cannot_be_switched_on_and_says_why() {
+        let (mut window, services) = blocked();
+        let nt4 = row("nt4-domain");
+        window.update(Msg::Toggle(nt4), &services, "gw");
+        assert!(
+            !window.draft().is_enabled("nt4-domain"),
+            "refused: nesting and keyctl are off"
+        );
+        assert!(
+            !window.draft().is_enabled("docker"),
+            "docker did not come along"
+        );
+        let nodes = window.choose();
+        assert!(nodes
+            .iter()
+            .any(|n| matches!(n, Node::Warning(w) if w.contains("cannot be switched on"))));
+        assert!(nodes
+            .iter()
+            .any(|n| matches!(n, Node::Text(t) if t.contains("nesting"))));
+        // the Details link goes to the Compatibility tab
+        let link = nodes.iter().find_map(|n| match n {
+            Node::Row(items) => items.iter().find_map(|i| match i {
+                Node::Button(b) if b.label == "Compatibility..." => Some(b.enabled),
+                _ => None,
+            }),
+            _ => None,
+        });
+        assert_eq!(link, Some(true));
+        window.update(Msg::Compat, &services, "gw");
+        assert!(window.take_compat());
+        assert!(!window.take_compat(), "once");
+        // a component with no requirements still switches on
+        let web = row("remote-commands");
+        window.update(Msg::Toggle(web), &services, "gw");
+        assert!(window.draft().is_enabled("remote-commands"));
+    }
+
+    #[test]
+    fn the_rows_carry_the_mark_of_their_requirements() {
+        let (window, _) = blocked();
+        let nodes = window.choose();
+        let Some(Node::CheckList(list)) = nodes.iter().find(|n| matches!(n, Node::CheckList(_)))
+        else {
+            panic!("no list");
+        };
+        let nt4 = &list.rows[row("nt4-domain")];
+        assert!(nt4.detail.starts_with("X  "), "{}", nt4.detail);
+        assert!(!nt4.enabled, "greyed out");
+        let gateway = &list.rows[row("gateway")];
+        assert!(!gateway.detail.starts_with("X"));
+    }
+
+    #[test]
+    fn a_privileged_container_with_nesting_lets_docker_components_on() {
+        let fake = Arc::new(Fake::default());
+        *fake.probe.lock().unwrap() =
+            "virt_container=lxc\nvirt_vm=none\nuid_map=0 0 4294967295\nnesting=yes\n".into();
+        let services = Services::new(fake, Wake::none());
+        let mut window = Components::default();
+        window.take_settings(&Settings::parse("networks: []\n").unwrap(), "gw");
+        window.open();
+        let start = std::time::Instant::now();
+        while window.report.is_none() {
+            window.refresh(&services, "gw");
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        assert!(window.draft().is_enabled("nt4-domain"));
     }
 }

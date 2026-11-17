@@ -8,6 +8,7 @@
 
 use anyhow::{anyhow, Result};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
+use lanlord_model::doctor::Report;
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
@@ -186,6 +187,15 @@ pub trait Gateway: Send + Sync {
         }
     }
 
+    /// what the server can and cannot do for lanlord's components (the doctor's report); the
+    /// probe may need sudo.
+    fn doctor(&self, host: &str, ask: AskPassword) -> Result<Report> {
+        match self.call(host, Op::Doctor, ask)? {
+            Reply::Doctor(report) => Ok(report),
+            other => Err(unexpected("doctor", other)),
+        }
+    }
+
     /// the status of each network connection (read-only, no sudo).
     fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {
         match self.call(host, Op::NetworkStatus, &mut never)? {
@@ -306,6 +316,7 @@ pub use native::{Ssh, NO_KEY};
 mod native {
     use anyhow::{anyhow, Result};
     use lanlord_core::ops::execute;
+    use lanlord_model::doctor::Report;
     use lanlord_model::ops::{Op, Reply};
     use lanlord_model::settings::Document;
     use lanlord_model::{leases, server};
@@ -390,12 +401,16 @@ mod native {
             }
             Op::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
             Op::ServerFacts => Ok(Reply::Facts(server::demo())),
+            Op::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
             Op::NetworkStatus => Ok(Reply::Interfaces(lanlord_model::netstatus::demo())),
             Op::PurgePreview { .. } => Ok(Reply::Lines(demo_purge())),
             Op::Purge { .. } => Err(anyhow!("demo mode: nothing is removed")),
             _ => return None,
         })
     }
+
+    /// the demo server is an unprivileged lxc container on proxmox without the features docker needs.
+    const DEMO_DOCTOR: &str = "hostname=gateway\ndistro=debian\ndistro_version=13\ninit=systemd\nkernel=6.8.12-4-pve\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\nkeyctl=no\nlink_bridge=ok\nlink_macvlan=ok\nlink_ipvlan=ok\ntun=missing\nip_forward=1\nnft=ok\ndocker_installed=no\n";
 
     const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
 
@@ -451,6 +466,14 @@ mod native {
             assert!(matches!(leases, Reply::Leases(l) if l.len() == 3));
             let facts = server_demo(&Op::ServerFacts).unwrap().unwrap();
             assert!(matches!(facts, Reply::Facts(_)));
+            let doctor = server_demo(&Op::Doctor).unwrap().unwrap();
+            let Reply::Doctor(report) = doctor else {
+                panic!("not a report");
+            };
+            assert!(
+                !lanlord_model::compat::blockers(&report, "nt4-domain").is_empty(),
+                "the demo server shows a failing check"
+            );
         }
 
         #[test]
@@ -548,6 +571,8 @@ mod fake {
         pub zones: Mutex<Vec<String>>,
         /// the small reads that are not tasks (the taskbar clock).
         pub reads: Mutex<Vec<String>>,
+        /// the probe output the doctor answers with.
+        pub probe: Mutex<String>,
     }
 
     impl Default for Fake {
@@ -588,6 +613,7 @@ mod fake {
                     status: vec!["Server: 10.0.0.1 (pool.ntp.org)".into()],
                 }),
                 reads: Mutex::new(Vec::new()),
+                probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
                     [
                         "Africa/Cairo",
@@ -623,9 +649,7 @@ mod fake {
     impl Gateway for Fake {
         fn call(&self, host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
             Ok(match op {
-                Op::Doctor => Reply::Doctor(lanlord_model::doctor::Report::parse(
-                    "virt_container=none\nvirt_vm=none\nlink_bridge=ok\n",
-                )),
+                Op::Doctor => Reply::Doctor(self.doctor(host, ask)?),
                 Op::Bootstrap => {
                     self.bootstrap(host, ask)?;
                     Reply::Done
@@ -844,6 +868,11 @@ mod fake {
             self.enter(format!("facts {host}"), ask)?;
             let facts = self.facts.lock().unwrap().clone();
             Ok(facts.unwrap_or_else(server::demo))
+        }
+
+        pub fn doctor(&self, host: &str, ask: AskPassword) -> Result<Report> {
+            self.enter(format!("doctor {host}"), ask)?;
+            Ok(Report::parse(&self.probe.lock().unwrap()))
         }
 
         pub fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {

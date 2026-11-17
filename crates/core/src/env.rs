@@ -17,21 +17,10 @@ use crate::ssh::Session;
 
 pub use lanlord_model::doctor::{DOCKER_MODULES, PROXMOX_FEATURES_FIX, PROXMOX_TUN_FIX};
 
-/// the checks of the report that `module` needs, so that `problems_for` can pick them out.
-fn needed_checks(module: &str) -> &'static [&'static str] {
-    match module {
-        // keyctl is only needed when the container's ids are shifted; the report says a
-        // privileged container needs none by marking that check ok
-        m if DOCKER_MODULES.contains(&m) => &["lxc-nesting", "lxc-keyctl", "nested-container"],
-        "vde" | "wireguard" | "link" => &["tun"],
-        _ => &[],
-    }
-}
-
 /// the checks `module` needs that are not ok on this machine. a `Fail` stops the module; the
 /// rest (`Unknown`, `Warn`) are only worth saying, so a missing tool never blocks anything.
 pub fn problems_for<'a>(report: &'a Report, module: &str) -> Vec<&'a Check> {
-    let ids = needed_checks(module);
+    let ids = lanlord_model::compat::checks_for_module(module);
     report
         .checks
         .iter()

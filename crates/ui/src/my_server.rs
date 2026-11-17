@@ -2,7 +2,7 @@
 //! draws them with egui.
 
 use eframe::egui::{self, Ui};
-pub use lanlord_app::my_server::{Msg, MyServer};
+pub use lanlord_app::my_server::{Msg, MyServer, ADVANCED, COMPATIBILITY, GENERAL};
 use lanlord_app::services::Services;
 
 use crate::view;

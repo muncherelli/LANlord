@@ -258,6 +258,8 @@ pub struct Shell {
     close_requests: Vec<Target>,
     /// windows a click asked to open, opened after the frame.
     open_next: Vec<Target>,
+    /// My Server opens on its Compatibility tab at the next chance.
+    compat_next: bool,
     mouse: Mouse,
     hits: Hits,
     /// the clock text; the local time unless a test sets it.
@@ -301,6 +303,7 @@ impl Shell {
             drag: None,
             close_requests: Vec::new(),
             open_next: Vec::new(),
+            compat_next: false,
             mouse: Mouse::new(),
             hits: Hits::default(),
             clock: None,
@@ -611,6 +614,15 @@ impl Shell {
         for target in std::mem::take(&mut self.open_next) {
             self.open(target);
         }
+        if std::mem::take(&mut self.compat_next) {
+            if let Some(host) = self.host() {
+                self.my_server.update(
+                    lanlord_app::my_server::Msg::Tab(lanlord_app::my_server::COMPATIBILITY),
+                    &self.services,
+                    &host,
+                );
+            }
+        }
         self.console.drain();
         self.settings.poll();
         if self.settings.take_saved() {
@@ -755,6 +767,9 @@ impl Shell {
                 if let Some(msg) = msg {
                     self.welcome.update(msg, &windows);
                 }
+                if self.welcome.take_compat() {
+                    self.compat_next = true;
+                }
                 if let Some(target) = self.welcome.take_open() {
                     self.open_next.push(target);
                 }
@@ -772,6 +787,10 @@ impl Shell {
                     }
                     if self.components.take_done() {
                         self.close_requests.push(Target::Components);
+                    }
+                    if self.components.take_compat() {
+                        self.open_next.push(Target::MyServer);
+                        self.compat_next = true;
                     }
                     answer
                 }
