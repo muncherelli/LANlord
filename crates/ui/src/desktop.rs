@@ -275,10 +275,7 @@ impl Desktop {
         else {
             return Vec::new();
         };
-        lanlord_model::compat::alerts(&report, enabled.enabled.keys().map(String::as_str))
-            .into_iter()
-            .cloned()
-            .collect()
+        lanlord_app::compat::problems(&report, &enabled)
     }
 
     /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop

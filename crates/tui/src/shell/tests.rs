@@ -861,3 +861,65 @@ fn the_welcome_window_opens_after_logon_only_while_its_box_is_ticked() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+const COMPAT_SETTINGS: &str = "docker: {}\ndns: {}\n";
+
+/// a shell on a server whose probe says `probe`, with docker and dns switched on, drawn until
+/// the report is in.
+fn probed(probe: &str) -> Shell {
+    let fake = Fake::new();
+    *fake.probe.lock().unwrap() = probe.into();
+    *fake.stored.lock().unwrap() = COMPAT_SETTINGS.into();
+    let mut shell = shell_with(fake);
+    shell.use_demo_server();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(3) {
+        frame(&mut shell);
+        let host = shell.host().unwrap_or_default();
+        if shell.services.compat().report(&host).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    frame(&mut shell);
+    shell
+}
+
+const LXC_WITHOUT_FEATURES: &str =
+    "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\nnesting=no\nkeyctl=no\n";
+
+#[test]
+fn the_taskbar_warns_when_a_switched_on_component_needs_what_fails() {
+    let mut shell = probed(LXC_WITHOUT_FEATURES);
+    assert!(shell.compat_alert());
+    let text = frame(&mut shell);
+    assert!(text.contains("! Compatibility"), "{text}");
+    let alert = shell
+        .hits
+        .taskbar
+        .as_ref()
+        .unwrap()
+        .alert
+        .expect("a hit area");
+    click(&mut shell, middle(alert));
+    let text = frame(&mut shell);
+    assert!(shell.windows.iter().any(|w| w.target == Target::MyServer));
+    assert_eq!(shell.my_server.tab(), lanlord_app::my_server::COMPATIBILITY);
+    assert!(text.contains("Needed for"), "{text}");
+}
+
+#[test]
+fn f8_opens_the_compatibility_tab_and_a_healthy_server_has_no_warning() {
+    let mut shell = probed(LXC_WITHOUT_FEATURES);
+    key(&mut shell, KeyCode::F(8));
+    frame(&mut shell);
+    assert_eq!(shell.my_server.tab(), lanlord_app::my_server::COMPATIBILITY);
+
+    let mut shell =
+        probed("virt_container=lxc\nvirt_vm=none\nuid_map=0 0 4294967295\nnesting=yes\n");
+    assert!(!shell.compat_alert());
+    assert!(!frame(&mut shell).contains("! Compatibility"));
+    key(&mut shell, KeyCode::F(8));
+    frame(&mut shell);
+    assert!(shell.windows.iter().all(|w| w.target != Target::MyServer));
+}

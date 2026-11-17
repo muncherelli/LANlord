@@ -1095,10 +1095,14 @@ mod tests {
             panic!("no list");
         };
         let nt4 = &list.rows[row("nt4-domain")];
-        assert!(nt4.detail.starts_with("X  "), "{}", nt4.detail);
+        assert!(
+            nt4.detail.starts_with(&format!("{}  ", mark(Status::Fail))),
+            "{}",
+            nt4.detail
+        );
         assert!(!nt4.enabled, "greyed out");
         let gateway = &list.rows[row("gateway")];
-        assert!(!gateway.detail.starts_with("X"));
+        assert!(!gateway.detail.starts_with(mark(Status::Fail)));
     }
 
     #[test]

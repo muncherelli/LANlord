@@ -4,11 +4,26 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+/// the one mapping from a status to its mark, for the front ends that draw it.
+pub use lanlord_model::compat::{mark, parse_mark};
 use lanlord_model::doctor::Report;
+pub use lanlord_model::doctor::Status;
 
 use crate::ask::never;
 use crate::remote::Remote;
 use crate::services::Services;
+
+/// the failing or warning checks that what `selection` switches on needs: what the taskbar
+/// alert of every front end is about.
+pub fn problems(
+    report: &Report,
+    selection: &lanlord_model::components::Selection,
+) -> Vec<lanlord_model::doctor::Check> {
+    lanlord_model::compat::alerts(report, selection.enabled.keys().map(String::as_str))
+        .into_iter()
+        .cloned()
+        .collect()
+}
 
 /// the cached report of the signed-in server; clones share it.
 #[derive(Clone, Default)]

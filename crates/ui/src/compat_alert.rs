@@ -5,9 +5,11 @@
 use std::time::Duration;
 
 use eframe::egui::{
-    self, Align2, Area, Color32, Frame, Id, Margin, Order, Pos2, Rect, Sense, Shape, Stroke, Ui,
-    Vec2,
+    self, Align2, Area, Color32, Frame, Id, Margin, Order, Painter, Pos2, Rect, Sense, Shape,
+    Stroke, Ui, Vec2,
 };
+
+use lanlord_model::doctor::Status;
 
 use crate::theme::BLACK;
 
@@ -129,12 +131,15 @@ impl Alert {
 
 /// a yellow triangle with a black exclamation mark, filling `rect`.
 pub fn warning_sign(ui: &Ui, rect: Rect) {
+    paint_warning(ui.painter(), rect);
+}
+
+fn paint_warning(painter: &Painter, rect: Rect) {
     let c = rect.center();
     let (w, h) = (rect.width() * 0.5, rect.height() * 0.5);
     let top = Pos2::new(c.x, c.y - h + 1.0);
     let left = Pos2::new(c.x - w + 1.0, c.y + h - 1.0);
     let right = Pos2::new(c.x + w - 1.0, c.y + h - 1.0);
-    let painter = ui.painter();
     painter.add(Shape::convex_polygon(
         vec![top, right, left],
         Color32::from_rgb(255, 221, 0),
@@ -149,6 +154,37 @@ pub fn warning_sign(ui: &Ui, rect: Rect) {
         stroke,
     );
     painter.circle_filled(Pos2::new(c.x, c.y + h * 0.6), 0.9, BLACK);
+}
+
+/// how wide a status mark is, in points.
+pub const MARK: f32 = 14.0;
+
+/// paint the mark of `status` centred on `at`: a green check, a red cross, a yellow warning
+/// sign or a grey question mark. they are shapes, so they look the same on every font.
+pub fn paint_mark(painter: &Painter, at: Pos2, status: Status) {
+    let p = |x: f32, y: f32| at + Vec2::new(x, y);
+    match status {
+        Status::Ok => {
+            let stroke = Stroke::new(2.0, Color32::from_rgb(0, 140, 0));
+            painter.line_segment([p(-4.0, 0.0), p(-1.5, 3.0)], stroke);
+            painter.line_segment([p(-1.5, 3.0), p(4.5, -4.0)], stroke);
+        }
+        Status::Fail => {
+            let stroke = Stroke::new(2.0, Color32::from_rgb(200, 0, 0));
+            painter.line_segment([p(-4.0, -4.0), p(4.0, 4.0)], stroke);
+            painter.line_segment([p(-4.0, 4.0), p(4.0, -4.0)], stroke);
+        }
+        Status::Warn => paint_warning(painter, Rect::from_center_size(at, Vec2::splat(MARK))),
+        Status::Unknown => {
+            painter.text(
+                at,
+                Align2::CENTER_CENTER,
+                "?",
+                crate::theme::font(),
+                Color32::from_rgb(110, 110, 110),
+            );
+        }
+    }
 }
 
 /// the sign in the tray; true when it was clicked.

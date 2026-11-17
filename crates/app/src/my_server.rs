@@ -654,11 +654,11 @@ mod tests {
             (table.rows[at].clone(), table.bad[at])
         };
         let (nesting, bad) = row("container nesting");
-        assert_eq!((nesting[0].as_str(), bad), ("X", true));
+        assert_eq!((nesting[0].as_str(), bad), (mark(Status::Fail), true));
         assert!(nesting[2].contains("NT4") && nesting[2].contains("Network services"));
-        assert_eq!(row("container keyctl").0[0], "OK");
+        assert_eq!(row("container keyctl").0[0], mark(Status::Ok));
         let (tun, bad) = row("tun/tap device");
-        assert_eq!((tun[0].as_str(), bad), ("!", false));
+        assert_eq!((tun[0].as_str(), bad), (mark(Status::Warn), false));
         assert!(tun[2].contains("VDE"));
         // a failing check shows the pct command in the copyable box
         let nesting_at = table

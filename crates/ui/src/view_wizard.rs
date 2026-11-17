@@ -112,13 +112,24 @@ pub fn check_list<M: Clone>(ui: &mut Ui, list: &CheckList<M>) -> Option<M> {
                         painter.layout_no_wrap(row.label.clone(), theme::font(), colour),
                         colour,
                     );
-                    painter.text(
+                    let (mark, detail) = match lanlord_model::compat::parse_mark(&row.detail) {
+                        Some((status, rest)) => (Some(status), rest),
+                        None => (None, row.detail.as_str()),
+                    };
+                    let shown = painter.text(
                         rect.right_center() - Vec2::new(6.0, 0.0),
                         Align2::RIGHT_CENTER,
-                        &row.detail,
+                        detail,
                         theme::font(),
                         BLACK,
                     );
+                    if let Some(status) = mark {
+                        let at = eframe::egui::Pos2::new(
+                            shown.left() - 4.0 - crate::compat_alert::MARK / 2.0,
+                            rect.center().y,
+                        );
+                        crate::compat_alert::paint_mark(painter, at, status);
+                    }
                     if response.clicked() {
                         let on_box = response
                             .interact_pointer_pos()

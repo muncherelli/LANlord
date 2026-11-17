@@ -121,14 +121,32 @@ pub fn needs_probe(module: &str) -> bool {
     !checks_for_module(module).is_empty()
 }
 
-/// a short mark for a status in a list.
+/// the marks of the four statuses as they travel in a list's text: a check mark, a cross, an
+/// exclamation mark and a question mark. each front end draws them its own way (the gui paints
+/// them as shapes, the tui colours the character); this is the one place that maps a status
+/// to its mark.
 pub fn mark(status: Status) -> &'static str {
     match status {
-        Status::Ok => "OK",
-        Status::Fail => "X",
+        Status::Ok => "\u{2713}",
+        Status::Fail => "\u{2717}",
         Status::Warn => "!",
         Status::Unknown => "?",
     }
+}
+
+/// split a list's text into the status of the mark it starts with and the rest: the mark is the
+/// whole text, or is followed by two spaces.
+pub fn parse_mark(text: &str) -> Option<(Status, &str)> {
+    [Status::Ok, Status::Fail, Status::Warn, Status::Unknown]
+        .into_iter()
+        .find_map(|status| {
+            let rest = text.strip_prefix(mark(status))?;
+            if rest.is_empty() {
+                Some((status, rest))
+            } else {
+                rest.strip_prefix("  ").map(|rest| (status, rest))
+            }
+        })
 }
 
 #[cfg(test)]
@@ -224,6 +242,13 @@ mod tests {
             .into_iter()
             .map(mark)
             .collect();
-        assert_eq!(marks, ["OK", "X", "!", "?"]);
+        assert_eq!(marks, ["\u{2713}", "\u{2717}", "!", "?"]);
+        for status in [Status::Ok, Status::Fail, Status::Warn, Status::Unknown] {
+            assert_eq!(parse_mark(mark(status)), Some((status, "")));
+            let with = format!("{}  needs docker", mark(status));
+            assert_eq!(parse_mark(&with), Some((status, "needs docker")));
+        }
+        assert_eq!(parse_mark("Needs docker"), None);
+        assert_eq!(parse_mark("!bang"), None);
     }
 }

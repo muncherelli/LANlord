@@ -101,10 +101,18 @@ fn data_row(
             Pos2::new(rect.left() + x, rect.top()),
             Pos2::new(right, rect.bottom()),
         );
+        let mut text_x = x + 5.0;
+        let mut shown = cell.as_str();
+        if let Some((status, rest)) = lanlord_model::compat::parse_mark(cell) {
+            let at = rect.left_center() + Vec2::new(x + 5.0 + crate::compat_alert::MARK / 2.0, 0.0);
+            crate::compat_alert::paint_mark(&ui.painter().with_clip_rect(column), at, status);
+            text_x += crate::compat_alert::MARK + 4.0;
+            shown = rest;
+        }
         ui.painter().with_clip_rect(column).text(
-            rect.left_center() + Vec2::new(x + 5.0, 0.0),
+            rect.left_center() + Vec2::new(text_x, 0.0),
             Align2::LEFT_CENTER,
-            cell,
+            shown,
             theme::font(),
             colour,
         );
