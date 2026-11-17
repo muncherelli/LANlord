@@ -1,45 +1,76 @@
 name: image
 
-# publishes the samba image the nt4-domain module runs. the tag is a hash of the
-# files it is built from, which is the same hash the playbook computes on the
-# gateway, so an apply always pulls exactly the content it was built with.
+# publishes ghcr.io/muncherelli/lanlord/lanlord-server-component, one tag per component:
+#   nt4 (rolling) and nt4-<samba version> (immutable)
+#   network-services (rolling) and network-services-<dnsmasq version>
+# the images hold only upstream software; lanlord's scripts and config are mounted by the
+# playbooks, so a rolling tag stays compatible with older lanlord installs. to add a version,
+# add a line to the matrix; `latest: true` marks the one the rolling tag follows.
 on:
   push:
     branches: [trunk]
+    tags: ['v*']
     paths:
       - ansible/playbooks/nt4-domain/image/**
+      - ansible/playbooks/dns/image/**
+      - .github/workflows/image.yml
+  pull_request:
+    paths:
+      - ansible/playbooks/nt4-domain/image/**
+      - ansible/playbooks/dns/image/**
       - .github/workflows/image.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
+env:
+  IMAGE: ghcr.io/muncherelli/lanlord/lanlord-server-component
+
 jobs:
-  samba-nt4:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    env:
-      CONTEXT: ansible/playbooks/nt4-domain/image
-      IMAGE: ghcr.io/muncherelli/lanlord-samba-nt4
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: nt4
+            version: 4.22.11
+            latest: true
+            context: ansible/playbooks/nt4-domain/image
+            arg: SAMBA_VERSION
+          - component: network-services
+            version: '2.91'
+            latest: true
+            context: ansible/playbooks/dns/image
+            arg: DNSMASQ_VERSION
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: work out the tag
-        id: tag
-        run: echo "hash=$(cd "$CONTEXT" && cat Dockerfile entrypoint.sh lanlord-user | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: work out the tags
+        id: tags
+        run: |
+          {
+            echo "list<<EOF"
+            echo "$IMAGE:${{ matrix.component }}-${{ matrix.version }}"
+            if [ "${{ matrix.latest }}" = true ]; then echo "$IMAGE:${{ matrix.component }}"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # pull requests only prove that the image builds for both architectures
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
-          context: ${{ env.CONTEXT }}
+          context: ${{ matrix.context }}
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.tag.outputs.hash }}
-            ${{ env.IMAGE }}:latest
+          push: ${{ github.event_name != 'pull_request' }}
+          build-args: ${{ matrix.arg }}=${{ matrix.version }}
+          tags: ${{ steps.tags.outputs.list }}

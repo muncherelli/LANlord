@@ -26,7 +26,8 @@
   become: true
   tags: [dns]
   vars:
-    image: lanlord-dns
+    image_repo: ghcr.io/muncherelli/lanlord/lanlord-server-component
+    image: "{{ image_repo }}:network-services"
     image_dir: /opt/lanlord/playbooks/dns/image
     state_root: /opt/lanlord/dns
     label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
@@ -50,25 +51,25 @@
         mode: "0750"
       when: dns_networks | length > 0
 
-    - name: work out the image tag from the files it is built from
-      ansible.builtin.shell: cat Dockerfile | sha256sum | cut -c1-12
-      args:
-        chdir: "{{ image_dir }}"
-      register: image_hash
-      changed_when: false
-      when: dns_networks | length > 0
-
-    - name: see whether the image is built
-      ansible.builtin.command: "docker image inspect {{ image }}:{{ image_hash.stdout }}"
-      register: image_present
+    # the image holds only dnsmasq; the configuration is mounted. pull first, which is how the
+    # rolling tag moves forward, and build the same Dockerfile here when it cannot be pulled
+    - name: pull the published image
+      ansible.builtin.command: "docker pull --quiet {{ image }}"
+      register: image_pull
       changed_when: false
       failed_when: false
       when: dns_networks | length > 0
 
-    - name: build the image here
-      ansible.builtin.command: "docker build --quiet -t {{ image }}:{{ image_hash.stdout }} {{ image_dir }}"
+    - name: build the image here when it could not be pulled
+      ansible.builtin.command: "docker build --quiet -t {{ image }} {{ image_dir }}"
       changed_when: true
-      when: dns_networks | length > 0 and image_present.rc != 0
+      when: dns_networks | length > 0 and image_pull.rc != 0
+
+    - name: look at the image
+      ansible.builtin.command: "docker image inspect --format '{% raw %}{{.Id}}{% endraw %}' {{ image }}"
+      register: image_id
+      changed_when: false
+      when: dns_networks | length > 0
 
     - name: move a single dnsmasq from before there was one per network
       ansible.builtin.include_tasks: dns-migrate.yml

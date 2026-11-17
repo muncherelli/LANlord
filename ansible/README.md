@@ -64,9 +64,14 @@ networks:
 
 Settings from before there was a list still work: a `dns:` section, `docker.internal_address` and the interface settings are read as one network called `retronet`, and the first `lanlord networks` change writes them back as a `networks:` list (and removes the old keys). On the first apply the single `lanlord-dns` container is replaced by `lanlord-dns-retronet`, and its leases move into `/opt/lanlord/dns/retronet`, so clients keep their leases. `lanlord networks list` shows a network read this way, and says so. The playbooks read both shapes through `playbooks/filter_plugins/lanlord.py` and `playbooks/networks.yml`.
 
-## The Samba image
+## The server component images
 
-`playbooks/nt4-domain/image/` is built by CI and published to `ghcr.io/muncherelli/lanlord-samba-nt4`. The tag is a hash of the three files in that folder, and the playbook computes the same hash on the gateway, so it always pulls the image that matches the files it was sent. If the pull fails, or `nt4-domain.build_locally` is true, it builds the same image on the gateway instead.
+CI publishes one image, `ghcr.io/muncherelli/lanlord/lanlord-server-component`, with a tag per component:
+
+- `nt4` (rolling) and `nt4-<samba version>` (for example `nt4-4.22.11`, never changes): samba built from the signature-checked source tarball as a classic (non-AD) server, with SMB1/NT1 still allowed. Its Dockerfile is in `playbooks/nt4-domain/image/`, next to the samba release key it checks the tarball against.
+- `network-services` (rolling) and `network-services-<dnsmasq version>`: dnsmasq on Alpine, from `playbooks/dns/image/`.
+
+The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf` and `dnsmasq.conf` are mounted into the container when it runs, so a rolling tag keeps working with older LANlord installs. Without `nt4-domain.samba_version` the playbook follows `nt4`; with it (say `4.22.11`) it runs `nt4-4.22.11`. Each apply pulls the tag first, which is how a rolling tag moves forward; if the pull fails it builds the same Dockerfile on the gateway instead.
 
 ## Joining NT4 machines
 

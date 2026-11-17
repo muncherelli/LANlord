@@ -41,6 +41,7 @@ const FILES: &[(&str, &str)] = &[
     playbook!("nt4-domain/image/Dockerfile"),
     playbook!("nt4-domain/image/entrypoint.sh"),
     playbook!("nt4-domain/image/lanlord-user"),
+    playbook!("nt4-domain/image/samba-pubkey.asc"),
 ];
 
 /// the playbooks as a tar archive.

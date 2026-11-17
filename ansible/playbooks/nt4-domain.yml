@@ -10,8 +10,7 @@
 #   netbios_name: LANLORD        # the server's name; default: this machine's hostname
 #   network: retronet            # which lanlord network it is on; default: the first (see networks.yml)
 #   address: 172.16.120.1/22     # default: that network's address
-#   build_locally: false         # true builds the image on the gateway instead of pulling the published one
-#   image: ghcr.io/you/samba     # another image name (tag is still a hash of the files)
+#   samba_version: 4.22.11       # which samba to run (tag nt4-<version>); default: follow the rolling nt4 tag
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
 #   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
 #   software: false              # true adds a software share (S: at logon): domain users read it,
@@ -32,8 +31,10 @@
   become: true
   tags: [nt4-domain]
   vars:
-    # the tag is a hash of the files the image is built from, so one tag is one content
-    image: "{{ (lookup('ansible.builtin.vars', 'nt4-domain', default={})).image | default('ghcr.io/muncherelli/lanlord-samba-nt4') }}"
+    # the image holds only samba; the scripts and config are mounted from here when it runs
+    image_repo: ghcr.io/muncherelli/lanlord/lanlord-server-component
+    samba_version: "{{ (lookup('ansible.builtin.vars', 'nt4-domain', default={})).samba_version | default('') }}"
+    image: "{{ image_repo }}:{{ ('nt4-' ~ samba_version) if samba_version | string | length > 0 else 'nt4' }}"
     image_dir: /opt/lanlord/playbooks/nt4-domain/image
     container: lanlord-nt4
     state_dir: /opt/lanlord/nt4
@@ -86,6 +87,7 @@
       loop:
         - "{{ state_dir }}"
         - "{{ state_dir }}/config"
+        - "{{ state_dir }}/bin"
       when: nt4 is defined
 
     # samba's directory holds the shares, so domain users must be able to pass through it; the
@@ -105,29 +107,50 @@
       register: smb_conf
       when: nt4 is defined
 
-    - name: work out the image tag from the files it is built from
-      ansible.builtin.shell: cat Dockerfile entrypoint.sh lanlord-user | sha256sum | cut -c1-12
-      args:
-        chdir: "{{ image_dir }}"
-      register: image_hash
-      changed_when: false
-      when: nt4 is defined
-
+    # the pull is how a rolling tag moves forward; when it cannot be pulled (offline, or the
+    # package is private) the same Dockerfile is built here, from the source tarball
     - name: pull the published image
-      ansible.builtin.command: "docker pull --quiet {{ image }}:{{ image_hash.stdout }}"
+      ansible.builtin.command: "docker pull --quiet {{ image }}"
       register: image_pull
       changed_when: false
       failed_when: false
-      when: nt4 is defined and not (nt4.build_locally | default(false))
+      when: nt4 is defined
 
-    # not published yet, or the package is private: build the same image here
     - name: build the image here when it could not be pulled
-      ansible.builtin.command: "docker build --quiet -t {{ image }}:{{ image_hash.stdout }} {{ image_dir }}"
+      ansible.builtin.command: >-
+        docker build --quiet -t {{ image }}
+        {{ ('--build-arg SAMBA_VERSION=' ~ samba_version) if samba_version | string | length > 0 else '' }}
+        {{ image_dir }}
       changed_when: false
-      when: nt4 is defined and (nt4.build_locally | default(false) or image_pull.rc != 0)
+      when: nt4 is defined and image_pull.rc != 0
+
+    # the scripts are mounted, so a changed script needs a new container: it is remembered as a label
+    # the playbook files are not executable, so the scripts are copied to a folder that is mounted
+    - name: copy the scripts the container runs
+      ansible.builtin.copy:
+        src: "{{ image_dir }}/{{ item }}"
+        dest: "{{ state_dir }}/bin/{{ item }}"
+        remote_src: true
+        mode: "0755"
+      loop: [entrypoint.sh, lanlord-user]
+      when: nt4 is defined
+
+    - name: work out the version of the scripts
+      ansible.builtin.shell: cat entrypoint.sh lanlord-user | sha256sum | cut -c1-12
+      args:
+        chdir: "{{ state_dir }}/bin"
+      register: scripts_hash
+      changed_when: false
+      when: nt4 is defined
+
+    - name: look at the image the container uses
+      ansible.builtin.command: "docker image inspect --format '{% raw %}{{.Id}}{% endraw %}' {{ image }}"
+      register: image_id
+      changed_when: false
+      when: nt4 is defined
 
     - name: see which image the container uses
-      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Config.Image}}{% endraw %}' {{ container }}"
+      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Image}} {{index .Config.Labels \"lanlord.scripts\"}}{% endraw %}' {{ container }}"
       register: current
       changed_when: false
       failed_when: false
@@ -135,7 +158,7 @@
 
     - name: replace the container when it is new, stopped or out of date
       when: >-
-        nt4 is defined and (current.stdout != 'true ' ~ image ~ ':' ~ image_hash.stdout
+        nt4 is defined and (current.stdout != 'true ' ~ image_id.stdout ~ ' ' ~ scripts_hash.stdout
         or smb_conf is changed)
       block:
         - name: replace the container, keeping the old one until the new one is healthy
@@ -146,9 +169,12 @@
             rc_retries: 20
             rc_run: >-
               docker run -d --name {{ container }} --network host --restart unless-stopped
+              --label lanlord.scripts={{ scripts_hash.stdout }}
+              -v {{ state_dir }}/bin/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+              -v {{ state_dir }}/bin/lanlord-user:/usr/local/bin/lanlord-user:ro
               -v {{ state_dir }}/lib:/var/lib/samba
               -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
-              {{ image }}:{{ image_hash.stdout }}
+              {{ image }}
 
     - name: wait for samba to answer
       ansible.builtin.command: "docker exec {{ container }} smbcontrol smbd ping"
