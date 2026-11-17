@@ -38,13 +38,14 @@ chmod 0600 /run/lanlord/settings.yml
   echo "ansible is not installed on the gateway; run lanlord bootstrap --ansible remote first" >&2
   exit 1
 fi
-install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/playbooks
+install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/.ansible /opt/lanlord/.ansible/tmp /opt/lanlord/playbooks
 base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tar -x -C /opt/lanlord/playbooks
 {payload}
 LANLORD_PAYLOAD
 {stage}cd /opt/lanlord
 sudo -n -u lanlord env HOME=/opt/lanlord PYTHONDONTWRITEBYTECODE=1 ANSIBLE_NOCOLOR=1 \
   ANSIBLE_PYTHON_INTERPRETER=auto_silent ANSIBLE_LOCAL_TEMP=/opt/lanlord/.ansible/tmp \
+  ANSIBLE_REMOTE_TEMP=/opt/lanlord/.ansible/tmp ANSIBLE_HOME=/opt/lanlord/.ansible \
   /opt/lanlord/venv/bin/ansible-playbook -i localhost,{vars}{tags} /opt/lanlord/playbooks/site.yml
 "#,
         payload = payload::archive_base64()?,

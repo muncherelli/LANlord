@@ -234,14 +234,17 @@ impl Session {
         let mut captured = String::new();
         for (is_err, line) in rx {
             if is_err {
-                emit(Kind::Err, line.as_str());
                 captured.push_str(&line);
                 captured.push('\n');
-            } else {
-                emit(Kind::Out, line.as_str());
             }
-            if let Some(sink) = sink.as_mut() {
-                sink(&line);
+            // a sink shows the line itself, so the log only keeps it as a debug line
+            match (sink.as_mut(), is_err) {
+                (Some(sink), _) => {
+                    emit(Kind::Debug, line.as_str());
+                    sink(&line);
+                }
+                (None, true) => emit(Kind::Err, line.as_str()),
+                (None, false) => emit(Kind::Out, line.as_str()),
             }
         }
         for reader in readers {

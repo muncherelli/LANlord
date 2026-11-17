@@ -413,6 +413,20 @@ esac"#
     }
 
     #[test]
+    fn the_servers_lines_reach_the_log_only_as_debug_so_they_print_once() {
+        let server = Server::new("once", None, FINE);
+        let log = crate::log::subscribe();
+        let (result, _) = install(&server);
+        result.unwrap();
+        let shown: Vec<_> = log
+            .try_iter()
+            .filter(|l| l.text == "play: baseline" || l.text == "setting up")
+            .collect();
+        assert!(!shown.is_empty());
+        assert!(shown.iter().all(|l| l.kind == Kind::Debug));
+    }
+
+    #[test]
     fn a_partial_install_resumes_after_the_step_it_finished() {
         let server = Server::new("resume", Some("bootstrap"), FINE);
         let (result, events) = install(&server);
