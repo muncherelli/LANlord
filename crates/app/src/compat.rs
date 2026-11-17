@@ -2,7 +2,7 @@
 //! kept for every window that shows it (My Server's Compatibility tab, the Components wizard and
 //! the taskbar alert). nothing reads it until something needs it, and a Re-check reads it again.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// the one mapping from a status to its mark, for the front ends that draw it.
 pub use lanlord_model::compat::{mark, parse_mark};
@@ -31,7 +31,7 @@ pub struct Compat(Arc<Mutex<Remote<Report>>>);
 
 impl Compat {
     fn remote(&self) -> MutexGuard<'_, Remote<Report>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// pick up a finished read; the report of `host` once it is there.
