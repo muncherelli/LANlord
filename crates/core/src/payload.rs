@@ -35,12 +35,15 @@ const FILES: &[(&str, &str)] = &[
     playbook!("webui-login.yml"),
     playbook!("dns/dnsmasq.conf.j2"),
     playbook!("dns/image/Dockerfile"),
+    playbook!("dns/image/VERSION"),
     playbook!("web-proxy/Caddyfile.j2"),
     playbook!("status/lanlord-status.sh"),
     playbook!("nt4-domain/smb.conf.j2"),
     playbook!("nt4-domain/image/Dockerfile"),
     playbook!("nt4-domain/image/entrypoint.sh"),
     playbook!("nt4-domain/image/lanlord-user"),
+    playbook!("nt4-domain/image/samba-pubkey.asc"),
+    playbook!("nt4-domain/image/VERSION"),
 ];
 
 /// the playbooks as a tar archive.

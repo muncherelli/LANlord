@@ -441,7 +441,7 @@ mod native {
             "note: settings.age is the only copy of the stored secrets",
             "remove container lanlord-nt4",
             "remove container lanlord-dns",
-            "remove image ghcr.io/muncherelli/lanlord-samba-nt4:3f2a9c1d7e44",
+            "remove image ghcr.io/muncherelli/lanlord-nt4-server-components:1.0.0",
             "remove unit lanlord-firewall.service",
             "remove the firewall table inet lanlord",
             "remove /opt/lanlord",
