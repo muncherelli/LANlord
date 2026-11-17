@@ -178,6 +178,14 @@ pub enum Node<M> {
         max_height: f32,
         body: Vec<Node<M>>,
     },
+    /// the white band at the top of a wizard page.
+    Banner(crate::view_wizard::Banner),
+    /// a list of tick boxes with icons.
+    CheckList(crate::view_wizard::CheckList<M>),
+    /// a sunken box of wrapped text, like the description under a setup list.
+    Description(String),
+    /// a text field that says which one it is.
+    KeyedInput(crate::view_wizard::KeyedInput<M>),
 }
 
 impl<M> Node<M> {

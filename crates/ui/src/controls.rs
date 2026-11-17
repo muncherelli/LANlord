@@ -39,7 +39,6 @@ pub fn field<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// a one-line edit box `width` points wide (the text area; the frame adds a few more).
-#[cfg(test)]
 pub fn edit(ui: &mut Ui, text: &mut String, width: f32) -> Response {
     field(ui, |ui| {
         ui.add(

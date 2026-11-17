@@ -75,6 +75,8 @@ pub struct State<'a> {
     pub updates: bool,
     /// this is a development build with a Developer submenu.
     pub developer: bool,
+    /// the positions in `MODULES` of the components this host has switched on.
+    pub modules: Vec<usize>,
 }
 
 /// the line at the top of the menu naming the server every action targets.
@@ -99,7 +101,8 @@ pub fn rows(state: &State) -> Vec<Row> {
         )));
     }
     rows.push(Row::Separator);
-    rows.extend(MODULES.iter().enumerate().map(|(i, m)| {
+    rows.extend(state.modules.iter().map(|&i| {
+        let m = &MODULES[i];
         Row::Item(Item {
             art: Some(m.id),
             ..Item::new(m.name, Action::Open(Target::Module(i)))
@@ -116,6 +119,10 @@ pub fn rows(state: &State) -> Vec<Row> {
             ..Item::new(target.title(), Action::Open(target))
         }));
     }
+    rows.push(Row::Item(Item {
+        enabled: state.host.is_some(),
+        ..Item::new("Add/Remove Components...", Action::Open(Target::Components))
+    }));
     rows.push(Row::Separator);
     for (label, power) in [
         ("Reboot server...", Power::Reboot),
