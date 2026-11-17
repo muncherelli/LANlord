@@ -55,6 +55,16 @@ Double-click the clock in the taskbar to open Date/Time Properties for the serve
 
 `lanlord purge HOST` removes LANlord from a server: its containers and images, `/opt/lanlord`, the firewall rules, the `lanlord` service account, the `admins` group and the sudo rules. It first lists everything it would remove and the data you would lose, then asks you to type the host name. The Docker engine, `/etc/motd` and the accounts of people stay unless you pass `--remove-admins` (root login only). Note that `settings.age` is the only copy of the stored secrets.
 
+## Running a development build
+
+`tools/dev.sh` opens a build from a checkout without installing anything:
+
+- `tools/dev.sh gui` and `tools/dev.sh tui` build and open the desktop window or the terminal ui. Add `--demo` for canned data and a fake update (no server is touched), `--clean` for an empty config in a throwaway folder, `--open dns,networks` to start with windows open, and `--release` for an optimised build.
+- `tools/dev.sh app` builds and installs the macOS app, and `tools/dev.sh web` builds the browser version.
+- `cargo gui` and `cargo tui` are shorter ways to run the same builds.
+
+`tools/dev-launchers.sh install` creates launchers for them (app bundles in `~/Applications` on macOS, desktop entries on Linux): the GUI and TUI from your checkout's debug build, and a preview build that merges `origin/trunk` with every open pull request (the ones that conflict are skipped and listed), with a Preview Update launcher that rebuilds it. It keeps launchers that already exist unless you pass `--force`, and `tools/dev-launchers.sh remove --yes` takes them away. A debug build also has a Developer entry in the LANlord menu that rebuilds and relaunches it.
+
 ## Supported platforms
 
 The gateway is the machine LANlord manages. The client is where you run `lanlord`.
