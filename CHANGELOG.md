@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Each account gets a role (Administrators, Operators or Users, or one you define) that says what it may see and change in each area; windows and menu items you may not use are hidden
+- My Account for everyone: edit your profile and change your password, which is changed on every linked account or on none
+- Users and Permissions window for administrators: roles, a grid of areas and levels, and who has which role
 - The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
 - The web interface logs in with the gateway's accounts and keeps sessions (#101)
 - The browser desktop runs every server operation over HTTP (#98)

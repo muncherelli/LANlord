@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use crate::access::{Grants, Need};
+
 /// who the gateway says you are once signed in.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Identity {
@@ -13,6 +15,10 @@ pub struct Identity {
     /// reaches the server as that account, so it counts; the web ui says it per session.
     #[serde(default = "admin_by_default")]
     pub admin: bool,
+    /// what the gateway lets this account do, area by area; `None` until the front end has
+    /// asked (see [`Identity::grants`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Grants>,
 }
 
 fn admin_by_default() -> bool {
@@ -22,6 +28,20 @@ fn admin_by_default() -> bool {
 impl Identity {
     pub fn is_root(&self) -> bool {
         self.uid == 0
+    }
+
+    /// the level of every area: what the gateway said, or the built-in roles' idea of an
+    /// administrator and of everyone else until it has.
+    pub fn grants(&self) -> Grants {
+        self.grants
+            .clone()
+            .unwrap_or_else(|| Grants::fallback(self.admin))
+    }
+
+    /// may this account do something that needs `need`? front ends use it to hide and to make
+    /// read-only; the server checks again.
+    pub fn allows(&self, need: Need) -> bool {
+        self.grants().allows(need)
     }
 }
 

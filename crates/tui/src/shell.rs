@@ -435,6 +435,9 @@ impl Shell {
     }
 
     pub fn open(&mut self, target: Target) {
+        if !target.visible(&self.grants()) {
+            return;
+        }
         if let Some(i) = self.windows.iter().position(|w| w.target == target) {
             let mut win = self.windows.remove(i);
             win.minimized = false;
@@ -563,13 +566,21 @@ impl Shell {
             .flatten()
     }
 
+    /// what the signed-in account may do; the demo and a local shell may do everything.
+    fn grants(&self) -> lanlord_core::access::Grants {
+        self.signed_in.as_ref().map_or_else(
+            || lanlord_core::access::Grants::fallback(true),
+            |s| s.identity.grants(),
+        )
+    }
+
     fn menu_state(&self) -> Vec<Row> {
         let host = self.host();
         menu::rows(&menu::State {
             host: host.as_deref(),
             signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
             switch_server: true,
-            admin: self.signed_in.as_ref().is_none_or(|s| s.identity.admin),
+            grants: self.grants(),
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
             updates: Some(false),
             developer: false,
@@ -805,7 +816,9 @@ impl Shell {
                     drive(&nodes, &mut pass, &state, palette).0
                 }
             },
-            Target::Networks => drive::<()>(&not_yet(), &mut pass, &state, palette).0,
+            Target::Networks | Target::MyAccount | Target::Permissions => {
+                drive::<()>(&not_yet(), &mut pass, &state, palette).0
+            }
         };
         if state.focus.is_none() {
             state.focus = answer.want_focus.clone();

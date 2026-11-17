@@ -10,8 +10,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::access::{Access, Area, Need, Profile};
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use crate::doctor::Report;
+use crate::identity::{AccountInfo, PasswordReport};
 use crate::leases::Lease;
 use crate::netstatus::InterfaceStatus;
 use crate::network::Internal;
@@ -83,6 +85,54 @@ pub enum Op {
     ClockUpdateNow,
     /// what the server can do for lanlord's networks, and how to fix what it cannot.
     Doctor,
+    /// the caller's own account: profile, roles, what they may do and the linked accounts.
+    AccountInfo,
+    /// change the caller's own password on every linked account, all or none. the old
+    /// password is checked first.
+    ChangePassword { old: Secret, new: Secret },
+    /// change the caller's own profile fields.
+    UpdateProfile { profile: Profile },
+    /// set the password of `user` on every linked account, all or none.
+    ResetPassword { user: String, new: Secret },
+    /// the roles and who has them.
+    LoadAccess,
+    /// store the roles and who has them.
+    SaveAccess { access: Access },
+}
+
+impl Op {
+    /// what this op needs from its caller. the match has no catch-all on purpose: a new op does
+    /// not compile until it says what it needs.
+    pub fn requires(&self) -> Need {
+        match self {
+            Op::Bootstrap => Need::manage(Area::Updates),
+            Op::Apply { .. } => Need::manage(Area::Services),
+            Op::LoadDocument => Need::view(Area::Services),
+            Op::SaveDocument { .. } => Need::manage(Area::Services),
+            Op::Probe => Need::view(Area::Network),
+            Op::ChangeUsers { .. } => Need::manage(Area::Domain),
+            Op::ResetMachine { .. } => Need::manage(Area::Domain),
+            Op::CreateAdmin { .. } => Need::manage(Area::Users),
+            Op::Leases => Need::view(Area::Network),
+            Op::LogonScripts | Op::ReadLogon { .. } | Op::ReadGeneratedLogon => {
+                Need::view(Area::Shares)
+            }
+            Op::WriteLogon { .. } => Need::manage(Area::Shares),
+            Op::Run { .. } => Need::manage(Area::Commands),
+            Op::Power { .. } => Need::manage(Area::Status),
+            Op::ServerFacts | Op::Doctor => Need::view(Area::Status),
+            Op::NetworkStatus => Need::view(Area::Network),
+            Op::PurgePreview { .. } => Need::view(Area::Updates),
+            Op::Purge { .. } => Need::manage(Area::Updates),
+            Op::ClockState | Op::ClockZones | Op::ClockZoneNow { .. } => Need::view(Area::Clock),
+            Op::ClockApply { .. } | Op::ClockUpdateNow => Need::manage(Area::Clock),
+            Op::AccountInfo | Op::ChangePassword { .. } | Op::UpdateProfile { .. } => {
+                Need::SelfOnly
+            }
+            Op::ResetPassword { .. } | Op::SaveAccess { .. } => Need::manage(Area::Users),
+            Op::LoadAccess => Need::view(Area::Users),
+        }
+    }
 }
 
 /// a secret setting to change: its path in the settings and the new value.
@@ -176,6 +226,10 @@ pub enum Reply {
     },
     /// what the server can and cannot do, from `lanlord doctor`.
     Doctor(Report),
+    Account(AccountInfo),
+    /// how a password change went on each linked account.
+    Password(PasswordReport),
+    Access(Access),
     /// the server needs the sudo password: a front end that cannot answer a prompt while an op
     /// runs (the web ui) asks the person and sends the same op again in a [`Request`] carrying
     /// it. the terminal and the desktop answer the prompt directly and never see this.
@@ -214,6 +268,7 @@ impl<E: std::fmt::Display> From<Result<Reply, E>> for Response {
 mod tests {
     use super::*;
     use crate::clock::{NtpChange, Sync};
+    use crate::identity::{LinkReport, LinkState};
     use crate::server::Iface;
 
     fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(
@@ -306,14 +361,60 @@ mod tests {
             },
             Op::ClockUpdateNow,
             Op::Doctor,
+            Op::AccountInfo,
+            Op::ChangePassword {
+                old: Secret::new("pw"),
+                new: Secret::new("pw2"),
+            },
+            Op::UpdateProfile {
+                profile: Profile {
+                    full_name: "Dana Example".into(),
+                    description: String::new(),
+                },
+            },
+            Op::ResetPassword {
+                user: "dana".into(),
+                new: Secret::new("pw2"),
+            },
+            Op::LoadAccess,
+            Op::SaveAccess {
+                access: Access::default(),
+            },
         ]
+    }
+
+    #[test]
+    fn every_op_says_what_it_needs() {
+        use crate::access::Level;
+        // each op has an entry (the match in `requires` is exhaustive); spot-check the ends
+        for op in every_op() {
+            let _ = op.requires();
+        }
+        assert_eq!(Op::Leases.requires(), Need::view(Area::Network));
+        assert_eq!(
+            Op::Purge {
+                remove_admins: false
+            }
+            .requires(),
+            Need::Area(Area::Updates, Level::Manage)
+        );
+        assert_eq!(Op::AccountInfo.requires(), Need::SelfOnly);
+        // nothing that changes something needs less than Manage
+        for op in every_op() {
+            if matches!(op, Op::Apply { .. } | Op::Power { .. } | Op::Run { .. }) {
+                assert!(
+                    matches!(op.requires(), Need::Area(_, Level::Manage)),
+                    "{op:?}"
+                );
+            }
+        }
     }
 
     #[test]
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 25);
+        assert_eq!(ops.len(), 31);
         for op in &ops {
             round_trip(op);
         }
@@ -389,6 +490,15 @@ mod tests {
             Reply::Doctor(Report::parse(
                 "virt_container=none\nvirt_vm=none\nlink_bridge=ok\n",
             )),
+            Reply::Access(Access::default()),
+            Reply::Account(AccountInfo::default()),
+            Reply::Password(PasswordReport {
+                ok: false,
+                links: vec![LinkReport {
+                    link: "Linux account".into(),
+                    state: LinkState::Failed("no".into()),
+                }],
+            }),
         ];
         for reply in &replies {
             round_trip(reply);

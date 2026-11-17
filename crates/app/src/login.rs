@@ -775,6 +775,7 @@ pub mod fake {
             user: user.into(),
             uid,
             admin: true,
+            grants: None,
         }
     }
 

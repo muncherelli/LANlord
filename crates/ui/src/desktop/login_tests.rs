@@ -674,6 +674,7 @@ mod web {
         // the account loses its rights while the box is up
         if let Some(s) = desktop.signed_in.as_mut() {
             s.identity.admin = false;
+            s.identity.grants = Some(lanlord_model::access::Grants::fallback(false));
         }
         frames(&mut desktop, &ctx, 3);
         press(&mut desktop, &ctx, "OK");

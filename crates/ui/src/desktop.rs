@@ -35,15 +35,20 @@ use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
 use crate::update_panel::{Choice, Updates};
 use crate::view;
 use crate::windows;
+use lanlord_app::account_window::AccountWindow;
 use lanlord_app::console::Console;
 use lanlord_app::desktop::Target;
 use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::login::WebSession;
+use lanlord_app::permissions_window::PermissionsWindow;
+use lanlord_app::remote::Remote;
 use lanlord_app::services::Services;
 use lanlord_app::tasks::PasswordRequest;
 use lanlord_app::welcome::Welcome;
 use lanlord_app::{hosts_window, module_window};
+use lanlord_model::access::Grants;
+use lanlord_model::identity::AccountInfo;
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
@@ -72,6 +77,10 @@ pub struct Desktop {
     ctx: egui::Context,
     settings: SettingsEditor,
     nt4: Nt4Window,
+    account: AccountWindow,
+    permissions: PermissionsWindow,
+    /// what the gateway says the signed-in account may do, fetched once after logon.
+    grants_remote: Remote<AccountInfo>,
     dns: DnsPanel,
     commands: CommandPanel,
     my_server: MyServer,
@@ -154,6 +163,9 @@ impl Desktop {
             services,
             settings: SettingsEditor::default(),
             nt4: Nt4Window::default(),
+            account: AccountWindow::default(),
+            permissions: PermissionsWindow::default(),
+            grants_remote: Remote::default(),
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             my_server: MyServer::default(),
@@ -253,9 +265,38 @@ impl Desktop {
 }
 
 impl Desktop {
-    /// is the account an administrator? one that signed in without the flag (local) is.
-    fn is_admin(&self) -> bool {
-        self.signed_in.as_ref().is_none_or(|s| s.identity.admin)
+    /// what the signed-in account may do; one that signed in without a logon (local) may do all.
+    fn grants(&self) -> Grants {
+        self.signed_in
+            .as_ref()
+            .map_or_else(|| Grants::fallback(true), |s| s.identity.grants())
+    }
+
+    /// ask the gateway once what the account may do, and keep the answer for the menus.
+    fn refresh_grants(&mut self) {
+        if self.grants_remote.poll() {
+            let grants = self.grants_remote.data.as_ref().map(|i| i.grants.clone());
+            // an answer never replaces grants the account already has
+            if let Some(signed_in) = self
+                .signed_in
+                .as_mut()
+                .filter(|s| s.identity.grants.is_none())
+            {
+                signed_in.identity.grants = grants;
+            }
+        }
+        let Some(host) = self.host() else { return };
+        let pending = self
+            .signed_in
+            .as_ref()
+            .is_some_and(|s| s.identity.grants.is_none());
+        if pending && self.grants_remote.wants_load(&host, false) {
+            let target = host.clone();
+            let job = self
+                .services
+                .quiet(move |gateway| gateway.account_info(&target, &mut lanlord_app::ask::never));
+            self.grants_remote.track(&host, Some(job), "", "", true);
+        }
     }
 
     /// drop everything one session left open: windows, dialogs and the state behind them, so the
@@ -273,6 +314,9 @@ impl Desktop {
         self.close_requests.clear();
         self.settings = SettingsEditor::default();
         self.nt4 = Nt4Window::default();
+        self.account = AccountWindow::default();
+        self.permissions = PermissionsWindow::default();
+        self.grants_remote = Remote::default();
         self.dns = DnsPanel::default();
         self.commands = CommandPanel::default();
         self.my_server = MyServer::default();
@@ -282,7 +326,7 @@ impl Desktop {
     }
 
     fn open(&mut self, target: Target) {
-        if target.needs_admin() && !self.is_admin() {
+        if !target.visible(&self.grants()) {
             return;
         }
         match self.windows.iter_mut().find(|w| w.target == target) {
@@ -293,7 +337,8 @@ impl Desktop {
                     self.clock.reset();
                 }
                 if target == Target::MyServer {
-                    self.my_server.set_read_only(!self.is_admin());
+                    self.my_server
+                        .set_read_only(!Target::MyServer.writable(&self.grants()));
                 }
                 if target == Target::Components {
                     self.components.open();
@@ -471,6 +516,9 @@ impl Desktop {
             self.updates.tick(&ctx);
             self.poll_rebuild(&ctx);
         }
+        self.refresh_grants();
+        self.account.poll();
+        self.permissions.poll();
         self.settings.poll();
         self.nt4.poll();
         self.dns.poll();
@@ -684,6 +732,20 @@ impl Desktop {
     }
 
     /// the modal boxes: a task's password prompt and the add-host box.
+    /// the Change Password box and the boxes of the permissions window.
+    fn account_dialogs(&mut self, ctx: &egui::Context, host: Option<&str>) {
+        if let Some(dialog) = self.account.dialog() {
+            if let (Some(msg), Some(host)) = (view::dialog(ctx, &dialog), host) {
+                self.account.update_dialog(msg, &self.services, host);
+            }
+        }
+        if let Some(dialog) = self.permissions.dialog() {
+            if let Some(msg) = view::dialog(ctx, &dialog) {
+                self.permissions.update_dialog(msg);
+            }
+        }
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.password.is_none() {
             self.password = self.services.next_request().map(|request| {
@@ -706,6 +768,7 @@ impl Desktop {
         let host = self.host();
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
+        self.account_dialogs(ctx, host.as_deref());
         self.networks.dialog(ctx);
         my_server::dialog(&mut self.my_server, ctx, &self.services);
         components_window::dialog(&mut self.components, ctx, &self.services, host.as_deref());
@@ -1150,7 +1213,8 @@ impl Desktop {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
             Target::MyServer => {
                 let host = self.host();
-                self.my_server.set_read_only(!self.is_admin());
+                self.my_server
+                    .set_read_only(!Target::MyServer.writable(&self.grants()));
                 my_server::show(&mut self.my_server, ui, &self.services, host.as_deref());
             }
             Target::Networks => {
@@ -1191,6 +1255,22 @@ impl Desktop {
                 }
                 if self.welcome.take_done() {
                     self.close_requests.push(Target::Welcome);
+                }
+            }
+            Target::MyAccount => {
+                let host = self.host();
+                let nodes = self.account.view(&self.services, host.as_deref());
+                if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host.as_deref()) {
+                    self.account.update(msg, &self.services, host);
+                }
+            }
+            Target::Permissions => {
+                let (host, writable) = (self.host(), Target::Permissions.writable(&self.grants()));
+                let nodes = self
+                    .permissions
+                    .view(&self.services, host.as_deref(), writable);
+                if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host.as_deref()) {
+                    self.permissions.update(msg, &self.services, host, writable);
                 }
             }
             Target::Components => {

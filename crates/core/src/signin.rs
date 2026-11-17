@@ -219,6 +219,7 @@ fn parse_identity(stdout: &str) -> Result<Identity, SigninError> {
         user: user.to_string(),
         uid,
         admin: true,
+        grants: None,
     })
 }
 

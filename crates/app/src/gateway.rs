@@ -7,8 +7,10 @@
 //! the web ui's `/api/op`.
 
 use anyhow::{anyhow, Result};
+use lanlord_model::access::{Access, Profile};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
+use lanlord_model::identity::{AccountInfo, PasswordReport};
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
@@ -142,6 +144,74 @@ pub trait Gateway: Send + Sync {
         match self.call(host, Op::Leases, ask)? {
             Reply::Leases(leases) => Ok(leases),
             other => Err(unexpected("leases", other)),
+        }
+    }
+
+    /// the signed-in person's own account.
+    fn account_info(&self, host: &str, ask: AskPassword) -> Result<AccountInfo> {
+        match self.call(host, Op::AccountInfo, ask)? {
+            Reply::Account(info) => Ok(info),
+            other => Err(unexpected("account_info", other)),
+        }
+    }
+
+    /// change the signed-in person's password on every linked account.
+    fn change_password(
+        &self,
+        host: &str,
+        old: &str,
+        new: &str,
+        ask: AskPassword,
+    ) -> Result<PasswordReport> {
+        let op = Op::ChangePassword {
+            old: Secret::new(old),
+            new: Secret::new(new),
+        };
+        match self.call(host, op, ask)? {
+            Reply::Password(report) => Ok(report),
+            other => Err(unexpected("change_password", other)),
+        }
+    }
+
+    /// change the signed-in person's own profile.
+    fn update_profile(&self, host: &str, profile: &Profile, ask: AskPassword) -> Result<()> {
+        let op = Op::UpdateProfile {
+            profile: profile.clone(),
+        };
+        done(self.call(host, op, ask)?, "update_profile")
+    }
+
+    /// the roles and who has them.
+    fn load_access(&self, host: &str, ask: AskPassword) -> Result<Access> {
+        match self.call(host, Op::LoadAccess, ask)? {
+            Reply::Access(access) => Ok(access),
+            other => Err(unexpected("load_access", other)),
+        }
+    }
+
+    /// store the roles and who has them.
+    fn save_access(&self, host: &str, access: &Access, ask: AskPassword) -> Result<()> {
+        let op = Op::SaveAccess {
+            access: access.clone(),
+        };
+        done(self.call(host, op, ask)?, "save_access")
+    }
+
+    /// set someone's password on every linked account.
+    fn reset_password(
+        &self,
+        host: &str,
+        user: &str,
+        new: &str,
+        ask: AskPassword,
+    ) -> Result<PasswordReport> {
+        let op = Op::ResetPassword {
+            user: user.into(),
+            new: Secret::new(new),
+        };
+        match self.call(host, op, ask)? {
+            Reply::Password(report) => Ok(report),
+            other => Err(unexpected("reset_password", other)),
         }
     }
 
@@ -736,6 +806,31 @@ mod fake {
                     Reply::ClockApplied { lines, stored }
                 }
                 Op::ClockUpdateNow => Reply::Lines(self.clock_update_now(host, ask)?),
+                Op::AccountInfo => {
+                    self.enter(format!("account {host}"), ask)?;
+                    Reply::Account(AccountInfo {
+                        grants: lanlord_model::access::Grants::all(
+                            lanlord_model::access::Level::Manage,
+                        ),
+                        ..AccountInfo::default()
+                    })
+                }
+                Op::ChangePassword { .. } | Op::ResetPassword { .. } => {
+                    self.enter(format!("password {host}"), ask)?;
+                    Reply::Password(PasswordReport::default())
+                }
+                Op::UpdateProfile { .. } => {
+                    self.enter(format!("profile {host}"), ask)?;
+                    Reply::Done
+                }
+                Op::LoadAccess => {
+                    self.enter(format!("load-access {host}"), ask)?;
+                    Reply::Access(Access::default())
+                }
+                Op::SaveAccess { .. } => {
+                    self.enter(format!("save-access {host}"), ask)?;
+                    Reply::Done
+                }
             })
         }
 
