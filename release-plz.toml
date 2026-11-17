@@ -5,7 +5,9 @@ publish = false
 git_only = true
 git_release_enable = false
 git_tag_enable = false
-changelog_update = false
+changelog_update = true
+# the sections and which commits go in them (feat, fix, perf and refactor; not chore, ci or test)
+changelog_config = "cliff.toml"
 pr_body = """
 ## release
 
@@ -22,35 +24,40 @@ name = "lanlord"
 git_release_enable = true
 git_tag_enable = true
 git_tag_name = "v{{ version }}"
-changelog_update = true
 changelog_path = "CHANGELOG.md"
 
 [[package]]
 name = "lanlord-model"
+changelog_update = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "lanlord-core"
+changelog_update = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "lanlord-app"
+changelog_update = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "lanlord-ui"
+changelog_update = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "lanlord-web"
+changelog_update = false
 git_release_enable = false
 git_tag_enable = false
 
 [[package]]
 name = "lanlord-auth-helper"
+changelog_update = false
 git_release_enable = false
 git_tag_enable = false
