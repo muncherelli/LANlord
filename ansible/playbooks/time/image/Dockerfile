@@ -11,9 +11,8 @@ LABEL org.opencontainers.image.title="lanlord-time-server-components" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       io.lanlord.chrony.version="${CHRONY_VERSION}"
-RUN apk add --no-cache "chrony~=${CHRONY_VERSION}" && rm -rf /etc/chrony /usr/share/doc /usr/share/man
 # the chrony package creates the chrony user; fail the build if it ever stops doing so
-RUN getent passwd chrony >/dev/null
+RUN apk add --no-cache "chrony~=${CHRONY_VERSION}" && rm -rf /etc/chrony /usr/share/doc /usr/share/man && getent passwd chrony >/dev/null
 # -x: serve time only, the host's clock is never touched (so no CAP_SYS_TIME); -d: stay in the
 # foreground and log to stdout; -u chrony: root only reads the config and binds udp 123, then
 # chronyd drops to the chrony user. no driftfile or log file is configured, and chronyd makes its
