@@ -69,6 +69,9 @@ impl PurgeBox {
         let job = services.spawn(&self.host, move |gateway, ask| {
             gateway.purge_preview(&host, admins, ask)
         });
+        if job.is_none() {
+            return;
+        }
         self.preview = Remote::default();
         self.preview.track(
             &self.host,
@@ -363,9 +366,12 @@ impl MyServer {
                 }
             }
             Msg::ToggleAdmins => {
+                let is_root = self.facts.data.as_ref().is_some_and(|f| f.is_root);
                 if let Some(purge) = self.purge.as_mut() {
-                    purge.remove_admins = !purge.remove_admins;
-                    purge.look(services);
+                    if is_root && !purge.running.busy() && !purge.preview.busy() {
+                        purge.remove_admins = !purge.remove_admins;
+                        purge.look(services);
+                    }
                 }
             }
             Msg::Typed(text) => {
@@ -431,6 +437,18 @@ mod tests {
         window.update(Msg::Remove, &services, "me@gw");
         assert!(!services.busy("me@gw"));
         assert!(!fake.calls().iter().any(|c| c.starts_with("purge me@gw")));
+    }
+
+    #[test]
+    fn the_admins_toggle_waits_for_the_preview() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = asked(&fake, &services);
+        window.update(Msg::ToggleAdmins, &services, "me@gw");
+        assert!(window.purge().is_some_and(|p| p.remove_admins()));
+        // the new preview is still running, so a second toggle is ignored
+        window.update(Msg::ToggleAdmins, &services, "me@gw");
+        assert!(window.purge().is_some_and(|p| p.remove_admins()));
     }
 
     #[test]

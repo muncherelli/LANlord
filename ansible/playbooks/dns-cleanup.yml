@@ -1,0 +1,38 @@
+# included by dns.yml when the settings have a networks list: remove the dnsmasq container and the
+# folder of every network that is no longer in it. only containers named lanlord-dns-<name> and
+# folders named like a network are touched; the files of the single dnsmasq that came before
+# (dnsmasq.conf and dnsmasq.leases straight in /opt/lanlord/dns) are not folders and stay.
+- name: work out which networks are wanted
+  ansible.builtin.set_fact:
+    dns_wanted: "{{ dns_networks | map(attribute='name') | list }}"
+
+- name: list the dnsmasq containers
+  ansible.builtin.command: "docker ps -a --filter 'name=^lanlord-dns-' --format '{% raw %}{{.Names}}{% endraw %}'"
+  register: dns_containers
+  changed_when: false
+
+- name: remove the containers of networks that are gone
+  ansible.builtin.command: "docker rm -f {{ item }}"
+  loop: "{{ dns_containers.stdout_lines }}"
+  # only names that start with lanlord-dns- are ever touched, whatever the list says
+  when: >-
+    item is match('^lanlord-dns-')
+    and item | regex_replace('^lanlord-dns-', '') | regex_replace('-prev$', '') not in dns_wanted
+    and item | regex_replace('^lanlord-dns-', '') is match(label_re)
+  changed_when: true
+
+- name: list the folders
+  ansible.builtin.find:
+    paths: "{{ state_root }}"
+    file_type: directory
+    recurse: false
+  register: dns_folders
+
+- name: remove the folders of networks that are gone
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ dns_folders.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: (item.path | basename) is match(label_re) and (item.path | basename) not in dns_wanted

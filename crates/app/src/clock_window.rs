@@ -203,6 +203,24 @@ pub struct ClockData {
     pub kept: Option<Stored>,
 }
 
+/// what to say after a change, beyond "applied", about keeping it in the settings.
+fn kept_text(kept: &Stored) -> Option<String> {
+    match kept {
+        Stored::Yes => Some("applied and kept in the settings".into()),
+        Stored::NoKey => Some(
+            "applied; not kept in the settings (no key yet), so an apply may undo it".into(),
+        ),
+        Stored::NotInstalled => Some(
+            "applied; LANlord is not installed on this server, so the change is not stored in its settings"
+                .into(),
+        ),
+        Stored::Failed(why) => Some(format!(
+            "applied, but could not be remembered in LANlord's settings: {why}"
+        )),
+        Stored::Nothing => None,
+    }
+}
+
 fn load(gateway: &dyn Gateway, host: &str, kept: Option<Stored>) -> Result<ClockData> {
     Ok(ClockData {
         state: gateway.clock_state(host)?,
@@ -493,13 +511,8 @@ impl ClockPanel {
             if let Some(data) = &self.remote.data {
                 self.loaded = Some(Loaded::new(data));
                 self.fresh = Some(data.state.clone());
-                match data.kept {
-                    Some(Stored::Yes) => self.remote.say(false, "applied and kept in the settings"),
-                    Some(Stored::NoKey) => self.remote.say(
-                        false,
-                        "applied; not kept in the settings (no key yet), so an apply may undo it",
-                    ),
-                    _ => {}
+                if let Some(text) = data.kept.as_ref().and_then(kept_text) {
+                    self.remote.say(false, &text);
                 }
             }
             self.close = std::mem::take(&mut self.close_after);

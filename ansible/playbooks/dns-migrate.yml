@@ -1,0 +1,50 @@
+# included by dns.yml: before there was one dnsmasq per network there was a single container,
+# lanlord-dns, with its files straight in /opt/lanlord/dns. it and the first network's dnsmasq
+# would both listen on the same address, so the old container is removed first, and its leases
+# move to the first network's folder so the dhcp clients keep their leases. nothing happens on a
+# machine that never had the single container.
+- name: look for the single dnsmasq container
+  ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' lanlord-dns"
+  register: old_container
+  changed_when: false
+  failed_when: false
+
+- name: look for its files
+  ansible.builtin.stat:
+    path: "{{ state_root }}/{{ item }}"
+  loop: [dnsmasq.leases, dnsmasq.conf]
+  register: old_files
+
+- name: work out what there is to move
+  ansible.builtin.set_fact:
+    old_exists: "{{ old_container.rc == 0 }}"
+    old_leases: "{{ old_files.results[0].stat.exists }}"
+    old_conf: "{{ old_files.results[1].stat.exists }}"
+    old_target: "{{ state_root }}/{{ (dns_networks | first).name }}"
+
+- name: remove the single dnsmasq container
+  ansible.builtin.command: "docker rm -f {{ item }}"
+  loop: [lanlord-dns, lanlord-dns-prev]
+  changed_when: true
+  failed_when: false
+  when: old_exists
+
+- name: make the first network's folder
+  ansible.builtin.file:
+    path: "{{ old_target }}"
+    state: directory
+    mode: "0750"
+  when: old_leases or old_conf
+
+- name: keep the leases
+  ansible.builtin.command: "mv {{ state_root }}/dnsmasq.leases {{ old_target }}/dnsmasq.leases"
+  args:
+    creates: "{{ old_target }}/dnsmasq.leases"
+  when: old_leases
+
+- name: drop the old copies
+  ansible.builtin.file:
+    path: "{{ state_root }}/{{ item }}"
+    state: absent
+  loop: [dnsmasq.leases, dnsmasq.conf]
+  when: old_leases or old_conf

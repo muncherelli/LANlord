@@ -105,8 +105,7 @@ mod tests {
     #[test]
     fn every_icon_has_its_own_id_and_the_clock_window_has_no_icon() {
         let icons = icons();
-        let mut ids: Vec<_> = icons.iter().map(|t| t.id()).collect();
-        ids.dedup();
+        let ids: std::collections::HashSet<_> = icons.iter().map(|t| t.id()).collect();
         assert_eq!(ids.len(), icons.len());
         assert!(!icons.contains(&Target::DateTime));
     }
