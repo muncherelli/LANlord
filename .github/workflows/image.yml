@@ -5,13 +5,15 @@ name: image
 #   network-services (rolling) and network-services-<dnsmasq version>
 # the images hold only upstream software; lanlord's scripts and config are mounted by the
 # playbooks, so a rolling tag stays compatible with older lanlord installs. to add a version,
-# add a line to .github/image-versions.json; `latest: true` marks the one the rolling tag points at (it is re-pointed on every run).
+# add a line to .github/image-versions.json; `latest: true` marks the one the rolling tag
+# points at (it is re-pointed on every run).
 #
-# a versioned tag is never overwritten: when it already exists the publish job skips its build.
-# the rolling tag is always re-pointed at the versioned tag marked latest, so it cannot get stuck. to deliberately reissue one (a
-# fixed Dockerfile, a newer alpine), add a line with the same `version` and a `tag` ending
-# in -r2 (then -r3, ...) and move `latest: true` to it. pull requests only build, and the
-# publish job, the only one with packages: write, runs on pushes alone.
+# a versioned tag is never overwritten: when it already exists the publish job skips its
+# build. the rolling tag is always re-pointed at the versioned tag marked latest, so it cannot
+# get stuck. to deliberately reissue one (a fixed Dockerfile, a newer alpine), add a line with
+# the same `version` and a `tag` ending in -r2 (then -r3, ...) and move `latest: true` to it.
+# pull requests only build, and the publish job, the only one with packages: write, runs on
+# pushes alone.
 on:
   push:
     branches: [trunk]

@@ -54,19 +54,22 @@
     # the image holds only dnsmasq; the configuration is mounted. pull first, which is how the
     # rolling tag moves forward, and build the same Dockerfile here when it cannot be pulled
     - name: pull the published image
-      ansible.builtin.command: "docker pull --quiet {{ image }}"
+      ansible.builtin.command:
+        argv: [docker, pull, --quiet, "{{ image }}"]
       register: image_pull
       changed_when: false
       failed_when: false
       when: dns_networks | length > 0
 
     - name: build the image here when it could not be pulled
-      ansible.builtin.command: "docker build --quiet -t {{ image }} {{ image_dir }}"
+      ansible.builtin.command:
+        argv: [docker, build, --quiet, -t, "{{ image }}", "{{ image_dir }}"]
       changed_when: true
       when: dns_networks | length > 0 and image_pull.rc != 0
 
     - name: look at the image
-      ansible.builtin.command: "docker image inspect --format '{% raw %}{{.Id}}{% endraw %}' {{ image }}"
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{% raw %}{{.Id}}{% endraw %}', "{{ image }}"]
       register: image_id
       changed_when: false
       when: dns_networks | length > 0

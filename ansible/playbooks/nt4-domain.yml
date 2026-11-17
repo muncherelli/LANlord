@@ -63,6 +63,7 @@
       ansible.builtin.assert:
         that:
           - nt4_mode in ['domain', 'workgroup']
+          - samba_version | string is match('^([0-9]+(\\.[0-9]+)*(-r[0-9]+)?)?$')
           - nt4_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
           - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
           - nt4_address is match('^[0-9.]+/[0-9]{1,2}$')
@@ -71,7 +72,7 @@
         fail_msg: >-
           nt4-domain settings: mode must be domain or workgroup; name is the domain or workgroup
           (up to 15 letters, digits, - or _); address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
-          a domain needs an admin_password
+          a domain needs an admin_password; samba_version looks like 4.22.11 or 4.22.11-r2
       when: nt4 is defined
 
     - name: check that docker is installed
@@ -110,17 +111,19 @@
     # the pull is how a rolling tag moves forward; when it cannot be pulled (offline, or the
     # package is private) the same Dockerfile is built here, from the source tarball
     - name: pull the published image
-      ansible.builtin.command: "docker pull --quiet {{ image }}"
+      ansible.builtin.command:
+        argv: [docker, pull, --quiet, "{{ image }}"]
       register: image_pull
       changed_when: false
       failed_when: false
       when: nt4 is defined
 
     - name: build the image here when it could not be pulled
-      ansible.builtin.command: >-
-        docker build --quiet -t {{ image }}
-        {{ ('--build-arg SAMBA_VERSION=' ~ (samba_version | string | regex_replace('-r[0-9]+$', ''))) if samba_version | string | length > 0 else '' }}
-        {{ image_dir }}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['docker', 'build', '--quiet', '-t', image]
+             + (['--build-arg', 'SAMBA_VERSION=' ~ (samba_version | string | regex_replace('-r[0-9]+$', ''))] if samba_version | string | length > 0 else [])
+             + [image_dir] }}
       changed_when: false
       when: nt4 is defined and image_pull.rc != 0
 
@@ -144,7 +147,8 @@
       when: nt4 is defined
 
     - name: look at the image the container uses
-      ansible.builtin.command: "docker image inspect --format '{% raw %}{{.Id}}{% endraw %}' {{ image }}"
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{% raw %}{{.Id}}{% endraw %}', "{{ image }}"]
       register: image_id
       changed_when: false
       when: nt4 is defined
