@@ -246,6 +246,14 @@ impl WebFiles {
 }
 
 #[derive(Subcommand)]
+enum BridgeMode {
+    /// answer requests until stdin ends (the default)
+    Serve,
+    /// greet and exit, to time the round trip
+    Hello,
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// open the native window
     Gui,
@@ -368,6 +376,13 @@ enum Command {
     /// read one operation as json on stdin, run it and print the reply as json
     #[command(hide = true)]
     Op { host: String },
+    /// run typed operations on this gateway for a controller; json frames, one per line, on
+    /// stdin and stdout (what lanlord starts over ssh; sudo for the ones that change things)
+    #[command(hide = true)]
+    Bridge {
+        #[command(subcommand)]
+        mode: Option<BridgeMode>,
+    },
     /// turn the nt4-domain software share (S: at logon) on or off, and apply it
     Software {
         host: String,
@@ -980,6 +995,18 @@ fn read_request(input: &str) -> serde_json::Result<Request> {
         .or_else(|_| serde_json::from_str::<Op>(input).map(|op| Request { op, password: None }))
 }
 
+/// the gateway side of `Session::bridge`: only protocol goes to stdout, logs go to stderr.
+fn bridge(mode: Option<BridgeMode>) -> Result<()> {
+    use lanlord_core::bridge::{run_local, serve};
+    let version = env!("CARGO_PKG_VERSION");
+    let mut out = std::io::stdout().lock();
+    if matches!(mode, Some(BridgeMode::Hello)) {
+        serve(std::io::empty(), &mut out, version, &mut run_local)
+    } else {
+        serve(std::io::stdin().lock(), &mut out, version, &mut run_local)
+    }
+}
+
 fn admin(host: &str, action: AdminCommand) -> Result<()> {
     use lanlord_core::admins::{change, list, Action};
     let action = match action {
@@ -1108,6 +1135,7 @@ fn main() -> Result<()> {
         Some(Command::Facts { host }) => facts(&host),
         Some(Command::Doctor { host, json }) => doctor(&host, json),
         Some(Command::Op { host }) => op(&host),
+        Some(Command::Bridge { mode }) => bridge(mode),
         Some(Command::Software { host, state }) => {
             let identity = crypto::load(&identity_path()?)?;
             let session = lanlord_core::ssh::Session::new(&host)?;
@@ -1419,6 +1447,13 @@ mod tests {
     #[test]
     fn op_is_hidden_from_help() {
         assert!(matches!(parse(&["op", "gw"]), Command::Op { host } if host == "gw"));
+        assert!(matches!(parse(&["bridge"]), Command::Bridge { mode: None }));
+        assert!(matches!(
+            parse(&["bridge", "serve"]),
+            Command::Bridge {
+                mode: Some(BridgeMode::Serve)
+            }
+        ));
         let help = Cli::command().render_help().to_string();
         assert!(help.contains("leases") && help.contains("facts") && help.contains("power"));
         assert!(
