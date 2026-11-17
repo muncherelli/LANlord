@@ -525,11 +525,40 @@ mod web {
         sign_in(&mut desktop, &ctx, "ann", "s3cret");
         until(&mut desktop, &ctx, logged_on);
         desktop.do_action(&ctx, Action::LogOff);
+        frames(&mut desktop, &ctx, 2);
         assert!(desktop.login.is_some() && desktop.signed_in.is_none());
         assert!(desktop.windows.is_empty() && !desktop.start_open);
-        assert_eq!(web.calls().last().map(String::as_str), Some("logout"));
+        assert!(web.calls().iter().any(|c| c == "logout"));
         assert_eq!(desktop.login.as_ref().unwrap().user, "ann");
         assert!(desktop.login.as_ref().unwrap().password_is_empty());
+    }
+
+    #[test]
+    fn a_logout_the_server_did_not_honour_keeps_the_person_signed_in() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        *web.keeps_session.lock().unwrap() = true;
+        *web.current.lock().unwrap() = Some(id("ann", 1000));
+        desktop.do_action(&ctx, Action::LogOff);
+        frames(&mut desktop, &ctx, 3);
+        assert!(logged_on(&desktop), "still signed in");
+        assert!(matches!(
+            desktop.confirm,
+            Some((crate::desktop::Confirm::Failure, _))
+        ));
+    }
+
+    #[test]
+    fn a_link_to_windows_waits_for_the_logon() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        desktop.open_spec_after_logon("console");
+        assert!(desktop.windows.is_empty());
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        assert!(desktop.windows.iter().any(|w| w.target == Target::Console));
     }
 
     #[test]

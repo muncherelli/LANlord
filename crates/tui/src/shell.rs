@@ -569,6 +569,7 @@ impl Shell {
             host: host.as_deref(),
             signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
             switch_server: true,
+            admin: self.signed_in.as_ref().is_none_or(|s| s.identity.admin),
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
             updates: Some(false),
             developer: false,

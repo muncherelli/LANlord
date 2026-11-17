@@ -72,6 +72,8 @@ pub struct State<'a> {
     pub signed_in: Option<&'a str>,
     /// a different server can be chosen at the logon box (not in the browser, which has one).
     pub switch_server: bool,
+    /// the signed-in account is an administrator; the power items are off for anyone else.
+    pub admin: bool,
     /// the server is there and nothing is running against it.
     pub ready: bool,
     /// automatic updates are on; `None` where lanlord is not updated from the menu (the browser).
@@ -134,7 +136,7 @@ pub fn rows(state: &State) -> Vec<Row> {
         ("Shut down server...", Power::PowerOff),
     ] {
         rows.push(Row::Item(Item {
-            enabled: state.ready,
+            enabled: state.ready && state.admin,
             ..Item::new(label, Action::Power(power))
         }));
     }
@@ -181,6 +183,7 @@ mod tests {
             host: Some("local"),
             signed_in: None,
             switch_server: true,
+            admin: true,
             ready: true,
             updates,
             developer: false,
@@ -201,6 +204,7 @@ mod tests {
             host: Some("local"),
             signed_in: Some("ann"),
             switch_server,
+            admin: true,
             ready: true,
             updates: None,
             developer: false,
@@ -214,6 +218,31 @@ mod tests {
         assert!(has(&state(true), "Switch server..."));
         assert!(!has(&state(false), "Switch server..."));
         assert!(has(&state(false), "Log off ann..."));
+    }
+
+    #[test]
+    fn only_an_admin_gets_the_power_items() {
+        let power = |admin| {
+            let state = State {
+                host: Some("local"),
+                signed_in: Some("ann"),
+                switch_server: false,
+                admin,
+                ready: true,
+                updates: None,
+                developer: false,
+                modules: Vec::new(),
+            };
+            rows(&state)
+                .into_iter()
+                .filter_map(|r| match r {
+                    Row::Item(i) if matches!(i.action, Action::Power(_)) => Some(i.enabled),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(power(true), [true, true]);
+        assert_eq!(power(false), [false, false]);
     }
 
     #[test]

@@ -9,6 +9,14 @@ use std::fmt;
 pub struct Identity {
     pub user: String,
     pub uid: u32,
+    /// may run the gateway's administrative actions (power, components). the ssh sign-in
+    /// reaches the server as that account, so it counts; the web ui says it per session.
+    #[serde(default = "admin_by_default")]
+    pub admin: bool,
+}
+
+fn admin_by_default() -> bool {
+    true
 }
 
 impl Identity {

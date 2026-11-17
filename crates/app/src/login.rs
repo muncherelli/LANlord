@@ -717,6 +717,8 @@ pub mod fake {
         pub logins: Mutex<VecDeque<Result<Identity, SigninError>>>,
         /// every call, as `login user password`, `current` or `logout`.
         pub calls: Mutex<Vec<String>>,
+        /// the server keeps the session when asked to end it.
+        pub keeps_session: Mutex<bool>,
     }
 
     impl FakeWeb {
@@ -752,7 +754,9 @@ pub mod fake {
 
         fn logout(&self) -> LocalFuture<()> {
             self.calls.lock().unwrap().push("logout".into());
-            *self.current.lock().unwrap() = None;
+            if !*self.keeps_session.lock().unwrap() {
+                *self.current.lock().unwrap() = None;
+            }
             Box::pin(async {})
         }
     }
@@ -761,6 +765,7 @@ pub mod fake {
         Identity {
             user: user.into(),
             uid,
+            admin: true,
         }
     }
 

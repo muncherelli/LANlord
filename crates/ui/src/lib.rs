@@ -127,7 +127,7 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
                 // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop,
                 // but only the ones that are safe to open from a link
                 if let Some(spec) = query("open") {
-                    desktop.open_spec(&safe_open_spec(&spec));
+                    desktop.open_spec_after_logon(&safe_open_spec(&spec));
                 }
                 Ok(Box::new(desktop))
             }),

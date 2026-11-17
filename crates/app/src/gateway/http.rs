@@ -165,8 +165,8 @@ impl WebSession for HttpSession {
     }
 }
 
-/// who `/api/session` says is logged on. the web ui does not tell a uid, so it is made up
-/// (above root's, so nothing treats the account as root).
+/// who `/api/session` says is logged on, and whether they are an admin. the api does not tell a
+/// uid, so one is made up (above root's, so nothing treats the account as root).
 async fn session_now() -> Option<Identity> {
     let (status, text) = fetch("GET", "/api/session", None).await.ok()?;
     if status != 200 {
@@ -176,6 +176,7 @@ async fn session_now() -> Option<Identity> {
     Some(Identity {
         user: value.get("user")?.as_str()?.to_string(),
         uid: 1000,
+        admin: value.get("admin")?.as_bool()?,
     })
 }
 

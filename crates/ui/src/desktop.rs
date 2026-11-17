@@ -105,6 +105,10 @@ pub struct Desktop {
     /// how the browser logs on and off; `None` everywhere else.
     web: Option<Rc<dyn WebSession>>,
     signed_in: Option<SignedIn>,
+    /// the browser's logout, waiting for the server to say the session is gone.
+    /// windows a `?open=` link asked for, opened once someone is logged on.
+    open_after_logon: Option<String>,
+    logging_off: Option<std::sync::mpsc::Receiver<bool>>,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
@@ -170,6 +174,8 @@ impl Desktop {
             auth: None,
             login: None,
             web: None,
+            logging_off: None,
+            open_after_logon: None,
             signed_in: None,
             admin_setup: None,
             #[cfg(feature = "native")]
@@ -296,6 +302,16 @@ impl Desktop {
     /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
     /// icons, and for the nt4 window the number of the tab. it lets the real desktop be opened
     /// on a chosen view, for screenshots.
+    /// like `open_spec`, but when the logon box is up the windows wait until someone is on.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn open_spec_after_logon(&mut self, spec: &str) {
+        if self.login.is_some() {
+            self.open_after_logon = Some(spec.to_string());
+        } else {
+            self.open_spec(spec);
+        }
+    }
+
     pub fn open_spec(&mut self, spec: &str) {
         for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
             let (id, tab) = item.split_once('@').unwrap_or((item, ""));
@@ -386,6 +402,7 @@ impl Desktop {
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         self.sync_window_title(&ctx);
 
+        self.poll_log_off();
         if self.login.is_some() {
             self.show_login(ui, &ctx);
             return;
@@ -483,6 +500,9 @@ impl Desktop {
         if self.welcome.logon(&account) {
             self.open(Target::Welcome);
         }
+        if let Some(spec) = self.open_after_logon.take() {
+            self.open_spec(&spec);
+        }
     }
 
     /// keep the Welcome screen's tick box in the preferences file at `path`.
@@ -544,17 +564,59 @@ impl Desktop {
         self.return_to_login(last, None);
     }
 
-    /// the browser's way back to the logon box: the name stays filled in, and `ended` says the
-    /// server already dropped the session (so there is nothing to log off from).
+    /// the browser's way back to the logon box: the name stays filled in, and `log_off` says the
+    /// server still has the session, so it is ended first. the box waits for the server's answer:
+    /// a logout that failed leaves the person signed in, and one still in flight cannot clear
+    /// the cookie of a later logon.
     fn return_to_web_login(&mut self, note: Option<&str>, log_off: bool) {
         let Some(session) = self.web.clone() else {
             return;
         };
-        let last = self.signed_in.take().map(|s| s.identity.user);
         if log_off {
-            let closer = session.clone();
-            lanlord_app::login::spawn_local(async move { closer.logout().await });
+            if self.logging_off.is_some() {
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = self.ctx.clone();
+            lanlord_app::login::spawn_local(async move {
+                session.logout().await;
+                // the logout is done when the server no longer knows the session
+                let _ = tx.send(session.current().await.is_none());
+                ctx.request_repaint();
+            });
+            self.logging_off = Some(rx);
+            return;
         }
+        self.show_web_login(session, note);
+    }
+
+    /// once a frame: when the logout answered, show the box, or say it did not work.
+    fn poll_log_off(&mut self) {
+        let Some(rx) = &self.logging_off else {
+            return;
+        };
+        let ended = match rx.try_recv() {
+            Ok(ended) => ended,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        };
+        self.logging_off = None;
+        if ended {
+            if let Some(session) = self.web.clone() {
+                self.show_web_login(session, None);
+            }
+        } else {
+            let text = "The server did not end your session, so you are still logged on.";
+            emit(Kind::Err, text);
+            self.confirm = Some((
+                Confirm::Failure,
+                Form::new("log-off-failed", "Log off", text),
+            ));
+        }
+    }
+
+    fn show_web_login(&mut self, session: Rc<dyn WebSession>, note: Option<&str>) {
+        let last = self.signed_in.take().map(|s| s.identity.user);
         self.windows.clear();
         self.active = None;
         self.start_open = false;

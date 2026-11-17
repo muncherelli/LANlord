@@ -22,8 +22,7 @@ pub enum Confirm {
     About,
     /// rebuild and relaunch; the box has one tick for pulling trunk first.
     Rebuild,
-    /// a rebuild that did not work; the box only says why.
-    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    /// a rebuild or log off that did not work; the box only says why.
     Failure,
 }
 
@@ -155,6 +154,7 @@ impl Desktop {
             signed_in: (self.auth.is_some() || self.web.is_some())
                 .then(|| who.as_deref().unwrap_or("")),
             switch_server: self.web.is_none(),
+            admin: self.signed_in.as_ref().is_none_or(|s| s.identity.admin),
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
             updates: self.updates_enabled(),
             developer: self.dev.is_some(),
