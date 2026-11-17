@@ -78,6 +78,17 @@
         webui_proxy_user: "{{ webui_cfg.proxy_user | default('root') }}"
       when: wp is defined
 
+    # caddy's own certificate authority can sign every name the gateway goes by, so the web ui
+    # answers to its address, short name and full name alike; a real certificate covers only host
+    - name: list the names the web ui answers to
+      ansible.builtin.set_fact:
+        webui_names: >-
+          {{ ([webui_host] + ([host_address, ansible_facts['hostname'], ansible_facts['fqdn']]
+              if webui_tls == 'internal' else []))
+             | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+             | reject('equalto', 'localhost') | unique | list }}
+      when: wp is defined
+
     - name: decide whether the web ui is served
       ansible.builtin.set_fact:
         webui_on: "{{ wp.webui is defined }}"
