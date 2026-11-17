@@ -204,7 +204,7 @@ mod tests {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for entry in std::fs::read_dir(src).unwrap() {
             let path = entry.unwrap().path();
-            if path.file_name().is_some_and(|n| n == "payload.rs") {
+            if path.is_dir() || path.file_name().is_some_and(|n| n == "payload.rs") {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
