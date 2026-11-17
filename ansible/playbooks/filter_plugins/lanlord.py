@@ -13,7 +13,7 @@ except ImportError:  # the tests run this file without ansible
 
 LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
 INTERFACE = re.compile(r'^[A-Za-z0-9_.:-]{1,15}$')
-LEASE = re.compile(r'^(\d{1,5}[mhd]|infinite)$')
+LEASE = re.compile(r'^(\d{1,5}[mhd]|infinite)$', re.ASCII)
 MAC = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
 LEGACY_NAME = 'retronet'
 NAME = '.name'
@@ -177,7 +177,6 @@ def _legacy_networks(settings, detected):
     net = _network(item, 'dns', False, detected)
     net.update({'dns_enabled': bool(settings.get('dns_defined')), 'configure_address': bool(legacy_address)})
     return [net]
-
 
 
 def _unique(networks):

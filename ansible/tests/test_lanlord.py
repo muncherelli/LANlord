@@ -51,6 +51,15 @@ class NetworksTest(unittest.TestCase):
         with self.assertRaises(lanlord.Error):
             lanlord.lanlord_networks({'networks_defined': True, 'networks': [item]})
 
+    def test_lease_accepts_only_ascii_digits(self):
+        item = {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24',
+                'dhcp': {'range': ['192.0.2.10', '192.0.2.20'], 'lease': '12h'}}
+        settings = {'networks_defined': True, 'networks': [item]}
+        self.assertEqual(lanlord.lanlord_networks(settings)[0]['dhcp']['lease'], '12h')
+        item['dhcp']['lease'] = '\u0663d'
+        with self.assertRaises(lanlord.Error):
+            lanlord.lanlord_networks(settings)
+
     def test_netmask(self):
         self.assertEqual(lanlord.lanlord_netmask('22'), '255.255.252.0')
 
