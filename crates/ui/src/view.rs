@@ -108,7 +108,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 ui.add_space(8.0);
                 ui.label("\u{2022}");
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 ui.add(egui::Label::new(text.as_str()).wrap());
             });
             None
@@ -189,14 +189,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             }
         }
         Node::Lines { id, lines, height } => {
+            let height = controls::grow(ui, *height);
             theme::sunken(ui, WHITE, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt(*id)
-                    .max_height(*height)
+                    .max_height(height)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.set_min_height(*height);
+                        ui.set_min_height(height);
                         for line in lines {
                             ui.label(RichText::new(line.as_str()).monospace().size(11.0));
                         }
@@ -240,10 +241,11 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             select,
         } => {
             let mut picked = None;
+            let min_height = controls::grow(ui, *min_height);
             ui.push_id(*id, |ui| {
                 theme::sunken(ui, WHITE, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_min_height(*min_height);
+                    ui.set_min_height(min_height);
                     if items.is_empty() {
                         ui.label(empty.as_str());
                     }
@@ -303,14 +305,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             edit,
         } => {
             let mut text = value.clone();
+            let height = controls::grow(ui, *height);
             theme::sunken(ui, WHITE, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt(*id)
-                    .max_height(*height)
+                    .max_height(height)
                     .show(ui, |ui| {
                         ui.add_sized(
-                            [ui.available_width(), *height],
+                            [ui.available_width(), height],
                             TextEdit::multiline(&mut text)
                                 .hint_text(hint.as_str())
                                 .font(egui::TextStyle::Monospace)
@@ -423,14 +426,23 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             id,
             max_height,
             body,
-        } => theme::sunken(ui, WHITE, |ui| {
-            ui.set_width(ui.available_width());
-            ScrollArea::vertical()
-                .id_salt(*id)
-                .max_height(*max_height)
-                .show(ui, |ui| show(ui, body))
-                .inner
-        }),
+        } => {
+            let natural = *max_height;
+            let max_height = controls::grow(ui, natural);
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ScrollArea::vertical()
+                    .id_salt(*id)
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        if max_height > natural {
+                            ui.set_min_height(max_height);
+                        }
+                        show(ui, body)
+                    })
+                    .inner
+            })
+        }
     }
 }
 

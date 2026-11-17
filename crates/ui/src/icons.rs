@@ -69,6 +69,7 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "lanlord" => &data::SMALL_LANLORD,
         "update" => &data::SMALL_UPDATE,
         "datetime" => &SMALL_CLOCK,
+        "taskmgr" => &SMALL_TASKMGR,
         _ => &data::SMALL_HOSTS,
     }
 }
@@ -110,6 +111,26 @@ pub fn update_failed() -> &'static [&'static str] {
 pub fn update_done() -> &'static [&'static str] {
     &data::SMALL_UPDATE_DONE
 }
+
+/// the Task Manager's icon: a window holding a green activity trace, drawn by hand like the clock.
+const SMALL_TASKMGR: [&str; 16] = [
+    "................",
+    "................",
+    ".kkkkkkkkkkkkkk.",
+    ".kwwwwwwwwwwwwk.",
+    ".kgnnnnnnnnnngk.",
+    ".kggggggggggggk.",
+    ".kgkkkkkkkkkkgk.",
+    ".kgkGkkkkkkklgk.",
+    ".kgkGkkklkklkgk.",
+    ".kgklGkklllkkgk.",
+    ".kgklGlklkllkgk.",
+    ".kgkkkkkkkkkkgk.",
+    ".kggggggggggggk.",
+    ".kkkkkkkkkkkkkk.",
+    "................",
+    "................",
+];
 
 /// the title bar icon of the Date/Time window, drawn by hand here (the generated icons are not
 /// for a window that is opened from the taskbar rather than the desktop).

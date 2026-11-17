@@ -27,7 +27,7 @@ pub enum Msg {
 
 /// the width of the topic buttons, wide enough for the longest label (the window front end
 /// tests that it is, with its own font).
-const TOPIC_BUTTON: f32 = 100.0;
+pub const TOPIC_BUTTON: f32 = 100.0;
 /// the width of the text panel: the paragraphs wrap to it.
 pub const PANEL: f32 = 400.0;
 

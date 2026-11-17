@@ -121,6 +121,7 @@ pub fn rows(state: &State) -> Vec<Row> {
         Target::Networks,
         Target::Settings,
         Target::Console,
+        Target::TaskManager,
     ] {
         rows.push(Row::Item(Item {
             art: Some(target.id()),

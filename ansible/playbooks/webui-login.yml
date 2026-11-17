@@ -20,7 +20,7 @@
     - name: check the web ui account name
       ansible.builtin.assert:
         that:
-          - caller is match('^[a-z_][a-z0-9_-]{0,31}$')
+          - caller is match('^[a-z_][a-z0-9_-]{0,31}\\Z')
         fail_msg: "lanlord_webui_user needs a plain login name like lanlord"
 
     - name: make the staging directory, writable only by root

@@ -2,6 +2,7 @@
 
 use eframe::egui::{self, Align2, Id, Margin, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
+use crate::controls;
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
 
@@ -62,7 +63,7 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -
         .rect_filled(rect, 0.0, if active { NAVY } else { SHADOW });
     icons::draw_small(ui.painter(), rect.left_top() + Vec2::new(3.0, 2.0), icon);
     ui.painter().text(
-        rect.left_center() + Vec2::new(23.0, 0.0),
+        rect.left_center() + Vec2::new(TITLE_TEXT, 0.0),
         Align2::LEFT_CENTER,
         title,
         theme::font(),
@@ -99,10 +100,25 @@ pub struct Placement {
     pub width: f32,
     /// the desktop it has to stay inside.
     pub area: Rect,
-    /// for a window whose contents can grow (a console, a list, a text), the height it opens at
-    /// instead of the contents' own: it then keeps whatever size the user gives it and its
-    /// growable part takes the room. `None` opens the window as tall as its contents.
+    /// the contents can grow (a console, a list, a text): the window can be resized and the
+    /// growable part of its contents takes the room.
+    pub growable: bool,
+    /// the height a growable window opens at when it is not as tall as its contents, like a
+    /// console of 24 lines. `None` opens it as tall as its contents, stopping at the desktop.
     pub height: Option<f32>,
+}
+
+/// what a growable window's contents were, to share its room out the next frame.
+#[derive(Clone, Copy)]
+struct Room {
+    /// how tall, with their margins, without room given to the parts that grow
+    natural: f32,
+    /// how tall the parts that grow were on their own
+    claimed: f32,
+    /// the window has been given a size, which it keeps
+    user: bool,
+    /// frames drawn so far
+    age: u8,
 }
 
 /// what a window gave back: what its title bar asked for, whether it was clicked and where it is.
@@ -114,28 +130,38 @@ pub struct Shown {
     pub content: f32,
 }
 
-/// the height a window spends on its own border, title bar, margins and the spacing between them.
+/// the height a window spends on its own border and title bar.
 pub(crate) const CHROME: f32 = TITLE_BAR + 2.0 * FRAME;
 /// the title bar's height, and the width of one of its buttons.
-const TITLE_BAR: f32 = 20.0;
+pub(crate) const TITLE_BAR: f32 = 20.0;
 const TITLE_BUTTON: f32 = 16.0;
 /// the border round a window, and the margin between it and the contents.
-const FRAME: f32 = 3.0;
+pub(crate) const FRAME: f32 = 3.0;
+/// frames a window needs to take the size of its contents
+const SETTLE: u8 = 3;
+
 const MARGIN: f32 = 8.0;
+/// where the title's text starts in the title bar: past the small icon and the gap after it.
+const TITLE_TEXT: f32 = 23.0;
 
 /// what a window adds to its contents: the frame and margins either side, and the title bar.
 pub fn chrome() -> Vec2 {
     Vec2::new(2.0 * (FRAME + MARGIN), CHROME + 2.0 * MARGIN)
 }
 
-/// the least a resizable window can be: the title bar with its icon and three buttons, and one
-/// row of controls under it, each side in the margins.
-pub fn least_size(ctx: &egui::Context) -> Vec2 {
-    let row = ctx.global_style().spacing.interact_size.y;
-    let icon = 23.0;
+/// the least a resizable window can be: wide enough for its title bar, which holds the icon, the
+/// whole title and three buttons, and as tall as its contents are with the parts that take extra
+/// room shrunk to their least. `contents` is how tall they are then, with their margins.
+pub fn least_size(ctx: &egui::Context, title: &str, contents: f32) -> Vec2 {
+    let text = ctx.fonts_mut(|fonts| {
+        fonts
+            .layout_no_wrap(title.to_string(), theme::font(), WHITE)
+            .size()
+            .x
+    });
     Vec2::new(
-        2.0 * FRAME + icon + 3.0 * TITLE_BUTTON + 2.0 * MARGIN,
-        CHROME + 2.0 * MARGIN + row,
+        FRAME + TITLE_TEXT + text + 3.0 * TITLE_BUTTON + 2.0 * FRAME,
+        CHROME + contents,
     )
 }
 
@@ -158,8 +184,22 @@ pub fn show(
     let mut content_height = 0.0;
     let width = place.width;
     let max_height = place.area.height();
-    let growable = place.height.is_some() && !dialog;
-    let least = least_size(ctx);
+    let growable = place.growable && !dialog;
+    // what the contents were last frame: how tall without the room they were given, and how tall
+    // the parts that take room are on their own. none on the first frame, when a window is as
+    // tall as its contents
+    let key = Id::unique(("window-room", id));
+    let before: Option<Room> = ctx.data(|d| d.get_temp(key));
+    // a growable window follows its contents, getting taller as they do, until the user sizes it
+    let fit = growable && place.height.is_none() && !before.is_some_and(|r| r.user);
+    let sized = growable && !fit;
+    let contents_least = match before {
+        Some(r) if r.claimed > 0.0 => r.natural - r.claimed + r.claimed.min(controls::FILL_MIN),
+        _ => controls::FILL_MIN,
+    } + 2.0 * MARGIN;
+    // never more than the desktop, whose room the contents then scroll in
+    let mut least = least_size(ctx, title, contents_least);
+    least.y = least.y.min(max_height);
     // only a window with a list, a log or a text can be resized: the rest are forms, as big as
     // their controls
     let mut window = egui::Window::new(title)
@@ -178,11 +218,13 @@ pub fn show(
         window.pivot(Align2::CENTER_CENTER).default_pos(place.start)
     } else {
         let window = window.constrain_to(place.area).default_pos(place.start);
-        match place.height {
-            Some(h) => window
+        match (growable, place.height) {
+            (true, Some(h)) => window
                 .default_size(Vec2::new(width, h.min(max_height)))
                 .min_size(least),
-            None => window.default_width(width),
+            // no height to open at: it starts at nothing and takes the height of its contents
+            (true, None) => window.default_size(Vec2::new(width, 0.0)).min_size(least),
+            _ => window.default_width(width),
         }
     };
     let shown = window.show(ctx, |ui| {
@@ -198,10 +240,16 @@ pub fn show(
         // size they use. asking the window's own ui would cap them at its last size, so a window
         // could never grow
         // a growable window gives its contents the room it has, so they follow its size
-        let room = if growable {
-            ui.available_height().max(40.0)
+        let held = ui.available_height();
+        let room = if sized {
+            held.clamp(40.0, (max_height - CHROME).max(40.0))
         } else {
             (max_height - CHROME).max(40.0)
+        };
+        // the room above what the contents need on their own, for the growable part to take
+        let extra = match before {
+            Some(r) if sized => (room - r.natural).max(0.0),
+            _ => 0.0,
         };
         let from = ui.cursor().min;
         let mut inner = ui.new_child(
@@ -212,20 +260,46 @@ pub fn show(
                 ))
                 .layout(*ui.layout()),
         );
-        egui::ScrollArea::vertical()
-            .id_salt(("window-scroll", id))
-            .max_height(room)
-            .min_scrolled_height(least.y - CHROME - 2.0 * MARGIN)
-            .auto_shrink([false, !growable])
-            .show(&mut inner, |ui| {
-                let framed = egui::Frame::new()
-                    .inner_margin(Margin::same(MARGIN as i8))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = spacing;
-                        content(ui)
-                    });
-                content_height = framed.response.rect.height();
-            });
+        let (_, spare) = controls::lend_room(ctx, extra, || {
+            egui::ScrollArea::vertical()
+                .id_salt(("window-scroll", id))
+                .max_height(room)
+                .min_scrolled_height(least.y - CHROME)
+                .auto_shrink([false, !sized])
+                .show(&mut inner, |ui| {
+                    let framed = egui::Frame::new()
+                        .inner_margin(Margin::same(MARGIN as i8))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = spacing;
+                            content(ui)
+                        });
+                    content_height = framed.response.rect.height();
+                });
+        });
+        if growable {
+            let natural = content_height - (extra - spare.extra);
+            // the window is not the size of its contents (or of the desktop, when they are more),
+            // though they did not change: someone dragged its corner
+            let user = !fit
+                || before.is_some_and(|r| {
+                    r.user
+                        // the window takes the size of its contents a frame or two late
+                        || (r.age >= SETTLE
+                            && (held - r.natural.min(max_height - CHROME)).abs() > 2.0
+                            && (natural - r.natural).abs() < 0.5)
+                });
+            let now = Room {
+                natural,
+                claimed: spare.claimed,
+                user,
+                age: before.map_or(0, |r| r.age.saturating_add(1)),
+            };
+            ctx.data_mut(|d| d.insert_temp(key, now));
+            if before.is_none_or(|r| r.age < SETTLE || (r.natural - natural).abs() > 0.5) {
+                // the room to spare is worked out from this, so draw again with it
+                ctx.request_repaint();
+            }
+        }
         ui.allocate_rect(inner.min_rect(), Sense::hover());
     })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
@@ -255,6 +329,7 @@ mod tests {
                     start: at,
                     width: 300.0,
                     area,
+                    growable: false,
                     height: None,
                 };
                 rect = show(ui.ctx(), "t", "T", place, true, dialog, |ui| {
@@ -306,6 +381,7 @@ mod tests {
                         start: Pos2::new(110.0, 10.0),
                         width: 300.0,
                         area,
+                        growable: false,
                         height: None,
                     };
                     rect = show(ui.ctx(), "doc", "Doc", place, true, false, |ui| {
@@ -349,6 +425,7 @@ mod tests {
                         start: Pos2::new(400.0, 200.0),
                         width: 300.0,
                         area: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 472.0)),
+                        growable: false,
                         height: None,
                     };
                     let mut inner = Rect::NOTHING;

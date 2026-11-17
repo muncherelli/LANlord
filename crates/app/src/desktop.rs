@@ -21,6 +21,8 @@ pub enum Target {
     Welcome,
     /// the changelog, read only; opened from the Welcome window and the menu's help rows.
     Changelog,
+    /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
+    TaskManager,
 }
 
 /// the console opens as 80 columns by 24 rows of text, the size of a terminal.
@@ -44,6 +46,7 @@ impl Target {
             Self::Components => "components",
             Self::Welcome => "welcome",
             Self::Changelog => "changelog",
+            Self::TaskManager => "taskmgr",
         }
     }
 
@@ -59,14 +62,20 @@ impl Target {
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
             Self::Changelog => "Changelog",
+            Self::TaskManager => "Task Manager",
         }
     }
 
-    /// the contents can grow (a console, a list, a text): the window opens at `size` rather than
-    /// as tall as its contents, the user may resize it and the growable part fills it.
+    /// the contents can grow (a console, a list, a text): the user may resize the window and the
+    /// growable part fills it. the rest are forms, as big as their controls.
     pub fn growable(self) -> bool {
         match self {
-            Self::Console | Self::Hosts | Self::Changelog | Self::MyServer | Self::Networks => true,
+            Self::Console
+            | Self::Hosts
+            | Self::Changelog
+            | Self::MyServer
+            | Self::Networks
+            | Self::Settings => true,
             // the modules with a list of logins, hosts or commands; the rest are plain forms
             Self::Module(i) => matches!(MODULES[i].id, "nt4-domain" | "dns" | "remote-commands"),
             _ => false,
@@ -80,16 +89,17 @@ impl Target {
 
     /// the window changes things on the server (settings, components, networks, users, the
     /// clock, commands), so only an administrator may open it. My Server stays open to anyone:
-    /// it reads, and its purge is switched off for the rest.
+    /// it reads, and its purge is switched off for the rest. the Task Manager is open to anyone too; ending a process is the part that needs an admin.
     pub fn needs_admin(self) -> bool {
         !matches!(
             self,
-            Self::MyServer | Self::Hosts | Self::Welcome | Self::Changelog
+            Self::MyServer | Self::Hosts | Self::Welcome | Self::Changelog | Self::TaskManager
         )
     }
 
-    /// how big the window opens in the text view, in layout units. the gui uses the width only:
-    /// there a window is as tall as its contents.
+    /// how big the window opens in the text view, in layout units. the gui measures its own: a
+    /// window is as tall as its contents, a console as many cells as `CONSOLE_COLS` by
+    /// `CONSOLE_ROWS`.
     pub fn size(self) -> (f32, f32) {
         match self {
             Self::Module(i) => match MODULES[i].id {
@@ -105,8 +115,12 @@ impl Target {
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
-            Self::Welcome => (530.0, 380.0),
+            Self::Welcome => (
+                crate::welcome::PANEL + crate::welcome::TOPIC_BUTTON + 8.0,
+                380.0,
+            ),
             Self::Changelog => (520.0, 400.0),
+            Self::TaskManager => (500.0, 490.0),
         }
     }
 }

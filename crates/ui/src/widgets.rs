@@ -2,6 +2,7 @@
 
 use eframe::egui::{Align2, Pos2, Rect, ScrollArea, Sense, Ui, Vec2};
 
+use crate::controls;
 use crate::remote::RED;
 use crate::theme::{self, BLACK, NAVY, WHITE};
 
@@ -24,15 +25,16 @@ impl Table<'_> {
     /// draw the table; returns the row clicked.
     pub fn show(&self, ui: &mut Ui) -> Option<usize> {
         let mut clicked = None;
+        let height = controls::grow(ui, self.height);
         theme::sunken(ui, WHITE, |ui| {
             ui.set_width(ui.available_width());
             heading_row(ui, self.headings, self.widths);
             ScrollArea::vertical()
                 .id_salt(self.id)
-                .max_height(self.height)
+                .max_height(height)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_min_height(self.height);
+                    ui.set_min_height(height);
                     for (i, row) in self.rows.iter().enumerate() {
                         let flagged = self.bad.get(i).copied().unwrap_or(false);
                         let selected = self.selected == Some(i);

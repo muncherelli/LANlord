@@ -104,10 +104,10 @@ pub fn action(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     response
 }
 
-/// a white, sunken area for lists and text, like an edit box.
 /// the margin inside a sunken box's bevel.
 pub const SUNKEN: f32 = 3.0;
 
+/// a white, sunken area for lists and text, like an edit box.
 pub fn sunken<R>(ui: &mut Ui, fill: Color32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let framed = Frame::new()
         .fill(fill)

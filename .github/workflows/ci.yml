@@ -124,7 +124,8 @@ jobs:
         run: cargo llvm-cov report --summary-only
       - name: python tests
         run: |
-          python3 -m pip install --only-binary :all: coverage==7.17.3
+          python3 -m pip install --only-binary :all: coverage==7.17.3 ansible-core==2.22.0
+          export PATH="$HOME/.local/bin:$PATH"
           python3 -m coverage run --branch -m unittest discover -s ansible/tests
           python3 -m coverage xml -o coverage.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
