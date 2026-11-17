@@ -12,7 +12,11 @@
       ansible.builtin.file:
         path: /opt/lanlord/state
         state: directory
+        owner: lanlord
+        group: lanlord
         mode: "0750"
+      # /opt/lanlord belongs to root, so lanlord cannot create it itself
+      become: true
 
     - name: check that privilege escalation works
       ansible.builtin.command: id -un

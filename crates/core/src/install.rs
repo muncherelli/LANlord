@@ -137,13 +137,14 @@ pub(crate) fn run_with(
     };
     for step in Step::ALL {
         events(Event::StepStarted(step));
-        // the check always runs; it is cheap and the server may have changed since
-        if step != Step::Check && done.is_some_and(|d| step <= d) {
+        // the check and the bootstrap always run: the check is cheap and the server may have
+        // changed since, and the bootstrap is idempotent and repairs an old lanlord account
+        if !matches!(step, Step::Check | Step::Bootstrap) && done.is_some_and(|d| step <= d) {
             events(Event::Line("already done, skipping".into()));
             events(Event::StepDone(step));
             continue;
         }
-        match do_step(session, options, step, &mut *ask_password, events) {
+        match do_step(session, options, step, done, &mut *ask_password, events) {
             Ok(()) => events(Event::StepDone(step)),
             Err(err) => {
                 let message = format!("{err:#}");
@@ -166,6 +167,7 @@ fn do_step(
     session: &Session,
     options: &Options,
     step: Step,
+    done: Option<Step>,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
@@ -184,7 +186,12 @@ fn do_step(
         }
         Step::Bootstrap => {
             bootstrap_lines(session, options, &mut *ask_password, &mut line)?;
-            record(session, Step::Bootstrap, ask_password)
+            // a rerun must not move a later marker back
+            if done.is_none_or(|d| d < Step::Bootstrap) {
+                record(session, Step::Bootstrap, ask_password)
+            } else {
+                Ok(())
+            }
         }
         Step::Base => {
             let modules: Vec<String> = BASE_MODULES.iter().map(|m| m.to_string()).collect();
@@ -431,15 +438,19 @@ esac"#
         let server = Server::new("resume", Some("bootstrap"), FINE);
         let (result, events) = install(&server);
         result.unwrap();
-        // the bootstrap is not run again; the baseline and the finish are
-        assert_eq!(server.log(), ["apply", "base", "installed"]);
-        assert!(events.contains(&Event::Line("already done, skipping".into())));
+        // the bootstrap runs again (it is idempotent and repairs an old account), then the
+        // baseline and the finish
+        assert_eq!(server.log(), ["bootstrap", "apply", "base", "installed"]);
+        assert!(!events.contains(&Event::Line("already done, skipping".into())));
         assert_eq!(steps(&events).len(), 8);
         assert_eq!(server.marker(), "installed");
 
         let server = Server::new("resume-base", Some("base"), FINE);
-        install(&server).0.unwrap();
-        assert_eq!(server.log(), ["installed"]);
+        let (result, events) = install(&server);
+        result.unwrap();
+        // a finished baseline is skipped, but the bootstrap still runs without moving the marker
+        assert_eq!(server.log(), ["bootstrap", "installed"]);
+        assert!(events.contains(&Event::Line("already done, skipping".into())));
     }
 
     #[test]

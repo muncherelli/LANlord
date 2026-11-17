@@ -179,7 +179,7 @@ fi
 {service_account}getent group {admins} >/dev/null || groupadd --gid {admins_id} {admins}
 {join_admins}# root owns /opt/lanlord so lanlord cannot swap out the venv; it owns only what it writes
 install -d -o root -g lanlord -m 0750 /opt/lanlord
-install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansible
+install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansible /opt/lanlord/state
 
 # lanlord runs ansible, which needs root; it has no password and no login
 {service_sudoers}
@@ -409,7 +409,7 @@ mod tests {
         let s = script(&opts(AnsibleMode::Remote, false), "admin").unwrap();
         assert!(s.contains("chown -R root:root /opt/lanlord/venv"));
         assert!(!s.contains("sudo -u lanlord"));
-        assert!(s.contains("-m 0750 /opt/lanlord/config /opt/lanlord/.ansible"));
+        assert!(s.contains("-m 0750 /opt/lanlord/config /opt/lanlord/.ansible /opt/lanlord/state"));
     }
 
     #[test]
