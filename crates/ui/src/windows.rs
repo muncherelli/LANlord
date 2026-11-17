@@ -110,7 +110,7 @@ pub struct Shown {
 }
 
 /// the height a window spends on its own border, title bar, margins and the spacing between them.
-const CHROME: f32 = 26.0;
+pub(crate) const CHROME: f32 = 26.0;
 
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a

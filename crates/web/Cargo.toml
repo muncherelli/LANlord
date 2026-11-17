@@ -12,6 +12,9 @@ crate-type = ["cdylib", "rlib"]
 # show the made-up demo server instead of talking to the gateway (`tools/build-web.sh --features demo`)
 demo = ["lanlord-ui/demo"]
 
+# the red bug and debug menu, and the ?demo=1&wmdebug=1&open=all links (`tools/build-web.sh --dev`)
+devtools = ["lanlord-ui/devtools"]
+
 # the browser entry only; on a desktop the crate is empty
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 lanlord-ui = { version = "0.1.0", path = "../ui", default-features = false }

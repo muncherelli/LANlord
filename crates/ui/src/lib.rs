@@ -126,13 +126,33 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
                 }
                 // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop,
                 // but only the ones that are safe to open from a link
-                if let Some(spec) = query("open") {
+                #[cfg(feature = "devtools")]
+                let open_all = apply_devtools_links(&mut desktop);
+                #[cfg(not(feature = "devtools"))]
+                let open_all = false;
+                if let (Some(spec), false) = (query("open"), open_all) {
                     desktop.open_spec_after_logon(&safe_open_spec(&spec));
                 }
                 Ok(Box::new(desktop))
             }),
         )
         .await
+}
+
+/// `?demo=1` starts on the demo desktop, `?wmdebug=1` turns the window-manager outlines on and
+/// `?open=all` opens every window. true when `open=all` was handled. only devtools builds look at
+/// these.
+#[cfg(all(target_arch = "wasm32", feature = "devtools"))]
+fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
+    if query("demo").as_deref() == Some("1") {
+        desktop.enter_demo();
+    }
+    desktop.set_wm_debug(query("wmdebug").as_deref() == Some("1"));
+    let all = query("open").as_deref() == Some("all");
+    if all {
+        desktop.open_spec_after_logon("all");
+    }
+    all
 }
 
 /// the made-up demo server in a demo build, the gateway the page came from otherwise.
@@ -191,6 +211,14 @@ fn safe_open_spec(spec: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::safe_open_spec;
+
+    /// a plain build (what a release is) has no developer tools; `tools/check-no-devtools.sh`
+    /// checks the same for the release workflows.
+    #[cfg(not(feature = "devtools"))]
+    #[test]
+    fn a_plain_build_has_no_developer_tools() {
+        assert!(!cfg!(feature = "devtools"));
+    }
 
     #[test]
     fn links_open_only_known_windows_and_never_the_purge_prompt() {

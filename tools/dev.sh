@@ -12,7 +12,8 @@ usage: tools/dev.sh <command> [options]
   gui [options]        build and open the desktop window from this checkout
   tui [options]        build and open the terminal ui from this checkout
   web [--serve] [--port N]
-                       build the browser version; --serve also runs it here (default port 8080)
+                       build the browser version with the developer tools (a red bug in the corner:
+                       demo desktop, window outlines; ?demo=1&wmdebug=1&open=all); --serve also runs it here (default port 8080)
   linux-build [--target x86_64|aarch64] [--debug]
                        cross-compile the server binary for linux (needs zig and cargo-zigbuild)
   deploy HOST [options]
@@ -46,10 +47,10 @@ EOF
 build() {
   target=${CARGO_TARGET_DIR:-$PWD/target}
   if [ "${1:-}" = "--release" ]; then
-    cargo build -q -p lanlord --release
+    cargo build -q -p lanlord --release --features devtools
     bin="$target/release/lanlord"
   else
-    cargo build -q -p lanlord
+    cargo build -q -p lanlord --features devtools
     bin="$target/debug/lanlord"
   fi
 }
@@ -123,7 +124,7 @@ case "$cmd" in
       shift
     done
     case "$port" in '' | *[!0-9]*) echo "the port must be a number" >&2; exit 2 ;; esac
-    "$root/tools/build-web.sh"
+    "$root/tools/build-web.sh" --dev
     if [ "$serve" = 1 ]; then
       # the real web server from this checkout, on this machine only, so the page comes with the
       # same headers as on a gateway

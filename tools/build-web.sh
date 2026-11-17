@@ -2,7 +2,8 @@
 # builds the browser version of lanlord into target/web-dist, which `lanlord webui --static`
 # serves on the gateway. it installs nothing: when a tool is missing it says how to get it.
 # run it from anywhere: tools/build-web.sh; extra arguments go to trunk, e.g. `--features demo`
-# for the made-up demo server.
+# for the made-up demo server. `--dev` also compiles in the developer tools (the red bug, the
+# demo desktop, window-manager outlines); a release build never has them.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 trunk_version="0.22.1"
@@ -26,6 +27,14 @@ fi
 
 # trunk fetches the wasm-bindgen and wasm-opt versions pinned in crates/web/Trunk.toml into its
 # own cache on first use
+args=()
+for arg in "$@"; do
+  if [ "$arg" = "--dev" ]; then
+    args+=(--features devtools)
+  else
+    args+=("$arg")
+  fi
+done
 cd "$root/crates/web"
-trunk build --release "$@"
+trunk build --release ${args[@]+"${args[@]}"}
 echo "built $root/target/web-dist"

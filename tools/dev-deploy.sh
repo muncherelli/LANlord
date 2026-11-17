@@ -145,7 +145,7 @@ if [ "$build" = 1 ]; then
   echo "building the server binary for $arch linux..."
   "$root/tools/dev-linux-build.sh" --target "$arch"
   echo "building the browser version..."
-  "$root/tools/build-web.sh"
+  "$root/tools/build-web.sh" --dev
 fi
 [ -f "$bin" ] || { echo "no binary at $bin; run tools/dev.sh linux-build first (or drop --no-build)" >&2; exit 1; }
 [ -f "$web/index.html" ] || { echo "no browser build in $web; run tools/dev.sh web first (or drop --no-build)" >&2; exit 1; }

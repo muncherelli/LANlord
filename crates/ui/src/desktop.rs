@@ -12,6 +12,8 @@ use lanlord_app::log::{emit, Kind};
 use lanlord_core::update;
 use lanlord_model::modules::{Module, MODULES};
 
+#[cfg(feature = "devtools")]
+mod devtools;
 mod menu;
 
 use menu::Confirm;
@@ -132,6 +134,8 @@ pub struct Desktop {
     window_title: String,
     /// the made-up demo server, not a real gateway: the title and the taskbar say so.
     demo: bool,
+    #[cfg(feature = "devtools")]
+    devtools: devtools::Devtools,
 }
 
 impl Desktop {
@@ -193,6 +197,8 @@ impl Desktop {
             dev_open: false,
             window_title: "LANlord".into(),
             demo: false,
+            #[cfg(feature = "devtools")]
+            devtools: Default::default(),
         }
     }
 
@@ -264,6 +270,9 @@ impl Desktop {
     /// drop everything one session left open: windows, dialogs and the state behind them, so the
     /// next account starts clean and cannot answer a box the last one opened.
     fn reset_session_ui(&mut self) {
+        // a logon or log off ends the demo desktop; the real one comes back
+        #[cfg(feature = "devtools")]
+        self.end_demo();
         self.windows.clear();
         self.active = None;
         self.selected = None;
@@ -354,6 +363,9 @@ impl Desktop {
             let (id, tab) = item.split_once('@').unwrap_or((item, ""));
             if id == "menu" {
                 self.start_open = true;
+            } else if id == "all" && cfg!(feature = "devtools") {
+                #[cfg(feature = "devtools")]
+                self.open_all();
             } else if id == "datetime" {
                 self.open(Target::DateTime);
                 self.clock.open_tab(tab);
@@ -407,6 +419,10 @@ impl Desktop {
         if self.demo {
             title.push_str(" (demo)");
         }
+        #[cfg(feature = "devtools")]
+        if self.in_demo() {
+            title = "LANlord (demo)".into();
+        }
         if title != self.window_title {
             crate::platform::set_title(ctx, &title);
             self.window_title = title;
@@ -438,6 +454,8 @@ impl Desktop {
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         self.sync_window_title(&ctx);
+        #[cfg(feature = "devtools")]
+        self.devtools_ui(ui);
 
         self.poll_log_off();
         if self.login.is_some() {
@@ -1087,6 +1105,8 @@ impl Desktop {
 /// the part of the screen above the taskbar.
 fn desktop_area(ctx: &egui::Context) -> Rect {
     let screen = ctx.content_rect();
+    #[cfg(feature = "devtools")]
+    let screen = Rect::from_min_max(screen.min + Vec2::new(0.0, devtools::STRIP), screen.max);
     Rect::from_min_max(screen.min, screen.max - Vec2::new(0.0, TASKBAR))
 }
 
@@ -1145,6 +1165,8 @@ impl Desktop {
                 }
             }
         }
+        #[cfg(feature = "devtools")]
+        self.wm_overlay(ctx);
         close.append(&mut self.close_requests);
         windows.retain(|w| !close.contains(&w.target));
         self.windows = windows;
@@ -1414,8 +1436,8 @@ mod tests {
             for target in targets {
                 desktop.windows.clear();
                 desktop.open(target);
-                frames_on(&mut desktop, &ctx, size, 4);
-                let area = Rect::from_min_max(Pos2::ZERO, Pos2::new(size.x, size.y - TASKBAR));
+                frames_on(&mut desktop, &ctx, size, 9);
+                let area = desktop_area(&ctx);
                 let &(_, rect, content) = desktop
                     .measured
                     .iter()
