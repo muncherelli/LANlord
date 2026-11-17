@@ -832,6 +832,7 @@ fn the_welcome_window_opens_after_logon_only_while_its_box_is_ticked() {
         identity: lanlord_core::signin::Identity {
             user: user.into(),
             uid: 1000,
+            admin: true,
         },
     };
     let mut shell = demo();

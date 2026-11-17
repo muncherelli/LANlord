@@ -437,3 +437,250 @@ fn the_menu_has_a_welcome_row_that_opens_the_window() {
     frames(&mut desktop, &ctx, 2);
     assert!(!welcome_open(&desktop));
 }
+
+mod web {
+    //! the browser's logon: user name and password for the gateway itself, no host, a session
+    //! the server can end, and log off that posts to the server.
+
+    use std::rc::Rc;
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use crate::login::fake::FakeWeb;
+
+    fn web_logon() -> (
+        Desktop,
+        egui::Context,
+        Rc<FakeWeb>,
+        Arc<lanlord_app::gateway::Fake>,
+    ) {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.local.lock().unwrap() = true;
+        let web = Rc::new(FakeWeb::default());
+        desktop.require_web_login(web.clone());
+        frames(&mut desktop, &ctx, 3);
+        (desktop, ctx, web, fake)
+    }
+
+    fn sign_in(desktop: &mut Desktop, ctx: &egui::Context, user: &str, password: &str) {
+        let login = desktop.login.as_mut().expect("the logon box is open");
+        login.user = user.into();
+        login.set_password(password);
+        assert!(press(desktop, ctx, "OK"));
+    }
+
+    #[test]
+    fn the_box_comes_first_and_has_no_host_or_shut_down() {
+        let (_desktop, ctx, web, _) = web_logon();
+        assert_eq!(web.calls(), ["current"], "the session was looked for");
+        assert!(enabled(&ctx, "OK").is_some() && enabled(&ctx, "Cancel").is_some());
+        assert!(enabled(&ctx, "Shut Down").is_none());
+        assert!(enabled(&ctx, "Hostname:").is_none());
+    }
+
+    #[test]
+    fn logging_on_shows_the_one_server() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        assert_eq!(web.calls(), ["current", "login ann s3cret"]);
+        // the gateway is the server, not a host in the list
+        assert_eq!(desktop.host().as_deref(), Some("local"));
+        assert!(desktop.hosts.hosts().is_empty());
+    }
+
+    #[test]
+    fn a_live_session_skips_the_box() {
+        let (mut desktop, ctx, _) = desktop();
+        let web = Rc::new(FakeWeb::default());
+        *web.current.lock().unwrap() = Some(id("ann", 1000));
+        desktop.require_web_login(web.clone());
+        until(&mut desktop, &ctx, logged_on);
+        assert_eq!(web.calls(), ["current"]);
+    }
+
+    #[test]
+    fn the_menu_has_log_off_but_no_switch_server() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        desktop.start_open = true;
+        frames(&mut desktop, &ctx, 3);
+        assert!(desktop.menu_item_at(screen(), &Action::LogOff).is_some());
+        assert!(desktop
+            .menu_item_at(screen(), &Action::SwitchServer)
+            .is_none());
+        assert!(desktop
+            .menu_rows()
+            .iter()
+            .any(|r| matches!(r, Row::Item(i) if i.label() == "Log off ann...")));
+    }
+
+    #[test]
+    fn logging_off_posts_a_logout_and_returns_to_the_box() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        desktop.do_action(&ctx, Action::LogOff);
+        frames(&mut desktop, &ctx, 2);
+        assert!(desktop.login.is_some() && desktop.signed_in.is_none());
+        assert!(desktop.windows.is_empty() && !desktop.start_open);
+        assert!(web.calls().iter().any(|c| c == "logout"));
+        assert_eq!(desktop.login.as_ref().unwrap().user, "ann");
+        assert!(desktop.login.as_ref().unwrap().password_is_empty());
+    }
+
+    #[test]
+    fn a_logout_the_server_did_not_honour_keeps_the_person_signed_in() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        *web.keeps_session.lock().unwrap() = true;
+        *web.current.lock().unwrap() = Some(id("ann", 1000));
+        desktop.do_action(&ctx, Action::LogOff);
+        frames(&mut desktop, &ctx, 3);
+        assert!(logged_on(&desktop), "still signed in");
+        assert!(matches!(
+            desktop.confirm,
+            Some((crate::desktop::Confirm::Failure, _))
+        ));
+    }
+
+    #[test]
+    fn a_logout_that_could_not_ask_the_server_keeps_the_person_signed_in() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        *web.unreachable.lock().unwrap() = true;
+        desktop.do_action(&ctx, Action::LogOff);
+        frames(&mut desktop, &ctx, 3);
+        assert!(logged_on(&desktop), "the session may still be alive");
+        assert!(matches!(
+            desktop.confirm,
+            Some((crate::desktop::Confirm::Failure, _))
+        ));
+    }
+
+    #[test]
+    fn an_account_that_is_not_an_admin_cannot_open_the_windows_that_change_the_server() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        let mut user = id("carol", 1000);
+        user.admin = false;
+        web.logins.lock().unwrap().push_back(Ok(user));
+        sign_in(&mut desktop, &ctx, "carol", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        for target in [
+            Target::Console,
+            Target::Settings,
+            Target::Networks,
+            Target::Components,
+            Target::DateTime,
+        ] {
+            desktop.open(target);
+        }
+        let open = |d: &Desktop, t: Target| d.windows.iter().any(|w| w.target == t);
+        for target in [Target::Console, Target::Settings, Target::Networks] {
+            assert!(!open(&desktop, target), "{target:?}");
+        }
+        assert!(!open(&desktop, Target::Components) && !open(&desktop, Target::DateTime));
+        desktop.open(Target::MyServer);
+        assert!(open(&desktop, Target::MyServer), "reading is allowed");
+    }
+
+    #[test]
+    fn a_link_to_windows_waits_for_the_logon() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        desktop.open_spec_after_logon("console");
+        assert!(desktop.windows.is_empty());
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        assert!(desktop.windows.iter().any(|w| w.target == Target::Console));
+    }
+
+    #[test]
+    fn a_session_the_server_ended_returns_to_the_box_with_a_note() {
+        let (mut desktop, ctx, web, fake) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        desktop.open(Target::Console);
+        // any call the server answered 401 raises the flag
+        fake.ended.store(true, Ordering::SeqCst);
+        frames(&mut desktop, &ctx, 2);
+        let login = desktop.login.as_ref().expect("back at the box");
+        assert!(desktop.signed_in.is_none() && desktop.windows.is_empty());
+        assert_eq!(login.user, "ann");
+        assert!(
+            login.status().contains("session ended"),
+            "{}",
+            login.status()
+        );
+        assert!(
+            !web.calls().iter().any(|c| c == "logout"),
+            "nothing to log off from"
+        );
+        // logging on again clears the flag, and the desktop stays
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        assert!(!fake.ended.load(Ordering::SeqCst));
+        frames(&mut desktop, &ctx, 2);
+        assert!(logged_on(&desktop));
+    }
+    fn sign_in_as(
+        desktop: &mut Desktop,
+        ctx: &egui::Context,
+        name: &str,
+        admin: bool,
+        web: &FakeWeb,
+    ) {
+        let mut user = id(name, 1000);
+        user.admin = admin;
+        web.logins.lock().unwrap().push_back(Ok(user));
+        sign_in(desktop, ctx, name, "s3cret");
+        until(desktop, ctx, logged_on);
+    }
+
+    #[test]
+    fn a_confirm_the_last_account_left_open_does_not_survive_the_next_logon() {
+        let (mut desktop, ctx, web, fake) = web_logon();
+        sign_in_as(&mut desktop, &ctx, "ann", true, &web);
+        desktop.do_action(&ctx, Action::Power(lanlord_model::power::Power::Reboot));
+        desktop.open(Target::MyServer);
+        assert!(desktop.confirm.is_some());
+        // the session ends, and a non-admin logs on in the same tab
+        fake.ended.store(true, Ordering::SeqCst);
+        frames(&mut desktop, &ctx, 2);
+        assert!(desktop.login.is_some() && desktop.confirm.is_none());
+        sign_in_as(&mut desktop, &ctx, "carol", false, &web);
+        frames(&mut desktop, &ctx, 3);
+        assert!(desktop.confirm.is_none());
+        assert!(desktop.windows.iter().all(|w| w.target != Target::MyServer));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("power")));
+    }
+
+    #[test]
+    fn a_non_admin_cannot_ask_for_or_accept_a_reboot() {
+        let (mut desktop, ctx, web, fake) = web_logon();
+        sign_in_as(&mut desktop, &ctx, "ann", true, &web);
+        desktop.do_action(&ctx, Action::Power(lanlord_model::power::Power::Reboot));
+        assert!(desktop.confirm.is_some());
+        // the account loses its rights while the box is up
+        if let Some(s) = desktop.signed_in.as_mut() {
+            s.identity.admin = false;
+        }
+        frames(&mut desktop, &ctx, 3);
+        press(&mut desktop, &ctx, "OK");
+        frames(&mut desktop, &ctx, 3);
+        assert!(!fake.calls().iter().any(|c| c.starts_with("power")));
+        desktop.confirm = None;
+        desktop.do_action(&ctx, Action::Power(lanlord_model::power::Power::PowerOff));
+        assert!(desktop.confirm.is_none());
+    }
+}
