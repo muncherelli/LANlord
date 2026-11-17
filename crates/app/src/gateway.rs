@@ -599,6 +599,9 @@ mod fake {
     impl Gateway for Fake {
         fn call(&self, host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
             Ok(match op {
+                Op::Doctor => Reply::Doctor(lanlord_model::doctor::Report::parse(
+                    "virt_container=none\nvirt_vm=none\nlink_bridge=ok\n",
+                )),
                 Op::Bootstrap => {
                     self.bootstrap(host, ask)?;
                     Reply::Done
