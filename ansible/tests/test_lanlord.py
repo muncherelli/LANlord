@@ -60,6 +60,20 @@ class NetworksTest(unittest.TestCase):
         with self.assertRaises(lanlord.Error):
             lanlord.lanlord_networks(settings)
 
+    def test_trailing_newline_is_rejected(self):
+        for tail in ('\n', '\r\n'):
+            for field, good in (('name', 'lab'), ('lease', '12h'), ('interface', 'eth1'), ('mac', 'aa:bb:cc:dd:ee:ff')):
+                host = {'name': 'box', 'mac': 'aa:bb:cc:dd:ee:ff', 'address': '192.0.2.5'}
+                item = {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24',
+                        'dhcp': {'range': ['192.0.2.10', '192.0.2.20'], 'lease': '12h', 'hosts': [host]}}
+                settings = {'networks_defined': True, 'networks': [item]}
+                target = host if field == 'mac' else item['dhcp'] if field == 'lease' else item
+                target[field] = good
+                lanlord.lanlord_networks(settings)
+                target[field] = good + tail
+                with self.assertRaises(lanlord.Error):
+                    lanlord.lanlord_networks(settings)
+
     def test_netmask(self):
         self.assertEqual(lanlord.lanlord_netmask('22'), '255.255.252.0')
 
