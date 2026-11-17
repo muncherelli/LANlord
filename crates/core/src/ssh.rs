@@ -4,6 +4,7 @@
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 
 use anyhow::{bail, Result};
 
@@ -83,6 +84,24 @@ fn shell_quote(arg: &str) -> String {
     }
 }
 
+/// read `stream` line by line on a thread, sending each line (and whether it came from stderr).
+fn read_lines(
+    stream: impl std::io::Read + Send + 'static,
+    is_err: bool,
+    tx: mpsc::Sender<(bool, String)>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).split(b'\n').map_while(|l| l.ok()) {
+            if tx
+                .send((is_err, String::from_utf8_lossy(&line).into_owned()))
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+}
+
 fn spawn_error(err: std::io::Error) -> SshError {
     if err.kind() == std::io::ErrorKind::NotFound {
         SshError::NotInstalled
@@ -148,7 +167,27 @@ impl Session {
         self.spawn(remote, Input::Bytes(input))
     }
 
+    /// like `run_with_stdin`, and every line the remote prints (on stdout or stderr) is also
+    /// handed to `on_line` as it arrives, for a progress display.
+    pub fn run_with_stdin_lines(
+        &self,
+        remote: &[String],
+        input: &[u8],
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<i32> {
+        self.spawn_with(remote, Input::Bytes(input), Some(on_line))
+    }
+
     fn spawn(&self, remote: &[String], input: Input) -> Result<i32> {
+        self.spawn_with(remote, input, None)
+    }
+
+    fn spawn_with(
+        &self,
+        remote: &[String],
+        input: Input,
+        mut sink: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<i32> {
         emit(
             Kind::Debug,
             format!("ssh {} {}", self.host, remote.join(" ")),
@@ -169,24 +208,32 @@ impl Session {
             // dropping stdin closes it so the remote shell sees end of input
             stdin.write_all(input)?;
         }
-        let stdout = child.stdout.take().map(|out| {
-            std::thread::spawn(move || {
-                for line in BufReader::new(out).split(b'\n').map_while(|l| l.ok()) {
-                    emit(Kind::Out, String::from_utf8_lossy(&line));
-                }
-            })
-        });
-        let mut captured = String::new();
+        // both streams are read on their own threads and merged here, so the sink and the log
+        // see the lines in the order they arrive and neither pipe can fill up and stall
+        let (tx, rx) = mpsc::channel::<(bool, String)>();
+        let mut readers = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            readers.push(read_lines(out, false, tx.clone()));
+        }
         if let Some(stderr) = child.stderr.take() {
-            for line in BufReader::new(stderr).split(b'\n') {
-                let line = String::from_utf8_lossy(&line?).into_owned();
+            readers.push(read_lines(stderr, true, tx.clone()));
+        }
+        drop(tx);
+        let mut captured = String::new();
+        for (is_err, line) in rx {
+            if is_err {
                 emit(Kind::Err, line.as_str());
                 captured.push_str(&line);
                 captured.push('\n');
+            } else {
+                emit(Kind::Out, line.as_str());
+            }
+            if let Some(sink) = sink.as_mut() {
+                sink(&line);
             }
         }
-        if let Some(thread) = stdout {
-            let _ = thread.join();
+        for reader in readers {
+            let _ = reader.join();
         }
         match child.wait()?.code() {
             // 255 is ssh's own failure code
