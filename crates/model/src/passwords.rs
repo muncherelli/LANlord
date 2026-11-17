@@ -10,8 +10,7 @@ pub const DEFAULT_LEN: usize = 12;
 /// or above it are thrown away so every character is equally likely.
 const LIMIT: usize = 256 / ALPHABET.len() * ALPHABET.len();
 
-/// a password of `len` characters (`DEFAULT_LEN` when zero), with the random bytes coming from
-/// `fill`; the caller picks the source (the os on a desktop, the browser's crypto on the web).
+/// like `generate`, with the random bytes coming from `fill`.
 pub fn generate_with(len: usize, mut fill: impl FnMut(&mut [u8])) -> String {
     let len = if len == 0 { DEFAULT_LEN } else { len };
     let alphabet = ALPHABET.as_bytes();

@@ -79,22 +79,7 @@ fn run_limited(
     }
 }
 
-/// where a newer version would come from, and so how to install it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// new commits on trunk in the checkout this build was made from.
-    Git,
-    /// a new release; the page to open.
-    Release { url: String },
-}
-
-/// what is new, for the notice and its box.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Update {
-    pub source: Source,
-    pub headline: String,
-    pub lines: Vec<String>,
-}
+pub use lanlord_model::update::{Source, Update};
 
 /// the checkout a development build can be rebuilt from: LANLORD_DEV, else the place this
 /// build was made (debug builds only), when it is still a git checkout.
@@ -976,11 +961,26 @@ mod tests {
         dir
     }
 
+    /// write an executable script. tests run in parallel and start processes, and a process
+    /// forked while this one holds the script open for writing would make running it fail with
+    /// "text file busy"; so the script is written beside its place and `install` copies it in,
+    /// and this process never has the program itself open for writing.
     fn script(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let parent = path.parent().unwrap();
+        std::fs::create_dir_all(parent).unwrap();
+        let source = parent.join(format!(
+            ".{}.src",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let installed = std::process::Command::new("install")
+            .args(["-m", "0755"])
+            .arg(&source)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(installed.success(), "install {}", path.display());
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]

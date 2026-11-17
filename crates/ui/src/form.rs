@@ -1,159 +1,30 @@
-//! a modal box with several labelled fields, for adding a login, a lease or a
-//! record. a secret field is masked, can be filled with a generated password
-//! and can be shown while you copy it down.
+//! the form box lives in `lanlord_app::form`; this draws it with egui.
 
-use eframe::egui::{self, Color32, Key, TextEdit, Ui};
+pub use lanlord_app::form::{Form, FormAnswer};
 
-use crate::controls;
+use eframe::egui;
 
-use crate::dialogs::modal;
-use crate::theme;
+use crate::view;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FormAnswer {
-    Ok,
-    Cancel,
-}
-
-pub struct FormField {
-    pub label: String,
-    pub value: String,
-    secret: bool,
-    shown: bool,
-}
-
-pub struct Form {
-    id: &'static str,
-    title: String,
-    message: String,
-    pub fields: Vec<FormField>,
-    pub checks: Vec<(String, bool)>,
-    /// shown under the fields, for input that was refused.
-    pub error: Option<String>,
-    focused: bool,
-}
-
-impl Form {
-    pub fn new(id: &'static str, title: &str, message: &str) -> Self {
-        Self {
-            id,
-            title: title.into(),
-            message: message.into(),
-            fields: Vec::new(),
-            checks: Vec::new(),
-            error: None,
-            focused: false,
-        }
-    }
-
-    pub fn text(mut self, label: &str, value: &str) -> Self {
-        self.fields.push(FormField {
-            label: label.into(),
-            value: value.into(),
-            secret: false,
-            shown: false,
-        });
-        self
-    }
-
-    pub fn secret(mut self, label: &str) -> Self {
-        self.fields.push(FormField {
-            label: label.into(),
-            value: String::new(),
-            secret: true,
-            shown: false,
-        });
-        self
-    }
-
-    pub fn check(mut self, label: &str, value: bool) -> Self {
-        self.checks.push((label.into(), value));
-        self
-    }
-
-    /// the trimmed text of field `i`.
-    pub fn value(&self, i: usize) -> &str {
-        self.fields.get(i).map_or("", |f| f.value.trim())
-    }
-
-    /// the field `i` exactly as typed, which matters for passwords.
-    pub fn raw(&self, i: usize) -> &str {
-        self.fields.get(i).map_or("", |f| f.value.as_str())
-    }
-
-    pub fn checked(&self, i: usize) -> bool {
-        self.checks.get(i).is_some_and(|c| c.1)
-    }
-
-    fn field_row(&mut self, ui: &mut Ui, i: usize, first: bool) {
-        let focus_wanted = first && !self.focused;
-        let field = &mut self.fields[i];
-        ui.label(&field.label);
-        ui.horizontal(|ui| {
-            let room = if field.secret { 176.0 } else { 10.0 };
-            let width = ui.available_width() - room;
-            let response = controls::field(ui, |ui| {
-                ui.add(
-                    TextEdit::singleline(&mut field.value)
-                        .password(field.secret && !field.shown)
-                        .desired_width(width)
-                        .frame(egui::Frame::new())
-                        .margin(egui::Margin::ZERO),
-                )
-            });
-            if focus_wanted {
-                response.request_focus();
-            }
-            if field.secret {
-                if theme::action(ui, "Generate", true).clicked() {
-                    field.value = crate::platform::password();
-                    field.shown = true;
-                }
-                let label = if field.shown { "Hide" } else { "Show" };
-                if theme::action(ui, label, true).clicked() {
-                    field.shown = !field.shown;
-                }
-            }
-        });
-    }
-
+/// drawing a form as a modal box.
+pub trait ShowForm {
     /// draw the form; `Some` once the user answered it.
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<FormAnswer> {
-        let mut answer = None;
-        let (id, title) = (self.id, self.title.clone());
-        modal(ctx, id, &title, |ui| {
-            if !self.message.is_empty() {
-                ui.label(&self.message);
-            }
-            for i in 0..self.fields.len() {
-                self.field_row(ui, i, i == 0);
-            }
-            self.focused = true;
-            for (label, value) in &mut self.checks {
-                controls::check(ui, value, label.as_str());
-            }
-            if let Some(error) = &self.error {
-                ui.colored_label(Color32::from_rgb(160, 0, 0), error);
-            }
-            ui.add_space(8.0);
-            controls::buttons(ui, |ui| {
-                let cancel = theme::button(ui, "Cancel", false);
-                let ok = theme::button(ui, "OK", false);
-                if ok.clicked() {
-                    answer = Some(FormAnswer::Ok);
-                } else if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                    answer = Some(FormAnswer::Cancel);
-                }
-            });
-        });
-        answer
+    fn show(&mut self, ctx: &egui::Context) -> Option<FormAnswer>;
+}
+
+impl ShowForm for Form {
+    fn show(&mut self, ctx: &egui::Context) -> Option<FormAnswer> {
+        let dialog = self.view();
+        view::dialog(ctx, &dialog).and_then(|msg| self.update(msg))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use eframe::egui::Key;
+
     use super::*;
-    use crate::testkit;
+    use crate::{testkit, theme};
 
     fn show(form: &mut Form, ctx: &egui::Context, events: Vec<egui::Event>) -> Option<FormAnswer> {
         let mut answer = None;
@@ -185,23 +56,15 @@ mod tests {
     }
 
     #[test]
-    fn values_are_trimmed_but_raw_keeps_spaces() {
-        let (form, _) = open();
-        assert_eq!((form.value(0), form.raw(0)), ("bob", " bob "));
-        assert_eq!(form.value(9), "");
-        assert!(form.checked(0) && !form.checked(3));
-    }
-
-    #[test]
     fn generate_fills_and_shows_the_password_and_show_toggles() {
         let (mut form, ctx) = open();
         assert!(press(&mut form, &ctx, "Generate").is_none());
         assert_eq!(form.raw(1).len(), 12);
-        assert!(form.fields[1].shown);
+        assert!(form.shown(1));
         press(&mut form, &ctx, "Hide");
-        assert!(!form.fields[1].shown);
+        assert!(!form.shown(1));
         press(&mut form, &ctx, "Show");
-        assert!(form.fields[1].shown);
+        assert!(form.shown(1));
     }
 
     #[test]

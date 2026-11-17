@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::ask::AskPassword;
 use crate::log::{emit, Kind};
 use anyhow::{anyhow, Result};
+use zeroize::Zeroizing;
 
 use crate::wake::Wake;
 
@@ -16,7 +17,8 @@ use crate::wake::Wake;
 /// cancelled, goes back through `reply`.
 pub struct PasswordRequest {
     pub prompt: String,
-    pub reply: Sender<Option<String>>,
+    /// the password, or `None` when it was cancelled; zeroized wherever it is dropped.
+    pub reply: Sender<Option<Zeroizing<String>>>,
 }
 
 /// the result of a task that is still running or has just finished.
@@ -134,13 +136,14 @@ fn background(work: impl FnOnce() + Send + 'static) {
 
 /// in the browser there are no threads: the work runs on the page's event loop once the
 /// current frame is done. a task that talks to the server sends its op with
-/// `gateway::http::Http::send`, which does not block.
+/// `gateway::http::Http::run`, which does not block.
 #[cfg(target_arch = "wasm32")]
 fn background(work: impl FnOnce() + Send + 'static) {
     wasm_bindgen_futures::spawn_local(async move { work() });
 }
 
 /// a password prompt that asks through the ui.
+#[cfg(not(target_arch = "wasm32"))]
 fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> Result<String> {
     move |what| {
         let (reply, answer) = mpsc::channel();
@@ -151,13 +154,27 @@ fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> R
             })
             .map_err(|_| anyhow!("the ui is gone"))?;
         wake.wake();
+        // core's prompt takes a plain string, so the only plain copy is made here
         answer
             .recv()
             .ok()
             .flatten()
+            .map(|password| password.to_string())
             .ok_or_else(|| anyhow!("cancelled"))
     }
 }
+
+/// in the browser a task runs on the page's only thread, so waiting for the dialog would wait
+/// forever. a prompt fails at once instead; the web ui asks for the password itself when the
+/// server answers an op with `Reply::NeedsPassword` (see `gateway::http::Http::run`).
+#[cfg(target_arch = "wasm32")]
+fn asker(_requests: Sender<PasswordRequest>, _wake: Wake) -> impl FnMut(&str) -> Result<String> {
+    |what: &str| Err(anyhow!("{PROMPT_IN_BROWSER} ({what})"))
+}
+
+/// why a task in the browser cannot ask for a password in the middle of its work.
+pub const PROMPT_IN_BROWSER: &str =
+    "the browser cannot stop a task to ask for a password; send the op again with it";
 
 #[cfg(test)]
 mod tests {
@@ -230,7 +247,10 @@ mod tests {
         let start = Instant::now();
         loop {
             if let Some(request) = tasks.next_request() {
-                request.reply.send(reply.map(String::from)).unwrap();
+                request
+                    .reply
+                    .send(reply.map(|r| Zeroizing::new(r.to_string())))
+                    .unwrap();
                 return request.prompt;
             }
             assert!(

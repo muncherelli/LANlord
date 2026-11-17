@@ -1,5 +1,6 @@
-//! random passwords that are easy to read out and type on an old keyboard; the alphabet and the
-//! rules live in lanlord-model, the operating system's random source here.
+//! random passwords that are easy to read out and type on an old keyboard. the alphabet and
+//! the generator live in `lanlord_model::passwords`; this adds the operating system's random
+//! source.
 
 pub use lanlord_model::passwords::*;
 

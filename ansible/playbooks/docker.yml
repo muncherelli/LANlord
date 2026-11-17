@@ -25,15 +25,47 @@
         fail_msg: "docker settings: interface names and the address need a plain value like eth1 and 172.16.120.2/22"
       when: docker is defined
 
-    - name: work out the host and internal network interfaces
-      ansible.builtin.include_tasks: network.yml
+    # docker needs the proxmox features nesting and keyctl when it runs in an lxc container;
+    # say so before installing anything. this runs the same probe as `lanlord doctor` and the
+    # apply gate, so they always agree: only a definite "no" counts, and a probe that cannot
+    # tell (or fails) stops nothing.
+    - name: look at this machine
+      ansible.builtin.script: "{{ playbook_dir }}/doctor-probe.sh"
+      register: doctor
+      changed_when: false
+      failed_when: false
+      when: docker is defined
+
+    - name: work out which lxc features are definitely missing
+      ansible.builtin.set_fact:
+        lxc_missing: >-
+          {{ ((['nesting'] if 'nesting=no' in lines else [])
+              + (['keyctl'] if 'keyctl=no' in lines and 'uid_map=0 0 4294967295' not in lines else []))
+             | join(' and ') }}
+      vars:
+        lines: "{{ doctor.stdout_lines | default([]) if 'virt_container=lxc' in (doctor.stdout_lines | default([])) else [] }}"
+      when: docker is defined
+
+    - name: stop when an lxc container lacks nesting or keyctl
+      ansible.builtin.assert:
+        that: lxc_missing == ''
+        fail_msg: >-
+          this server cannot run docker yet: this lxc container is missing {{ lxc_missing }}.
+          fix: on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1`
+          (replace <CTID> with this container's number) and restart the container with
+          `pct reboot <CTID>`; lanlord cannot do this from inside the container
+      when: docker is defined
+
+    - name: work out the host network and the lanlord networks
+      ansible.builtin.include_tasks: networks.yml
       when: docker is defined
 
     - name: say what this machine is
       ansible.builtin.debug:
         msg: >-
           {{ ansible_facts['virtualization_type'] | default('bare metal') or 'bare metal' }};
-          host network {{ host_interface }}, internal network {{ internal_interface }}
+          host network {{ host_interface }}, lanlord networks
+          {{ lan_interfaces | default([]) | join(', ') if lan_interfaces | default([]) | length > 0 else 'none' }}
       when: docker is defined
 
     - name: install docker on arch
@@ -84,6 +116,12 @@
       changed_when: false
       when: docker is defined
 
+    - name: work out which networks get their address, mtu and firewall settings from lanlord
+      ansible.builtin.set_fact:
+        lan_interfaces: "{{ lanlord_networks | map(attribute='interface') | list }}"
+        lan_configured: "{{ lanlord_networks | selectattr('configure_address') | list }}"
+      when: docker is defined
+
     - name: find out which network manager is running
       ansible.builtin.shell: |
         for unit in systemd-networkd NetworkManager; do
@@ -92,74 +130,23 @@
         echo none
       register: net_manager
       changed_when: false
-      when: docker is defined and docker.internal_address is defined
+      when: docker is defined and lan_configured | length > 0
 
     - name: stop on a network manager we cannot configure
       ansible.builtin.fail:
         msg: >-
           network manager '{{ net_manager.stdout }}' is not supported yet (systemd-networkd and
-          NetworkManager are). add {{ docker.internal_address }} to {{ internal_interface }}
-          yourself and remove internal_address from your settings.
-      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'none'
+          NetworkManager are). add the addresses {{ lan_configured | map(attribute='address') | list }} to
+          {{ lan_configured | map(attribute='interface') | list }} yourself and take them out of your settings.
+      when: docker is defined and lan_configured | length > 0 and net_manager.stdout == 'none'
 
-    - name: make a place for the internal interface's extra settings
-      ansible.builtin.file:
-        path: "/etc/systemd/network/{{ internal_interface }}.network.d"
-        state: directory
-        group: systemd-network
-        mode: "0750"
-      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'systemd-networkd'
-
-    # proxmox rewrites the main .network file of a container, but never this drop-in
-    - name: give the internal interface its extra address (systemd-networkd)
-      ansible.builtin.copy:
-        dest: "/etc/systemd/network/{{ internal_interface }}.network.d/lanlord.conf"
-        content: |
-          [Network]
-          Address={{ docker.internal_address }}
-        group: systemd-network
-        mode: "0640"
-      register: networkd_address
-      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'systemd-networkd'
-
-    - name: apply the new address (systemd-networkd)
-      ansible.builtin.command: networkctl reload
-      changed_when: true
-      when: networkd_address is changed
-
-    - name: find the NetworkManager connection of the internal interface
-      ansible.builtin.command: "nmcli -g GENERAL.CONNECTION device show {{ internal_interface }}"
-      register: nm_connection
-      changed_when: false
-      failed_when: nm_connection.stdout == ''
-      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'NetworkManager'
-
-    - name: read its addresses
-      ansible.builtin.command: "nmcli -g ipv4.addresses connection show '{{ nm_connection.stdout }}'"
-      register: nm_addresses
-      changed_when: false
-      when: docker is defined and docker.internal_address is defined and net_manager.stdout == 'NetworkManager'
-
-    - name: give the internal interface its extra address (NetworkManager)
-      ansible.builtin.command: "nmcli connection modify '{{ nm_connection.stdout }}' +ipv4.addresses {{ docker.internal_address }}"
-      register: nm_added
-      when: >-
-        docker is defined and docker.internal_address is defined and net_manager.stdout == 'NetworkManager'
-        and docker.internal_address not in nm_addresses.stdout
-
-    - name: apply the new address (NetworkManager)
-      ansible.builtin.command: "nmcli connection up '{{ nm_connection.stdout }}'"
-      changed_when: true
-      when: nm_added is changed
-
-    - name: wait for the address to show up
-      ansible.builtin.command: "ip -o addr show dev {{ internal_interface }}"
-      register: internal_addresses
-      until: docker.internal_address.split('/')[0] in internal_addresses.stdout
-      retries: 10
-      delay: 1
-      changed_when: false
-      when: docker is defined and docker.internal_address is defined
+    - name: give every lanlord network its address and mtu
+      ansible.builtin.include_tasks: network-address.yml
+      loop: "{{ lan_configured | default([]) }}"
+      loop_control:
+        loop_var: lan
+        label: "{{ lan.name }}"
+      when: docker is defined
 
     - name: make a place for lanlord's firewall rules
       ansible.builtin.file:
@@ -169,24 +156,9 @@
       when: docker is defined
 
     - name: keep netbios, smb, dns and dhcp off the host network
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: docker/firewall.nft.j2
         dest: /etc/lanlord/firewall.nft
-        content: |
-          add table inet lanlord
-          flush table inet lanlord
-          table inet lanlord {
-            chain input {
-              type filter hook input priority -10; policy accept;
-              iifname "{{ host_interface }}" udp dport { 137, 138 } drop
-              iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
-              iifname "{{ host_interface }}" udp dport { 53, 67, 68 } drop
-              iifname "{{ host_interface }}" tcp dport 53 drop
-            }
-            chain output {
-              type filter hook output priority -10; policy accept;
-              oifname "{{ host_interface }}" udp sport 67 drop
-            }
-          }
         mode: "0600"
         validate: nft -c -f %s
       register: firewall_rules
@@ -223,5 +195,6 @@
       ansible.builtin.debug:
         msg: >-
           docker is running ({{ storage_driver.stdout }});
-          {{ internal_interface }} is the internal network and {{ host_interface }} drops netbios and smb
+          {{ host_interface }} drops netbios and smb and the lanlord networks
+          ({{ lan_interfaces | join(', ') if lan_interfaces | length > 0 else 'none' }}) are left alone
       when: docker is defined

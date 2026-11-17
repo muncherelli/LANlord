@@ -1,13 +1,17 @@
 # the browser build; tools/build-web.sh runs it. `lanlord webui --static target/web-dist`
 # serves the result.
-trunk-version = "^0.22.1"
+trunk-version = "=0.22.1"
 
 [build]
 target = "index.html"
 # the size-tuned profile from the workspace Cargo.toml
 cargo_profile = "web"
 dist = "../../target/web-dist"
+# like cargo --locked: fail instead of updating Cargo.lock
+locked = true
 
 [tools]
 # must match the wasm-bindgen version in Cargo.lock
 wasm_bindgen = "0.2.130"
+# the binaryen release trunk 0.22.1 defaults to
+wasm_opt = "version_131"

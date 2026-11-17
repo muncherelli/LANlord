@@ -39,12 +39,27 @@ fn scratch(name: &str) -> std::path::PathBuf {
     dir
 }
 
+/// write an executable script. tests run in parallel and start processes, and a process forked
+/// while this one holds the script open for writing would make running it fail with "text file
+/// busy"; so the script is written beside its place and `install` copies it in, and this process
+/// never has the program itself open for writing.
 #[cfg(unix)]
 fn script(path: &Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let parent = path.parent().unwrap();
+    std::fs::create_dir_all(parent).unwrap();
+    let source = parent.join(format!(
+        ".{}.src",
+        path.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::write(&source, format!("#!/bin/sh\n{body}\n")).unwrap();
+    let installed = std::process::Command::new("install")
+        .args(["-m", "0700"])
+        .arg(&source)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(installed.success(), "install {}", path.display());
+    let _ = std::fs::remove_file(source);
 }
 
 /// every test that runs a rebuild writes to the process-wide log, and several read it back, so

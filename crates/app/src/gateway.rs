@@ -291,7 +291,7 @@ fn text(reply: Reply, op: &str) -> Result<Option<String>> {
 }
 
 #[cfg(feature = "native")]
-pub use native::{Local, Ssh, NO_KEY};
+pub use native::{Ssh, NO_KEY};
 
 #[cfg(feature = "native")]
 mod native {
@@ -319,15 +319,16 @@ mod native {
         }
     }
 
-    /// lanlord running on the gateway itself (server mode): one server, the local one.
-    pub struct Local;
+    /// lanlord running on the gateway itself (server mode): one server, the local one. nothing
+    /// uses it yet: core runs every op through an ssh session, and server mode needs a local
+    /// path and a privilege model (a root helper, or a socket daemon only the admins group may
+    /// use) first.
+    #[allow(dead_code)] // server mode is not built yet
+    pub(super) struct Local;
 
     impl Gateway for Local {
-        fn call(&self, _host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
-            // todo: core runs every op through an ssh session for now, so server mode reaches
-            // itself over localhost until there is a local path and a privilege model
-            // (a root helper, or a socket daemon only the admins group may use)
-            execute("localhost", &op, ask)
+        fn call(&self, _host: &str, _op: Op, _ask: AskPassword) -> Result<Reply> {
+            Err(anyhow!("server mode backend not built yet"))
         }
 
         fn is_local(&self) -> bool {
@@ -339,29 +340,28 @@ mod native {
     /// tried without a server; a purge never runs in it. `LANLORD_FAKE_CLOCK` does the same for
     /// the clock.
     fn demo_reply(op: &Op) -> Option<Result<Reply>> {
-        if let Some(container) = demo_clock::mode() {
-            match op {
-                Op::ClockState => return Some(Ok(Reply::Clock(demo_clock::state(container)))),
-                Op::ClockZones => return Some(Ok(Reply::Names(demo_clock::zones()))),
-                Op::ClockZoneNow { zone } => {
-                    return Some(Ok(Reply::ZoneNow(demo_clock::zone_now(zone))))
-                }
-                Op::ClockApply { change } => {
-                    let (lines, stored) = demo_clock::apply(change, container);
-                    return Some(Ok(Reply::ClockApplied { lines, stored }));
-                }
-                Op::ClockUpdateNow => {
-                    return Some(Ok(Reply::Lines(vec![
-                        "Server: 162.159.200.1 (pool.ntp.org)".into(),
-                    ])))
-                }
-                _ => {}
-            }
+        if let Some(reply) = demo_clock::mode().and_then(|container| clock_demo(op, container)) {
+            return Some(reply);
         }
         if std::env::var("LANLORD_FAKE_SERVER").as_deref() != Ok("1") {
             return None;
         }
         server_demo(op)
+    }
+
+    /// the made-up answer of the demo clock, for the clock ops.
+    fn clock_demo(op: &Op, container: bool) -> Option<Result<Reply>> {
+        Some(Ok(match op {
+            Op::ClockState => Reply::Clock(demo_clock::state(container)),
+            Op::ClockZones => Reply::Names(demo_clock::zones()),
+            Op::ClockZoneNow { zone } => Reply::ZoneNow(demo_clock::zone_now(zone)),
+            Op::ClockApply { change } => {
+                let (lines, stored) = demo_clock::apply(change, container);
+                Reply::ClockApplied { lines, stored }
+            }
+            Op::ClockUpdateNow => Reply::Lines(vec!["Server: 162.159.200.1 (pool.ntp.org)".into()]),
+            _ => return None,
+        }))
     }
 
     /// the made-up answer of the demo server, for the ops that have one.
@@ -421,11 +421,62 @@ mod native {
             assert!(matches!(preview, Some(Ok(Reply::Lines(_)))));
             assert!(apply.is_none(), "ops without demo data go to the server");
         }
+
+        #[test]
+        fn the_demo_server_answers_its_windows() {
+            let load = server_demo(&Op::LoadDocument).unwrap().unwrap();
+            assert!(matches!(load, Reply::Document(d) if d.plain.contains("retronet")));
+            let leases = server_demo(&Op::Leases).unwrap().unwrap();
+            assert!(matches!(leases, Reply::Leases(l) if l.len() == 3));
+            let facts = server_demo(&Op::ServerFacts).unwrap().unwrap();
+            assert!(matches!(facts, Reply::Facts(_)));
+        }
+
+        #[test]
+        fn the_demo_clock_answers_every_clock_op() {
+            use lanlord_model::clock::Change;
+            for container in [false, true] {
+                let state = clock_demo(&Op::ClockState, container).unwrap().unwrap();
+                assert!(matches!(state, Reply::Clock(_)));
+                let zones = clock_demo(&Op::ClockZones, container).unwrap().unwrap();
+                assert!(matches!(zones, Reply::Names(z) if !z.is_empty()));
+                let now = Op::ClockZoneNow {
+                    zone: "Europe/Berlin".into(),
+                };
+                assert!(matches!(
+                    clock_demo(&now, container),
+                    Some(Ok(Reply::ZoneNow(_)))
+                ));
+                let apply = Op::ClockApply {
+                    change: Change::default(),
+                };
+                assert!(matches!(
+                    clock_demo(&apply, container),
+                    Some(Ok(Reply::ClockApplied { .. }))
+                ));
+                assert!(matches!(
+                    clock_demo(&Op::ClockUpdateNow, container),
+                    Some(Ok(Reply::Lines(_)))
+                ));
+                assert!(clock_demo(&Op::Leases, container).is_none());
+            }
+        }
+
+        #[test]
+        fn the_local_gateway_is_the_one_server_and_not_built_yet() {
+            assert!(Local.is_local());
+            assert!(!Ssh.is_local());
+            let err = Local
+                .call("ignored", Op::Leases, &mut crate::ask::never)
+                .unwrap_err();
+            assert_eq!(err.to_string(), "server mode backend not built yet");
+        }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub mod http;
+pub mod round_trip;
 
 #[cfg(any(test, feature = "fake"))]
 pub use fake::Fake;
@@ -468,6 +519,8 @@ mod fake {
         pub purge_lines: Mutex<Vec<String>>,
         /// the server's clock, changed by `clock_apply`.
         pub clock: Mutex<ClockState>,
+        /// what `clock_apply` says about keeping the change in the settings.
+        pub kept: Mutex<Stored>,
         /// the time zones it lists.
         pub zones: Mutex<Vec<String>>,
         /// the small reads that are not tasks (the taskbar clock).
@@ -498,6 +551,7 @@ mod fake {
                 outcome: Mutex::new(Outcome::Dropped),
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
+                kept: Mutex::new(Stored::Yes),
                 clock: Mutex::new(ClockState {
                     timezone: "Etc/UTC".into(),
                     utc_secs: 1_794_759_123,
@@ -545,6 +599,9 @@ mod fake {
     impl Gateway for Fake {
         fn call(&self, host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
             Ok(match op {
+                Op::Doctor => Reply::Doctor(lanlord_model::doctor::Report::parse(
+                    "virt_container=none\nvirt_vm=none\nlink_bridge=ok\n",
+                )),
                 Op::Bootstrap => {
                     self.bootstrap(host, ask)?;
                     Reply::Done
@@ -848,7 +905,7 @@ mod fake {
                 state.ntp = ntp.enabled;
                 state.servers.clone_from(&ntp.servers);
             }
-            Ok((vec!["applied".into()], Stored::Yes))
+            Ok((vec!["applied".into()], self.kept.lock().unwrap().clone()))
         }
 
         pub fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
@@ -888,6 +945,131 @@ mod fake {
             .is_err());
         assert!(fake.probe("a@b").is_err());
         assert_eq!(fake.calls(), ["save a@b", "load a@b", "probe a@b"]);
+    }
+
+    #[test]
+    fn every_typed_method_reaches_the_fake_through_an_op() {
+        let fake = Fake::new();
+        *fake.internal.lock().unwrap() = Some(Internal {
+            interface: "eth1".into(),
+            address: std::net::Ipv4Addr::new(192, 0, 2, 1),
+            prefix: 24,
+        });
+        fake.logon
+            .lock()
+            .unwrap()
+            .insert("start.bat".into(), "echo hi\n".into());
+        let gateway: &dyn Gateway = &fake;
+        let mut ask = |_: &str| Ok(String::new());
+        let h = "a@b";
+        gateway.bootstrap(h, &mut ask).unwrap();
+        gateway.apply(h, &["dns".into()], &mut ask).unwrap();
+        gateway
+            .save_document(h, "x: 1\n", &[("p.password".into(), "pw".into())], &mut ask)
+            .unwrap();
+        let document = gateway.load_document(h, &mut ask).unwrap();
+        assert_eq!(document.plain, "x: 1\n");
+        assert_eq!(document.secrets_set, ["p.password"]);
+        assert!(gateway.probe(h).is_ok());
+        gateway.reset_machine(h, "ws1", &mut ask).unwrap();
+        let admin = NewAdmin {
+            name: "admin".into(),
+            password: zeroize::Zeroizing::new("pw".into()),
+            ssh_key: Some("ssh-ed25519 AAAA demo".into()),
+            passwordless_sudo: true,
+        };
+        gateway.create_admin(h, &admin, &mut ask).unwrap();
+        assert!(gateway.leases(h, &mut ask).unwrap().is_empty());
+        assert_eq!(gateway.logon_scripts(h, &mut ask).unwrap(), ["start.bat"]);
+        assert!(gateway
+            .read_logon(h, "start.bat", &mut ask)
+            .unwrap()
+            .is_some());
+        assert!(gateway.read_generated_logon(h, &mut ask).unwrap().is_none());
+        gateway
+            .write_logon(h, "other.bat", "echo\r\n", &mut ask)
+            .unwrap();
+        assert_eq!(
+            gateway.power(h, Power::Reboot, &mut ask).unwrap(),
+            Outcome::Dropped
+        );
+        assert!(gateway.server_facts(h, &mut ask).is_ok());
+        assert_eq!(gateway.purge_preview(h, true, &mut ask).unwrap().len(), 1);
+        assert_eq!(gateway.purge(h, false, &mut ask).unwrap().len(), 1);
+        assert!(!gateway.clock_zones(h).unwrap().is_empty());
+        assert_eq!(
+            gateway.clock_zone_now(h, "Europe/Berlin").unwrap().abbrev,
+            "CET"
+        );
+        let change = ClockChange {
+            timezone: Some("Europe/Berlin".into()),
+            ..ClockChange::default()
+        };
+        let (lines, stored) = gateway.clock_apply(h, &change, &mut ask).unwrap();
+        assert_eq!((lines.len(), stored), (1, Stored::Yes));
+        assert_eq!(gateway.clock_state(h).unwrap().timezone, "Europe/Berlin");
+        assert_eq!(gateway.clock_update_now(h, &mut ask).unwrap().len(), 1);
+        assert_eq!(fake.calls().len(), 18, "{:?}", fake.calls());
+    }
+
+    /// a backend that answers every op with the wrong kind of reply.
+    #[cfg(test)]
+    struct Confused;
+
+    #[cfg(test)]
+    impl Gateway for Confused {
+        fn call(&self, _host: &str, op: Op, _ask: AskPassword) -> Result<Reply> {
+            Ok(match op {
+                Op::Bootstrap => Reply::ExitCode(1),
+                _ => Reply::Done,
+            })
+        }
+    }
+
+    #[test]
+    fn a_reply_that_does_not_fit_the_op_is_an_error() {
+        let gateway: &dyn Gateway = &Confused;
+        let mut ask = |_: &str| Ok(String::new());
+        let h = "a@b";
+        let err = gateway.bootstrap(h, &mut ask).unwrap_err().to_string();
+        assert!(err.contains("unexpected answer to bootstrap"), "{err}");
+        assert!(gateway.load_document(h, &mut ask).is_err());
+        assert!(gateway.probe(h).is_err());
+        assert!(gateway.leases(h, &mut ask).is_err());
+        assert!(gateway.logon_scripts(h, &mut ask).is_err());
+        assert!(gateway.read_logon(h, "x", &mut ask).is_err());
+        assert!(gateway.run(h, &[]).is_err());
+        assert!(gateway.power(h, Power::Reboot, &mut ask).is_err());
+        assert!(gateway.server_facts(h, &mut ask).is_err());
+        assert!(gateway.purge_preview(h, false, &mut ask).is_err());
+        assert!(gateway.clock_state(h).is_err());
+        assert!(gateway.clock_zone_now(h, "UTC").is_err());
+        assert!(gateway
+            .clock_apply(h, &ClockChange::default(), &mut ask)
+            .is_err());
+        assert!(!gateway.is_local());
+    }
+
+    #[test]
+    fn a_read_that_asks_for_a_password_fails() {
+        let fake = Fake::new();
+        *fake.password_prompt.lock().unwrap() = Some("[sudo] password:".into());
+        let gateway: &dyn Gateway = &fake;
+        *fake.internal.lock().unwrap() = Some(Internal {
+            interface: "eth1".into(),
+            address: std::net::Ipv4Addr::new(192, 0, 2, 1),
+            prefix: 24,
+        });
+        // a read never prompts, so with a network it succeeds without an answer
+        assert!(gateway.probe("a@b").is_ok());
+        assert!(fake.answer.lock().unwrap().is_none());
+        // an op that reaches the prompt fails when nobody can answer
+        let mut refuse = |_: &str| Err(anyhow!("no password here"));
+        let failed = gateway.reset_machine("a@b", "ws1", &mut refuse);
+        assert!(failed.is_err_and(|e| e.to_string().contains("no password here")));
+        let mut ask = |_: &str| Ok("pw".to_string());
+        gateway.reset_machine("a@b", "ws1", &mut ask).unwrap();
+        assert_eq!(fake.answer.lock().unwrap().as_deref(), Some("pw"));
     }
 
     #[test]

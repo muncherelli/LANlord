@@ -60,8 +60,8 @@ fn logins() -> (Desktop, egui::Context, Arc<Fake>) {
 /// fill the open form's fields.
 fn fill(form: Option<&mut crate::form::Form>, values: &[&str]) {
     let form = form.expect("a form is open");
-    for (field, value) in form.fields.iter_mut().zip(values) {
-        field.value = (*value).into();
+    for (i, value) in values.iter().enumerate() {
+        form.set(i, value);
     }
 }
 
@@ -226,7 +226,7 @@ fn the_dns_window_loads_makes_a_lease_static_and_saves_and_applies() {
         (form.value(0), form.value(1)),
         ("win98", "aa:bb:cc:dd:ee:00")
     );
-    form.fields[2].value = "172.16.120.101".into();
+    form.set(2, "172.16.120.101");
     assert!(press(&mut desktop, &ctx, "OK"));
     assert_eq!(desktop.dns.draft.dhcp.as_ref().unwrap().hosts.len(), 2);
     assert!(desktop.dns.dirty());

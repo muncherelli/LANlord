@@ -47,9 +47,30 @@ The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh`
 
 Double-click the clock in the taskbar to open Date/Time Properties for the server you are signed in to (the taskbar clock shows the server's time, not your computer's). It has the familiar three tabs: Date & Time, Time Zone and Internet Time. From the command line, `lanlord clock HOST show`, `set-timezone ZONE`, `set-time 'YYYY-MM-DD HH:MM:SS'`, `ntp on|off [SERVERS...]` and `update` do the same. The time zone and the time servers are also kept in the `gateway` settings (`timezone`, `ntp`, `ntp_enabled`), so a later apply does not undo them; a time set by hand is a one-off. A server that is an LXC container takes its clock from the Proxmox host, so there only the time zone can be changed.
 
+## Checking a server
+
+`lanlord doctor HOST` (also `lanlord check HOST`) says what kind of machine a server is (bare metal, a virtual machine, a privileged or unprivileged LXC container) and what it can do for LANlord: nesting and keyctl for Docker in an LXC container, `/dev/net/tun`, nftables, ip forwarding, which kinds of network link the kernel allows (bridges, VLANs, veth, macvlan, ipvlan, VXLAN, GRE, WireGuard), Docker's firewall backend and FORWARD policy, the network manager, and VDE. It marks each line OK, WARN, FAIL or unknown and gives the exact fix, for example `pct set <CTID> --features nesting=1,keyctl=1`; `--json` prints the report as data. `lanlord apply` asks the same probe before the modules that use Docker (docker, nt4-domain, web-proxy and dns; a plain apply checks the ones your settings configure) and stops only on a definite FAIL, never on something it could not tell or a probe that failed. `ansible/playbooks/docker.yml` runs the same probe script. LANlord cannot change a container's features from inside it; the fix is made on the Proxmox host, followed by a restart of the container.
+
 ## Starting over
 
 `lanlord purge HOST` removes LANlord from a server: its containers and images, `/opt/lanlord`, the firewall rules, the `lanlord` service account, the `admins` group and the sudo rules. It first lists everything it would remove and the data you would lose, then asks you to type the host name. The Docker engine, `/etc/motd` and the accounts of people stay unless you pass `--remove-admins` (root login only). Note that `settings.age` is the only copy of the stored secrets.
+
+## Running a development build
+
+`tools/dev.sh` opens a build from a checkout without installing anything:
+
+- `tools/dev.sh gui` and `tools/dev.sh tui` build and open the desktop window or the terminal ui. Add `--demo` for canned data and a fake update (no server is touched), `--clean` for an empty config in a throwaway folder, `--open dns,networks` to start with windows open, and `--release` for an optimised build.
+- `tools/dev.sh app` builds and installs the macOS app.
+- `cargo gui` and `cargo tui` are shorter ways to run the same builds.
+
+For the web UI and a test server:
+
+- `tools/dev.sh web --serve` builds the browser version and serves it on this machine only (`http://127.0.0.1:8080/`, or `--port N`), with the same web server and headers a gateway uses. The browser build is still a stand-in page: it shows no server data and talks to no server. It needs `trunk` and the wasm target, which `tools/build-web.sh` tells you how to install.
+- `tools/dev.sh linux-build` cross-compiles the server binary (no window, with the web server) for a Linux machine, `--target x86_64` (default) or `aarch64`. It needs zig and cargo-zigbuild, and installs nothing itself: `brew install zig`, `cargo install cargo-zigbuild --locked` and `rustup target add x86_64-unknown-linux-gnu`.
+- `tools/dev.sh deploy user@gateway.example.lan` builds both, shows what would change on the server (the binary, the web files), asks you to type the host, then installs them over SSH and restarts only the `lanlord-webui` service. It touches only `/opt/lanlord/bin/lanlord` and `/opt/lanlord/web`, keeps the previous versions as `lanlord.prev` and `web.prev`, and puts them back by itself if the service does not answer within 10 seconds. `--dry-run` changes nothing, `--no-build` reuses the last build, and `deploy HOST --rollback` restores the previous version. The host is always an argument and is never stored. Sign in as root, or as a user with passwordless sudo.
+- `tools/test-dev-pipeline.sh` tries the deploy, rollback and failure paths against a folder that stands in for a server, with no network.
+
+`tools/dev-launchers.sh install` creates launchers for them (app bundles in `~/Applications` on macOS, desktop entries on Linux): the GUI and TUI from your checkout's debug build, and a preview build that merges `origin/trunk` with every open pull request (the ones that conflict are skipped and listed), with a Preview Update launcher that rebuilds it. It keeps launchers that already exist unless you pass `--force`, and `tools/dev-launchers.sh remove --yes` takes them away. A debug build also has a Developer entry in the LANlord menu that rebuilds and relaunches it.
 
 ## Supported platforms
 
@@ -87,4 +108,4 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The Ansible files live in [`ansible/`](ansible/README.md).
+Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The gateway's web server (`lanlord webui`) is behind the `webui` feature: `cargo build -p lanlord --no-default-features --features webui`. The Ansible files live in [`ansible/`](ansible/README.md).

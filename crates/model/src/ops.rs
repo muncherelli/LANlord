@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
+use crate::doctor::Report;
 use crate::leases::Lease;
 use crate::network::Internal;
 use crate::power::{Outcome, Power};
@@ -77,6 +78,8 @@ pub enum Op {
     ClockApply { change: ClockChange },
     /// ask the time service to synchronize now.
     ClockUpdateNow,
+    /// what the server can do for lanlord's networks, and how to fix what it cannot.
+    Doctor,
 }
 
 /// a secret setting to change: its path in the settings and the new value.
@@ -167,6 +170,8 @@ pub enum Reply {
         lines: Vec<String>,
         stored: Stored,
     },
+    /// what the server can and cannot do, from `lanlord doctor`.
+    Doctor(Report),
     /// the server needs the sudo password: a front end that cannot answer a prompt while an op
     /// runs (the web ui) asks the person and sends the same op again in a [`Request`] carrying
     /// it. the terminal and the desktop answer the prompt directly and never see this.
@@ -295,6 +300,7 @@ mod tests {
                 },
             },
             Op::ClockUpdateNow,
+            Op::Doctor,
         ]
     }
 
@@ -302,7 +308,7 @@ mod tests {
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 23);
+        assert_eq!(ops.len(), 24);
         for op in &ops {
             round_trip(op);
         }
@@ -374,6 +380,9 @@ mod tests {
             Reply::NeedsPassword {
                 prompt: "[sudo] password for admin:".into(),
             },
+            Reply::Doctor(Report::parse(
+                "virt_container=none\nvirt_vm=none\nlink_bridge=ok\n",
+            )),
         ];
         for reply in &replies {
             round_trip(reply);
@@ -423,6 +432,20 @@ mod tests {
             }
         );
         assert_eq!(UserChange::from(&in_memory), change);
+        for change in [
+            UserChange::SetAdmin {
+                name: "alice".into(),
+                admin: true,
+            },
+            UserChange::SetSoftwareAdmin {
+                name: "bob".into(),
+                software_admin: false,
+            },
+            UserChange::Remove { name: "eve".into() },
+        ] {
+            let in_memory = UserChangeInMemory::from(&change);
+            assert_eq!(UserChange::from(&in_memory), change);
+        }
     }
 
     #[test]

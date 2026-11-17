@@ -276,3 +276,41 @@ fn reopening_the_window_reads_the_server_again() {
         .count();
     assert_eq!(zones, 2, "every opening lists the zones again");
 }
+
+fn apply_berlin(kept: lanlord_core::clock::Stored) -> (Desktop, egui::Context, Arc<Fake>) {
+    let (mut desktop, ctx, fake) = setup();
+    *fake.kept.lock().unwrap() = kept;
+    until(&mut desktop, &ctx, |d| d.feed.has_reading());
+    open(&mut desktop, &ctx);
+    desktop.clock.pretend_zone("Europe/Berlin");
+    frames(&mut desktop, &ctx, 2);
+    assert!(press(&mut desktop, &ctx, "Apply"));
+    until(&mut desktop, &ctx, idle("me@gw"));
+    frames(&mut desktop, &ctx, 3);
+    (desktop, ctx, fake)
+}
+
+#[test]
+fn a_change_on_a_server_without_lanlord_is_done_and_says_it_is_not_stored() {
+    let (desktop, _ctx, fake) = apply_berlin(lanlord_core::clock::Stored::NotInstalled);
+    assert_eq!(fake.clock.lock().unwrap().timezone, "Europe/Berlin");
+    let note = desktop.clock.note().unwrap();
+    assert!(
+        note.contains("LANlord is not installed on this server, so the change is not stored"),
+        "{note}"
+    );
+    assert!(!note.contains("127"), "{note}");
+}
+
+#[test]
+fn a_failure_to_keep_the_change_is_a_warning_and_the_window_still_refreshes() {
+    let failed = lanlord_core::clock::Stored::Failed("storing the settings failed".into());
+    let (desktop, _ctx, fake) = apply_berlin(failed);
+    assert_eq!(fake.clock.lock().unwrap().timezone, "Europe/Berlin");
+    let note = desktop.clock.note().unwrap();
+    assert!(
+        note.contains("applied, but could not be remembered in LANlord's settings: storing the settings failed"),
+        "{note}"
+    );
+    assert!(desktop.clock.is_loaded(), "the window shows the new state");
+}
