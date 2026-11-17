@@ -337,7 +337,7 @@ mod tests {
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 25);
+        assert_eq!(ops.len(), 26);
         for op in &ops {
             round_trip(op);
         }
