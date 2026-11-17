@@ -23,6 +23,13 @@ pub enum Target {
     Changelog,
 }
 
+/// the console opens as 80 columns by 24 rows of text, the size of a terminal.
+pub const CONSOLE_COLS: f32 = 80.0;
+pub const CONSOLE_ROWS: f32 = 24.0;
+/// a text cell in layout units, for the front ends that have no font to measure; the window
+/// front end measures its own.
+const CELL: (f32, f32) = (8.0, 16.0);
+
 impl Target {
     /// the id of the window's icon, and of the module for a module window.
     pub fn id(self) -> &'static str {
@@ -58,7 +65,12 @@ impl Target {
     /// the contents can grow (a console, a list, a text): the window opens at `size` rather than
     /// as tall as its contents, the user may resize it and the growable part fills it.
     pub fn growable(self) -> bool {
-        matches!(self, Self::Console | Self::Hosts | Self::Changelog)
+        match self {
+            Self::Console | Self::Hosts | Self::Changelog | Self::MyServer | Self::Networks => true,
+            // the modules with a list of logins, hosts or commands; the rest are plain forms
+            Self::Module(i) => matches!(MODULES[i].id, "nt4-domain" | "dns" | "remote-commands"),
+            _ => false,
+        }
     }
 
     /// a dialog has only a close button, cannot be resized and is as tall as its contents.
@@ -88,7 +100,7 @@ impl Target {
             },
             Self::MyServer => (440.0, 480.0),
             Self::Networks => (560.0, 440.0),
-            Self::Console => (680.0, 440.0),
+            Self::Console => (CONSOLE_COLS * CELL.0, CONSOLE_ROWS * CELL.1),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
