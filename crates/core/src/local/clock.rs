@@ -107,15 +107,23 @@ fn servers_in(text: &str) -> Vec<String> {
 /// write `text` to `path` so a reader sees the old file or the new one, never half of it.
 pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
     let dir = path.parent().context("the file has no folder")?;
-    std::fs::create_dir_all(dir)?;
+    // 0755 and 0644 on purpose, whatever the umask: services read what lanlord writes here
+    // (the old script used `install -d -m 0755`)
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o755)
+            .create(dir)?;
+    }
     let tmp = dir.join(format!(".lanlord-{}.tmp", std::process::id()));
     let result = (|| -> Result<()> {
-        // no chmod: the file gets the process umask like the shell's `>` did (0644 under sudo's
-        // 022), so services can read it and nobody else can write it
+        use std::os::unix::fs::OpenOptionsExt;
         let _ = std::fs::remove_file(&tmp);
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o644)
             .open(&tmp)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
@@ -361,12 +369,23 @@ fn set_zone(zone: &str) -> Result<()> {
     }
     if td.and_then(|td| Ok(td.set_timezone(zone, false)?)).is_err() {
         // timedated does not answer here; do what it would do
-        let link = Path::new("/etc/localtime");
-        let _ = std::fs::remove_file(link);
-        std::os::unix::fs::symlink(zone_file(zone), link)?;
+        link_zone(Path::new("/etc"), &zone_file(zone))?;
         if Path::new("/etc/timezone").is_file() {
             write_atomic(Path::new("/etc/timezone"), &format!("{zone}\n"))?;
         }
+    }
+    Ok(())
+}
+
+/// point `<etc>/localtime` at `target`: the link is made under another name and renamed over the
+/// old one, so there is never a moment without a time zone.
+fn link_zone(etc: &Path, target: &Path) -> Result<()> {
+    let tmp = etc.join(format!(".lanlord-localtime-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(target, &tmp)?;
+    if let Err(err) = std::fs::rename(&tmp, etc.join("localtime")) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.into());
     }
     Ok(())
 }
@@ -762,6 +781,36 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "two\n");
         let left: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().collect();
         assert_eq!(left.len(), 1, "no temporary file stays");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&file), 0o644);
+            assert_eq!(mode(file.parent().unwrap()), 0o755);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_zone_link_is_replaced_in_one_step() {
+        let etc = std::env::temp_dir().join(format!("lanlord-local-etc-{}", std::process::id()));
+        std::fs::create_dir_all(&etc).unwrap();
+        // nothing there yet, then an old link
+        link_zone(&etc, Path::new("/usr/share/zoneinfo/UTC")).unwrap();
+        link_zone(&etc, Path::new("/usr/share/zoneinfo/Asia/Kolkata")).unwrap();
+        assert_eq!(
+            std::fs::read_link(etc.join("localtime")).unwrap(),
+            Path::new("/usr/share/zoneinfo/Asia/Kolkata")
+        );
+        assert_eq!(
+            std::fs::read_dir(&etc).unwrap().count(),
+            1,
+            "no temp link stays"
+        );
+        // a folder cannot be replaced by a link: the error shows and nothing is left over
+        std::fs::remove_file(etc.join("localtime")).unwrap();
+        std::fs::create_dir(etc.join("localtime")).unwrap();
+        assert!(link_zone(&etc, Path::new("/usr/share/zoneinfo/UTC")).is_err());
+        assert_eq!(std::fs::read_dir(&etc).unwrap().count(), 1);
+        std::fs::remove_dir_all(&etc).unwrap();
     }
 }

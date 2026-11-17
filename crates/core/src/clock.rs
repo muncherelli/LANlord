@@ -121,14 +121,27 @@ fn render(template: &str, pairs: &[(&str, &str)]) -> String {
 }
 
 /// the bridge's answer to `op`, or `None` when the gateway has no bridge and the shell scripts
-/// below must do it. an answer of the wrong kind is an error, not a reason to fall back.
-fn via_bridge(session: &Session, op: &Op, ask: AskPassword) -> Result<Option<Reply>> {
+/// below must do it. `pick` takes the one reply kind `op` may get; any other kind is an error,
+/// never a reason to fall back (the bridge may already have made the change).
+fn via_bridge<T>(
+    session: &Session,
+    op: &Op,
+    ask: AskPassword,
+    pick: fn(&Reply) -> Option<T>,
+) -> Result<Option<T>> {
     match bridge::try_call(session, op, ask)? {
-        Some(reply @ (Reply::Clock(_) | Reply::Names(_) | Reply::ZoneNow(_) | Reply::Lines(_))) => {
-            Ok(Some(reply))
-        }
-        Some(other) => bail!("the bridge answered {other:?} to {op:?}"),
+        Some(reply) => match pick(&reply) {
+            Some(value) => Ok(Some(value)),
+            None => bail!("the bridge answered {reply:?} to {op:?}"),
+        },
         None => Ok(None),
+    }
+}
+
+fn lines_of(reply: &Reply) -> Option<Vec<String>> {
+    match reply {
+        Reply::Lines(lines) => Some(lines.clone()),
+        _ => None,
     }
 }
 
@@ -139,7 +152,11 @@ fn no_root(_: &str) -> Result<String> {
 
 /// the server's clock; asks for nothing.
 pub fn read(session: &Session) -> Result<ClockState> {
-    if let Some(Reply::Clock(state)) = via_bridge(session, &Op::ClockState, &mut no_root)? {
+    let pick = |r: &Reply| match r {
+        Reply::Clock(state) => Some(state.clone()),
+        _ => None,
+    };
+    if let Some(state) = via_bridge(session, &Op::ClockState, &mut no_root, pick)? {
         return Ok(state);
     }
     let script = render(READ, &[]);
@@ -148,7 +165,11 @@ pub fn read(session: &Session) -> Result<ClockState> {
 
 /// the time zones the server knows, sorted as it lists them.
 pub fn zones(session: &Session) -> Result<Vec<String>> {
-    if let Some(Reply::Names(zones)) = via_bridge(session, &Op::ClockZones, &mut no_root)? {
+    let pick = |r: &Reply| match r {
+        Reply::Names(zones) => Some(zones.clone()),
+        _ => None,
+    };
+    if let Some(zones) = via_bridge(session, &Op::ClockZones, &mut no_root, pick)? {
         return Ok(zones);
     }
     let out = session.capture(&["sh".into(), "-c".into(), ZONES.into()])?;
@@ -172,7 +193,11 @@ pub fn zone_now(session: &Session, zone: &str) -> Result<ZoneNow> {
     let op = Op::ClockZoneNow {
         zone: zone.to_string(),
     };
-    if let Some(Reply::ZoneNow(now)) = via_bridge(session, &op, &mut no_root)? {
+    let pick = |r: &Reply| match r {
+        Reply::ZoneNow(now) => Some(now.clone()),
+        _ => None,
+    };
+    if let Some(now) = via_bridge(session, &op, &mut no_root, pick)? {
         return Ok(now);
     }
     let script = render(ZONE_NOW, &[("ZONE", zone)]);
@@ -223,7 +248,7 @@ pub fn apply(session: &Session, change: &Change, ask_password: AskPassword) -> R
     let op = Op::ClockApply {
         change: change.clone(),
     };
-    if let Some(Reply::Lines(lines)) = via_bridge(session, &op, ask_password)? {
+    if let Some(lines) = via_bridge(session, &op, ask_password, lines_of)? {
         return Ok(lines);
     }
     // check everything before anything changes
@@ -244,10 +269,12 @@ pub fn apply(session: &Session, change: &Change, ask_password: AskPassword) -> R
 
 /// ask the time service to synchronize now and say how it went.
 pub fn update_now(session: &Session, ask_password: AskPassword) -> Result<Vec<String>> {
-    if let Some(Reply::Lines(lines)) = via_bridge(session, &Op::ClockUpdateNow, ask_password)? {
+    // one question for the bridge attempt and the fallback together
+    let mut ask = crate::users::cached(ask_password);
+    if let Some(lines) = via_bridge(session, &Op::ClockUpdateNow, &mut ask, lines_of)? {
         return Ok(lines);
     }
-    let out = root(session, render(UPDATE_NOW, &[]), ask_password)?;
+    let out = root(session, render(UPDATE_NOW, &[]), &mut ask)?;
     Ok(out.lines().map(str::to_string).collect())
 }
 
@@ -638,6 +665,24 @@ esac"#,
     // the fake gateway is a shell script, so these run where there is a shell
     #[cfg(unix)]
     mod session {
+        #[cfg(unix)]
+        #[test]
+        fn a_reply_of_the_wrong_kind_is_an_error_not_a_fallback() {
+            let session = Session::fake(
+                r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo root ;;
+  *) echo '{"proto":1,"version":"t"}'; read req
+     echo '{"kind":"reply","id":1,"reply":{"reply":"lines","value":["done"]}}' ;;
+esac"#,
+            );
+            session
+                .no_bridge
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            let err = zones(&session).unwrap_err().to_string();
+            assert!(err.contains("the bridge answered"), "{err}");
+        }
+
         use super::*;
         use crate::testgw::{identity, no_password, Gateway};
 

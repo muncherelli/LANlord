@@ -39,13 +39,16 @@ pub enum BridgeError {
     Missing,
     /// it answers, but in another protocol; the text says what to do.
     Mismatch(String),
+    /// it did not start or did not greet (a failed sudo, noise from a login script); this time
+    /// only, the next call may work.
+    Failed(String),
 }
 
 impl std::fmt::Display for BridgeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Missing => write!(f, "the gateway has no lanlord bridge"),
-            Self::Mismatch(why) => f.write_str(why),
+            Self::Mismatch(why) | Self::Failed(why) => f.write_str(why),
         }
     }
 }
@@ -139,7 +142,7 @@ fn write_frame(out: &mut impl Write, frame: &impl serde::Serialize) -> Result<()
     Ok(())
 }
 
-/// an bridge running on the gateway, reached through one ssh exec.
+/// a bridge running on the gateway, reached through one ssh exec.
 pub struct Bridge {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -149,8 +152,8 @@ pub struct Bridge {
 
 impl Session {
     /// start `lanlord bridge` on the gateway over the open ssh connection; as root when `root`
-    /// (sudo, asking for the password once if it has to). the first frame is checked, so an
-    /// bridge that is missing or speaks another protocol is an [`BridgeError`].
+    /// (sudo, asking for the password once if it has to). the first frame is checked, so a
+    /// bridge that is missing or speaks another protocol is a [`BridgeError`].
     pub fn bridge(&self, root: bool, ask_password: AskPassword) -> Result<Bridge> {
         let argv = [BRIDGE_BIN, "bridge"];
         let (remote, first) = if root {
@@ -166,13 +169,16 @@ impl Session {
         let mut stdin = child.stdin.take();
         let stdout = child.stdout.take().context("no output from ssh")?;
         // what the bridge says on stderr is progress for the log, never protocol
-        if let Some(stderr) = child.stderr.take() {
+        let stderr = child.stderr.take().map(|stderr| {
             std::thread::spawn(move || {
+                let mut said = Vec::new();
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    emit(Kind::Debug, line);
+                    emit(Kind::Debug, line.as_str());
+                    said.push(line);
                 }
-            });
-        }
+                said
+            })
+        });
         if let Some(stdin) = stdin.as_mut() {
             stdin.write_all(first.as_bytes())?;
         }
@@ -188,7 +194,7 @@ impl Session {
             _ => None,
         };
         let Some(hello) = hello else {
-            return Err(BridgeError::Missing.into());
+            return Err(bridge.not_started(stderr).into());
         };
         if let Some(why) = hello.mismatch() {
             return Err(BridgeError::Mismatch(why).into());
@@ -198,6 +204,22 @@ impl Session {
 }
 
 impl Bridge {
+    /// why nothing greeted: the program is not there (exit 127), or it failed some other way.
+    fn not_started(&mut self, stderr: Option<std::thread::JoinHandle<Vec<String>>>) -> BridgeError {
+        self.stdin.take();
+        let code = self.child.wait().ok().and_then(|s| s.code());
+        let said = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
+        let said = said.join(" ");
+        if code == Some(127) || said.contains("not found") || said.contains("No such file") {
+            return BridgeError::Missing;
+        }
+        BridgeError::Failed(format!(
+            "the bridge did not start (status {}): {}",
+            code.map_or_else(|| "none".to_string(), |c| c.to_string()),
+            said.trim()
+        ))
+    }
+
     /// run `op` and wait for its reply; `on_log` sees the progress lines.
     pub fn call(&mut self, op: &Op, on_log: &mut dyn FnMut(&str)) -> Result<Reply> {
         self.next += 1;
@@ -237,6 +259,14 @@ pub fn try_call(session: &Session, op: &Op, ask_password: AskPassword) -> Result
     let mut bridge = match session.bridge(op.needs_root(), ask_password) {
         Ok(bridge) => bridge,
         Err(err) => match err.downcast_ref::<BridgeError>() {
+            Some(BridgeError::Failed(why)) => {
+                // one-off: the next call may work, so the session keeps trying the bridge
+                emit(
+                    Kind::Info,
+                    format!("warning: the bridge failed, using the scripts: {why}"),
+                );
+                return Ok(None);
+            }
             Some(reason) => {
                 session.no_bridge.store(true, Ordering::Relaxed);
                 emit(Kind::Debug, format!("not using the bridge: {reason}"));
@@ -385,6 +415,28 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_failed_start_falls_back_once_without_giving_up_on_the_bridge() {
+        let gw = gateway("echo 'sudo: a password is required' >&2; exit 1");
+        let err = gw.bridge(false, &mut no_password).err().unwrap();
+        assert!(matches!(
+            err.downcast_ref::<BridgeError>(),
+            Some(BridgeError::Failed(why)) if why.contains("password is required")
+        ));
+        assert_eq!(
+            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            None
+        );
+        assert!(!gw.no_bridge.load(Ordering::Relaxed));
+        let gw = gateway("echo 'welcome back'");
+        let err = gw.bridge(false, &mut no_password).err().unwrap();
+        assert!(matches!(
+            err.downcast_ref::<BridgeError>(),
+            Some(BridgeError::Failed(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn another_protocol_falls_back_with_the_update_advice() {
         let gw = gateway(r#"echo '{"proto":99,"version":"9.0.0"}'"#);
         let err = gw.bridge(false, &mut no_password).err().unwrap();
@@ -410,6 +462,7 @@ mod tests {
             .to_string()
             .contains("no lanlord bridge"));
         assert_eq!(BridgeError::Mismatch("why".into()).to_string(), "why");
+        assert_eq!(BridgeError::Failed("how".into()).to_string(), "how");
     }
 
     #[test]
