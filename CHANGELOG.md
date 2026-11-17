@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
+
 ### Changed
 
 - Every window opens as tall as its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small (#105)

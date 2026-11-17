@@ -570,6 +570,8 @@ mod fake {
         pub exit: Mutex<i32>,
         /// what `is_local` says.
         pub local: Mutex<bool>,
+        /// what `session_ended` says (the browser's backend raises it on a 401).
+        pub ended: std::sync::atomic::AtomicBool,
         /// what `power` reports.
         pub outcome: Mutex<Outcome>,
         /// what the server facts say; the demo server when not set.
@@ -611,6 +613,7 @@ mod fake {
                 generated: Mutex::new(None),
                 exit: Mutex::new(0),
                 local: Mutex::new(false),
+                ended: Default::default(),
                 outcome: Mutex::new(Outcome::Dropped),
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
@@ -738,6 +741,14 @@ mod fake {
 
         fn is_local(&self) -> bool {
             *self.local.lock().unwrap()
+        }
+
+        fn session_ended(&self) -> bool {
+            self.ended.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn session_restored(&self) {
+            self.ended.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
 

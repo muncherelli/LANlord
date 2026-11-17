@@ -60,6 +60,16 @@ impl Target {
         matches!(self, Self::Welcome | Self::DateTime | Self::Components)
     }
 
+    /// the window changes things on the server (settings, components, networks, users, the
+    /// clock, commands), so only an administrator may open it. My Server stays open to anyone:
+    /// it reads, and its purge is switched off for the rest.
+    pub fn needs_admin(self) -> bool {
+        !matches!(
+            self,
+            Self::MyServer | Self::Hosts | Self::Welcome | Self::Changelog
+        )
+    }
+
     /// how big the window opens in the text view, in layout units. the gui uses the width only:
     /// there a window is as tall as its contents.
     pub fn size(self) -> (f32, f32) {
