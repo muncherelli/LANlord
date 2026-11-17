@@ -835,6 +835,7 @@ mod fake {
                     self.enter(format!("save-access {host}"), ask)?;
                     Reply::Done
                 }
+                Op::Subscribe { .. } => anyhow::bail!("live streams are not available yet"),
             })
         }
 

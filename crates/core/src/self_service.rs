@@ -1,13 +1,17 @@
 //! the ops about accounts and permissions: a person's own account, password changes across
 //! linked accounts, and the role assignments.
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use anyhow::{bail, Result};
 
 use lanlord_model::identity::{AccountInfo, PasswordReport};
 use lanlord_model::ops::Reply;
 use lanlord_model::secret::Secret;
 
-use crate::access::{self, Access, Caller, Profile};
+use crate::access::{self, Access, Caller, Grants, Profile};
 use crate::bootstrap::AskPassword;
 use crate::ssh::Session;
 use crate::{admins, config, identity};
@@ -26,8 +30,9 @@ fn domain_installed(session: &Session, ask: AskPassword) -> Result<bool> {
 }
 
 pub(crate) fn account_info(session: &Session, caller: &Caller, ask: AskPassword) -> Result<Reply> {
-    let access = access::assignments(session, &mut *ask)?;
-    let installed = domain_installed(session, &mut *ask)?;
+    // without root on the server the stored assignments cannot be read: show the defaults
+    let access = access::assignments(session, &mut *ask).unwrap_or_default();
+    let installed = domain_installed(session, &mut *ask).unwrap_or(false);
     let admin = admin_of(session)?;
     let links = identity::links_for(session, &admin, installed, ask);
     Ok(Reply::Account(AccountInfo {
@@ -58,6 +63,51 @@ fn propagate(
     Ok(identity::change_all(&links, user, new))
 }
 
+/// how many wrong old passwords are free before the waiting starts, and the waits.
+const FREE_GUESSES: u32 = 5;
+const FIRST_WAIT: Duration = Duration::from_secs(60);
+const LONGEST_WAIT: Duration = Duration::from_secs(15 * 60);
+
+/// wrong old passwords per account: how many in a row, and when the last one was.
+static GUESSES: Mutex<BTreeMap<String, (u32, Instant)>> = Mutex::new(BTreeMap::new());
+
+/// how long `user` must still wait before the next guess, given `fails` in a row, the last at `last`.
+fn wait_left(fails: u32, last: Instant, now: Instant) -> Option<Duration> {
+    let over = fails.checked_sub(FREE_GUESSES)?;
+    let wait = FIRST_WAIT
+        .saturating_mul(2u32.saturating_pow(over))
+        .min(LONGEST_WAIT);
+    wait.checked_sub(now.saturating_duration_since(last))
+        .filter(|left| !left.is_zero())
+}
+
+fn guesses() -> std::sync::MutexGuard<'static, BTreeMap<String, (u32, Instant)>> {
+    GUESSES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn check_not_locked(user: &str, now: Instant) -> Result<()> {
+    match guesses().get(user) {
+        Some(&(fails, last)) => match wait_left(fails, last, now) {
+            Some(left) => bail!(
+                "too many wrong passwords; try again in {} seconds",
+                left.as_secs() + 1
+            ),
+            None => Ok(()),
+        },
+        None => Ok(()),
+    }
+}
+
+fn note_guess(user: &str, right: bool, now: Instant) {
+    let mut book = guesses();
+    if right {
+        book.remove(user);
+    } else {
+        let entry = book.entry(user.to_string()).or_insert((0, now));
+        *entry = (entry.0 + 1, now);
+    }
+}
+
 pub(crate) fn change_password(
     session: &Session,
     caller: &Caller,
@@ -67,19 +117,61 @@ pub(crate) fn change_password(
 ) -> Result<Reply> {
     identity::check_policy(Some(old), new)?;
     let admin = admin_of(session)?;
-    if !identity::verify_password(session, &admin, &caller.user, old, &mut *ask)? {
+    check_not_locked(&caller.user, Instant::now())?;
+    let right = identity::verify_password(session, &admin, &caller.user, old, &mut *ask)
+        .map_err(|e| e.context("the password cannot be checked without the lanlord service"))?;
+    note_guess(&caller.user, right, Instant::now());
+    if !right {
         bail!("the old password is not correct");
     }
     let report = propagate(session, &caller.user, new, Some(old), ask)?;
     Ok(Reply::Password(report))
 }
 
+/// accounts that are the machine's own and never have their password reset from here.
+const SYSTEM_ACCOUNTS: [&str; 2] = ["root", "lanlord"];
+
+/// the lowest uid of a person; below it are the system accounts.
+const FIRST_PERSON: u32 = 1000;
+
+fn refuse(why: impl Into<String>) -> anyhow::Error {
+    access::Refused(why.into()).into()
+}
+
+/// whether a password reset of `user` by `caller` is allowed: never a system account, and only
+/// an administrator resets an administrator.
+fn check_target(session: &Session, caller: &Caller, user: &str) -> Result<()> {
+    if SYSTEM_ACCOUNTS.contains(&user) {
+        return Err(refuse(format!("{user} is a system account")));
+    }
+    let uid = session
+        .capture(&["id".into(), "-u".into(), user.into()])
+        .ok()
+        .and_then(|out| out.trim().parse::<u32>().ok())
+        .ok_or_else(|| refuse(format!("there is no account {user}")))?;
+    if uid < FIRST_PERSON {
+        return Err(refuse(format!("{user} is a system account")));
+    }
+    let groups = session
+        .capture(&["id".into(), "-nG".into(), user.into()])
+        .unwrap_or_default();
+    let is_admin = groups.split_whitespace().any(|g| g == admins::ADMINS_GROUP);
+    if is_admin && !caller.admin {
+        return Err(refuse("only an administrator can reset an administrator"));
+    }
+    Ok(())
+}
+
 pub(crate) fn reset_password(
     session: &Session,
+    caller: &Caller,
     user: &str,
     new: &Secret,
     ask: AskPassword,
 ) -> Result<Reply> {
+    if crate::bootstrap::valid_user(user) {
+        check_target(session, caller, user)?;
+    }
     Ok(Reply::Password(propagate(session, user, new, None, ask)?))
 }
 
@@ -130,13 +222,21 @@ pub(crate) fn load_access(session: &Session, ask: AskPassword) -> Result<Reply> 
 pub(crate) fn save_access(
     session: &Session,
     host: &str,
+    who: (&Caller, &Grants),
     access: &Access,
     ask: AskPassword,
 ) -> Result<Reply> {
     if let Some(problem) = access.problem() {
         bail!("{problem}");
     }
-    let (settings, _) = access::load(session, &mut *ask)?;
+    let (settings, stored) = access::load(session, &mut *ask)?;
+    let (caller, grants) = who;
+    if let Some(why) = stored
+        .unwrap_or_default()
+        .escalation(access, grants, caller.admin)
+    {
+        return Err(refuse(why));
+    }
     save(session, host, settings, access, ask)?;
     Ok(Reply::Done)
 }
@@ -145,8 +245,125 @@ pub(crate) fn save_access(
 mod tests {
     use super::*;
     use crate::testgw::{no_password, Gateway};
-    use lanlord_model::access::Role;
+    use lanlord_model::access::{Level, Role};
     use lanlord_model::identity::LinkState;
+
+    fn root() -> Caller {
+        Caller {
+            user: "ann".into(),
+            admin: true,
+        }
+    }
+
+    fn operator() -> Caller {
+        Caller {
+            user: "olly".into(),
+            admin: false,
+        }
+    }
+
+    fn is_refused<T>(result: &Result<T>) -> bool {
+        result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.downcast_ref::<access::Refused>().is_some())
+    }
+
+    #[test]
+    fn nobody_resets_a_system_account_or_one_that_does_not_exist() {
+        let gw = Gateway::new("self-reset-system");
+        for name in ["root", "lanlord", "svc", "ghost"] {
+            for who in [root(), operator()] {
+                let result =
+                    reset_password(&gw.session, &who, name, &secret("new"), &mut no_password);
+                assert!(is_refused(&result), "{name} by {}", who.user);
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_administrator_resets_an_administrator() {
+        let gw = Gateway::new("self-reset-admin");
+        let by_operator = reset_password(
+            &gw.session,
+            &operator(),
+            "boss",
+            &secret("new"),
+            &mut no_password,
+        );
+        assert!(is_refused(&by_operator));
+        let by_admin = reset_password(
+            &gw.session,
+            &root(),
+            "boss",
+            &secret("new"),
+            &mut no_password,
+        );
+        assert!(by_admin.is_ok(), "{by_admin:?}");
+        // an operator may reset an ordinary person
+        let person = reset_password(
+            &gw.session,
+            &operator(),
+            "dana",
+            &secret("new"),
+            &mut no_password,
+        );
+        assert!(person.is_ok(), "{person:?}");
+    }
+
+    #[test]
+    fn only_an_administrator_saves_administrators_or_roles_beyond_their_own() {
+        let gw = Gateway::new("self-access-escalate");
+        let mut access = Access::default();
+        access.members.insert(
+            "olly".into(),
+            vec![lanlord_model::access::ADMINISTRATORS.into()],
+        );
+        let users_manager = Grants::fallback(false);
+        let result = save_access(
+            &gw.session,
+            "gw",
+            (&operator(), &users_manager),
+            &access,
+            &mut no_password,
+        );
+        assert!(is_refused(&result), "{result:?}");
+        assert!(gw.plain().is_none(), "nothing was stored");
+        let result = save_access(
+            &gw.session,
+            "gw",
+            (&root(), &Grants::all(Level::Manage)),
+            &access,
+            &mut no_password,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn wrong_guesses_cost_waiting_that_grows_and_a_right_one_clears_it() {
+        let then = Instant::now();
+        let later = |s: u64| then + Duration::from_secs(s);
+        assert_eq!(wait_left(FREE_GUESSES - 1, then, then), None);
+        assert_eq!(wait_left(FREE_GUESSES, then, then), Some(FIRST_WAIT));
+        assert_eq!(
+            wait_left(FREE_GUESSES, then, later(10)),
+            Some(Duration::from_secs(50))
+        );
+        assert_eq!(wait_left(FREE_GUESSES, then, later(61)), None);
+        assert_eq!(
+            wait_left(FREE_GUESSES + 1, then, then),
+            Some(FIRST_WAIT * 2)
+        );
+        assert_eq!(wait_left(60, then, then), Some(LONGEST_WAIT));
+        let now = Instant::now();
+        for _ in 0..FREE_GUESSES {
+            note_guess("lockout-test", false, now);
+        }
+        assert!(check_not_locked("lockout-test", now).is_err());
+        assert!(check_not_locked("someone-else", now).is_ok());
+        note_guess("lockout-test", true, now);
+        assert!(check_not_locked("lockout-test", now).is_ok());
+    }
 
     fn dana() -> Caller {
         Caller {
@@ -161,6 +378,11 @@ mod tests {
             r#"for a; do last=$a; done
 case "$last" in
   "id -un") echo tester ;;
+  "id -u svc") echo 998 ;;
+  "id -u ghost") exit 1 ;;
+  "id -u "*) echo 1001 ;;
+  "id -nG boss") echo "boss admins" ;;
+  "id -nG "*) echo "users" ;;
   "sudo -n true") exit 0 ;;
   "sh -c "*) exit 0 ;;
   *)
@@ -244,11 +466,19 @@ esac"#,
         let log = std::env::temp_dir().join(format!("lanlord-pw-reset-{}", std::process::id()));
         let _ = std::fs::remove_file(&log);
         let server = passwd_server("ok", &log);
-        let reply = reset_password(&server, "dana", &secret("new"), &mut no_password).unwrap();
+        let reply =
+            reset_password(&server, &root(), "dana", &secret("new"), &mut no_password).unwrap();
         assert_eq!(the_links(reply), (true, vec![LinkState::Changed]));
         // with the domain component installed there is a second link that does nothing yet
         std::fs::write(gw.dir.join("yml"), "nt4-domain:\n  realm: EXAMPLE\n").unwrap();
-        let reply = reset_password(&gw.session, "dana", &secret("new"), &mut no_password).unwrap();
+        let reply = reset_password(
+            &gw.session,
+            &root(),
+            "dana",
+            &secret("new"),
+            &mut no_password,
+        )
+        .unwrap();
         let (ok, states) = the_links(reply);
         assert!(ok);
         assert_eq!(states.len(), 2);
@@ -259,7 +489,14 @@ esac"#,
     #[test]
     fn a_user_name_that_is_not_one_fails_the_link_and_the_report() {
         let gw = Gateway::new("self-reset-bad");
-        let reply = reset_password(&gw.session, "a b;c", &secret("new"), &mut no_password).unwrap();
+        let reply = reset_password(
+            &gw.session,
+            &root(),
+            "a b;c",
+            &secret("new"),
+            &mut no_password,
+        )
+        .unwrap();
         let (ok, states) = the_links(reply);
         assert!(!ok);
         assert!(matches!(states[0], LinkState::Failed(_)));
@@ -329,7 +566,14 @@ esac"#,
             .members
             .insert("dana".into(), vec![lanlord_model::access::OPERATORS.into()]);
         assert_eq!(
-            save_access(&gw.session, "gw", &access, &mut no_password).unwrap(),
+            save_access(
+                &gw.session,
+                "gw",
+                (&root(), &Grants::all(Level::Manage)),
+                &access,
+                &mut no_password
+            )
+            .unwrap(),
             Reply::Done
         );
         let Reply::Access(back) = load_access(&gw.session, &mut no_password).unwrap() else {
@@ -341,6 +585,13 @@ esac"#,
             name: lanlord_model::access::USERS.into(),
             grants: Default::default(),
         });
-        assert!(save_access(&gw.session, "gw", &bad, &mut no_password).is_err());
+        assert!(save_access(
+            &gw.session,
+            "gw",
+            (&root(), &Grants::all(Level::Manage)),
+            &bad,
+            &mut no_password
+        )
+        .is_err());
     }
 }

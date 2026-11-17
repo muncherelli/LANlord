@@ -51,6 +51,14 @@ impl Settings {
         self.root.get(key)
     }
 
+    /// the names of the top-level sections.
+    pub fn sections(&self) -> Vec<String> {
+        self.root
+            .keys()
+            .filter_map(|k| k.as_str().map(str::to_string))
+            .collect()
+    }
+
     /// replace one top-level section; the other sections are untouched.
     pub fn set_section(&mut self, key: &str, value: Value) {
         self.root.insert(Value::String(key.into()), value);

@@ -223,9 +223,11 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
-/// the operations endpoint. it needs a page-origin json request and a login. todo: hand the typed operation (json, at most `OP_LIMIT` bytes) to the
-/// operations executor that `lanlord op` runs, once it exists; never a command line. the body is
-/// read already so the size limit applies.
+/// the operations endpoint. it needs a page-origin json request and a login, and until the
+/// operations are handed to core's `execute_as` (which checks `Op::requires` for the session's
+/// account, and ends that user's sessions with `Auth::revoke_user` when a password or permission
+/// changes) it refuses every operation, so nothing here can run unchecked. the body is read
+/// already so the size limit applies.
 async fn op(
     State(auth): State<Arc<auth::Auth>>,
     headers: HeaderMap,
@@ -240,7 +242,7 @@ async fn op(
     (
         StatusCode::NOT_IMPLEMENTED,
         [(header::CONTENT_TYPE, "application/json")],
-        r#"{"error":"operations are not wired up yet"}"#,
+        r#"{"error":"operations over the web are not available yet; every operation is refused until it is checked against the account's permissions"}"#,
     )
         .into_response()
 }

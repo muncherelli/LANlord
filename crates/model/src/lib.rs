@@ -3,6 +3,7 @@
 //! so it also builds for the browser.
 
 pub mod access;
+pub mod bridge;
 pub mod clock;
 pub mod compat;
 pub mod components;

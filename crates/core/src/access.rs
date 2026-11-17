@@ -54,6 +54,18 @@ impl std::fmt::Display for Denied {
 
 impl std::error::Error for Denied {}
 
+/// an op the caller may run in general but not with what it asks for: the reason, in words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "refused: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
 /// the plain settings of the gateway, and the assignments in them; `None` for a gateway that
 /// was never given any.
 pub(crate) fn load(session: &Session, ask: AskPassword) -> Result<(Settings, Option<Access>)> {
@@ -61,7 +73,7 @@ pub(crate) fn load(session: &Session, ask: AskPassword) -> Result<(Settings, Opt
         Some(bytes) => Settings::parse(&String::from_utf8(bytes)?)?,
         None => Settings::empty(),
     };
-    let access = Access::from_settings(&settings);
+    let access = Access::from_settings(&settings).map_err(|e| anyhow::anyhow!(e))?;
     Ok((settings, access))
 }
 
@@ -81,12 +93,47 @@ pub(crate) fn grants_of(session: &Session, caller: &Caller, ask: AskPassword) ->
 /// refuse an op the grants do not cover.
 pub fn authorize(grants: &Grants, op: &Op) -> Result<(), Denied> {
     let need = op.requires();
-    if grants.allows(need) {
-        return Ok(());
+    if !grants.allows(need) {
+        return Err(denied(need));
     }
+    // applying components changes what each of them configures
+    if let Op::Apply { modules } = op {
+        for area in areas_applied(modules) {
+            if grants.level(area) < Level::Manage {
+                return Err(Denied {
+                    area,
+                    level: Level::Manage,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// the areas whose settings an apply of `modules` puts on the server; all of them for none.
+fn areas_applied(modules: &[String]) -> Vec<Area> {
+    let names: Vec<&str> = if modules.is_empty() {
+        lanlord_model::modules::MODULES
+            .iter()
+            .map(|m| m.id)
+            .collect()
+    } else {
+        modules.iter().map(String::as_str).collect()
+    };
+    let mut areas: Vec<Area> = names.into_iter().map(area_of_section).collect();
+    areas.sort();
+    areas.dedup();
+    areas
+}
+
+fn denied(need: Need) -> Denied {
     match need {
-        Need::Area(area, level) => Err(Denied { area, level }),
-        Need::SelfOnly => Ok(()),
+        Need::Area(area, level) => Denied { area, level },
+        // the grants always allow it
+        Need::SelfOnly => Denied {
+            area: Area::Status,
+            level: Level::View,
+        },
     }
 }
 
@@ -165,17 +212,6 @@ fn drop_leases(settings: &mut Settings) {
     settings.set_section("dns", Value::Mapping(map));
 }
 
-/// text for a save by someone who may not change who has access: the stored assignments are
-/// put back over whatever the editor sent (it never saw them).
-pub(crate) fn keep_assignments(sent: &str, stored: Option<&Access>) -> Result<String> {
-    let mut settings = Settings::parse(sent)?;
-    match stored {
-        Some(access) => access.store(&mut settings),
-        None => settings.remove_section(SECTION),
-    }
-    Ok(settings.text())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,14 +249,28 @@ mod tests {
     }
 
     #[test]
+    fn an_apply_needs_manage_on_every_area_it_changes() {
+        let operator = grants(OPERATORS);
+        let apply = |m: &[&str]| Op::Apply {
+            modules: m.iter().map(|s| s.to_string()).collect(),
+        };
+        assert!(authorize(&operator, &apply(&["docker"])).is_ok());
+        let denied = authorize(&operator, &apply(&["docker", "nt4-domain"])).unwrap_err();
+        assert_eq!(denied.area, Area::Domain);
+        assert!(authorize(&operator, &apply(&[])).is_err());
+        assert!(authorize(&grants(ADMINISTRATORS), &apply(&[])).is_ok());
+    }
+
+    #[test]
     fn administrators_may_do_everything() {
         assert_eq!(allowed(&grants(ADMINISTRATORS)), [true; 7]);
     }
 
     #[test]
     fn operators_run_the_day_to_day_but_not_power_or_permissions() {
-        // leases, facts, clock update (view only: denied), power, access, self, apply
-        let want = [true, true, false, false, false, true, true];
+        // leases, facts, clock update (view only: denied), power, access, self, and apply of
+        // everything (an operator does not manage every area, so it is denied)
+        let want = [true, true, false, false, false, true, false];
         assert_eq!(allowed(&grants(OPERATORS)), want);
     }
 
@@ -283,22 +333,5 @@ mod tests {
         };
         assert!(doc.plain.contains("eve") && doc.plain.contains("00:00:5e"));
         assert_eq!(doc.secrets_set.len(), 1);
-    }
-
-    #[test]
-    fn a_save_without_users_manage_keeps_the_stored_assignments() {
-        let stored = Settings::parse(&document().plain).unwrap();
-        let access = Access::from_settings(&stored).unwrap();
-        let kept = keep_assignments(
-            "dns: {}\naccess:\n  members:\n    dana: [Administrators]\n",
-            Some(&access),
-        )
-        .unwrap();
-        assert!(
-            kept.contains("eve") && !kept.contains("dana: [Admin"),
-            "{kept}"
-        );
-        let none = keep_assignments("access: {}\ndns: {}\n", None).unwrap();
-        assert!(!none.contains("access"));
     }
 }

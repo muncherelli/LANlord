@@ -5,13 +5,13 @@ use anyhow::{anyhow, bail, Result};
 
 pub use lanlord_model::ops::*;
 
-use crate::access::{Area, Caller, Grants, Level};
+use crate::access::{Caller, Grants, Need};
 use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
-use crate::{access, self_service, settings, users};
+use crate::{access, save_guard, self_service, settings, users};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
 };
@@ -67,7 +67,12 @@ fn guarded(
     ask: AskPassword,
     run: impl FnOnce(&Grants, AskPassword) -> Result<Reply>,
 ) -> Result<Reply> {
-    let grants = access::grants_of(session, caller, &mut *ask)?;
+    // a person's own account needs no lookup of rights, which needs root on the server
+    let grants = match access::grants_of(session, caller, &mut *ask) {
+        Ok(grants) => grants,
+        Err(_) if op.requires() == Need::SelfOnly => Grants::fallback(caller.admin),
+        Err(e) => return Err(e),
+    };
     access::authorize(&grants, op)?;
     let reply = run(&grants, ask)?;
     Ok(access::redact(&grants, caller, reply))
@@ -92,13 +97,13 @@ pub(crate) fn execute_with(
     })
 }
 
-/// the save of settings by someone who may not change who has access keeps what is stored.
+/// the settings to write for a save: only what the caller may change differs from what is stored.
 fn plain_for_save(session: &Session, who: &Who, plain: &str, ask: AskPassword) -> Result<String> {
-    if who.grants.level(Area::Users) >= Level::Manage {
+    if who.caller.admin {
         return Ok(plain.to_string());
     }
-    let (_, stored) = access::load(session, ask)?;
-    access::keep_assignments(plain, stored.as_ref())
+    let (stored, _) = access::load(session, ask)?;
+    save_guard::merge_save(&stored, plain, who.grants, who.caller)
 }
 
 fn dispatch(
@@ -152,6 +157,11 @@ fn dispatch(
             ssh_key,
             passwordless_sudo,
         } => {
+            if !who.caller.admin {
+                return Err(
+                    access::Refused("only an administrator creates administrators".into()).into(),
+                );
+            }
             account::create_admin(
                 session,
                 host,
@@ -208,9 +218,14 @@ fn dispatch(
         Op::UpdateProfile { profile } => {
             self_service::update_profile(session, host, who.caller, profile, ask)?
         }
-        Op::ResetPassword { user, new } => self_service::reset_password(session, user, new, ask)?,
+        Op::ResetPassword { user, new } => {
+            self_service::reset_password(session, who.caller, user, new, ask)?
+        }
         Op::LoadAccess => self_service::load_access(session, ask)?,
-        Op::SaveAccess { access } => self_service::save_access(session, host, access, ask)?,
+        Op::SaveAccess { access } => {
+            self_service::save_access(session, host, (who.caller, who.grants), access, ask)?
+        }
+        Op::Subscribe { .. } => bail!("live streams are not available yet"),
     })
 }
 
@@ -235,6 +250,7 @@ fn zeroize_pairs(mut pairs: Vec<(String, String)>) -> Vec<(String, String)> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::access::Level;
     use std::sync::OnceLock;
 
     use super::*;
@@ -418,6 +434,35 @@ esac"#,
     }
 
     #[test]
+    fn only_an_administrator_creates_administrators_and_applies_every_area() {
+        let gw = Gateway::new("ops-create-admin");
+        let everything = Grants::all(Level::Manage);
+        let olly = Caller {
+            user: "olly".into(),
+            admin: false,
+        };
+        let create = Op::CreateAdmin {
+            name: "eve".into(),
+            password: "pw".into(),
+            ssh_key: None,
+            passwordless_sudo: false,
+        };
+        let result = dispatch(
+            &gw.session,
+            "gw",
+            &Who {
+                caller: &olly,
+                grants: &everything,
+            },
+            &create,
+            &mut no_password,
+            key,
+        );
+        let err = result.unwrap_err();
+        assert!(err.downcast_ref::<access::Refused>().is_some(), "{err:#}");
+    }
+
+    #[test]
     fn someone_who_is_not_an_administrator_is_a_user() {
         let gw = Gateway::new("ops-user");
         let dana = Caller {
@@ -453,11 +498,17 @@ esac"#,
         gw.seed_sealed(&key, "dns: {}\n");
         let plain = "dns: {}\naccess:\n  members:\n    dana: [Administrators]\n";
         let operator_grants = Grants::fallback(false);
+        let olly = Caller {
+            user: "olly".into(),
+            admin: false,
+        };
         let who = Who {
-            caller: &admin(),
+            caller: &olly,
             grants: &operator_grants,
         };
-        let kept = plain_for_save(&gw.session, &who, plain, &mut no_password).unwrap();
+        let kept = plain_for_save(&gw.session, &who, plain, &mut no_password);
+        // the assignments are an area this caller cannot see, so what is stored stays
+        let kept = kept.unwrap();
         assert!(!kept.contains("dana"), "{kept}");
     }
 
@@ -512,6 +563,7 @@ esac"#,
             )
             .unwrap(),
         )
+        .unwrap()
         .unwrap();
         for (caller, is_admin) in callers {
             let grants = stored.grants(&caller.user, is_admin);

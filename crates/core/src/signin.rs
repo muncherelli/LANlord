@@ -81,7 +81,7 @@ impl Signin {
                     .env(ASKPASS_SECRET, password);
             }
         }
-        cmd.arg("--").arg(target).arg("id -un && id -u");
+        cmd.arg("--").arg(target).arg("id -un && id -u && id -nG");
         let out = cmd.output().map_err(spawn_error)?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         match out.status.code() {
@@ -215,10 +215,16 @@ fn parse_identity(stdout: &str) -> Result<Identity, SigninError> {
     let uid = uid
         .parse()
         .map_err(|_| SigninError::Other("the server did not say who you are".into()))?;
+    // the groups come last; without them nobody is taken for an administrator
+    let admin = lines.next().is_some_and(|groups| {
+        groups
+            .split_whitespace()
+            .any(|g| g == crate::admins::ADMINS_GROUP)
+    });
     Ok(Identity {
         user: user.to_string(),
         uid,
-        admin: true,
+        admin,
         grants: None,
     })
 }
@@ -439,6 +445,10 @@ mod tests {
             ("alice", 1000, false)
         );
         assert!(parse_identity("root\n0\n").unwrap().is_root());
+        // an administrator is who is in the admins group, not whoever signs in
+        assert!(!parse_identity("alice\n1000\nalice users\n").unwrap().admin);
+        assert!(!parse_identity("alice\n1000\n").unwrap().admin);
+        assert!(parse_identity("alice\n1000\nalice admins\n").unwrap().admin);
         assert!(parse_identity("alice\n").is_err());
         assert!(parse_identity("alice\nnope\n").is_err());
     }
@@ -539,7 +549,7 @@ mod tests {
 case "$*" in *StrictHostKeyChecking=yes*) ;; *) exit 8 ;; esac
 case "$*" in *ControlPersist*) ;; *) exit 7 ;; esac
 for a; do last=$a; done
-case "$last" in "id -un && id -u") printf 'alice\n1000\n' ;; *) exit 6 ;; esac"#,
+case "$last" in "id -un && id -u && id -nG") printf 'alice\n1000\nalice admins\n' ;; *) exit 6 ;; esac"#,
             );
             let id = silent(&signin).unwrap();
             assert_eq!((id.user.as_str(), id.is_root()), ("alice", false));

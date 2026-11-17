@@ -43,6 +43,19 @@ pub enum Area {
     Users,
 }
 
+/// the area a top-level section of the settings belongs to; what saving it needs.
+pub fn area_of_section(key: &str) -> Area {
+    match key {
+        "dns" => Area::Dns,
+        "firewall" => Area::Firewall,
+        "nt4-domain" => Area::Domain,
+        "network" | "networks" => Area::Network,
+        "remote-commands" => Area::Commands,
+        SECTION => Area::Users,
+        _ => Area::Services,
+    }
+}
+
 impl Area {
     pub const ALL: [Area; 13] = [
         Area::Status,
@@ -283,10 +296,59 @@ impl Access {
         Grants(grants)
     }
 
-    /// the assignments in `settings`; `None` when it has none yet (not migrated).
-    pub fn from_settings(settings: &Settings) -> Option<Self> {
-        let section = settings.section(SECTION)?;
-        serde_yaml_ng::from_value(section.clone()).ok()
+    /// the assignments in `settings`; `None` when it has none yet (not migrated), and an error
+    /// when the section is there but cannot be read, so that nothing is saved over it.
+    pub fn from_settings(settings: &Settings) -> Result<Option<Self>, String> {
+        let Some(section) = settings.section(SECTION) else {
+            return Ok(None);
+        };
+        serde_yaml_ng::from_value(section.clone())
+            .map(Some)
+            .map_err(|e| format!("the stored roles and assignments are damaged: {e}"))
+    }
+
+    /// what is wrong with `new` replacing these assignments when it is saved by someone with
+    /// `grants`: only an administrator makes Administrators, and nobody gives a role more than
+    /// they have themselves, whether by editing a role or by assigning one.
+    pub fn escalation(&self, new: &Access, grants: &Grants, admin: bool) -> Option<String> {
+        if admin {
+            return None;
+        }
+        let before = self.all_roles();
+        let beyond = |role: &Role| {
+            Area::ALL
+                .into_iter()
+                .find(|a| role.level(*a) > grants.level(*a))
+                .map(|a| {
+                    format!(
+                        "{} gives {} on {}, which you do not have yourself",
+                        role.name,
+                        role.level(a).title(),
+                        a.title()
+                    )
+                })
+        };
+        if let Some(why) = new
+            .roles
+            .iter()
+            .filter(|r| !before.contains(r))
+            .find_map(beyond)
+        {
+            return Some(why);
+        }
+        let all = new.all_roles();
+        for (user, names) in &new.members {
+            let had = self.members.get(user);
+            for name in names.iter().filter(|n| !had.is_some_and(|h| h.contains(n))) {
+                if name == ADMINISTRATORS {
+                    return Some("only an administrator can make someone an Administrator".into());
+                }
+                if let Some(why) = all.iter().find(|r| r.name == *name).and_then(beyond) {
+                    return Some(why);
+                }
+            }
+        }
+        None
     }
 
     pub fn store(&self, settings: &mut Settings) {
@@ -383,7 +445,7 @@ mod tests {
     #[test]
     fn a_gateway_without_assignments_migrates_admins_and_users() {
         let legacy = Settings::parse("dns:\n  zone: lab\n").unwrap();
-        assert_eq!(Access::from_settings(&legacy), None);
+        assert_eq!(Access::from_settings(&legacy), Ok(None));
         let access = Access::migrate(&names(&["admin"]));
         assert_eq!(access.roles_of("admin", true), [ADMINISTRATORS]);
         assert_eq!(access.roles_of("dana", false), [USERS]);
@@ -391,10 +453,11 @@ mod tests {
         let mut settings = legacy;
         access.store(&mut settings);
         let reread = Settings::parse(&settings.text()).unwrap();
-        assert_eq!(Access::from_settings(&reread), Some(access));
+        assert_eq!(Access::from_settings(&reread), Ok(Some(access)));
         assert!(settings.text().contains("zone: lab"));
         assert_eq!(
             Access::from_settings(&reread)
+                .unwrap()
                 .unwrap()
                 .grants("dana", false),
             Grants::fallback(false)
@@ -421,5 +484,60 @@ mod tests {
         assert!(!none.allows(Need::view(Area::Status)));
         assert!(Grants::all(Level::View).allows(Need::view(Area::Dns)));
         assert!(!Grants::all(Level::View).allows(Need::manage(Area::Dns)));
+    }
+
+    #[test]
+    fn a_damaged_section_is_an_error_and_not_an_empty_set() {
+        let bad = Settings::parse("access:\n  roles: 7\n").unwrap();
+        assert!(Access::from_settings(&bad).unwrap_err().contains("damaged"));
+    }
+
+    #[test]
+    fn sections_belong_to_the_area_that_changes_them() {
+        assert_eq!(area_of_section("dns"), Area::Dns);
+        assert_eq!(area_of_section("firewall"), Area::Firewall);
+        assert_eq!(area_of_section("nt4-domain"), Area::Domain);
+        assert_eq!(area_of_section("networks"), Area::Network);
+        assert_eq!(area_of_section("access"), Area::Users);
+        assert_eq!(area_of_section("docker"), Area::Services);
+        assert_eq!(area_of_section("anything-new"), Area::Services);
+    }
+
+    fn with(user: &str, role: &str) -> Access {
+        let mut a = Access::default();
+        a.members.insert(user.into(), vec![role.into()]);
+        a
+    }
+
+    #[test]
+    fn only_an_administrator_makes_administrators_or_gives_more_than_they_have() {
+        let users_manager = Grants::fallback(false);
+        let old = Access::default();
+        // an administrator may do anything
+        let admins = with("dana", ADMINISTRATORS);
+        assert_eq!(
+            old.escalation(&admins, &Grants::fallback(false), true),
+            None
+        );
+        // anyone else may not make an Administrator, even holding every right
+        let everything = Grants::all(Level::Manage);
+        assert!(old.escalation(&admins, &everything, false).is_some());
+        // a role beyond the caller's own, defined or assigned
+        let mut custom = with("dana", "Powerful");
+        let mut role = Role {
+            name: "Powerful".into(),
+            grants: Default::default(),
+        };
+        role.grants.insert(Area::Updates, Level::Manage);
+        custom.roles.push(role);
+        assert!(old.escalation(&custom, &users_manager, false).is_some());
+        assert_eq!(old.escalation(&custom, &everything, false), None);
+        // assigning a role someone already had is not an escalation
+        assert_eq!(custom.escalation(&custom, &users_manager, false), None);
+        // an assignment within the caller's rights is fine
+        assert_eq!(
+            old.escalation(&with("dana", USERS), &users_manager, false),
+            None
+        );
     }
 }

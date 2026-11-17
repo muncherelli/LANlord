@@ -305,6 +305,16 @@ impl Auth {
         self.book().sessions.remove(&digest(token));
     }
 
+    /// end every session of `user`: after their password or their permissions changed, what a
+    /// session was opened with is no longer true. gives how many there were.
+    #[cfg(test)] // the operations executor calls it once operations are wired up
+    pub fn revoke_user(&self, user: &str) -> usize {
+        let mut book = self.book();
+        let before = book.sessions.len();
+        book.sessions.retain(|_, s| s.user != user);
+        before - book.sessions.len()
+    }
+
     /// the user of the session a request's cookie names.
     pub fn session(&self, headers: &HeaderMap) -> Option<(String, bool)> {
         self.user_of(&cookie_token(headers)?)
@@ -871,6 +881,22 @@ mod tests {
             // with a session it still answers 501 until the operations are wired up
             assert_eq!(
                 post_op(&rig, Some(&cookie)).await,
+                StatusCode::NOT_IMPLEMENTED
+            );
+        });
+    }
+
+    #[test]
+    fn a_password_or_permission_change_ends_that_users_sessions_only() {
+        runtime().block_on(async {
+            let rig = rig();
+            let admin = session_for(&rig, "admin").await;
+            let other = session_for(&rig, "other").await;
+            assert_eq!(rig.auth.revoke_user("admin"), 1);
+            assert_eq!(rig.auth.revoke_user("admin"), 0);
+            assert_eq!(post_op(&rig, Some(&admin)).await, StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                post_op(&rig, Some(&other)).await,
                 StatusCode::NOT_IMPLEMENTED
             );
         });

@@ -108,6 +108,12 @@ impl Target {
             .is_none_or(|area| grants.level(area) >= Level::Manage)
     }
 
+    /// a dialog: fixed in size, as wide as `size` says and as tall as its contents, with no
+    /// resizing and no scrolling, like the NT4 property sheets.
+    pub fn fixed(self) -> bool {
+        self == Self::MyAccount
+    }
+
     /// how big the window opens, in layout units, before it is cut down to fit the desktop.
     pub fn size(self) -> (f32, f32) {
         match self {
@@ -125,7 +131,7 @@ impl Target {
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
             Self::Welcome => (580.0, 380.0),
-            Self::MyAccount => (440.0, 400.0),
+            Self::MyAccount => (400.0, 0.0),
             Self::Permissions => (640.0, 520.0),
         }
     }

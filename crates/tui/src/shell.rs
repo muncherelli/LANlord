@@ -241,6 +241,8 @@ pub struct Shell {
     /// the logon box, shown instead of the desktop until someone is signed in.
     login: Option<LoginBox>,
     signed_in: Option<SignedIn>,
+    /// showing the made-up demo server.
+    demo: bool,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     icons: Vec<Target>,
@@ -293,6 +295,7 @@ impl Shell {
             auth: None,
             login: None,
             signed_in: None,
+            demo: false,
             admin_setup: None,
             icons: desktop::icons(None),
             selected: None,
@@ -316,6 +319,7 @@ impl Shell {
 
     /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), like the gui.
     pub fn use_demo_server(&mut self) {
+        self.demo = true;
         self.hosts = HostList::new(None);
         let _ = self.hosts.add("demo@gateway");
     }
@@ -566,10 +570,11 @@ impl Shell {
             .flatten()
     }
 
-    /// what the signed-in account may do; the demo and a local shell may do everything.
+    /// what the signed-in account may do. without a sign-in only the demo and a shell on the
+    /// gateway itself (where the server decides anyway) show everything.
     fn grants(&self) -> lanlord_core::access::Grants {
         self.signed_in.as_ref().map_or_else(
-            || lanlord_core::access::Grants::fallback(true),
+            || lanlord_core::access::Grants::fallback(self.demo || self.services.is_local()),
             |s| s.identity.grants(),
         )
     }

@@ -98,6 +98,8 @@ pub enum Op {
     LoadAccess,
     /// store the roles and who has them.
     SaveAccess { access: Access },
+    /// keep sending samples of `topic` (live monitoring). reserved: no server answers it yet.
+    Subscribe { topic: String },
 }
 
 impl Op {
@@ -131,7 +133,27 @@ impl Op {
             }
             Op::ResetPassword { .. } | Op::SaveAccess { .. } => Need::manage(Area::Users),
             Op::LoadAccess => Need::view(Area::Users),
+            Op::Subscribe { .. } => Need::view(Area::Status),
         }
+    }
+}
+
+impl Op {
+    /// does the op change the server, so that the bridge that runs it must be root?
+    pub fn needs_root(&self) -> bool {
+        matches!(self, Op::ClockApply { .. } | Op::ClockUpdateNow)
+    }
+
+    /// can `lanlord bridge` on the gateway run the op itself? the others stay on the shell path.
+    pub fn runs_on_bridge(&self) -> bool {
+        matches!(
+            self,
+            Op::ClockState
+                | Op::ClockZones
+                | Op::ClockZoneNow { .. }
+                | Op::ClockApply { .. }
+                | Op::ClockUpdateNow
+        )
     }
 }
 
@@ -380,6 +402,9 @@ mod tests {
             Op::SaveAccess {
                 access: Access::default(),
             },
+            Op::Subscribe {
+                topic: "clock".into(),
+            },
         ]
     }
 
@@ -414,7 +439,7 @@ mod tests {
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 31);
+        assert_eq!(ops.len(), 32);
         for op in &ops {
             round_trip(op);
         }

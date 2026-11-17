@@ -265,11 +265,17 @@ impl Desktop {
 }
 
 impl Desktop {
-    /// what the signed-in account may do; one that signed in without a logon (local) may do all.
+    /// what the account may do. nothing beyond the Users role until the gateway has said so (and
+    /// the demo server, which is made up, may do all); the server enforces it either way.
     fn grants(&self) -> Grants {
-        self.signed_in
-            .as_ref()
-            .map_or_else(|| Grants::fallback(true), |s| s.identity.grants())
+        match &self.signed_in {
+            Some(s) => s.identity.grants(),
+            None => self
+                .grants_remote
+                .data
+                .as_ref()
+                .map_or_else(|| Grants::fallback(self.demo), |i| i.grants.clone()),
+        }
     }
 
     /// ask the gateway once what the account may do, and keep the answer for the menus.
@@ -289,7 +295,9 @@ impl Desktop {
         let pending = self
             .signed_in
             .as_ref()
-            .is_some_and(|s| s.identity.grants.is_none());
+            .map_or(self.grants_remote.data.is_none(), |s| {
+                s.identity.grants.is_none()
+            });
         if pending && self.grants_remote.wants_load(&host, false) {
             let target = host.clone();
             let job = self
@@ -1181,6 +1189,7 @@ impl Desktop {
                 cascade(n, area, size),
                 size,
                 self.active == Some(target),
+                target.fixed(),
                 |ui| self.contents(ui, target),
             );
             if let Some((actions, clicked)) = shown {
