@@ -11,8 +11,9 @@ name: image
 #
 # an image is only touched when it changed:
 # - the `versions` job lists the images whose input files (images.json) changed, by a git diff
-#   against the base branch (pull requests) or the previous commit (pushes to trunk). a manual
-#   run takes an `image` input instead.
+#   against the base branch (pull requests). a push to trunk considers every image, because
+#   runs are queued one at a time and an earlier push may have been cancelled; the packages
+#   check skips whatever is published already. a manual run takes an `image` input instead.
 # - a pull request builds those images for amd64 and arm64 without pushing, and fails when an
 #   image changed but its VERSION was not raised above the base branch's, so a change cannot
 #   ship without a new version.
@@ -21,7 +22,7 @@ name: image
 #   X.Y.Z is never overwritten.
 # - publishing only happens on trunk (also for a manual run), one run per ref at a time. the merge
 #   step checks again that X.Y.Z is still free, and moves the rolling X.Y, X and latest tags to
-#   it only when it is the newest version in their range.
+#   it only when it is the newest version in their range. forks never publish.
 # each architecture is built natively (amd64 and arm64 runners, no qemu) and the two are merged
 # into one multi-arch tag.
 # release tags (release-plz) do not run this workflow, so a lanlord release rebuilds nothing.
@@ -96,7 +97,9 @@ jobs:
             hit=0
             if [ "$EVENT" = workflow_dispatch ]; then
               if [ "$PICK" = all ] || [ "$PICK" = "$name" ]; then hit=1; fi
-            elif [ -z "$base" ]; then
+            elif [ -z "$base" ] || [ "$EVENT" = push ]; then
+              # a push counts every image as changed: the concurrency group keeps one pending run, so
+              # an earlier push may have been cancelled, and the packages check below skips what is published
               hit=1
             else
               for f in $(jq -r '.inputs[]' <<<"$entry"); do
@@ -156,7 +159,7 @@ jobs:
 
   # one job per image and architecture; the images in the matrix are all unpublished versions
   publish:
-    if: github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
+    if: github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
     needs: versions
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -200,7 +203,7 @@ jobs:
   # clearly (and tags nothing) when one of this image's architectures is missing. the rolling tags
   # are created first and the immutable X.Y.Z last, so a published X.Y.Z always means a finished run.
   merge:
-    if: ${{ !cancelled() && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true' }}
+    if: ${{ !cancelled() && github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true' }}
     needs: [versions, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -249,5 +252,10 @@ jobs:
           [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
           [ "$(newest "^$major\\.${minor#*.}\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$minor"
           cd /tmp/digests
+          digests=$(printf "$REPO@sha256:%s " *)
+          # the rolling tags first, then X.Y.Z on its own: a run that fails half way never leaves X.Y.Z
+          # published, so a retry is not skipped
           # shellcheck disable=SC2086
-          docker buildx imagetools create $args -t "$REPO:$VERSION" $(printf "$REPO@sha256:%s " *)
+          [ -z "$args" ] || docker buildx imagetools create $args $digests
+          # shellcheck disable=SC2086
+          docker buildx imagetools create -t "$REPO:$VERSION" $digests
