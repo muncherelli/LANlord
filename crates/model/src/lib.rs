@@ -2,6 +2,7 @@
 //! with their parsing and validation. nothing here touches the network, files or processes,
 //! so it also builds for the browser.
 
+pub mod bridge;
 pub mod clock;
 pub mod compat;
 pub mod components;

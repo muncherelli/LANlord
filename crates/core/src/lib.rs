@@ -5,6 +5,7 @@ pub mod account;
 pub mod admins;
 pub mod apply;
 pub mod bootstrap;
+pub mod bridge;
 pub mod clock;
 pub mod config;
 pub mod crypto;
@@ -14,6 +15,8 @@ pub mod exec;
 pub mod hosts;
 pub mod lan;
 pub mod leases;
+#[cfg(unix)]
+pub mod local;
 pub mod log;
 pub mod logon;
 pub use lanlord_model::modules;
