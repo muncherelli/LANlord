@@ -159,7 +159,7 @@ impl Welcome {
         let buttons = TOPICS
             .iter()
             .enumerate()
-            .map(|(i, t)| Button::new(t.button, i != self.topic, Msg::Topic(i)))
+            .map(|(i, t)| Node::Button(Button::new(t.button, i != self.topic, Msg::Topic(i))))
             .collect();
         let mut text: Vec<Node<Msg>> = topic.text.iter().map(|l| Node::Text((*l).into())).collect();
         text.push(Node::Gap(8.0));
@@ -175,12 +175,16 @@ impl Welcome {
                 lines: vec!["Retro networks, run from one desktop.".into()],
             },
             Node::Gap(8.0),
-            Node::Toolbar(buttons),
-            Node::Gap(4.0),
-            Node::Group {
-                title: topic.title.into(),
-                body: text,
-            },
+            Node::Columns(vec![
+                (
+                    Some(400.0),
+                    vec![Node::Group {
+                        title: topic.title.into(),
+                        body: text,
+                    }],
+                ),
+                (Some(120.0), buttons),
+            ]),
             Node::Gap(8.0),
             Node::Check {
                 label: SHOW_EACH_TIME.into(),
@@ -221,10 +225,7 @@ mod tests {
                     out += &texts(body);
                 }
                 Node::Button(b) => out += &b.label,
-                Node::Toolbar(b) => b.iter().for_each(|b| {
-                    out += &b.label;
-                    out.push('\n');
-                }),
+                Node::Columns(cols) => cols.iter().for_each(|(_, c)| out += &texts(c)),
                 Node::Check { label, .. } => out += label,
                 Node::Buttons(b) => b.iter().for_each(|b| out += &b.label),
                 _ => {}

@@ -67,7 +67,7 @@ impl Target {
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
-            Self::Welcome => (560.0, 360.0),
+            Self::Welcome => (580.0, 380.0),
         }
     }
 }
@@ -80,6 +80,14 @@ pub fn icons(enabled: Option<&Selection>) -> Vec<Target> {
     icons.extend(modules(enabled).into_iter().map(Target::Module));
     icons.extend([Target::Settings, Target::Console, Target::Hosts]);
     icons
+}
+
+/// the windows that exist for `icons`: the desktop icons plus the Components wizard, which has
+/// none.
+pub fn windows(icons: &[Target]) -> Vec<Target> {
+    let mut windows = icons.to_vec();
+    windows.push(Target::Components);
+    windows
 }
 
 /// the positions in `MODULES` of the components switched on in `enabled`.

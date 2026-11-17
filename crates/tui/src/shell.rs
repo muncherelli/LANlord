@@ -749,8 +749,7 @@ impl Shell {
                 answer
             }
             Target::Welcome => {
-                let mut windows = self.icons.clone();
-                windows.push(Target::Components);
+                let windows = desktop::windows(&self.icons);
                 let nodes = self.welcome.view(&windows);
                 let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
                 if let Some(msg) = msg {

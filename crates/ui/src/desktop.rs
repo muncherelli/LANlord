@@ -972,8 +972,7 @@ impl Desktop {
                 }
             }
             Target::Welcome => {
-                let mut windows: Vec<Target> = self.icons.clone();
-                windows.push(Target::Components);
+                let windows = lanlord_app::desktop::windows(&self.icons);
                 if let Some(msg) = view::show(ui, &self.welcome.view(&windows)) {
                     self.welcome.update(msg, &windows);
                 }
