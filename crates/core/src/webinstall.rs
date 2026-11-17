@@ -249,7 +249,10 @@ pub fn verify_script() -> String {
     with_root(
         r#"i=0
 while [ "$i" -lt 20 ]; do
-  for ip in 127.0.0.1 $(hostname -I 2>/dev/null); do
+  # caddy binds the host's own addresses; arch's hostname has no -I, so ask ip first
+  addrs=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+  [ -n "$addrs" ] || addrs=$(hostname -I 2>/dev/null || true)
+  for ip in 127.0.0.1 $addrs; do
     code=$(curl -sk -m 5 -o /dev/null -w '%{http_code}' "https://$ip:@PORT@/" 2>/dev/null || true)
     case "$code" in
       2??|3??|401) echo "the web ui answers on https://$ip:@PORT@/ ($code)"; exit 0 ;;

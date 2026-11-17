@@ -55,6 +55,15 @@
               - not helper_binary.stat.woth
             fail_msg: "{{ staged }} must be a regular file owned by root and writable only by root"
 
+        # arch and some others ship no /usr/local/libexec
+        - name: make sure the helper's directory exists
+          ansible.builtin.file:
+            path: "{{ helper | dirname }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
         - name: install the helper, owned by root
           ansible.builtin.copy:
             src: "{{ staged }}"
