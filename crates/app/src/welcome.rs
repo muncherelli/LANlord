@@ -268,14 +268,17 @@ impl Welcome {
                 (Some(TOPIC_BUTTON), buttons),
             ]),
             Node::Gap(8.0),
-            Node::Check {
-                label: SHOW_EACH_TIME.into(),
-                checked: self.show,
-                enabled: true,
-                toggle: Msg::Toggle,
-            },
             Node::Separator,
-            Node::Buttons(vec![Button::new("Close", true, Msg::Close)]),
+            // the tick box and Close share the bottom row, as in the NT4 Welcome
+            Node::Row(vec![
+                Node::Check {
+                    label: SHOW_EACH_TIME.into(),
+                    checked: self.show,
+                    enabled: true,
+                    toggle: Msg::Toggle,
+                },
+                Node::Buttons(vec![Button::new("Close", true, Msg::Close)]),
+            ]),
         ]
     }
 
@@ -348,10 +351,15 @@ mod tests {
         assert!(text.contains("no internet unless"));
         assert!(text.contains(SHOW_EACH_TIME));
         assert!(text.contains("Close"));
-        assert!(w
-            .view(&icons())
-            .iter()
-            .any(|n| matches!(n, Node::Check { checked: true, .. })));
+        // the tick box and Close share the row under the separator, tick box first
+        let view = w.view(&icons());
+        let n = view.len();
+        assert!(matches!(view[n - 2], Node::Separator));
+        let Node::Row(bottom) = &view[n - 1] else {
+            panic!("the bottom row")
+        };
+        assert!(matches!(bottom[0], Node::Check { checked: true, .. }));
+        assert!(matches!(bottom[1], Node::Buttons(_)));
     }
 
     #[test]
