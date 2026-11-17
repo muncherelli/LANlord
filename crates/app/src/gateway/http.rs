@@ -9,6 +9,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use lanlord_model::ops::{Op, Reply, Request};
 use lanlord_model::secret::Secret;
+use lanlord_model::signin::{Identity, SigninError};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use zeroize::Zeroizing;
@@ -16,6 +17,7 @@ use zeroize::Zeroizing;
 use super::round_trip::{self, SessionEnded};
 use super::Gateway;
 use crate::ask::AskPassword;
+use crate::login::{login_status, LocalFuture, WebSession};
 
 /// the gateway this page was served from.
 #[derive(Clone)]
@@ -123,4 +125,103 @@ async fn post(endpoint: &str, request: Request) -> Result<Reply> {
 
 fn js(value: wasm_bindgen::JsValue) -> anyhow::Error {
     anyhow!("{value:?}")
+}
+
+/// the browser's logon: `/api/login`, `/api/session` and `/api/logout` on the page's own server.
+/// the session itself is the `__Host-` cookie, which the browser keeps and JavaScript cannot see.
+#[derive(Clone, Copy, Default)]
+pub struct HttpSession;
+
+impl WebSession for HttpSession {
+    fn login(
+        &self,
+        user: String,
+        password: Zeroizing<String>,
+    ) -> LocalFuture<Result<Identity, SigninError>> {
+        Box::pin(async move {
+            // the body holds the password in plain text: keep it only until the browser has it
+            let body = Zeroizing::new(
+                serde_json::json!({ "user": user, "password": password.as_str() }).to_string(),
+            );
+            drop(password);
+            let (status, _) = fetch("POST", "/api/login", Some(body))
+                .await
+                .map_err(|e| SigninError::Unreachable(e.to_string()))?;
+            login_status(status)?;
+            session_now()
+                .await
+                .ok_or_else(|| SigninError::Other("The server did not start a session.".into()))
+        })
+    }
+
+    fn current(&self) -> LocalFuture<Option<Identity>> {
+        Box::pin(session_now())
+    }
+
+    fn logout(&self) -> LocalFuture<()> {
+        Box::pin(async {
+            let _ = fetch("POST", "/api/logout", Some(Zeroizing::new("{}".into()))).await;
+        })
+    }
+}
+
+/// who `/api/session` says is logged on. the web ui does not tell a uid, so it is made up
+/// (above root's, so nothing treats the account as root).
+async fn session_now() -> Option<Identity> {
+    let (status, text) = fetch("GET", "/api/session", None).await.ok()?;
+    if status != 200 {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(Identity {
+        user: value.get("user")?.as_str()?.to_string(),
+        uid: 1000,
+    })
+}
+
+/// one request to the page's own server, answered with its status and body text. a post sends
+/// json; the browser adds the Origin and fetch metadata headers the server checks.
+async fn fetch(method: &str, url: &str, body: Option<Zeroizing<String>>) -> Result<(u16, String)> {
+    let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
+    let controller = web_sys::AbortController::new().map_err(js)?;
+    let init = web_sys::RequestInit::new();
+    init.set_method(method);
+    init.set_signal(Some(&controller.signal()));
+    if let Some(body) = &body {
+        init.set_body(&wasm_bindgen::JsValue::from_str(body));
+    }
+    drop(body);
+    let request = web_sys::Request::new_with_str_and_init(url, &init).map_err(js)?;
+    if method == "POST" {
+        request
+            .headers()
+            .set("content-type", "application/json")
+            .map_err(js)?;
+    }
+    let abort = Closure::once(move || controller.abort());
+    let timer = window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            abort.as_ref().unchecked_ref(),
+            30_000,
+        )
+        .map_err(js)?;
+    let no_answer = || anyhow!("no answer from the server");
+    let fetched = async {
+        let answer: web_sys::Response =
+            wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&request))
+                .await
+                .map_err(|_| no_answer())?
+                .dyn_into()
+                .map_err(js)?;
+        let text = wasm_bindgen_futures::JsFuture::from(answer.text().map_err(js)?)
+            .await
+            .map_err(|_| no_answer())?
+            .as_string()
+            .unwrap_or_default();
+        Ok::<_, anyhow::Error>((answer.status(), text))
+    }
+    .await;
+    window.clear_timeout_with_handle(timer);
+    drop(abort);
+    fetched
 }

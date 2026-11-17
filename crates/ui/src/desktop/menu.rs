@@ -152,7 +152,9 @@ impl Desktop {
         let who = self.signed_in.as_ref().map(|s| s.identity.user.clone());
         menu::rows(&menu::State {
             host: host.as_deref(),
-            signed_in: self.auth.as_ref().map(|_| who.as_deref().unwrap_or("")),
+            signed_in: (self.auth.is_some() || self.web.is_some())
+                .then(|| who.as_deref().unwrap_or("")),
+            switch_server: self.web.is_none(),
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
             updates: self.updates_enabled(),
             developer: self.dev.is_some(),

@@ -437,3 +437,129 @@ fn the_menu_has_a_welcome_row_that_opens_the_window() {
     frames(&mut desktop, &ctx, 2);
     assert!(!welcome_open(&desktop));
 }
+
+mod web {
+    //! the browser's logon: user name and password for the gateway itself, no host, a session
+    //! the server can end, and log off that posts to the server.
+
+    use std::rc::Rc;
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+    use crate::login::fake::FakeWeb;
+
+    fn web_logon() -> (
+        Desktop,
+        egui::Context,
+        Rc<FakeWeb>,
+        Arc<lanlord_app::gateway::Fake>,
+    ) {
+        let (mut desktop, ctx, fake) = desktop();
+        *fake.local.lock().unwrap() = true;
+        let web = Rc::new(FakeWeb::default());
+        desktop.require_web_login(web.clone());
+        frames(&mut desktop, &ctx, 3);
+        (desktop, ctx, web, fake)
+    }
+
+    fn sign_in(desktop: &mut Desktop, ctx: &egui::Context, user: &str, password: &str) {
+        let login = desktop.login.as_mut().expect("the logon box is open");
+        login.user = user.into();
+        login.set_password(password);
+        assert!(press(desktop, ctx, "OK"));
+    }
+
+    #[test]
+    fn the_box_comes_first_and_has_no_host_or_shut_down() {
+        let (_desktop, ctx, web, _) = web_logon();
+        assert_eq!(web.calls(), ["current"], "the session was looked for");
+        assert!(enabled(&ctx, "OK").is_some() && enabled(&ctx, "Cancel").is_some());
+        assert!(enabled(&ctx, "Shut Down").is_none());
+        assert!(enabled(&ctx, "Hostname:").is_none());
+    }
+
+    #[test]
+    fn logging_on_shows_the_one_server() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        assert_eq!(web.calls(), ["current", "login ann s3cret"]);
+        // the gateway is the server, not a host in the list
+        assert_eq!(desktop.host().as_deref(), Some("local"));
+        assert!(desktop.hosts.hosts().is_empty());
+    }
+
+    #[test]
+    fn a_live_session_skips_the_box() {
+        let (mut desktop, ctx, _) = desktop();
+        let web = Rc::new(FakeWeb::default());
+        *web.current.lock().unwrap() = Some(id("ann", 1000));
+        desktop.require_web_login(web.clone());
+        until(&mut desktop, &ctx, logged_on);
+        assert_eq!(web.calls(), ["current"]);
+    }
+
+    #[test]
+    fn the_menu_has_log_off_but_no_switch_server() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        desktop.start_open = true;
+        frames(&mut desktop, &ctx, 3);
+        assert!(desktop.menu_item_at(screen(), &Action::LogOff).is_some());
+        assert!(desktop
+            .menu_item_at(screen(), &Action::SwitchServer)
+            .is_none());
+        assert!(desktop
+            .menu_rows()
+            .iter()
+            .any(|r| matches!(r, Row::Item(i) if i.label() == "Log off ann...")));
+    }
+
+    #[test]
+    fn logging_off_posts_a_logout_and_returns_to_the_box() {
+        let (mut desktop, ctx, web, _) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        desktop.do_action(&ctx, Action::LogOff);
+        assert!(desktop.login.is_some() && desktop.signed_in.is_none());
+        assert!(desktop.windows.is_empty() && !desktop.start_open);
+        assert_eq!(web.calls().last().map(String::as_str), Some("logout"));
+        assert_eq!(desktop.login.as_ref().unwrap().user, "ann");
+        assert!(desktop.login.as_ref().unwrap().password_is_empty());
+    }
+
+    #[test]
+    fn a_session_the_server_ended_returns_to_the_box_with_a_note() {
+        let (mut desktop, ctx, web, fake) = web_logon();
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        desktop.open(Target::Console);
+        // any call the server answered 401 raises the flag
+        fake.ended.store(true, Ordering::SeqCst);
+        frames(&mut desktop, &ctx, 2);
+        let login = desktop.login.as_ref().expect("back at the box");
+        assert!(desktop.signed_in.is_none() && desktop.windows.is_empty());
+        assert_eq!(login.user, "ann");
+        assert!(
+            login.status().contains("session ended"),
+            "{}",
+            login.status()
+        );
+        assert!(
+            !web.calls().iter().any(|c| c == "logout"),
+            "nothing to log off from"
+        );
+        // logging on again clears the flag, and the desktop stays
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        sign_in(&mut desktop, &ctx, "ann", "s3cret");
+        until(&mut desktop, &ctx, logged_on);
+        assert!(!fake.ended.load(Ordering::SeqCst));
+        frames(&mut desktop, &ctx, 2);
+        assert!(logged_on(&desktop));
+    }
+}

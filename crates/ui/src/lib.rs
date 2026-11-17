@@ -106,7 +106,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// start the desktop on the page's canvas. the browser build is lanlord on the gateway itself
-/// (server mode: one server, no logon box) and talks to it through `/api/op`; a build with the
+/// (server mode: one server, logging on with the gateway's accounts) and talks to it through `/api/op`; a build with the
 /// `demo` feature shows the made-up demo server instead, and says so.
 #[cfg(target_arch = "wasm32")]
 pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bindgen::JsValue> {
@@ -118,6 +118,11 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
                 let mut desktop = desktop::Desktop::new(web_gateway(), &cc.egui_ctx, None);
                 if cfg!(feature = "demo") {
                     desktop.mark_demo();
+                } else {
+                    // the gateway's own accounts log on in the page; a live session skips the box
+                    desktop.require_web_login(std::rc::Rc::new(
+                        lanlord_app::gateway::http::HttpSession,
+                    ));
                 }
                 // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop,
                 // but only the ones that are safe to open from a link

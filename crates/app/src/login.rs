@@ -2,6 +2,9 @@
 //! host name and signs you in with your own ssh credentials. nothing is stored here but the list
 //! of servers; a password you type lives in memory for one attempt and is wiped after it.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
@@ -26,6 +29,51 @@ pub trait Auth: Send + Sync {
     fn fingerprint(&self, target: &str) -> Result<String, SigninError>;
     /// close the connection kept open for `target`.
     fn sign_out(&self, target: &str);
+}
+
+/// a future that runs on the page's one thread.
+pub type LocalFuture<T> = Pin<Box<dyn Future<Output = T>>>;
+
+/// how the browser's logon box reaches the web ui: the gateway's own accounts, one server.
+/// nothing here is `Send`: in the browser there is one thread, and requests are awaited.
+pub trait WebSession {
+    /// log on with a user name and password; the answer is who the server says you are.
+    fn login(
+        &self,
+        user: String,
+        password: Zeroizing<String>,
+    ) -> LocalFuture<Result<Identity, SigninError>>;
+    /// who is logged on already (the cookie is still good), if anyone.
+    fn current(&self) -> LocalFuture<Option<Identity>>;
+    /// end the session on the server.
+    fn logout(&self) -> LocalFuture<()>;
+}
+
+/// what the web ui's `/api/login` answered, as the logon box shows it.
+pub fn login_status(status: u16) -> Result<(), SigninError> {
+    match status {
+        200 => Ok(()),
+        401 => Err(SigninError::WrongPassword),
+        503 => Err(SigninError::Other(
+            "The logon service on the server is not available.".into(),
+        )),
+        other => Err(SigninError::Other(format!(
+            "The server refused the logon ({other})."
+        ))),
+    }
+}
+
+/// run `work` on the page's thread. the browser has an event loop for it; elsewhere (tests) it
+/// is polled once, which is enough for the ready futures the fakes return.
+pub fn spawn_local(work: impl Future<Output = ()> + 'static) {
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(work);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut work = Box::pin(work);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let _ = work.as_mut().poll(&mut cx);
+    }
 }
 
 #[cfg(feature = "native")]
@@ -130,8 +178,15 @@ enum Overlay {
     Trust(MessageBox, String),
 }
 
+/// where logons go: ssh to a chosen server, or the web ui the page came from.
+#[derive(Clone)]
+enum Backend {
+    Ssh(Arc<dyn Auth>),
+    Web(Rc<dyn WebSession>),
+}
+
 pub struct LoginBox {
-    auth: Arc<dyn Auth>,
+    backend: Backend,
     wake: Wake,
     pub user: String,
     pub host: String,
@@ -153,7 +208,7 @@ impl LoginBox {
                 (u.to_string(), h.to_string())
             });
         Self {
-            auth,
+            backend: Backend::Ssh(auth),
             wake,
             user,
             host,
@@ -165,6 +220,42 @@ impl LoginBox {
             status_is_error: false,
             focus: false,
         }
+    }
+
+    /// the browser's box: a user name and password for the gateway the page came from, no
+    /// host. `last` is the user name to fill in.
+    pub fn web(session: Rc<dyn WebSession>, wake: Wake, last: Option<&str>) -> Self {
+        let mut login = Self::new(Arc::new(NoSsh), wake, None);
+        login.backend = Backend::Web(session);
+        login.user = last.unwrap_or_default().to_string();
+        login.stage = Stage::Password;
+        login
+    }
+
+    fn is_web(&self) -> bool {
+        matches!(self.backend, Backend::Web(_))
+    }
+
+    /// in the browser: look for a session that is still good, and skip the box when there is one.
+    pub fn resume_web(&mut self) {
+        let Backend::Web(session) = self.backend.clone() else {
+            return;
+        };
+        let (tx, rx) = channel();
+        let wake = self.wake.clone();
+        spawn_local(async move {
+            let result = match session.current().await {
+                Some(identity) => Ok(identity),
+                None => Err(SigninError::NeedsPassword),
+            };
+            let _ = tx.send(Work::Attempt {
+                target: String::new(),
+                result,
+            });
+            wake.wake();
+        });
+        self.work = Some(rx);
+        self.say("Checking for a session...", false);
     }
 
     pub fn stage(&self) -> Stage {
@@ -198,6 +289,12 @@ impl LoginBox {
     /// `user@host` from the two fields, or what is missing. a host typed as `user@host` with
     /// no user name filled in is accepted as it is.
     pub fn target(&self) -> Result<String, String> {
+        if self.is_web() {
+            return match self.user.trim() {
+                "" => Err("Type a username.".into()),
+                user => Ok(user.to_string()),
+            };
+        }
         let (user, host) = (self.user.trim(), self.host.trim());
         if user.is_empty() {
             return match host.split_once('@') {
@@ -243,6 +340,10 @@ impl LoginBox {
                 return;
             }
         };
+        if self.is_web() && self.password.is_empty() {
+            self.say("Type a password.", true);
+            return;
+        }
         let password = (self.stage == Stage::Password).then(|| {
             // the field is emptied now; the attempt owns the only copy
             Zeroizing::new(std::mem::take(&mut *self.password))
@@ -251,8 +352,23 @@ impl LoginBox {
     }
 
     fn start_attempt(&mut self, target: String, password: Option<Zeroizing<String>>, trust: bool) {
-        let (auth, wake) = (self.auth.clone(), self.wake.clone());
+        let wake = self.wake.clone();
         let (tx, rx) = channel();
+        let auth = match &self.backend {
+            Backend::Ssh(auth) => auth.clone(),
+            Backend::Web(session) => {
+                let session = session.clone();
+                spawn_local(async move {
+                    let password = password.unwrap_or_default();
+                    let result = session.login(target.clone(), password).await;
+                    let _ = tx.send(Work::Attempt { target, result });
+                    wake.wake();
+                });
+                self.work = Some(rx);
+                self.say("Logging on...", false);
+                return;
+            }
+        };
         std::thread::spawn(move || {
             let result = auth.attempt(&target, password.as_ref().map(|p| p.as_str()), trust);
             // dropping the password wipes it
@@ -265,7 +381,10 @@ impl LoginBox {
     }
 
     fn start_fingerprint(&mut self, target: String) {
-        let (auth, wake) = (self.auth.clone(), self.wake.clone());
+        let Backend::Ssh(auth) = self.backend.clone() else {
+            return;
+        };
+        let wake = self.wake.clone();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
             let result = auth.fingerprint(&target);
@@ -323,7 +442,24 @@ impl LoginBox {
         result: Result<Identity, SigninError>,
     ) -> Option<SignedIn> {
         match result {
-            Ok(identity) => return Some(SignedIn { target, identity }),
+            Ok(identity) => {
+                // the session answered with the account's name, whatever was typed
+                let target = if self.is_web() {
+                    identity.user.clone()
+                } else {
+                    target
+                };
+                return Some(SignedIn { target, identity });
+            }
+            // the browser has no session yet: just show the box
+            Err(SigninError::NeedsPassword) if self.is_web() => {
+                self.focus = false;
+            }
+            Err(error) if self.is_web() => {
+                self.password = Zeroizing::new(String::new());
+                self.focus = false;
+                self.fail(&error.to_string());
+            }
             Err(SigninError::NeedsPassword) => {
                 self.stage = Stage::Password;
                 self.focus = false;
@@ -346,6 +482,12 @@ impl LoginBox {
     /// Cancel: back out of the password step, or empty the boxes.
     pub fn cancel(&mut self) {
         if self.busy() {
+            return;
+        }
+        if self.is_web() {
+            self.password = Zeroizing::new(String::new());
+            self.say("", false);
+            self.focus = false;
             return;
         }
         if self.stage == Stage::Password {
@@ -374,18 +516,21 @@ impl LoginBox {
         let busy = self.busy() || self.overlay.is_some();
         let first = !self.focus;
         self.focus = true;
+        let web = self.is_web();
         let password_stage = self.stage == Stage::Password;
         let mut nodes = vec![
             Node::Header {
                 icon: "gateway",
                 title: String::new(),
-                lines: vec![
-                    "Type the name you use on the gateway and its hostname or address.".into(),
-                ],
+                lines: vec![if web {
+                    "Type your name and password for this gateway.".into()
+                } else {
+                    "Type the name you use on the gateway and its hostname or address.".into()
+                }],
             },
             Node::Gap(8.0),
         ];
-        if !known.is_empty() {
+        if !known.is_empty() && !web {
             nodes.push(Node::Labelled {
                 label: "Server:".into(),
                 body: vec![Node::Choice {
@@ -417,18 +562,20 @@ impl LoginBox {
         nodes.push(field(
             "Username:",
             &self.user,
-            first && !password_stage && empty,
+            first && (web || !password_stage) && empty,
             Msg::User,
             Msg::SubmitUser,
         ));
-        nodes.push(Node::Gap(4.0));
-        nodes.push(field(
-            "Hostname:",
-            &self.host,
-            first && !password_stage && !empty,
-            Msg::Host,
-            Msg::SubmitHost,
-        ));
+        if !web {
+            nodes.push(Node::Gap(4.0));
+            nodes.push(field(
+                "Hostname:",
+                &self.host,
+                first && !password_stage && !empty,
+                Msg::Host,
+                Msg::SubmitHost,
+            ));
+        }
         if password_stage {
             nodes.push(Node::Gap(4.0));
             nodes.push(Node::Labelled {
@@ -437,7 +584,7 @@ impl LoginBox {
                     value: self.password.clone(),
                     size: Size::Points(240.0),
                     shown: false,
-                    focus: first,
+                    focus: first && (!web || !empty),
                     edit: Box::new(Msg::Password),
                     enter: (!busy).then(|| {
                         Box::new(Msg::SubmitPassword) as Box<dyn Fn(Zeroizing<String>) -> Msg>
@@ -445,13 +592,17 @@ impl LoginBox {
                 }],
             });
         }
+        // the browser has nothing to shut down
+        let mut buttons = vec![
+            Button::new("Cancel", !busy, Msg::Cancel),
+            Button::new("OK", !busy, Msg::Ok),
+        ];
+        if !web {
+            buttons.insert(0, Button::new("Shut Down", true, Msg::ShutDown));
+        }
         nodes.extend([
             Node::Gap(10.0),
-            Node::Buttons(vec![
-                Button::new("Shut Down", true, Msg::ShutDown),
-                Button::new("Cancel", !busy, Msg::Cancel),
-                Button::new("OK", !busy, Msg::Ok),
-            ]),
+            Node::Buttons(buttons),
             Node::Gap(6.0),
             Node::Status {
                 text: self.status.clone(),
@@ -519,6 +670,19 @@ impl LoginBox {
     }
 }
 
+/// the ssh side of a box that only logs on through the web ui: never asked.
+struct NoSsh;
+
+impl Auth for NoSsh {
+    fn attempt(&self, _: &str, _: Option<&str>, _: bool) -> Result<Identity, SigninError> {
+        Err(SigninError::Other("no ssh in the browser".into()))
+    }
+    fn fingerprint(&self, _: &str) -> Result<String, SigninError> {
+        Err(SigninError::Other("no ssh in the browser".into()))
+    }
+    fn sign_out(&self, _: &str) {}
+}
+
 #[cfg(any(test, feature = "fake"))]
 pub mod fake {
     //! a scripted `Auth` for headless tests.
@@ -543,6 +707,53 @@ pub mod fake {
 
         pub fn calls(&self) -> Vec<String> {
             self.calls.lock().unwrap().clone()
+        }
+    }
+
+    /// a scripted web session: what `current` finds, what the next logons answer, every call.
+    #[derive(Default)]
+    pub struct FakeWeb {
+        pub current: Mutex<Option<Identity>>,
+        pub logins: Mutex<VecDeque<Result<Identity, SigninError>>>,
+        /// every call, as `login user password`, `current` or `logout`.
+        pub calls: Mutex<Vec<String>>,
+    }
+
+    impl FakeWeb {
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl WebSession for FakeWeb {
+        fn login(
+            &self,
+            user: String,
+            password: Zeroizing<String>,
+        ) -> LocalFuture<Result<Identity, SigninError>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("login {user} {}", password.as_str()));
+            let answer = self
+                .logins
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Err(SigninError::Other("no answer scripted".into())));
+            Box::pin(async move { answer })
+        }
+
+        fn current(&self) -> LocalFuture<Option<Identity>> {
+            self.calls.lock().unwrap().push("current".into());
+            let now = self.current.lock().unwrap().clone();
+            Box::pin(async move { now })
+        }
+
+        fn logout(&self) -> LocalFuture<()> {
+            self.calls.lock().unwrap().push("logout".into());
+            *self.current.lock().unwrap() = None;
+            Box::pin(async {})
         }
     }
 
@@ -594,8 +805,103 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::fake::FakeAuth;
+    use super::fake::{id, FakeAuth, FakeWeb};
     use super::*;
+
+    fn web_box(web: &Rc<FakeWeb>) -> LoginBox {
+        LoginBox::web(web.clone(), Wake::none(), None)
+    }
+
+    #[test]
+    fn the_web_box_logs_on_with_a_user_and_a_password_and_no_host() {
+        let web = Rc::new(FakeWeb::default());
+        web.logins.lock().unwrap().push_back(Ok(id("ann", 1000)));
+        let mut login = web_box(&web);
+        login.user = "ann".into();
+        login.set_password("s3cret");
+        login.submit();
+        let signed = login.poll().expect("signed in");
+        assert_eq!(signed.target, "ann");
+        assert_eq!(signed.identity.user, "ann");
+        assert_eq!(web.calls(), ["login ann s3cret"]);
+        assert!(login.password_is_empty(), "the field was emptied");
+    }
+
+    #[test]
+    fn the_web_box_needs_a_user_and_a_password_before_asking() {
+        let web = Rc::new(FakeWeb::default());
+        let mut login = web_box(&web);
+        login.submit();
+        assert_eq!(login.status(), "Type a username.");
+        login.user = "ann".into();
+        login.submit();
+        assert_eq!(login.status(), "Type a password.");
+        assert!(web.calls().is_empty());
+    }
+
+    #[test]
+    fn a_wrong_password_in_the_web_box_says_so_and_keeps_the_box() {
+        let web = Rc::new(FakeWeb::default());
+        web.logins
+            .lock()
+            .unwrap()
+            .push_back(Err(SigninError::WrongPassword));
+        let mut login = web_box(&web);
+        login.user = "ann".into();
+        login.set_password("nope");
+        login.submit();
+        assert!(login.poll().is_none());
+        assert!(login.overlay_text().unwrap().contains("incorrect"));
+        assert!(login.password_is_empty());
+        assert_eq!(login.stage(), Stage::Password);
+    }
+
+    #[test]
+    fn a_live_session_skips_the_web_box() {
+        let web = Rc::new(FakeWeb::default());
+        *web.current.lock().unwrap() = Some(id("ann", 1000));
+        let mut login = web_box(&web);
+        login.resume_web();
+        assert_eq!(login.poll().expect("signed in").target, "ann");
+        assert_eq!(web.calls(), ["current"]);
+    }
+
+    #[test]
+    fn without_a_session_the_web_box_just_waits_quietly() {
+        let web = Rc::new(FakeWeb::default());
+        let mut login = web_box(&web);
+        login.resume_web();
+        assert!(login.poll().is_none());
+        assert!(login.overlay_text().is_none());
+        assert_eq!(login.status(), "");
+        assert!(!login.busy());
+    }
+
+    #[test]
+    fn the_web_box_has_no_host_field_or_shut_down() {
+        let web = Rc::new(FakeWeb::default());
+        let mut login = web_box(&web);
+        let mut labels = Vec::new();
+        let mut buttons = Vec::new();
+        for node in login.view(&["x@y".into()]) {
+            match node {
+                Node::Labelled { label, .. } => labels.push(label),
+                Node::Buttons(list) => buttons.extend(list.into_iter().map(|b| b.label)),
+                _ => {}
+            }
+        }
+        assert_eq!(labels, ["Username:", "Password:"]);
+        assert_eq!(buttons, ["Cancel", "OK"]);
+    }
+
+    #[test]
+    fn the_logon_answers_become_messages() {
+        assert_eq!(login_status(200), Ok(()));
+        assert_eq!(login_status(401), Err(SigninError::WrongPassword));
+        for status in [403, 400, 503] {
+            assert!(matches!(login_status(status), Err(SigninError::Other(_))));
+        }
+    }
 
     #[test]
     fn a_dropped_worker_is_reported() {

@@ -70,6 +70,8 @@ pub struct State<'a> {
     pub host: Option<&'a str>,
     /// someone signed in through the logon box (so they can switch server or log off).
     pub signed_in: Option<&'a str>,
+    /// a different server can be chosen at the logon box (not in the browser, which has one).
+    pub switch_server: bool,
     /// the server is there and nothing is running against it.
     pub ready: bool,
     /// automatic updates are on; `None` where lanlord is not updated from the menu (the browser).
@@ -92,10 +94,12 @@ pub fn rows(state: &State) -> Vec<Row> {
         ..Item::new(&server_line(state.host), Action::ServerLine)
     })];
     if let Some(who) = state.signed_in {
-        rows.push(Row::Item(Item::new(
-            "Switch server...",
-            Action::SwitchServer,
-        )));
+        if state.switch_server {
+            rows.push(Row::Item(Item::new(
+                "Switch server...",
+                Action::SwitchServer,
+            )));
+        }
         rows.push(Row::Item(Item::new(
             &format!("Log off {who}..."),
             Action::LogOff,
@@ -176,6 +180,7 @@ mod tests {
         let state = State {
             host: Some("local"),
             signed_in: None,
+            switch_server: true,
             ready: true,
             updates,
             developer: false,
@@ -188,6 +193,27 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn the_browser_logs_off_but_has_no_other_server_to_switch_to() {
+        let state = |switch_server| State {
+            host: Some("local"),
+            signed_in: Some("ann"),
+            switch_server,
+            ready: true,
+            updates: None,
+            developer: false,
+            modules: Vec::new(),
+        };
+        let has = |state: &State, label: &str| {
+            rows(state)
+                .iter()
+                .any(|r| matches!(r, Row::Item(i) if i.label() == label))
+        };
+        assert!(has(&state(true), "Switch server..."));
+        assert!(!has(&state(false), "Switch server..."));
+        assert!(has(&state(false), "Log off ann..."));
     }
 
     #[test]

@@ -34,6 +34,19 @@ impl DerefMut for LoginBox {
 }
 
 impl LoginBox {
+    /// the browser's box: user name and password for the gateway the page came from.
+    pub fn web(
+        session: std::rc::Rc<dyn lanlord_app::login::WebSession>,
+        ctx: &egui::Context,
+        last: Option<&str>,
+    ) -> Self {
+        Self(lanlord_app::login::LoginBox::web(
+            session,
+            crate::wake(ctx),
+            last,
+        ))
+    }
+
     /// a box for `auth`, with the fields filled from `last` (`user@host`) when there is one.
     pub fn new(auth: Arc<dyn Auth>, ctx: &egui::Context, last: Option<&str>) -> Self {
         Self(lanlord_app::login::LoginBox::new(
