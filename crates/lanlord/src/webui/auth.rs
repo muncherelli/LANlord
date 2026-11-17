@@ -10,7 +10,7 @@ use std::future::Future;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
@@ -191,7 +191,7 @@ impl Auth {
     }
 
     fn book(&self) -> std::sync::MutexGuard<'_, Book> {
-        self.book.lock().unwrap_or_else(|e| e.into_inner())
+        self.book.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// whether this user or address may try a password now.
