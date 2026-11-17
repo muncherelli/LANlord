@@ -1052,8 +1052,18 @@ mod fake {
         let fake = Fake::new();
         *fake.password_prompt.lock().unwrap() = Some("[sudo] password:".into());
         let gateway: &dyn Gateway = &fake;
-        // probe never passes a real asker; the fake only asks inside `enter`
-        assert!(gateway.probe("a@b").is_err());
+        *fake.internal.lock().unwrap() = Some(Internal {
+            interface: "eth1".into(),
+            address: std::net::Ipv4Addr::new(192, 0, 2, 1),
+            prefix: 24,
+        });
+        // a read never prompts, so with a network it succeeds without an answer
+        assert!(gateway.probe("a@b").is_ok());
+        assert!(fake.answer.lock().unwrap().is_none());
+        // an op that reaches the prompt fails when nobody can answer
+        let mut refuse = |_: &str| Err(anyhow!("no password here"));
+        let failed = gateway.reset_machine("a@b", "ws1", &mut refuse);
+        assert!(failed.is_err_and(|e| e.to_string().contains("no password here")));
         let mut ask = |_: &str| Ok("pw".to_string());
         gateway.reset_machine("a@b", "ws1", &mut ask).unwrap();
         assert_eq!(fake.answer.lock().unwrap().as_deref(), Some("pw"));

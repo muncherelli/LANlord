@@ -103,18 +103,27 @@ async fn post(endpoint: &str, request: Request) -> Result<Reply> {
             TIMEOUT_MS,
         )
         .map_err(js)?;
-    let answer = wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&web_request))
-        .await
-        .map_err(|_| anyhow!("no answer from the server within {} s", TIMEOUT_MS / 1000));
+    let timed_out = || anyhow!("no answer from the server within {} s", TIMEOUT_MS / 1000);
+    // the abort timer stays armed until the body is read, so a stalled body also times out
+    let fetched = async {
+        let answer: web_sys::Response =
+            wasm_bindgen_futures::JsFuture::from(window.fetch_with_request(&web_request))
+                .await
+                .map_err(|_| timed_out())?
+                .dyn_into()
+                .map_err(js)?;
+        let status = answer.status();
+        let text = wasm_bindgen_futures::JsFuture::from(answer.text().map_err(js)?)
+            .await
+            .map_err(|_| timed_out())?
+            .as_string()
+            .unwrap_or_default();
+        Ok::<_, anyhow::Error>((status, text))
+    }
+    .await;
     window.clear_timeout_with_handle(timer);
     drop(abort);
-    let answer: web_sys::Response = answer?.dyn_into().map_err(js)?;
-    let status = answer.status();
-    let text = wasm_bindgen_futures::JsFuture::from(answer.text().map_err(js)?)
-        .await
-        .map_err(js)?
-        .as_string()
-        .unwrap_or_default();
+    let (status, text) = fetched?;
     if !(200..300).contains(&status) {
         return Err(anyhow!("the server answered {status}: {}", text.trim()));
     }
