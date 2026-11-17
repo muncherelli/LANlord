@@ -134,6 +134,8 @@ pub struct Session {
     host: String,
     /// the ssh program and any leading arguments.
     program: Vec<String>,
+    /// set once the gateway turned out to have no usable `lanlord bridge`; later ops skip it.
+    pub(crate) no_bridge: std::sync::atomic::AtomicBool,
 }
 
 impl Session {
@@ -144,6 +146,7 @@ impl Session {
         Ok(Self {
             host: host.to_string(),
             program: vec!["ssh".to_string()],
+            no_bridge: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -159,6 +162,19 @@ impl Session {
             cmd.arg(line.join(" "));
         }
         cmd
+    }
+
+    /// start `remote` with all three streams piped, for a long conversation (the bridge).
+    pub(crate) fn spawn_piped(&self, remote: &[String]) -> Result<std::process::Child> {
+        emit(
+            Kind::Debug,
+            format!("ssh {} {}", self.host, remote.join(" ")),
+        );
+        let mut cmd = self.command(remote);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        Ok(cmd.spawn().map_err(spawn_error)?)
     }
 
     /// run `remote` with stdout and stdin attached to ours; returns its exit code.
@@ -311,6 +327,10 @@ impl Session {
         let mut session = Session::new("gw").unwrap();
         // run it through sh so we never exec a file we just wrote (ETXTBSY)
         session.program = vec!["sh".into(), path.to_string_lossy().into_owned()];
+        // a fake that reads stdin to its end would never greet; these tests use the scripts
+        session
+            .no_bridge
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         session
     }
 }

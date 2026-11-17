@@ -48,8 +48,8 @@
     - name: check the clock settings
       ansible.builtin.assert:
         that:
-          - gateway.timezone is not defined or gateway.timezone is match('^[A-Za-z0-9_+/-]{1,64}$')
-          - gateway.ntp is not defined or (gateway.ntp is sequence and gateway.ntp is not string and gateway.ntp | length <= 8 and (gateway.ntp | select('match', '^[A-Za-z0-9:.-]{1,253}$') | list | length) == (gateway.ntp | length))
+          - gateway.timezone is not defined or gateway.timezone is match('^[A-Za-z0-9_+/-]{1,64}\\Z')
+          - gateway.ntp is not defined or (gateway.ntp is sequence and gateway.ntp is not string and gateway.ntp | length <= 8 and (gateway.ntp | select('match', '^[A-Za-z0-9:.-]{1,253}\\Z') | list | length) == (gateway.ntp | length))
           - gateway.ntp_enabled is not defined or gateway.ntp_enabled is boolean
         fail_msg: >-
           gateway settings: timezone is a name like Europe/Berlin, ntp is a list of at most
