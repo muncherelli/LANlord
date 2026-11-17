@@ -65,8 +65,8 @@ pub fn run() -> Result<()> {
         shell.use_demo_server();
     }
     let mut terminal = ratatui::init();
-    let mut out = stdout();
-    paint::mouse::enable(&mut out)?;
+    // mouse reporting stays on for the length of the loop and goes off when the guard drops
+    let capture = paint::mouse::Capture::start()?;
     let result = run_loop(
         &mut terminal,
         &mut shell,
@@ -82,7 +82,7 @@ pub fn run() -> Result<()> {
             let _ = out.flush();
         },
     );
-    let _ = paint::mouse::disable(&mut out);
+    drop(capture);
     ratatui::restore();
     result
 }

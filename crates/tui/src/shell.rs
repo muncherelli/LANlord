@@ -1639,6 +1639,10 @@ impl Shell {
     }
 
     fn scroll(&mut self, at: Position, lines: i8) {
+        // a menu or a dialog is modal: the wheel does nothing behind it
+        if self.menu.is_some() || self.dialog_id().is_some() {
+            return;
+        }
         let target = self
             .hits
             .windows
@@ -1717,7 +1721,7 @@ impl Shell {
             self.quit = true;
             return;
         }
-        if key.code == KeyCode::F(10) {
+        if key.code == KeyCode::F(10) && !self.before_desktop() {
             self.menu = if self.menu.is_some() { None } else { Some(0) };
             return;
         }

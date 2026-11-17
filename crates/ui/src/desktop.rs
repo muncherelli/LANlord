@@ -231,7 +231,8 @@ impl Desktop {
                     self.my_server
                         .update(my_server::Msg::Tab(page), &self.services, &host);
                     if let (true, Some(host)) = (tab == "2", self.host()) {
-                        self.my_server.ask_to_purge(&self.services, &host);
+                        self.my_server
+                            .update(my_server::Msg::AskPurge, &self.services, &host);
                     }
                 }
                 if id == "nt4-domain" {

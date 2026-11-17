@@ -569,6 +569,29 @@ fn clicking_a_spin_arrow_steps_the_hour_and_apply_lights_up() {
 }
 
 #[test]
+fn the_wheel_does_nothing_behind_an_open_menu() {
+    let mut shell = editable_clock();
+    let minute_up = up_arrow(&shell, 2);
+    let start = spin_text(&mut shell, minute_up);
+    let over = shell
+        .regions_of(DATE_TIME)
+        .into_iter()
+        .find(|r| r.part == Part::Spin(0) && r.rect.y == minute_up.y)
+        .map(|r| r.rect)
+        .expect("a spin box");
+    shell.menu = Some(0);
+    mouse(
+        &mut shell,
+        MouseEventKind::ScrollUp,
+        middle(over),
+        Instant::now(),
+    );
+    shell.menu = None;
+    let minute_up = up_arrow(&shell, 2);
+    assert_eq!(start, spin_text(&mut shell, minute_up));
+}
+
+#[test]
 fn the_wheel_and_arrow_keys_step_a_spin_box() {
     let mut shell = editable_clock();
     let minute_up = up_arrow(&shell, 2);
