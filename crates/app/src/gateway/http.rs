@@ -194,6 +194,43 @@ async fn session_now() -> Result<Option<Identity>> {
     }))
 }
 
+/// one sample of the gateway, with the process list when `procs`. any signed-in user may ask.
+pub async fn monitor_sample(procs: bool) -> Result<lanlord_model::monitor::Sample> {
+    let url = if procs {
+        "/api/monitor?procs=1"
+    } else {
+        "/api/monitor"
+    };
+    let (status, text) = fetch("GET", url, None).await?;
+    monitor_status(status, &text)?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// end a process on the gateway; the server only lets administrators.
+pub async fn monitor_end(pid: u32) -> Result<()> {
+    let body = Zeroizing::new(serde_json::json!({ "pid": pid }).to_string());
+    let (status, text) = fetch("POST", "/api/monitor/end", Some(body)).await?;
+    monitor_status(status, &text)
+}
+
+/// a monitor route answers 401 only for want of a login, so that is the session ending, the
+/// same as for an op: the desktop goes back to the logon box.
+fn monitor_status(status: u16, body: &str) -> Result<()> {
+    match status {
+        200 => Ok(()),
+        401 => Err(SessionEnded.into()),
+        _ => Err(anyhow!(error_text(status, body))),
+    }
+}
+
+/// the server's `{"error":..}` text, or the status.
+fn error_text(status: u16, body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(str::to_string))
+        .unwrap_or_else(|| format!("the server answered {status}"))
+}
+
 /// one request to the page's own server, answered with its status and body text. a post sends
 /// json; the browser adds the Origin and fetch metadata headers the server checks.
 async fn fetch(method: &str, url: &str, body: Option<Zeroizing<String>>) -> Result<(u16, String)> {

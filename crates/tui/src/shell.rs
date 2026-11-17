@@ -18,6 +18,7 @@ use lanlord_app::hostlist::HostList;
 use lanlord_app::login::{self, Auth, LoginBox, SignedIn};
 use lanlord_app::logon_panel::LogonPanel;
 use lanlord_app::menu::{self, Action, Row};
+use lanlord_app::monitor::{self, Monitor};
 use lanlord_app::my_server::MyServer;
 use lanlord_app::nt4_panel::Nt4Panel;
 use lanlord_app::services::Services;
@@ -238,6 +239,10 @@ pub struct Shell {
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
     clock_panel: ClockPanel,
     feed: ClockFeed,
+    /// the Task Manager's numbers (read only while its window is open) and how its list is sorted.
+    monitor: Monitor,
+    top_order: monitor::Order,
+    started: std::time::Instant,
     /// how to sign in; `None` when lanlord runs on the gateway itself (or in a test).
     auth: Option<Arc<dyn Auth>>,
     /// the logon box, shown instead of the desktop until someone is signed in.
@@ -293,6 +298,9 @@ impl Shell {
             nt4_tab: 0,
             clock_panel: ClockPanel::default(),
             feed: ClockFeed::default(),
+            monitor: Monitor::default(),
+            top_order: monitor::Order::default(),
+            started: std::time::Instant::now(),
             auth: None,
             login: None,
             signed_in: None,
@@ -647,6 +655,7 @@ impl Shell {
         self.dns.poll();
         self.commands.poll();
         self.poll_clock();
+        self.poll_monitor();
         self.my_server.refresh_purge();
         if let Some(host) = self.my_server.take_purged() {
             self.after_purge(&host);
@@ -772,6 +781,14 @@ impl Shell {
                 }
                 answer
             }
+            Target::TaskManager => {
+                let nodes = monitor::top_view(&self.monitor, self.top_order);
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let Some(monitor::TopMsg::Sort(column)) = msg {
+                    self.top_order.click(column);
+                }
+                answer
+            }
             Target::Welcome => {
                 let windows = desktop::windows(&self.icons);
                 let nodes = self.welcome.view(&windows);
@@ -830,6 +847,24 @@ impl Shell {
         }
         self.views.insert(key, state);
         answer
+    }
+
+    /// read the host for the Task Manager while its window is open.
+    fn poll_monitor(&mut self) {
+        let backend = if self.services.is_local() {
+            monitor::Backend::Local
+        } else {
+            monitor::Backend::Off(
+                "Monitoring another server needs the bridge connection, which is not available yet."
+                    .into(),
+            )
+        };
+        self.monitor.use_backend(backend);
+        self.monitor.poll();
+        if self.windows.iter().any(|w| w.target == Target::TaskManager) {
+            let now = self.started.elapsed().as_secs_f64();
+            self.monitor.tick(now, monitor::FAST, true, &Wake::none());
+        }
     }
 
     /// keep the taskbar clock on the server's time: read it once, and take what the Date/Time

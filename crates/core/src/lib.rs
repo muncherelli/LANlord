@@ -20,6 +20,7 @@ pub mod local;
 pub mod log;
 pub mod logon;
 pub use lanlord_model::modules;
+pub mod monitor;
 pub mod netstatus;
 pub mod network;
 pub use lanlord_model::networks;
