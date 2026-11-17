@@ -1,10 +1,12 @@
 # the web-proxy module: caddy in docker on the host network, proxying web
 # requests to sites on the internal network and to the lanlord web ui. the
 # docker module must have been applied first. it does nothing until your
-# settings have a `web-proxy:` section.
+# settings have a `web-proxy:` section. without lanlord networks (`networks: []`), a web ui only
+# (no sites) and `status: {enabled: false}` it answers on the host address on the web ui port and
+# nothing else.
 #
 # web-proxy:
-#   listen: [host, internal]      # where caddy answers (the default is both): host is your normal network,
+#   listen: [host, internal]      # where caddy answers (the default is both, or host without an internal network): host is your normal network,
 #                                 # internal (the retro network), or ipv4 addresses; a list or one value
 #   tls: "off"                    # or internal, for https with caddy's own certificate authority (quote off)
 #   sites:
@@ -45,7 +47,7 @@
 
     - name: work out the defaults
       ansible.builtin.set_fact:
-        proxy_listen_raw: "{{ wp.listen | default(['host', 'internal']) }}"
+        proxy_listen_raw: "{{ wp.listen | default(['host', 'internal'] if (internal_ip | default('')) != '' else ['host']) }}"
         # yaml reads an unquoted `off` as the boolean false, so accept both
         proxy_tls: "{{ 'off' if (wp.tls | default('off')) in ['off', false] else wp.tls }}"
         proxy_sites: "{{ wp.sites | default([]) }}"

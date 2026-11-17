@@ -54,7 +54,7 @@ https://{{ webui_host }}:{{ webui_port }} {
 	reverse_proxy {{ webui_upstream }}
 }
 {% endif %}
-{% if proxy_tls == 'off' %}
+{% if proxy_tls == 'off' and proxy_sites | length > 0 %}
 
 # anything that is not one of the sites above
 http:// {

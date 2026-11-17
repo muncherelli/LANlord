@@ -40,3 +40,4 @@ mod testgw;
 pub mod update;
 pub mod updater;
 pub mod users;
+pub mod webinstall;

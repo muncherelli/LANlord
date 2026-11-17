@@ -77,13 +77,19 @@ if have docker; then
   done
 fi
 
-for u in lanlord-webui.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
+for u in lanlord-webui.service lanlord-auth.socket lanlord-auth@.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
   if exists "$ROOT/etc/systemd/system/$u"; then
-    if have systemctl; then act "stop and disable $u" systemctl disable --now "$u"; fi
+    # the per-connection login service is a template that is never enabled itself
+    if have systemctl && [ "$u" != lanlord-auth@.service ]; then act "stop and disable $u" systemctl disable --now "$u"; fi
     act "remove unit $u" rm -f "$ROOT/etc/systemd/system/$u"
   fi
 done
 if [ "$DRY" = 0 ] && have systemctl; then systemctl daemon-reload >/dev/null 2>&1; fi
+
+# the web ui login: the helper the playbook copies out of /opt/lanlord, and its pam rules
+for f in /usr/local/libexec/lanlord-auth-helper /etc/pam.d/lanlord; do
+  if exists "$ROOT$f"; then act "remove $f" rm -f "$ROOT$f"; fi
+done
 
 if have nft && nft list table inet lanlord >/dev/null 2>&1; then
   act "remove the firewall table inet lanlord" nft delete table inet lanlord
@@ -99,7 +105,7 @@ for f in "$ROOT"/etc/systemd/network/*.network.d/lanlord.conf; do
 done
 if [ "$netchanged" = 1 ] && [ "$DRY" = 0 ] && have networkctl; then networkctl reload >/dev/null 2>&1; fi
 
-for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web; do
+for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web /run/lanlord-auth; do
   if exists "$ROOT$d"; then act "remove $d" rm -rf "$ROOT$d"; fi
 done
 
@@ -426,7 +432,15 @@ esac"#,
 
     #[test]
     fn everything_bootstrap_and_the_playbooks_create_is_in_the_purge() {
-        let playbooks = ["dns", "docker", "nt4-domain", "web-proxy", "site"].map(|name| {
+        let playbooks = [
+            "dns",
+            "docker",
+            "nt4-domain",
+            "web-proxy",
+            "webui-login",
+            "site",
+        ]
+        .map(|name| {
             fs::read_to_string(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join(format!("../../ansible/playbooks/{name}.yml")),
@@ -443,6 +457,12 @@ esac"#,
                 if let Some(rest) = line.strip_prefix("dest: /etc/systemd/system/") {
                     wanted.push(rest.to_string());
                 }
+                if let Some(rest) = line.strip_prefix("dest: /etc/pam.d/") {
+                    wanted.push(format!("/etc/pam.d/{rest}"));
+                }
+                if let Some(rest) = line.strip_prefix("helper: ") {
+                    wanted.push(rest.to_string());
+                }
                 if let Some(rest) = line.strip_prefix("- name: lanlord-status") {
                     wanted.push(format!("lanlord-status{}", rest.trim()));
                 }
@@ -454,6 +474,7 @@ esac"#,
                 "/opt/lanlord",
                 "/run/lanlord",
                 "/run/lanlord-web",
+                "/run/lanlord-auth",
                 "lanlord",
                 "lanlord-web",
                 ADMINS_GROUP,

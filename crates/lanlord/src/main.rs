@@ -220,6 +220,31 @@ enum AdminCommand {
     },
 }
 
+/// where the web ui files of an install come from: a local build, or this version's release.
+#[derive(clap::Args)]
+struct WebFiles {
+    /// the linux server binary to install (a headless build with the webui feature); give it
+    /// with --web-dist and --auth-helper, or leave all three out to download this version's release
+    #[arg(long, value_name = "PATH")]
+    server_binary: Option<PathBuf>,
+    /// the browser build to install (a folder with index.html, from tools/dev.sh web)
+    #[arg(long, value_name = "DIR")]
+    web_dist: Option<PathBuf>,
+    /// the lanlord-auth-helper binary for the web ui login
+    #[arg(long, value_name = "PATH")]
+    auth_helper: Option<PathBuf>,
+}
+
+impl WebFiles {
+    fn source(self) -> Result<lanlord_core::webinstall::WebSource> {
+        lanlord_core::webinstall::WebSource::choose(
+            self.server_binary,
+            self.web_dist,
+            self.auth_helper,
+        )
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// open the native window
@@ -305,13 +330,19 @@ enum Command {
         confirm: Option<String>,
     },
     /// install lanlord on a server, resuming an install that was interrupted
-    Install { host: String },
+    Install {
+        host: String,
+        #[command(flatten)]
+        web: WebFiles,
+    },
     /// purge a server and install lanlord on it again
     Reinstall {
         host: String,
         /// repeat the host name to confirm that everything on it is removed
         #[arg(long, value_name = "HOST")]
         confirm: String,
+        #[command(flatten)]
+        web: WebFiles,
     },
     /// list the dhcp leases the gateway has handed out
     Leases { host: String },
@@ -1058,12 +1089,16 @@ fn main() -> Result<()> {
             remove_admins,
             confirm,
         }) => purge(&host, remove_admins, confirm),
-        Some(Command::Install { host }) => {
-            lanlord_core::install::run(&host, &mut ask, &mut print_install)
+        Some(Command::Install { host, web }) => {
+            lanlord_core::install::run(&host, &web.source()?, &mut ask, &mut print_install)
         }
-        Some(Command::Reinstall { host, confirm }) => {
-            lanlord_core::install::reinstall(&host, &confirm, &mut ask, &mut print_install)
-        }
+        Some(Command::Reinstall { host, confirm, web }) => lanlord_core::install::reinstall(
+            &host,
+            &confirm,
+            &web.source()?,
+            &mut ask,
+            &mut print_install,
+        ),
         Some(Command::Leases { host }) => leases(&host),
         Some(Command::Power {
             host,
