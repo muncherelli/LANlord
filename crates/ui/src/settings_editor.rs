@@ -7,9 +7,9 @@ use lanlord_core::settings::{secret_fields, Document, SecretField, Settings};
 
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
-use crate::services::Services;
-use crate::tasks::Job;
 use crate::theme::{self, WHITE};
+use lanlord_app::services::Services;
+use lanlord_app::tasks::Job;
 
 /// the height of the settings text box.
 const EDITOR_HEIGHT: f32 = 230.0;
@@ -360,12 +360,12 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::gateway::Fake;
+    use lanlord_app::gateway::Fake;
 
     fn setup(stored: &str) -> (SettingsEditor, Services, Arc<Fake>) {
         let fake = Arc::new(Fake::new());
         *fake.stored.lock().unwrap() = stored.to_string();
-        let services = Services::new(fake.clone(), &egui::Context::default());
+        let services = Services::new(fake.clone(), lanlord_app::wake::Wake::none());
         (SettingsEditor::default(), services, fake)
     }
 
@@ -564,7 +564,7 @@ mod tests {
         assert!(editor.message.as_ref().unwrap().0);
         // let the waiting task finish
         let request = loop {
-            if let Some(request) = services.tasks.next_request() {
+            if let Some(request) = services.next_request() {
                 break request;
             }
             std::thread::sleep(Duration::from_millis(5));

@@ -14,11 +14,11 @@ use lanlord_core::settings::{
 
 use crate::controls;
 use crate::form::{Form, FormAnswer};
-use crate::gateway::Gateway;
-use crate::remote::Remote;
-use crate::services::{update_settings, Services};
+use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::{bad_rows, field_error, labelled_edit, messages, Table};
+use lanlord_app::gateway::Gateway;
+use lanlord_app::services::{update_settings, Services};
 
 const MODULE: &str = "dns";
 

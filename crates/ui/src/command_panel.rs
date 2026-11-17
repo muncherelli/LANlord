@@ -8,10 +8,10 @@ use lanlord_core::log::{self, Kind, Line};
 
 use crate::console;
 use crate::controls;
-use crate::services::Services;
-use crate::tasks::Job;
 use crate::theme::{self, BLACK};
 use crate::widgets::Table;
+use lanlord_app::services::Services;
+use lanlord_app::tasks::Job;
 
 const HISTORY: usize = 10;
 const KEEP: usize = 500;

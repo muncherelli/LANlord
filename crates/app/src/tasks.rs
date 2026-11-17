@@ -1,15 +1,16 @@
-//! background tasks: work runs on a plain thread so the window never blocks.
-//! a task can ask for a sudo password; the ui shows a dialog and answers
-//! through a channel, the same way the tui does.
+//! background tasks: work runs off the ui thread so the window never blocks.
+//! a task can ask for a sudo password; the front end shows a dialog and answers
+//! through a channel.
 
 use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use eframe::egui::Context;
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::log::{emit, Kind};
+
+use crate::wake::Wake;
 
 /// a task asking the user for a password; the answer, or `None` when
 /// cancelled, goes back through `reply`.
@@ -77,27 +78,27 @@ impl Tasks {
         self.asked.try_recv().ok()
     }
 
-    /// run a small read on its own thread. it marks no host busy and never asks for a
+    /// run a small read in the background. it marks no host busy and never asks for a
     /// password, so it cannot hold up what you are doing (the tray clock uses it).
     pub fn quiet<T: Send + 'static>(
         &self,
-        ctx: &Context,
+        wake: &Wake,
         work: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> Job<T> {
         let (done, result) = mpsc::channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        let wake = wake.clone();
+        background(move || {
             let _ = done.send(work().map_err(|err| err.to_string()));
-            ctx.request_repaint();
+            wake.wake();
         });
         Job { result }
     }
 
-    /// run `work` against `host` on its own thread; `None` when that host
+    /// run `work` against `host` in the background; `None` when that host
     /// already has a task. failures are also written to the console.
     pub fn spawn<T: Send + 'static>(
         &self,
-        ctx: &Context,
+        wake: &Wake,
         host: &str,
         work: impl FnOnce(AskPassword) -> Result<T> + Send + 'static,
     ) -> Option<Job<T>> {
@@ -109,9 +110,9 @@ impl Tasks {
             host: host.to_string(),
         };
         let (done, result) = mpsc::channel();
-        let (requests, ctx) = (self.requests.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let mut ask = asker(requests, ctx.clone());
+        let (requests, wake) = (self.requests.clone(), wake.clone());
+        background(move || {
+            let mut ask = asker(requests, wake.clone());
             let outcome = work(&mut ask).map_err(|err| err.to_string());
             if let Err(message) = &outcome {
                 emit(Kind::Err, message.clone());
@@ -119,14 +120,28 @@ impl Tasks {
             // free the host before the result shows up, so the ui sees both at once
             drop(guard);
             let _ = done.send(outcome);
-            ctx.request_repaint();
+            wake.wake();
         });
         Some(Job { result })
     }
 }
 
+/// start `work` off the ui thread: a plain thread on the desktop.
+#[cfg(not(target_arch = "wasm32"))]
+fn background(work: impl FnOnce() + Send + 'static) {
+    std::thread::spawn(work);
+}
+
+/// in the browser there are no threads, and running the work inline could wait forever on the
+/// password dialog it is drawn behind. tasks become requests to the backend there, which are
+/// not built yet.
+#[cfg(target_arch = "wasm32")]
+fn background(_work: impl FnOnce() + Send + 'static) {
+    unimplemented!("background tasks in the browser need wasm_bindgen_futures::spawn_local");
+}
+
 /// a password prompt that asks through the ui.
-fn asker(requests: Sender<PasswordRequest>, ctx: Context) -> impl FnMut(&str) -> Result<String> {
+fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> Result<String> {
     move |what| {
         let (reply, answer) = mpsc::channel();
         requests
@@ -135,7 +150,7 @@ fn asker(requests: Sender<PasswordRequest>, ctx: Context) -> impl FnMut(&str) ->
                 reply,
             })
             .map_err(|_| anyhow!("the ui is gone"))?;
-        ctx.request_repaint();
+        wake.wake();
         answer
             .recv()
             .ok()
@@ -166,23 +181,23 @@ mod tests {
 
     #[test]
     fn a_task_returns_its_value_and_frees_the_host() {
-        let (tasks, ctx) = (Tasks::default(), Context::default());
-        let job = tasks.spawn(&ctx, "a@b", |_| Ok(41 + 1)).unwrap();
+        let (tasks, wake) = (Tasks::default(), Wake::none());
+        let job = tasks.spawn(&wake, "a@b", |_| Ok(41 + 1)).unwrap();
         assert_eq!(wait(&job), Ok(42));
         assert!(!tasks.busy("a@b"));
     }
 
     #[test]
     fn only_one_task_runs_per_host() {
-        let (tasks, ctx) = (Tasks::default(), Context::default());
+        let (tasks, wake) = (Tasks::default(), Wake::none());
         let (release, gate) = mpsc::channel::<()>();
         let first = tasks
-            .spawn(&ctx, "a@b", move |_| Ok(gate.recv().is_ok()))
+            .spawn(&wake, "a@b", move |_| Ok(gate.recv().is_ok()))
             .unwrap();
         assert!(tasks.busy("a@b"));
-        assert!(tasks.spawn(&ctx, "a@b", |_| Ok(())).is_none());
+        assert!(tasks.spawn(&wake, "a@b", |_| Ok(())).is_none());
         assert!(
-            tasks.spawn(&ctx, "c@d", |_| Ok(())).is_some(),
+            tasks.spawn(&wake, "c@d", |_| Ok(())).is_some(),
             "other hosts are free"
         );
         assert!(first.poll().is_none(), "still working");
@@ -193,9 +208,9 @@ mod tests {
 
     #[test]
     fn failures_come_back_as_messages() {
-        let (tasks, ctx) = (Tasks::default(), Context::default());
+        let (tasks, wake) = (Tasks::default(), Wake::none());
         let job = tasks
-            .spawn::<()>(&ctx, "a@b", |_| Err(anyhow!("boom")))
+            .spawn::<()>(&wake, "a@b", |_| Err(anyhow!("boom")))
             .unwrap();
         assert_eq!(wait(&job), Err("boom".to_string()));
         assert!(!tasks.busy("a@b"));
@@ -203,9 +218,9 @@ mod tests {
 
     #[test]
     fn a_panicking_task_still_frees_the_host() {
-        let (tasks, ctx) = (Tasks::default(), Context::default());
+        let (tasks, wake) = (Tasks::default(), Wake::none());
         let job = tasks
-            .spawn::<()>(&ctx, "a@b", |_| panic!("task panic on purpose"))
+            .spawn::<()>(&wake, "a@b", |_| panic!("task panic on purpose"))
             .unwrap();
         assert!(wait(&job).is_err());
         assert!(!tasks.busy("a@b"));
@@ -228,9 +243,9 @@ mod tests {
 
     #[test]
     fn a_task_can_ask_for_a_password() {
-        let (tasks, ctx) = (Tasks::default(), Context::default());
+        let (tasks, wake) = (Tasks::default(), Wake::none());
         let job = tasks
-            .spawn(&ctx, "a@b", |ask| ask("sudo password for me"))
+            .spawn(&wake, "a@b", |ask| ask("sudo password for me"))
             .unwrap();
         assert_eq!(
             answer_when_asked(&tasks, Some("hunter2")),
@@ -241,8 +256,8 @@ mod tests {
 
     #[test]
     fn cancelling_the_password_cancels_the_task() {
-        let (tasks, ctx) = (Tasks::default(), Context::default());
-        let job = tasks.spawn(&ctx, "a@b", |ask| ask("pw")).unwrap();
+        let (tasks, wake) = (Tasks::default(), Wake::none());
+        let job = tasks.spawn(&wake, "a@b", |ask| ask("pw")).unwrap();
         answer_when_asked(&tasks, None);
         assert_eq!(wait(&job), Err("cancelled".to_string()));
     }

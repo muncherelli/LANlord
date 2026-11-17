@@ -8,5 +8,9 @@ license.workspace = true
 anyhow.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 eframe = "0.37.0"
+lanlord-app.workspace = true
 lanlord-core = { version = "0.1.0", path = "../core" }
 zeroize = "1"
+
+[dev-dependencies]
+lanlord-app = { workspace = true, features = ["fake"] }

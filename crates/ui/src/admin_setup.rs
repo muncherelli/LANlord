@@ -7,12 +7,12 @@ use lanlord_core::signin;
 use zeroize::Zeroizing;
 
 use crate::controls;
-use crate::gateway::NewAdmin;
 use crate::icons;
 use crate::login::Message;
-use crate::services::Services;
-use crate::tasks::Job;
 use crate::theme::{self, GRAY, NAVY, WHITE};
+use lanlord_app::gateway::NewAdmin;
+use lanlord_app::services::Services;
+use lanlord_app::tasks::Job;
 
 /// what the screen decided.
 #[derive(Debug, PartialEq, Eq)]
@@ -349,8 +349,8 @@ mod tests {
         use std::sync::{mpsc, Arc};
 
         let ctx = egui::Context::default();
-        let fake = Arc::new(crate::gateway::Fake::new());
-        let services = Services::new(fake.clone(), &ctx);
+        let fake = Arc::new(lanlord_app::gateway::Fake::new());
+        let services = Services::new(fake.clone(), crate::wake(&ctx));
         // a task that does not finish holds the host
         let (release, wait) = mpsc::channel::<()>();
         let held = services.spawn("root@gw", move |_, _| {
@@ -373,8 +373,8 @@ mod tests {
         use std::sync::Arc;
 
         let ctx = egui::Context::default();
-        let fake = Arc::new(crate::gateway::Fake::new());
-        let services = Services::new(fake.clone(), &ctx);
+        let fake = Arc::new(lanlord_app::gateway::Fake::new());
+        let services = Services::new(fake.clone(), crate::wake(&ctx));
         let mut setup = AdminSetup::with_test_keys(&[]);
         setup.name = "alice".into();
         setup.set_passwords("pw", "pw");

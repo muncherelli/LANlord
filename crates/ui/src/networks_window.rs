@@ -7,10 +7,10 @@ use lanlord_core::settings::Settings;
 
 use crate::controls;
 use crate::dialogs;
-use crate::remote::Remote;
-use crate::services::Services;
+use crate::remote::{Remote, ShowNote};
 use crate::theme;
 use crate::widgets::Table;
+use lanlord_app::services::Services;
 
 /// what the window asks the desktop to do.
 #[derive(Debug, PartialEq, Eq)]
