@@ -1,0 +1,4 @@
+# short names for running a development build: `cargo gui`, `cargo tui`
+[alias]
+gui = "run -p lanlord -- gui"
+tui = "run -p lanlord --"
