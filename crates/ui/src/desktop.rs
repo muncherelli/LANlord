@@ -101,6 +101,8 @@ pub struct Desktop {
     /// the logon box, shown instead of the desktop until someone is signed in.
     login: Option<LoginBox>,
     signed_in: Option<SignedIn>,
+    /// each window as drawn last frame: its rectangle and the height its contents asked for.
+    measured: Vec<(Target, Rect, f32)>,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
@@ -166,6 +168,7 @@ impl Desktop {
             auth: None,
             login: None,
             signed_in: None,
+            measured: Vec::new(),
             admin_setup: None,
             #[cfg(feature = "native")]
             updates: Updates::quiet(),
@@ -938,10 +941,10 @@ fn desktop_area(ctx: &egui::Context) -> Rect {
     Rect::from_min_max(screen.min, screen.max - Vec2::new(0.0, TASKBAR))
 }
 
-/// how big a window opens, before it is cut down to fit the desktop.
-fn window_size(target: Target) -> Vec2 {
-    let (w, h) = target.size();
-    Vec2::new(w, h)
+/// how wide a window opens, before it is cut down to fit the desktop. its height is never chosen:
+/// it is what the contents need.
+fn window_width(target: Target) -> f32 {
+    target.size().0
 }
 
 /// where the `n`th window opens: stepped down and right of the last one, and never so far
@@ -957,6 +960,7 @@ fn cascade(n: usize, area: Rect, size: Vec2) -> Pos2 {
 impl Desktop {
     fn show_windows(&mut self, ctx: &egui::Context) {
         let mut windows = std::mem::take(&mut self.windows);
+        self.measured.clear();
         let mut close = Vec::new();
         let area = desktop_area(ctx);
         for (n, window) in windows.iter_mut().enumerate() {
@@ -964,24 +968,30 @@ impl Desktop {
                 continue;
             }
             let target = window.target;
-            let size = window_size(target).min(area.size() - Vec2::new(116.0, 8.0));
+            // only the width is chosen; the height is whatever the contents need
+            let width = window_width(target).min(area.width() - 116.0);
+            let start = if target.is_dialog() {
+                area.center()
+            } else {
+                cascade(n, area, Vec2::new(width, 200.0))
+            };
+            let place = windows::Placement { start, width, area };
             let shown = windows::show(
                 ctx,
                 target.id(),
                 target.title(),
-                cascade(n, area, size),
-                size,
-                area.height() - 8.0,
+                place,
                 self.active == Some(target),
                 target.is_dialog(),
                 |ui| self.contents(ui, target),
             );
-            if let Some((actions, clicked)) = shown {
-                if actions.close {
+            if let Some(shown) = shown {
+                self.measured.push((target, shown.rect, shown.content));
+                if shown.actions.close {
                     close.push(target);
-                } else if actions.minimize {
+                } else if shown.actions.minimize {
                     window.minimized = true;
-                } else if clicked {
+                } else if shown.clicked {
                     self.active = Some(target);
                 }
             }
@@ -1035,7 +1045,25 @@ impl Desktop {
             }
             Target::Welcome => {
                 let windows = lanlord_app::desktop::windows(&self.icons);
-                if let Some(msg) = view::show(ui, &self.welcome.view(&windows)) {
+                // measure every topic, so the box is as tall as the tallest one's
+                let heights: Vec<f32> = (0..Welcome::topics())
+                    .map(|t| {
+                        let mut probe = ui.new_child(
+                            egui::UiBuilder::new()
+                                .id_salt(("welcome-probe", t))
+                                .max_rect(ui.available_rect_before_wrap())
+                                .invisible(),
+                        );
+                        view::show(&mut probe, &self.welcome.view_of(t, &windows, 0.0));
+                        probe.min_rect().height()
+                    })
+                    .collect();
+                let tallest = heights.iter().copied().fold(0.0, f32::max);
+                let slack = tallest - heights[self.welcome.topic()];
+                if let Some(msg) = view::show(
+                    ui,
+                    &self.welcome.view_of(self.welcome.topic(), &windows, slack),
+                ) {
                     self.welcome.update(msg, &windows);
                 }
                 if self.welcome.take_compat() {
@@ -1218,14 +1246,60 @@ mod tests {
     }
 
     #[test]
-    fn every_window_has_a_size_that_fits_the_default_desktop() {
+    fn every_window_opens_as_tall_as_its_contents_and_no_taller_than_the_desktop() {
+        for size in [Vec2::new(1280.0, 630.0), Vec2::new(800.0, 500.0)] {
+            let (mut desktop, ctx, _) = desktop();
+            with_host(&mut desktop, &ctx);
+            frames_on(&mut desktop, &ctx, size, 6);
+            let mut targets = desktop.icons.clone();
+            targets.extend([Target::DateTime, Target::Components, Target::Welcome]);
+            for target in targets {
+                desktop.windows.clear();
+                desktop.open(target);
+                frames_on(&mut desktop, &ctx, size, 4);
+                let area = Rect::from_min_max(Pos2::ZERO, Pos2::new(size.x, size.y - TASKBAR));
+                let &(_, rect, content) = desktop
+                    .measured
+                    .iter()
+                    .find(|m| m.0 == target)
+                    .unwrap_or_else(|| panic!("{} was not drawn", target.title()));
+                let name = target.title();
+                // a 20 pixel title bar and a 3 pixel border all round, around the contents
+                let wanted = content + 26.0;
+                if wanted <= area.height() {
+                    assert!(
+                        (rect.height() - wanted).abs() <= 1.0,
+                        "{name}: {rect:?} {wanted}"
+                    );
+                } else {
+                    assert!(rect.height() <= area.height() + 1.0, "{name}: {rect:?}");
+                }
+                assert!(
+                    area.expand(1.0).contains_rect(rect),
+                    "{name} {rect:?} {area:?}"
+                );
+                if target.is_dialog() {
+                    let (cx, cy) = (area.center().x, area.center().y);
+                    let off = (rect.center().x - cx)
+                        .abs()
+                        .max((rect.center().y - cy).abs());
+                    assert!(
+                        off < 2.0 || rect.height() >= area.height() - 2.0,
+                        "{name} {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_window_has_a_width_that_fits_the_default_desktop() {
         let (mut desktop, ctx, _) = desktop();
         frames(&mut desktop, &ctx, 1);
         let area = desktop_area(&ctx);
         for target in desktop.icons.clone() {
-            let size = window_size(target);
             assert!(
-                size.x + 116.0 <= area.width() && size.y + 8.0 <= area.height(),
+                window_width(target) + 116.0 <= area.width(),
                 "{}",
                 target.title()
             );

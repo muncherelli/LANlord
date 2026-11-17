@@ -94,101 +94,110 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -
     }
 }
 
-/// show a window; returns what its title bar asked for and whether it was clicked. a `dialog`
-/// has a close button only, cannot be resized, and fits its contents: `size.x` is its width and
-/// its height is what the contents need, up to `max_height` (the desktop), past which it
-/// scrolls.
+/// where a window goes and how much room it has: the desktop above the taskbar.
+#[derive(Clone, Copy)]
+pub struct Placement {
+    /// the window's top left for a document window, its middle for a dialog.
+    pub start: Pos2,
+    /// the width it opens at.
+    pub width: f32,
+    /// the desktop it has to stay inside.
+    pub area: Rect,
+}
+
+/// what a window gave back: what its title bar asked for, whether it was clicked and where it is.
+pub struct Shown {
+    pub actions: TitleActions,
+    pub clicked: bool,
+    pub rect: Rect,
+    /// the height the contents asked for, with their margins.
+    pub content: f32,
+}
+
+/// the height a window spends on its own border, title bar, margins and the spacing between them.
+const CHROME: f32 = 26.0;
+
+/// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
+/// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
+/// close button only, cannot be resized and opens centred on `place.start`; any other window has
+/// the three buttons, can be resized and opens with its top left there, moved if need be to stay
+/// on the desktop.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
     id: &str,
     title: &str,
-    start: Pos2,
-    size: Vec2,
-    max_height: f32,
+    place: Placement,
     active: bool,
     dialog: bool,
     content: impl FnOnce(&mut Ui),
-) -> Option<(TitleActions, bool)> {
+) -> Option<Shown> {
     let mut actions = TitleActions::default();
-    if dialog {
-        return dialog_window(ctx, id, title, start, size.x, max_height, active, content)
-            .map(|(actions, clicked, _)| (actions, clicked));
-    }
-    let shown = egui::Window::new(title)
+    let mut content_height = 0.0;
+    let width = place.width;
+    let max_height = place.area.height();
+    let mut window = egui::Window::new(title)
         .id(Id::unique(id))
         .title_bar(false)
         .collapsible(false)
-        .resizable(true)
-        .default_pos(start)
-        .default_size(size)
-        .min_size(Vec2::new(320.0, 180.0))
-        .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)))
-        .show(ctx, |ui| {
-            actions = title_bar(ui, id, title, active, false);
-            ui.add_space(4.0);
-            // a window smaller than its contents scrolls instead of cutting them off
-            egui::ScrollArea::vertical()
-                .id_salt(("window-scroll", id))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(7, 3))
-                        .show(ui, content);
-                });
-        })?;
+        .resizable(!dialog)
+        .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)));
+    window = if dialog {
+        // `start` is where the middle of the window goes, so it stays centred once its size
+        // is known
+        window.pivot(Align2::CENTER_CENTER).default_pos(place.start)
+    } else {
+        window
+            .constrain_to(place.area)
+            .default_pos(place.start)
+            .default_width(width)
+            .min_size(Vec2::new(200.0, 60.0))
+    };
+    let shown = window.show(ctx, |ui| {
+        // the title bar spans the window inside its 3 pixel border; the contents sit in
+        // an 8 pixel margin on every side
+        if dialog {
+            ui.set_width(width - 6.0);
+        }
+        let spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        actions = title_bar(ui, id, title, active, dialog);
+        // the contents are laid out in a space as tall as the desktop and the window takes the
+        // size they use. asking the window's own ui would cap them at its last size, so a window
+        // could never grow
+        let room = (max_height - CHROME).max(40.0);
+        let from = ui.cursor().min;
+        let mut inner = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(
+                    from,
+                    Vec2::new(ui.available_width(), room),
+                ))
+                .layout(*ui.layout()),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt(("window-scroll", id))
+            .max_height(room)
+            .auto_shrink([false, true])
+            .show(&mut inner, |ui| {
+                let framed = egui::Frame::new()
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = spacing;
+                        content(ui)
+                    });
+                content_height = framed.response.rect.height();
+            });
+        ui.allocate_rect(inner.min_rect(), Sense::hover());
+    })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);
-    Some((actions, shown.response.is_pointer_button_down_on()))
-}
-
-/// the height a dialog spends on its own border, title bar, margins and the spacing between them.
-const DIALOG_CHROME: f32 = 50.0;
-
-/// a dialog: fixed width, as tall as what is in it (or as the desktop allows, then it scrolls),
-/// with an 8 pixel margin all round. also gives the window's rectangle.
-#[allow(clippy::too_many_arguments)]
-fn dialog_window(
-    ctx: &egui::Context,
-    id: &str,
-    title: &str,
-    start: Pos2,
-    width: f32,
-    max_height: f32,
-    active: bool,
-    content: impl FnOnce(&mut Ui),
-) -> Option<(TitleActions, bool, Rect)> {
-    let mut actions = TitleActions::default();
-    let shown = egui::Window::new(title)
-        .id(Id::unique(id))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .default_pos(start)
-        .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)))
-        .show(ctx, |ui| {
-            // the window's width less its own 3 pixel border and the 8 pixel margin
-            ui.set_width(width - 22.0);
-            actions = title_bar(ui, id, title, active, true);
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical()
-                .id_salt(("dialog-scroll", id))
-                .max_height((max_height - DIALOG_CHROME).max(40.0))
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(8, 0))
-                        .show(ui, content);
-                });
-            ui.add_space(8.0);
-        })?;
-    let painter = ctx.layer_painter(shown.response.layer_id);
-    bevel(&painter, shown.response.rect, true);
-    Some((
+    Some(Shown {
         actions,
-        shown.response.is_pointer_button_down_on(),
-        shown.response.rect,
-    ))
+        clicked: shown.response.is_pointer_button_down_on(),
+        rect: shown.response.rect,
+        content: content_height,
+    })
 }
 
 #[cfg(test)]
@@ -197,19 +206,40 @@ mod tests {
     use crate::testkit;
 
     /// the height of a dialog holding `inner` points of content, on a screen `max` tall.
-    fn height(inner: f32, max: f32) -> f32 {
+    fn shown(inner: f32, max: f32, dialog: bool) -> Rect {
         let ctx = egui::Context::default();
         let mut rect = None;
         for _ in 0..3 {
             testkit::run(&ctx, vec![], |ui| {
-                let at = Pos2::new(10.0, 10.0);
-                rect = dialog_window(ui.ctx(), "t", "T", at, 300.0, max, true, |ui| {
+                let at = Pos2::new(480.0, 320.0);
+                let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, max));
+                let place = Placement {
+                    start: at,
+                    width: 300.0,
+                    area,
+                };
+                rect = show(ui.ctx(), "t", "T", place, true, dialog, |ui| {
                     ui.allocate_space(Vec2::new(10.0, inner));
                 })
-                .map(|(_, _, rect)| rect);
+                .map(|s| s.rect);
             });
         }
-        rect.expect("shown").height()
+        rect.expect("shown")
+    }
+
+    fn height(inner: f32, max: f32) -> f32 {
+        shown(inner, max, true).height()
+    }
+
+    #[test]
+    fn a_dialog_opens_centred_on_the_point_it_is_given() {
+        // the screen is 960 by 640 and the dialog asks for its middle at (480, 320)
+        for inner in [50.0, 150.0] {
+            let rect = shown(inner, 600.0, true);
+            assert!((rect.center().x - 480.0).abs() < 1.0, "{rect:?}");
+            assert!((rect.center().y - 320.0).abs() < 1.0, "{rect:?}");
+            assert!((rect.width() - 300.0).abs() < 1.0, "{rect:?}");
+        }
     }
 
     #[test]
@@ -217,10 +247,47 @@ mod tests {
         let short = height(50.0, 600.0);
         let tall = height(150.0, 600.0);
         assert!((tall - short - 100.0).abs() < 1.0, "{short} {tall}");
-        assert!(short >= 50.0 + 40.0, "{short}");
+        // the 8 pixel margins above and below the contents, a 20 pixel title bar, a 3 pixel border
+        assert!((short - (50.0 + 16.0 + 20.0 + 6.0)).abs() < 1.5, "{short}");
         // too much for a small screen: it stops at the screen and scrolls
         let clamped = height(2000.0, 300.0);
         assert!(clamped <= 300.0 + 1.0, "{clamped}");
         assert!(clamped > 250.0, "{clamped}");
+    }
+
+    #[test]
+    fn a_document_window_grows_and_shrinks_with_its_contents_and_stays_on_the_desktop() {
+        let ctx = egui::Context::default();
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 472.0));
+        let run = |inner: f32| {
+            let mut rect = None;
+            for _ in 0..4 {
+                testkit::run_on(&ctx, Vec2::new(800.0, 500.0), vec![], |ui| {
+                    let place = Placement {
+                        start: Pos2::new(110.0, 10.0),
+                        width: 300.0,
+                        area,
+                    };
+                    rect = show(ui.ctx(), "doc", "Doc", place, true, false, |ui| {
+                        ui.allocate_space(Vec2::new(10.0, inner));
+                    })
+                    .map(|s| s.rect);
+                });
+            }
+            rect.unwrap()
+        };
+        let small = run(50.0);
+        assert!(
+            (small.height() - (50.0 + 16.0 + 26.0)).abs() < 1.5,
+            "{small:?}"
+        );
+        let tall = run(300.0);
+        assert!(
+            (tall.height() - small.height() - 250.0).abs() < 1.5,
+            "{tall:?}"
+        );
+        let huge = run(3000.0);
+        assert!(huge.height() <= area.height() + 1.0, "{huge:?}");
+        assert!(area.expand(1.0).contains_rect(huge), "{huge:?}");
     }
 }

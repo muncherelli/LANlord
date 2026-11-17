@@ -195,7 +195,22 @@ impl Welcome {
     /// the window's tree; `icons` are the windows the desktop has, so a topic only opens one
     /// that exists.
     pub fn view(&self, icons: &[Target]) -> Vec<Node<Msg>> {
-        let topic = &TOPICS[self.topic];
+        self.view_of(self.topic, icons, 0.0)
+    }
+
+    /// how many topics there are.
+    pub fn topics() -> usize {
+        TOPICS.len()
+    }
+
+    pub fn topic(&self) -> usize {
+        self.topic
+    }
+
+    /// the window for `topic`, with `slack` more room above the topic's button: a front end
+    /// measures every topic and passes what makes the shorter ones as tall as the tallest.
+    pub fn view_of(&self, topic: usize, icons: &[Target], slack: f32) -> Vec<Node<Msg>> {
+        let topic = &TOPICS[topic.min(TOPICS.len() - 1)];
         // the chosen topic is drawn pressed (a front end without that look greys it)
         let buttons = TOPICS
             .iter()
@@ -209,19 +224,9 @@ impl Welcome {
                 )
             })
             .collect();
-        // every topic takes the same number of lines, so the window does not change size
-        let rows = TOPICS
-            .iter()
-            .map(|t| lines(t.text).len())
-            .max()
-            .unwrap_or(0);
-        let mut text: Vec<Node<Msg>> = lines(topic.text)
-            .into_iter()
-            .chain(std::iter::repeat(String::new()))
-            .take(rows)
-            .map(Node::Text)
-            .collect();
-        text.push(Node::Gap(8.0));
+        let mut text: Vec<Node<Msg>> = lines(topic.text).into_iter().map(Node::Text).collect();
+        // the room the window front end adds so the box is as tall for every topic
+        text.push(Node::Gap(8.0 + slack));
         let mut buttons_row = vec![Node::Button(Button::new(
             topic.open,
             self.target(topic.target, icons).is_some(),
@@ -288,20 +293,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_topic_takes_the_same_number_of_lines() {
-        let rows = |w: &mut Welcome| match &w.view(&[])[2] {
-            Node::Columns(c) => match &c[0].1[0] {
-                Node::Group { body, .. } => body.len(),
-                _ => panic!("no group"),
-            },
-            _ => panic!("no columns"),
-        };
-        let mut welcome = Welcome::new(None);
-        let first = rows(&mut welcome);
-        for topic in 1..TOPICS.len() {
-            welcome.update(Msg::Topic(topic), &[]);
-            assert_eq!(rows(&mut welcome), first);
-        }
+    fn the_text_is_broken_into_lines_the_panel_holds() {
         assert!(TOPICS
             .iter()
             .all(|t| lines(t.text).iter().all(|l| l.len() <= LINE)));
