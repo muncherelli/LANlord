@@ -31,7 +31,7 @@ percent-encoding = { version = "2", optional = true }
 rpassword = "7.5.5"
 serde_json.workspace = true
 sha2 = { version = "0.10", optional = true }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "signal", "macros", "fs", "time"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "signal", "macros", "fs", "time", "io-util"], optional = true }
 tower = { version = "0.5", default-features = false, features = ["util"], optional = true }
 tower-http = { version = "0.6", default-features = false, features = ["fs", "timeout"], optional = true }
 zeroize = "1.9.1"

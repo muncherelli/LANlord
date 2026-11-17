@@ -2,14 +2,17 @@
 //! proxies to (https on port 8443), serves the browser build of the gui from a folder and, later,
 //! carries the typed operations the browser sends. it never runs commands from raw text.
 
+mod auth;
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use axum::extract::{DefaultBodyLimit, Request};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
@@ -62,10 +65,22 @@ pub fn static_dir(given: Option<PathBuf>) -> Option<PathBuf> {
 /// endpoint. the build is looked for on every request, so installing or replacing it needs no
 /// restart. every response carries the security headers.
 pub fn router(static_dir: Option<&Path>) -> Router {
+    router_with(static_dir, auth::Auth::system())
+}
+
+/// the same, with the logins checked and the sessions kept by `auth`.
+fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route(
+            "/api/login",
+            post(auth::login).layer(DefaultBodyLimit::max(auth::LOGIN_LIMIT)),
+        )
+        .route("/api/logout", post(auth::logout))
+        .route("/api/session", get(auth::session))
         .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
+        .with_state(auth)
         .fallback(move |request: Request| web(dir.clone(), request))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -208,10 +223,20 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
-/// the operations endpoint. todo: hand the typed operation (json, at most `OP_LIMIT` bytes) to the
+/// the operations endpoint. it needs a page-origin json request and a login. todo: hand the typed operation (json, at most `OP_LIMIT` bytes) to the
 /// operations executor that `lanlord op` runs, once it exists; never a command line. the body is
 /// read already so the size limit applies.
-async fn op(_operation: axum::body::Bytes) -> Response {
+async fn op(
+    State(auth): State<Arc<auth::Auth>>,
+    headers: HeaderMap,
+    _operation: axum::body::Bytes,
+) -> Response {
+    if let Err(refused) = auth::same_origin_json(&headers) {
+        return refused;
+    }
+    if let Err(unauthorized) = auth::require(&auth, &headers) {
+        return unauthorized;
+    }
     (
         StatusCode::NOT_IMPLEMENTED,
         [(header::CONTENT_TYPE, "application/json")],
@@ -430,9 +455,10 @@ mod tests {
     }
 
     #[test]
-    fn operations_are_not_wired_up_yet() {
+    fn operations_are_refused_without_the_pages_origin() {
+        // (with a session they still answer 501; see the session tests in auth.rs)
         let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/op"));
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(kind, "application/json");
     }
 
@@ -920,7 +946,7 @@ mod tests {
             "/api/op",
             Body::from(vec![b'x'; 100]),
         ));
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
     #[cfg(unix)]
