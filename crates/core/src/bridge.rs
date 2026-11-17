@@ -53,8 +53,17 @@ impl std::fmt::Display for BridgeError {
 impl std::error::Error for BridgeError {}
 
 /// run `op` the way the bridge does, on this machine. `log` gets progress lines.
-#[cfg(unix)]
 pub fn run_local(op: &Op, log: &mut dyn FnMut(&str)) -> Result<Reply> {
+    match op {
+        Op::Subscribe { .. } => bail!("live streams are not available yet"),
+        op if op.runs_on_bridge() => run_clock(op, log),
+        _ => bail!("the bridge does not run this operation"),
+    }
+}
+
+/// the clock ops; the bridge only runs on linux gateways, so elsewhere there is nothing to run.
+#[cfg(unix)]
+fn run_clock(op: &Op, log: &mut dyn FnMut(&str)) -> Result<Reply> {
     use crate::local::clock;
     Ok(match op {
         Op::ClockState => Reply::Clock(clock::read()?),
@@ -62,13 +71,12 @@ pub fn run_local(op: &Op, log: &mut dyn FnMut(&str)) -> Result<Reply> {
         Op::ClockZoneNow { zone } => Reply::ZoneNow(clock::zone_now(zone)?),
         Op::ClockApply { change } => Reply::Lines(clock::apply(change, log)?),
         Op::ClockUpdateNow => Reply::Lines(clock::update_now()?),
-        Op::Subscribe { .. } => bail!("live streams are not available yet"),
         _ => bail!("the bridge does not run this operation"),
     })
 }
 
 #[cfg(not(unix))]
-pub fn run_local(_: &Op, _: &mut dyn FnMut(&str)) -> Result<Reply> {
+fn run_clock(_: &Op, _: &mut dyn FnMut(&str)) -> Result<Reply> {
     bail!("the bridge runs on a gateway")
 }
 
