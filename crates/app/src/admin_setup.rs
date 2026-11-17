@@ -93,7 +93,7 @@ impl AdminSetup {
     }
 
     pub fn with_test_keys(keys: &[&str]) -> Self {
-        Self::with_keys(keys.iter().map(|k| k.to_string()).collect())
+        Self::with_keys(keys.iter().map(ToString::to_string).collect())
     }
 
     pub fn set_passwords(&mut self, password: &str, confirm: &str) {
