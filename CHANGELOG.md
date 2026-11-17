@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Applying settings shows a progress dialog with a bar, the task being worked on, the elapsed time and the tasks done so far, with the raw output under Details
 - A Task Manager (Processes, Performance and Networking) opens from the LANlord menu, and a network activity icon in the taskbar tray lights up with traffic and opens it on Networking. Anyone logged in can look; only administrators can end a process (#114)
 - The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
 - The web interface logs in with the gateway's accounts and keeps sessions (#101)

@@ -30,6 +30,7 @@ const FILES: &[(&str, &str)] = &[
     playbook!("dns-migrate.yml"),
     playbook!("dns-cleanup.yml"),
     playbook!("filter_plugins/lanlord.py"),
+    playbook!("callback_plugins/lanlord_progress.py"),
     playbook!("docker/firewall.nft.j2"),
     playbook!("replace-container.yml"),
     playbook!("webui-login.yml"),
