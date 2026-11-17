@@ -583,6 +583,10 @@ impl<'a> Painter<'a> {
                     bold(self.st(BLACK, GRAY)),
                 );
             }
+            Node::Bullet(t) => {
+                let line = format!("  \u{2022} {t}");
+                text(buf, area.x, area.y, area.width, &line, self.st(BLACK, GRAY));
+            }
             Node::Warning(t) => {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
