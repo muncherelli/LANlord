@@ -68,12 +68,16 @@ if have docker; then
   for c in lanlord-nt4 lanlord-dns lanlord-caddy; do
     if docker inspect "$c" >/dev/null 2>&1; then act "remove container $c" docker rm -f "$c"; fi
   done
+  # one dnsmasq per lanlord network, and any previous copy left by an interrupted replacement
+  for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^lanlord-dns-'); do
+    act "remove container $c" docker rm -f "$c"
+  done
   for img in $(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep lanlord); do
     act "remove image $img" docker image rm "$img"
   done
 fi
 
-for u in lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
+for u in lanlord-webui.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
   if exists "$ROOT/etc/systemd/system/$u"; then
     if have systemctl; then act "stop and disable $u" systemctl disable --now "$u"; fi
     act "remove unit $u" rm -f "$ROOT/etc/systemd/system/$u"
@@ -95,7 +99,7 @@ for f in "$ROOT"/etc/systemd/network/*.network.d/lanlord.conf; do
 done
 if [ "$netchanged" = 1 ] && [ "$DRY" = 0 ] && have networkctl; then networkctl reload >/dev/null 2>&1; fi
 
-for d in /etc/lanlord /opt/lanlord /run/lanlord; do
+for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web; do
   if exists "$ROOT$d"; then act "remove $d" rm -rf "$ROOT$d"; fi
 done
 
@@ -106,6 +110,7 @@ if [ "$REMOVE_ADMINS" = 1 ]; then
   done
 fi
 if getent passwd lanlord >/dev/null 2>&1; then act "remove the service account lanlord" userdel lanlord; fi
+if getent group lanlord-web >/dev/null 2>&1; then act "remove the group lanlord-web" groupdel lanlord-web; fi
 if getent group lanlord >/dev/null 2>&1; then act "remove the group lanlord" groupdel lanlord; fi
 if getent group @ADMINS@ >/dev/null 2>&1; then act "remove the group @ADMINS@" groupdel @ADMINS@; fi
 
@@ -209,6 +214,7 @@ mod tests {
   "inspect lanlord-nt4") exit 0 ;;
   "inspect "*) exit 1 ;;
   "image ls") printf 'ghcr.io/x/lanlord-samba-nt4:abc\ncaddy:2-alpine\n'; exit 0 ;;
+  "ps -a") printf 'lanlord-dns-retronet\nlanlord-dns-lab-prev\nunrelated\n'; exit 0 ;;
 esac
 echo "docker $*" >> LOG"#,
                 ),
@@ -228,6 +234,7 @@ echo "nft $*" >> LOG"#,
   "group admins") echo "admins:x:9998:root,alice" ;;
   "passwd lanlord") echo "lanlord:x:9999:9999::/opt/lanlord:/bin/false" ;;
   "group lanlord") echo "lanlord:x:9999:" ;;
+  "group lanlord-web") echo "lanlord-web:x:9990:" ;;
   *) exit 2 ;;
 esac"#,
                 ),
@@ -326,9 +333,15 @@ esac"#,
             !out.contains("caddy:2-alpine"),
             "only lanlord's own images go"
         );
+        for dns in [
+            "remove container lanlord-dns-retronet",
+            "remove container lanlord-dns-lab-prev",
+        ] {
+            assert!(out.contains(dns), "{dns} in\n{out}");
+        }
         assert!(
-            !out.contains("lanlord-dns"),
-            "only containers that exist are listed"
+            !out.contains("unrelated") && !out.contains("container lanlord-dns\n"),
+            "only lanlord's containers that exist are listed"
         );
         assert!(fake.log().is_empty(), "no command may act: {}", fake.log());
         for file in [
@@ -367,9 +380,12 @@ esac"#,
         let log = fake.log();
         for expected in [
             "docker rm -f lanlord-nt4",
+            "docker rm -f lanlord-dns-retronet",
+            "docker rm -f lanlord-dns-lab-prev",
             "docker image rm ghcr.io/x/lanlord-samba-nt4:abc",
             "nft delete table inet lanlord",
             "userdel lanlord",
+            "groupdel lanlord-web",
             "groupdel lanlord",
             "groupdel admins",
             "systemctl daemon-reload",
@@ -435,7 +451,9 @@ esac"#,
                 "/etc/lanlord",
                 "/opt/lanlord",
                 "/run/lanlord",
+                "/run/lanlord-web",
                 "lanlord",
+                "lanlord-web",
                 ADMINS_GROUP,
             ]
             .map(str::to_string),

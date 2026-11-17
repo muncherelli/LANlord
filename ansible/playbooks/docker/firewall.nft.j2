@@ -1,0 +1,22 @@
+# written by lanlord; changes here are overwritten
+# netbios, smb, dns and dhcp are kept off the host network ({{ host_interface }}). the lanlord networks
+# ({{ lan_interfaces | join(', ') if lan_interfaces | length > 0 else 'none' }}) are accepted first, so
+# these rules can never cut off one of them.
+add table inet lanlord
+flush table inet lanlord
+table inet lanlord {
+  chain input {
+    type filter hook input priority -10; policy accept;
+{% if lan_interfaces | length > 0 %}
+    iifname { {% for name in lan_interfaces %}"{{ name }}"{% if not loop.last %}, {% endif %}{% endfor %} } accept
+{% endif %}
+    iifname "{{ host_interface }}" udp dport { 137, 138 } drop
+    iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
+    iifname "{{ host_interface }}" udp dport { 53, 67, 68 } drop
+    iifname "{{ host_interface }}" tcp dport 53 drop
+  }
+  chain output {
+    type filter hook output priority -10; policy accept;
+    oifname "{{ host_interface }}" udp sport 67 drop
+  }
+}

@@ -1,0 +1,69 @@
+# included by docker.yml once for each lanlord network that has its address in the settings (loop
+# variable `lan`; net_manager says which network manager runs): give the network's interface its
+# address, and its mtu when the settings have one.
+- name: make a place for the interface's extra settings
+  ansible.builtin.file:
+    path: "/etc/systemd/network/{{ lan.interface }}.network.d"
+    state: directory
+    group: systemd-network
+    mode: "0750"
+  when: net_manager.stdout == 'systemd-networkd'
+
+# proxmox rewrites the main .network file of a container, but never this drop-in
+- name: give the interface its address (systemd-networkd)
+  ansible.builtin.copy:
+    dest: "/etc/systemd/network/{{ lan.interface }}.network.d/lanlord.conf"
+    content: |
+      [Network]
+      Address={{ lan.address }}
+      {% if lan.mtu %}
+
+      [Link]
+      MTUBytes={{ lan.mtu }}
+      {% endif %}
+    group: systemd-network
+    mode: "0640"
+  register: networkd_address
+  when: net_manager.stdout == 'systemd-networkd'
+
+- name: apply the new address (systemd-networkd)
+  ansible.builtin.command: networkctl reload
+  changed_when: true
+  when: networkd_address is changed
+
+- name: find the NetworkManager connection of the interface
+  ansible.builtin.command: "nmcli -g GENERAL.CONNECTION device show {{ lan.interface }}"
+  register: nm_connection
+  changed_when: false
+  failed_when: nm_connection.stdout == ''
+  when: net_manager.stdout == 'NetworkManager'
+
+- name: read its addresses
+  ansible.builtin.command: "nmcli -g ipv4.addresses connection show '{{ nm_connection.stdout }}'"
+  register: nm_addresses
+  changed_when: false
+  when: net_manager.stdout == 'NetworkManager'
+
+- name: give the interface its address (NetworkManager)
+  ansible.builtin.command: "nmcli connection modify '{{ nm_connection.stdout }}' +ipv4.addresses {{ lan.address }}"
+  register: nm_added
+  when: net_manager.stdout == 'NetworkManager' and lan.address not in nm_addresses.stdout
+
+- name: give the interface its mtu (NetworkManager)
+  ansible.builtin.command: "nmcli connection modify '{{ nm_connection.stdout }}' 802-3-ethernet.mtu {{ lan.mtu }}"
+  register: nm_mtu
+  changed_when: true
+  when: net_manager.stdout == 'NetworkManager' and lan.mtu
+
+- name: apply the new settings (NetworkManager)
+  ansible.builtin.command: "nmcli connection up '{{ nm_connection.stdout }}'"
+  changed_when: true
+  when: nm_added is changed or nm_mtu is changed
+
+- name: wait for the address to show up
+  ansible.builtin.command: "ip -o addr show dev {{ lan.interface }}"
+  register: lan_addresses
+  until: lan.ip in lan_addresses.stdout
+  retries: 10
+  delay: 1
+  changed_when: false

@@ -1,0 +1,46 @@
+# included by dns.yml once for each network (loop variable `net`): the dnsmasq of one lanlord
+# network. its container is lanlord-dns-<name> and its folder /opt/lanlord/dns/<name>.
+- name: write this network's dnsmasq files
+  ansible.builtin.include_tasks: dns-render.yml
+
+- name: see which image the container uses
+  ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Config.Image}}{% endraw %}' {{ dns_container }}"
+  register: current
+  changed_when: false
+  failed_when: false
+
+- name: replace the container when it is new, stopped or out of date
+  when: current.stdout != 'true ' ~ image ~ ':' ~ image_hash.stdout or dnsmasq_conf is changed
+  block:
+    - name: let dnsmasq check the configuration
+      ansible.builtin.command: >-
+        docker run --rm -v {{ dns_dir }}/dnsmasq.conf:/etc/dnsmasq.conf:ro
+        {{ image }}:{{ image_hash.stdout }} --test
+      changed_when: false
+
+    - name: replace the container, keeping the old one until the new one is healthy
+      ansible.builtin.include_tasks: replace-container.yml
+      vars:
+        rc_name: "{{ dns_container }}"
+        rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ dns_container }})\" = true"
+        rc_run: >-
+          docker run -d --name {{ dns_container }} --network host --restart unless-stopped
+          --cap-add NET_ADMIN --cap-add NET_RAW
+          -v {{ dns_dir }}/dnsmasq.conf:/etc/dnsmasq.conf:ro
+          -v {{ dns_dir }}/dnsmasq.leases:/var/lib/misc/dnsmasq.leases
+          {{ image }}:{{ image_hash.stdout }}
+
+- name: wait for dnsmasq to run
+  ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ dns_container }}"
+  register: dnsmasq_running
+  until: dnsmasq_running.stdout == 'true'
+  retries: 10
+  delay: 2
+  changed_when: false
+
+- name: say what this dnsmasq does
+  ansible.builtin.debug:
+    msg: >-
+      {{ net.name }}: dnsmasq answers for .{{ net.zone }} on {{ net.ip }} ({{ net.interface }}),
+      {{ dns_names | length + net.records | length }} names,
+      {{ ('dhcp ' ~ net.dhcp.range[0] ~ ' to ' ~ net.dhcp.range[1]) if net.dhcp else 'no dhcp' }}

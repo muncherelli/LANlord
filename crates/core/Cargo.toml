@@ -14,3 +14,6 @@ lanlord-model.workspace = true
 serde_yaml_ng = "0.10.0"
 zeroize = "1.9.1"
 tar = "0.4.46"
+
+[dev-dependencies]
+serde_json.workspace = true

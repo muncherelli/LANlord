@@ -285,11 +285,15 @@ pub fn keep_change(change: &Change, settings: &mut Settings) {
 }
 
 /// whether a change was also kept in the settings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Stored {
     Yes,
     /// nothing in the change is kept (only a time was set).
     Nothing,
     /// there is no key to store the settings with.
     NoKey,
+    /// lanlord is not installed on the server, so there are no settings to keep it in.
+    NotInstalled,
+    /// the server took the change, but keeping it in the settings failed; the text says why.
+    Failed(String),
 }
