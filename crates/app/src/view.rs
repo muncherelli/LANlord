@@ -32,6 +32,8 @@ pub enum Node<M> {
     Status { text: String, error: bool },
     /// a line of bold text.
     Heading(String),
+    /// a list item: a bullet, and the text wrapped under itself rather than under the bullet.
+    Bullet(String),
     /// one button on its own line, left aligned.
     Button(Button<M>),
     /// a row of tabs over the page of the `current` one; clicking a tab sends `pick(tab)`.

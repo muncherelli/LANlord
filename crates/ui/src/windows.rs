@@ -98,6 +98,10 @@ pub struct Placement {
     pub width: f32,
     /// the desktop it has to stay inside.
     pub area: Rect,
+    /// for a window whose contents can grow (a console, a list, a text), the height it opens at
+    /// instead of the contents' own: it then keeps whatever size the user gives it and its
+    /// growable part takes the room. `None` opens the window as tall as its contents.
+    pub height: Option<f32>,
 }
 
 /// what a window gave back: what its title bar asked for, whether it was clicked and where it is.
@@ -142,12 +146,15 @@ pub fn show(
         // is known
         window.pivot(Align2::CENTER_CENTER).default_pos(place.start)
     } else {
-        window
-            .constrain_to(place.area)
-            .default_pos(place.start)
-            .default_width(width)
-            .min_size(Vec2::new(200.0, 60.0))
+        let window = window.constrain_to(place.area).default_pos(place.start);
+        match place.height {
+            Some(h) => window
+                .default_size(Vec2::new(width, h.min(max_height)))
+                .min_size(Vec2::new(200.0, 100.0)),
+            None => window.default_width(width).min_size(Vec2::new(200.0, 60.0)),
+        }
     };
+    let growable = place.height.is_some() && !dialog;
     let shown = window.show(ctx, |ui| {
         // the title bar spans the window inside its 3 pixel border; the contents sit in
         // an 8 pixel margin on every side
@@ -160,7 +167,12 @@ pub fn show(
         // the contents are laid out in a space as tall as the desktop and the window takes the
         // size they use. asking the window's own ui would cap them at its last size, so a window
         // could never grow
-        let room = (max_height - CHROME).max(40.0);
+        // a growable window gives its contents the room it has, so they follow its size
+        let room = if growable {
+            ui.available_height().max(40.0)
+        } else {
+            (max_height - CHROME).max(40.0)
+        };
         let from = ui.cursor().min;
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
@@ -173,7 +185,7 @@ pub fn show(
         egui::ScrollArea::vertical()
             .id_salt(("window-scroll", id))
             .max_height(room)
-            .auto_shrink([false, true])
+            .auto_shrink([false, !growable])
             .show(&mut inner, |ui| {
                 let framed = egui::Frame::new()
                     .inner_margin(Margin::same(8))
@@ -212,6 +224,7 @@ mod tests {
                     start: at,
                     width: 300.0,
                     area,
+                    height: None,
                 };
                 rect = show(ui.ctx(), "t", "T", place, true, dialog, |ui| {
                     ui.allocate_space(Vec2::new(10.0, inner));
@@ -262,6 +275,7 @@ mod tests {
                         start: Pos2::new(110.0, 10.0),
                         width: 300.0,
                         area,
+                        height: None,
                     };
                     rect = show(ui.ctx(), "doc", "Doc", place, true, false, |ui| {
                         ui.allocate_space(Vec2::new(10.0, inner));
@@ -284,5 +298,40 @@ mod tests {
         let huge = run(3000.0);
         assert!(huge.height() <= area.height() + 1.0, "{huge:?}");
         assert!(area.expand(1.0).contains_rect(huge), "{huge:?}");
+    }
+
+    #[test]
+    fn the_contents_sit_the_same_distance_from_the_frame_on_the_left_right_and_bottom() {
+        // a 3 pixel border and an 8 pixel margin: 11 pixels, for a dialog and a document window
+        for dialog in [true, false] {
+            let ctx = egui::Context::default();
+            let mut got = None;
+            for _ in 0..4 {
+                testkit::run_on(&ctx, Vec2::new(800.0, 500.0), vec![], |ui| {
+                    let place = Placement {
+                        start: Pos2::new(400.0, 200.0),
+                        width: 300.0,
+                        area: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 472.0)),
+                        height: None,
+                    };
+                    let mut inner = Rect::NOTHING;
+                    let shown = show(ui.ctx(), "t", "T", place, true, dialog, |ui| {
+                        let wide = Vec2::new(ui.available_width(), 40.0);
+                        inner = ui.allocate_exact_size(wide, Sense::hover()).0;
+                    });
+                    got = shown.map(|s| (s.rect, inner));
+                });
+            }
+            let (frame, inner) = got.expect("shown");
+            let left = inner.left() - frame.left();
+            let right = frame.right() - inner.right();
+            let bottom = frame.bottom() - inner.bottom();
+            assert!(
+                (left - 11.0).abs() < 0.5
+                    && (right - 11.0).abs() < 0.5
+                    && (bottom - 11.0).abs() < 0.5,
+                "dialog {dialog}: left {left}, right {right}, bottom {bottom}"
+            );
+        }
     }
 }

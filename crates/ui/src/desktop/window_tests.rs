@@ -580,3 +580,74 @@ fn a_failing_gateway_is_reported_in_the_logon_tab() {
         Some(&(true, "sudo said no".to_string()))
     );
 }
+
+#[test]
+fn the_console_opens_at_a_working_size_can_be_resized_and_keeps_the_size_the_user_gave_it() {
+    use eframe::egui::{Event, PointerButton, Pos2, Vec2};
+    use lanlord_app::log::{emit, Kind};
+    let size = Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    desktop.open(Target::Console);
+    frames_on(&mut desktop, &ctx, size, 6);
+    let rect = |d: &Desktop| {
+        d.measured
+            .iter()
+            .find(|m| m.0 == Target::Console)
+            .unwrap()
+            .1
+    };
+    let opened = rect(&desktop);
+    // an empty console does not collapse to its contents
+    assert!(
+        opened.height() >= 300.0 && opened.width() >= 600.0,
+        "{opened:?}"
+    );
+    // drag the bottom right corner in, then out
+    let drag = |desktop: &mut Desktop, ctx: &egui::Context, from: Pos2, to: Pos2| {
+        let button = |pressed| Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frames_on(desktop, ctx, size, 1);
+        frame(desktop, ctx, vec![Event::PointerMoved(from)]);
+        frame(
+            desktop,
+            ctx,
+            vec![Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for i in 1..=4 {
+            let at = from + (to - from) * (i as f32 / 4.0);
+            frame(desktop, ctx, vec![Event::PointerMoved(at)]);
+        }
+        frame(desktop, ctx, vec![button(false)]);
+        frames_on(desktop, ctx, size, 3);
+    };
+    let corner = opened.right_bottom() - Vec2::splat(2.0);
+    drag(&mut desktop, &ctx, corner, corner - Vec2::new(150.0, 120.0));
+    let smaller = rect(&desktop);
+    assert!(
+        smaller.width() < opened.width() - 100.0 && smaller.height() < opened.height() - 80.0,
+        "{opened:?} -> {smaller:?}"
+    );
+    let corner = smaller.right_bottom() - Vec2::splat(2.0);
+    drag(&mut desktop, &ctx, corner, corner + Vec2::new(90.0, 70.0));
+    let user = rect(&desktop);
+    assert!(user.width() > smaller.width() + 60.0 && user.height() > smaller.height() + 40.0);
+    // new output does not snap it back
+    for n in 0..60 {
+        emit(Kind::Out, format!("line {n}"));
+    }
+    frames_on(&mut desktop, &ctx, size, 8);
+    let after = rect(&desktop);
+    assert!(
+        (after.size() - user.size()).abs().max_elem() < 1.5,
+        "{user:?} -> {after:?}"
+    );
+}

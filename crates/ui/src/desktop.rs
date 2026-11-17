@@ -1093,6 +1093,10 @@ fn window_width(target: Target) -> f32 {
     target.size().0
 }
 
+fn window_height(target: Target) -> f32 {
+    target.size().1
+}
+
 /// where the `n`th window opens: stepped down and right of the last one, and never so far
 /// that it hangs off the desktop or covers the icons.
 fn cascade(n: usize, area: Rect, size: Vec2) -> Pos2 {
@@ -1116,12 +1120,18 @@ impl Desktop {
             let target = window.target;
             // only the width is chosen; the height is whatever the contents need
             let width = window_width(target).min(area.width() - 116.0);
+            let height = target.growable().then(|| window_height(target));
             let start = if target.is_dialog() {
                 area.center()
             } else {
-                cascade(n, area, Vec2::new(width, 200.0))
+                cascade(n, area, Vec2::new(width, height.unwrap_or(200.0)))
             };
-            let place = windows::Placement { start, width, area };
+            let place = windows::Placement {
+                start,
+                width,
+                area,
+                height,
+            };
             let shown = windows::show(
                 ctx,
                 target.id(),
@@ -1420,7 +1430,11 @@ mod tests {
                     .unwrap_or_else(|| panic!("{} was not drawn", target.title()));
                 let name = target.title();
                 // a 20 pixel title bar and a 3 pixel border all round, around the contents
-                let wanted = content + 26.0;
+                let wanted = if target.growable() {
+                    window_height(target).min(area.height())
+                } else {
+                    content + 26.0
+                };
                 if wanted <= area.height() {
                     assert!(
                         (rect.height() - wanted).abs() <= 1.0,

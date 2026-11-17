@@ -102,6 +102,17 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.label(RichText::new(text.as_str()).strong());
             None
         }
+        Node::Bullet(text) => {
+            // the bullet stands in its own column so wrapped lines hang under the text
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(8.0);
+                ui.label("\u{2022}");
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(text.as_str()).wrap());
+            });
+            None
+        }
         Node::Button(button) if button.selected => {
             theme::sized_button(ui, &button.label, true, button.width);
             None
