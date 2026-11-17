@@ -50,8 +50,33 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: open or update the release pr
+        id: release_pr
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # CHANGELOG.md is hand-written, so the release pr promotes [Unreleased]
+      # to the new version's section. skipped when there is no release pr,
+      # and a no-op when the section is already there
+      - name: promote the unreleased changelog section
+        if: steps.release_pr.outputs.pr != ''
+        env:
+          PR: ${{ steps.release_pr.outputs.pr }}
+        run: |
+          branch=$(echo "$PR" | jq -r '.head_branch // empty')
+          [ -n "$branch" ] || exit 0
+          git fetch origin "$branch"
+          git checkout -B "$branch" "origin/$branch"
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lanlord") | .version')
+          if grep -q "^## \[$version\]" CHANGELOG.md; then
+            exit 0
+          fi
+          sed -i "s/^## \[Unreleased\]\$/## [Unreleased]\n\n## [$version] - $(date -u +%F)/" CHANGELOG.md
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "docs(changelog): promote unreleased to $version"
+          git push origin "$branch"
