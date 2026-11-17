@@ -1,6 +1,6 @@
 //! the Console window: what lanlord prints, collected from `lanlord_core::log`.
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Receiver;
 
 use crate::log::{self, Line};
 
@@ -17,8 +17,9 @@ pub struct Console {
 
 impl Console {
     /// subscribe to the log; `wake` is called whenever a line arrives.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(wake: Wake) -> Self {
-        let (forward, incoming) = mpsc::channel();
+        let (forward, incoming) = std::sync::mpsc::channel();
         let from_log = log::subscribe();
         std::thread::spawn(move || {
             for line in from_log {
@@ -31,6 +32,16 @@ impl Console {
         Self {
             lines: Vec::new(),
             incoming,
+        }
+    }
+
+    /// in the browser there are no threads to forward lines with, so the frame reads the log
+    /// directly in [`Console::drain`]; new lines show at the next repaint.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new(_wake: Wake) -> Self {
+        Self {
+            lines: Vec::new(),
+            incoming: log::subscribe(),
         }
     }
 

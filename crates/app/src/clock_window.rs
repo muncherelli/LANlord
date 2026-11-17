@@ -3,7 +3,7 @@
 //! computer.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use web_time::Instant;
 
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
