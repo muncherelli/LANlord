@@ -405,6 +405,32 @@ impl Components {
             self.step = Step::Attach;
             return;
         }
+        // a component switched on before the report arrived is checked now
+        let catalogue = catalogue();
+        let mut refused: Vec<String> = Vec::new();
+        for component in catalogue
+            .iter()
+            .filter(|c| selection.is_enabled(c.id()))
+            .filter(|c| !self.blockers(c).is_empty())
+        {
+            let why: Vec<&str> = self
+                .blockers(component)
+                .iter()
+                .map(|c| c.detail.as_str())
+                .collect();
+            refused.push(format!("{}: {}", component.name(), why.join("; ")));
+        }
+        if !refused.is_empty() {
+            self.step = Step::Choose;
+            self.saving.say(
+                true,
+                format!(
+                    "this server cannot run what is ticked, clear it first ({})",
+                    refused.join(" | ")
+                ),
+            );
+            return;
+        }
         let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
             let mut settings = gateway.load_settings(&target, ask)?;
@@ -1122,5 +1148,20 @@ mod tests {
         }
         window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
         assert!(window.draft().is_enabled("nt4-domain"));
+    }
+
+    #[test]
+    fn finish_refuses_a_component_that_was_ticked_before_the_report_arrived() {
+        let (mut window, services) = blocked();
+        // ticked while nothing was known about the server
+        let report = window.report.take();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        assert!(window.draft().is_enabled("nt4-domain"));
+        window.report = report;
+        window.update(Msg::Finish, &services, "gw");
+        assert_eq!(window.step, Step::Choose);
+        let (error, text) = window.saving.note.clone().unwrap();
+        assert!(error && text.contains("nesting"), "{text}");
+        assert!(!window.saving.busy(), "nothing was saved");
     }
 }

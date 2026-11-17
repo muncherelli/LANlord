@@ -1035,7 +1035,9 @@ impl Desktop {
                 if let Some(msg) = view::show(ui, &self.welcome.view(&windows)) {
                     self.welcome.update(msg, &windows);
                 }
-                self.compat_next = self.welcome.take_compat();
+                if self.welcome.take_compat() {
+                    self.compat_next = true;
+                }
                 if let Some(target) = self.welcome.take_open() {
                     self.open_next = Some(target);
                 }

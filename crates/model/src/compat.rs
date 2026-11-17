@@ -75,7 +75,7 @@ pub fn needed_for(id: &str) -> Vec<&'static str> {
         .collect();
     if id == "tun" {
         uses.push("Remote attachments (VDE and 86Box links)");
-        uses.push("Tunnels (vxlan, gretap and wireguard)");
+        uses.push("Userspace wireguard tunnels (wireguard-go, boringtun)");
     }
     uses
 }
@@ -184,7 +184,12 @@ mod tests {
         assert!(uses.iter().any(|t| t.starts_with("Network services")));
         let tun = needed_for("tun");
         assert!(tun.iter().any(|t| t.contains("VDE and 86Box")));
-        assert!(tun.iter().any(|t| t.contains("wireguard")));
+        assert!(tun.iter().any(|t| t.contains("wireguard-go")));
+        assert!(
+            !tun.iter()
+                .any(|t| t.contains("vxlan") || t.contains("gretap")),
+            "those do not open /dev/net/tun"
+        );
         assert!(needed_for("ip-forward").is_empty());
     }
 

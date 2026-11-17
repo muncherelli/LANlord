@@ -332,3 +332,19 @@ fn the_welcome_button_opens_my_server_on_the_compatibility_tab() {
     assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
     assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
 }
+
+#[test]
+fn a_welcome_with_no_request_does_not_wipe_the_components_request_in_the_same_frame() {
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    // components draws first, welcome after it in the same frame
+    desktop.open(Target::Components);
+    desktop.open(Target::Welcome);
+    desktop.components.update(
+        lanlord_app::components::Msg::Compat,
+        &desktop.services,
+        "me@gw",
+    );
+    frames(&mut desktop, &ctx, 3);
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}
