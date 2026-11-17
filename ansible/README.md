@@ -64,9 +64,25 @@ networks:
 
 Settings from before there was a list still work: a `dns:` section, `docker.internal_address` and the interface settings are read as one network called `retronet`, and the first `lanlord networks` change writes them back as a `networks:` list (and removes the old keys). On the first apply the single `lanlord-dns` container is replaced by `lanlord-dns-retronet`, and its leases move into `/opt/lanlord/dns/retronet`, so clients keep their leases. `lanlord networks list` shows a network read this way, and says so. The playbooks read both shapes through `playbooks/filter_plugins/lanlord.py` and `playbooks/networks.yml`.
 
-## The Samba image
+## The server component images
 
-`playbooks/nt4-domain/image/` is built by CI and published to `ghcr.io/muncherelli/lanlord-samba-nt4`. The tag is a hash of the three files in that folder, and the playbook computes the same hash on the gateway, so it always pulls the image that matches the files it was sent. If the pull fails, or `nt4-domain.build_locally` is true, it builds the same image on the gateway instead.
+CI publishes two images, one package each, versioned independently:
+
+- `ghcr.io/muncherelli/lanlord-nt4-server-components`: samba built from the signature-checked source tarball as a classic (non-AD) server, with SMB1/NT1 still allowed. Its Dockerfile is in `playbooks/nt4-domain/image/`, next to the samba release key it checks the tarball against.
+- `ghcr.io/muncherelli/lanlord-dhcp-dns-components`: dnsmasq on Alpine, from `playbooks/dns/image/`.
+
+Tags are versions only. Each image has an immutable `X.Y.Z` tag, from the `VERSION` file in its directory (they start at `1.0.0`), plus rolling `X.Y`, `X` and `latest` tags that move to the newest release. The upstream versions are not tags: they are labels (`org.opencontainers.image.version` is the image's own version; `io.lanlord.samba.version` and `io.lanlord.dnsmasq.version` are the upstream ones, set from the `ARG` in the Dockerfile). To change what is inside an image (a newer samba, a fixed Dockerfile), edit it and raise its `VERSION` on purpose.
+
+The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf` and `dnsmasq.conf` are mounted into the container when it runs. The playbooks pin the `X.Y.Z` in the `VERSION` file that ships with them (never `latest`), so an install keeps running the image it was released with. Each apply pulls that tag; if the pull fails it builds the same Dockerfile on the gateway instead.
+
+An image is only rebuilt when it changed (`.github/workflows/image.yml`, with the images listed in `.github/images.json`):
+
+- A pull request builds (for amd64 and arm64, without pushing) only the images whose files changed, and fails with a message when an image changed but its `VERSION` was not raised above the base branch's, so a change cannot ship without a new version.
+- Each architecture is built natively (amd64 and arm64 runners, no emulation) and merged into one multi-arch tag.
+- Publishing only runs on trunk (also for a manual run). `X.Y`, `X` and `latest` move to a release only when it is the newest in their range.
+- A push to trunk publishes an image only when its `X.Y.Z` tag does not exist in GHCR yet. Otherwise the image is skipped whole: no build, no push, rolling tags untouched. A published `X.Y.Z` is never overwritten.
+- The workflow can be run by hand with an `image` input; a version that is already published is still never overwritten.
+- LANlord release tags do not run it, so a LANlord release rebuilds no image.
 
 ## Joining NT4 machines
 

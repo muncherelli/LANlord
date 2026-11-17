@@ -209,6 +209,23 @@ fn safe_open_spec(spec: &str) -> String {
         .join(",")
 }
 
+/// the value of `name` in the page address's query string.
+#[cfg(target_arch = "wasm32")]
+fn query(name: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    search
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| {
+            value
+                .replace("%2C", ",")
+                .replace("%2c", ",")
+                .replace("%40", "@")
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::safe_open_spec;
@@ -232,21 +249,4 @@ mod tests {
         assert_eq!(safe_open_spec("developer,unknown,menu"), "menu");
         assert_eq!(safe_open_spec("dns@12,hosts@x"), "dns,hosts");
     }
-}
-
-/// the value of `name` in the page address's query string.
-#[cfg(target_arch = "wasm32")]
-fn query(name: &str) -> Option<String> {
-    let search = web_sys::window()?.location().search().ok()?;
-    search
-        .trim_start_matches('?')
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| {
-            value
-                .replace("%2C", ",")
-                .replace("%2c", ",")
-                .replace("%40", "@")
-        })
 }

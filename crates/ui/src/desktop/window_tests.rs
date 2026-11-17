@@ -7,8 +7,10 @@ use eframe::egui;
 use lanlord_model::leases::Lease;
 use lanlord_model::network::Internal;
 
-use super::harness::*;
-use super::*;
+use super::harness::{
+    desktop, enabled, frame_on, frames, frames_on, idle, press, until, with_host,
+};
+use super::{window_size, Desktop, Target, MODULES};
 use crate::nt4_window::Tab;
 use lanlord_app::gateway::Fake;
 

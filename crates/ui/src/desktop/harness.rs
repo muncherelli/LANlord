@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Pos2};
 
-use super::*;
+use super::{theme, Desktop, Rect};
 use crate::testkit;
 pub use crate::testkit::{click, key, SCREEN};
 use lanlord_app::gateway::Fake;

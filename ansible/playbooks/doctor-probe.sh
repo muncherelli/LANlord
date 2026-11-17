@@ -15,10 +15,10 @@ lanlord_doctor() {
     for s in b d v e p m i x g w; do ip link del "$n$s" >/dev/null 2>&1; done
   }
   trap cleanup EXIT INT TERM HUP
-  say() { printf '%s=%s\n' "$1" "$2"; }
+  say() { key="$1"; value="$2"; printf '%s=%s\n' "$key" "$value"; }
   have() { command -v "$1" >/dev/null 2>&1; }
   first_line() { tr '\n' ' ' | sed 's/  */ /g; s/ $//' | cut -c1-200; }
-  osr() { if [ -r /etc/os-release ]; then sed -n "s/^$1=//p" /etc/os-release | head -n 1 | tr -d '"'; fi; }
+  osr() { field="$1"; if [ -r /etc/os-release ]; then sed -n "s/^${field}=//p" /etc/os-release | head -n 1 | tr -d '"'; fi; }
 
   say kernel "$(uname -r 2>/dev/null)"
   say hostname "$(hostname 2>/dev/null)"
