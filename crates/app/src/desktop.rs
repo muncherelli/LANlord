@@ -19,6 +19,8 @@ pub enum Target {
     Components,
     /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
     Welcome,
+    /// the progress of an apply; it opens by itself when one starts and has no desktop icon.
+    Progress,
     /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
     TaskManager,
 }
@@ -36,6 +38,7 @@ impl Target {
             Self::DateTime => "datetime",
             Self::Components => "components",
             Self::Welcome => "welcome",
+            Self::Progress => "apply-progress",
             Self::TaskManager => "taskmgr",
         }
     }
@@ -51,6 +54,7 @@ impl Target {
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
+            Self::Progress => "Applying Settings",
             Self::TaskManager => "Task Manager",
         }
     }
@@ -82,6 +86,7 @@ impl Target {
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
             Self::Welcome => (580.0, 380.0),
+            Self::Progress => (480.0, 360.0),
             Self::TaskManager => (500.0, 490.0),
         }
     }
@@ -189,5 +194,18 @@ mod tests {
                 "hosts"
             ]
         );
+    }
+
+    #[test]
+    fn the_progress_window_has_no_icon_and_names_itself() {
+        assert_eq!(Target::Progress.id(), "apply-progress");
+        assert_eq!(Target::Progress.title(), "Applying Settings");
+        assert!(
+            Target::Progress.needs_admin(),
+            "applying is for administrators"
+        );
+        assert!(Target::Progress.size().0 > 0.0);
+        assert!(!icons(None).contains(&Target::Progress));
+        assert!(!windows(&icons(None)).contains(&Target::Progress));
     }
 }

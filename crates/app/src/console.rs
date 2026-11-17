@@ -2,7 +2,8 @@
 
 use std::sync::mpsc::Receiver;
 
-use crate::log::{self, Line};
+use crate::apply_progress::ApplyProgress;
+use crate::log::{self, Kind, Line};
 
 use crate::view::Node;
 use crate::wake::Wake;
@@ -11,6 +12,8 @@ use crate::wake::Wake;
 const KEEP: usize = 2000;
 
 pub struct Console {
+    /// the progress of the apply that is running, fed from the same log.
+    pub apply: ApplyProgress,
     lines: Vec<Line>,
     incoming: Receiver<Line>,
 }
@@ -30,6 +33,7 @@ impl Console {
             }
         });
         Self {
+            apply: ApplyProgress::default(),
             lines: Vec::new(),
             incoming,
         }
@@ -40,6 +44,7 @@ impl Console {
     #[cfg(target_arch = "wasm32")]
     pub fn new(_wake: Wake) -> Self {
         Self {
+            apply: ApplyProgress::default(),
             lines: Vec::new(),
             incoming: log::subscribe(),
         }
@@ -47,7 +52,13 @@ impl Console {
 
     /// move what arrived since the last frame into the list.
     pub fn drain(&mut self) {
-        self.lines.extend(self.incoming.try_iter());
+        for line in self.incoming.try_iter() {
+            self.apply.line(&line);
+            // events are for the progress dialog, not for reading
+            if line.kind != Kind::Event {
+                self.lines.push(line);
+            }
+        }
         if self.lines.len() > KEEP {
             self.lines.drain(..self.lines.len() - KEEP);
         }
@@ -74,8 +85,6 @@ impl Console {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
-
-    use crate::log::Kind;
 
     use super::*;
 
@@ -119,5 +128,26 @@ mod tests {
             panic!("the console is one log");
         };
         assert_eq!(lines, &[(Kind::Err, "broken".to_string())]);
+    }
+
+    #[test]
+    fn events_feed_the_progress_and_stay_out_of_the_lines() {
+        let mut console = Console::new(Wake::none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        console.incoming = rx;
+        tx.send(Line {
+            kind: Kind::Event,
+            text: r#"{"event":"total","n":3}"#.into(),
+        })
+        .unwrap();
+        tx.send(Line {
+            kind: Kind::Info,
+            text: "plain".into(),
+        })
+        .unwrap();
+        console.drain();
+        assert_eq!(console.apply.progress().total, 3);
+        assert_eq!(console.lines().len(), 1);
+        assert_eq!(console.lines()[0].text, "plain");
     }
 }

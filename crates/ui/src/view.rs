@@ -273,6 +273,28 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             controls::separator(ui);
             None
         }
+        Node::Bar { fraction, text } => {
+            theme::sunken(ui, WHITE, |ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
+                // nt4 style: solid navy blocks with a gap between them
+                let full = rect.width() * fraction.clamp(0.0, 1.0);
+                let mut x = rect.left();
+                while x + 8.0 <= rect.left() + full {
+                    let block = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(8.0, 16.0));
+                    ui.painter().rect_filled(block, 0.0, NAVY);
+                    x += 10.0;
+                }
+                ui.painter().text(
+                    rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    egui::FontId::proportional(12.0),
+                    BLACK,
+                );
+            });
+            None
+        }
         Node::Row(body) => ui.horizontal(|ui| show(ui, body)).inner,
         Node::TextArea {
             id,

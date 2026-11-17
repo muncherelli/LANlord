@@ -1,0 +1,15 @@
+some ansible line that is not an event
+LANLORD_EVENT {"event":"total","n":3}
+LANLORD_EVENT {"event":"task_start","name":"write the config"}
+LANLORD_EVENT {"event":"task_done","name":"write the config","status":"ok","changed":true,"msg":""}
+LANLORD_EVENT {"event":"task_start","name":"only on debian"}
+LANLORD_EVENT {"event":"task_done","name":"only on debian","status":"skipped","changed":false,"msg":""}
+LANLORD_EVENT {"event":"task_start","name":"make directories"}
+LANLORD_EVENT {"event":"item","n":1}
+LANLORD_EVENT {"event":"item","n":2}
+LANLORD_EVENT {"event":"item","n":3}
+LANLORD_EVENT {"event":"task_done","name":"make directories","status":"ok","changed":true,"msg":""}
+LANLORD_EVENT {"event":"total","n":1}
+LANLORD_EVENT {"event":"task_start","name":"restart dnsmasq"}
+LANLORD_EVENT {"event":"task_done","name":"restart dnsmasq","status":"ok","changed":false,"msg":""}
+LANLORD_EVENT {"event":"finished","stats":{"ok":3,"changed":2,"failed":0,"skipped":1,"unreachable":0}}

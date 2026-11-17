@@ -11,6 +11,8 @@ pub enum Kind {
     Info,
     /// what lanlord is doing, shown with --verbose or in a console.
     Debug,
+    /// not for reading: the text is one `apply::ApplyEvent` as json, for the progress dialog.
+    Event,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
