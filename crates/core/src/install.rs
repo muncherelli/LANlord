@@ -237,7 +237,7 @@ fn do_step(
             }
         }
         Step::Base => {
-            let modules: Vec<String> = BASE_MODULES.iter().map(|m| m.to_string()).collect();
+            let modules: Vec<String> = BASE_MODULES.iter().map(ToString::to_string).collect();
             apply::apply_lines(
                 session,
                 &options.host,
