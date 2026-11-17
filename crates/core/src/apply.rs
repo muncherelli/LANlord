@@ -127,8 +127,17 @@ pub(crate) fn apply_with_settings(
     run_tags(session, admin.trim(), tags, settings, ask_password, on_line)
 }
 
+// what this thread published, for the tests: the log reaches every subscriber, so the events of
+// tests that run side by side would mix.
+#[cfg(test)]
+thread_local! {
+    static PUBLISHED: std::cell::RefCell<Vec<ApplyEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// send an event to the progress dialogs, and the readable part of it to the log.
 fn publish(event: &ApplyEvent) {
+    #[cfg(test)]
+    PUBLISHED.with(|p| p.borrow_mut().push(event.clone()));
     emit(
         Kind::Event,
         serde_json::to_string(event).unwrap_or_default(),
@@ -158,6 +167,39 @@ fn publish(event: &ApplyEvent) {
     }
 }
 
+/// one apply at a time: the dialogs share one progress state, so two runs would mix their
+/// events. the flag is released when the guard drops, on every way out. (under test each
+/// thread has its own flag, because the tests run side by side.)
+#[cfg(not(test))]
+static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    static BUSY: &'static std::sync::atomic::AtomicBool =
+        Box::leak(Box::new(std::sync::atomic::AtomicBool::new(false)));
+}
+
+struct Busy(&'static std::sync::atomic::AtomicBool);
+
+impl Busy {
+    fn take() -> Result<Self> {
+        #[cfg(not(test))]
+        let flag: &'static std::sync::atomic::AtomicBool = &BUSY;
+        #[cfg(test)]
+        let flag: &'static std::sync::atomic::AtomicBool = BUSY.with(|f| *f);
+        if flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            bail!("an apply is already running");
+        }
+        Ok(Self(flag))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn run_tags(
     session: &Session,
     admin: &str,
@@ -166,9 +208,12 @@ fn run_tags(
     ask_password: AskPassword,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<()> {
+    let _busy = Busy::take()?;
     // refuse early on a machine that definitely cannot run docker, with the fix; the settings
     // say which modules a plain apply runs
     crate::env::gate(session, admin, tags, settings.as_deref(), ask_password)?;
+    // everything that can fail before the run starts is done before the dialog opens
+    let script = script(settings.as_deref(), tags)?;
     match &settings {
         Some(plain) => emit(
             Kind::Info,
@@ -180,28 +225,19 @@ fn run_tags(
         ),
     }
     publish(&ApplyEvent::Started);
-    // (events seen, the run's own end seen)
-    let seen = std::cell::Cell::new((false, false));
+    // whether the run printed its own end
+    let ended = std::cell::Cell::new(false);
     let mut sink = |line: &str| match apply::parse_line(line) {
         Some(event) => {
-            seen.set((
-                true,
-                seen.get().1 || matches!(event, ApplyEvent::Finished { .. }),
-            ));
+            ended.set(ended.get() || matches!(event, ApplyEvent::Finished { .. }));
             publish(&event)
         }
         None => on_line(line),
     };
-    let ran = run_as_root_lines(
-        session,
-        admin,
-        script(settings.as_deref(), tags)?,
-        ask_password,
-        &mut sink,
-    );
-    if seen.get() == (true, false) {
-        // the run stopped without its own summary, so close the dialog; a run that never
-        // got an exit status (ssh failed, killed) counts as failed too
+    let ran = run_as_root_lines(session, admin, script, ask_password, &mut sink);
+    if !ended.get() {
+        // the run stopped without its own summary (it never started, ssh failed, it was
+        // killed), so close the dialog; no exit status at all counts as failed too
         let failed = u32::from(!matches!(ran, Ok(0)));
         publish(&ApplyEvent::Finished {
             stats: apply::Stats {
@@ -225,9 +261,6 @@ mod tests {
     use super::*;
     use crate::crypto;
     use base64::Engine;
-
-    /// tests that look at the end of a run take turns: the log reaches every subscriber.
-    static ENDS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn temp(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("lanlord-apply-{}-{name}", std::process::id()))
@@ -373,7 +406,6 @@ esac"#,
 
     #[test]
     fn plugin_lines_become_events_and_the_rest_stays_output() {
-        let _turn = ENDS.lock().unwrap_or_else(|e| e.into_inner());
         let record = temp("events");
         let events = [
             r#"LANLORD_EVENT {"event":"total","n":1}"#,
@@ -560,10 +592,11 @@ esac"#
         ))
     }
 
-    fn finished_events(rx: &std::sync::mpsc::Receiver<crate::log::Line>) -> Vec<ApplyEvent> {
-        rx.try_iter()
-            .filter(|l| l.kind == Kind::Event)
-            .filter_map(|l| serde_json::from_str(&l.text).ok())
+    /// the ends this thread published since the last call.
+    fn finished_events() -> Vec<ApplyEvent> {
+        PUBLISHED
+            .with(|p| std::mem::take(&mut *p.borrow_mut()))
+            .into_iter()
             .filter(|e| matches!(e, ApplyEvent::Finished { .. }))
             .collect()
     }
@@ -571,11 +604,10 @@ esac"#
     /// one test for all three ends, because subscribers see every thread's events.
     #[test]
     fn a_run_ends_once_with_its_own_summary_or_a_synthetic_one() {
-        let _turn = ENDS.lock().unwrap_or_else(|e| e.into_inner());
         let total = r#"LANLORD_EVENT {"event":"total","n":2}"#;
         let end = r#"LANLORD_EVENT {"event":"finished","stats":{"ok":1,"changed":0,"failed":0,"skipped":0,"unreachable":0}}"#;
         // cut short: the dialog is closed with a failure
-        let rx = crate::log::subscribe();
+        finished_events();
         let err = apply_with(
             &gateway_printing(&[total], 2),
             "gw",
@@ -585,13 +617,13 @@ esac"#
         )
         .unwrap_err();
         assert!(err.to_string().contains("status 2"), "{err}");
-        let cut = finished_events(&rx);
+        let cut = finished_events();
         assert!(matches!(
             cut.as_slice(),
             [ApplyEvent::Finished { stats }] if stats.failed == 1
         ));
         // no exit status at all (ssh status 255): closed with a failure as well
-        let rx = crate::log::subscribe();
+        finished_events();
         assert!(apply_with(
             &gateway_printing(&[total], 255),
             "gw",
@@ -601,11 +633,11 @@ esac"#
         )
         .is_err());
         assert!(matches!(
-            finished_events(&rx).as_slice(),
+            finished_events().as_slice(),
             [ApplyEvent::Finished { stats }] if stats.failed == 1
         ));
         // its own end: not closed a second time
-        let rx = crate::log::subscribe();
+        finished_events();
         apply_with(
             &gateway_printing(&[total, end], 0),
             "gw",
@@ -614,13 +646,13 @@ esac"#
             &mut no_password,
         )
         .unwrap();
-        let own = finished_events(&rx);
+        let own = finished_events();
         assert!(matches!(
             own.as_slice(),
             [ApplyEvent::Finished { stats }] if stats.failed == 0 && stats.ok == 1
         ));
-        // no events at all: nothing to close
-        let rx = crate::log::subscribe();
+        // no events at all: the dialog was opened, so it is closed all the same
+        finished_events();
         apply_with(
             &gateway_printing(&["plain output"], 0),
             "gw",
@@ -629,6 +661,36 @@ esac"#
             &mut no_password,
         )
         .unwrap();
-        assert!(finished_events(&rx).is_empty());
+        assert!(matches!(
+            finished_events().as_slice(),
+            [ApplyEvent::Finished { stats }] if stats.failed == 0
+        ));
+        // not installed: closed as failed
+        finished_events();
+        assert!(apply_with(
+            &gateway_printing(&[], NOT_INSTALLED_STATUS),
+            "gw",
+            None,
+            &[],
+            &mut no_password,
+        )
+        .is_err());
+        assert!(matches!(
+            finished_events().as_slice(),
+            [ApplyEvent::Finished { stats }] if stats.failed == 1
+        ));
+    }
+
+    #[test]
+    fn a_second_apply_is_refused_while_one_runs_and_allowed_after() {
+        let held = Busy::take().unwrap();
+        let err =
+            apply_with(&gateway_printing(&[], 0), "gw", None, &[], &mut no_password).unwrap_err();
+        assert!(err.to_string().contains("already running"), "{err}");
+        drop(held);
+        apply_with(&gateway_printing(&[], 0), "gw", None, &[], &mut no_password).unwrap();
+        // and the flag is let go after a failed run too
+        assert!(apply_with(&gateway_printing(&[], 3), "gw", None, &[], &mut no_password).is_err());
+        drop(Busy::take().expect("released after the failed run"));
     }
 }
