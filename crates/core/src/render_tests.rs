@@ -497,3 +497,63 @@ fn ansible_moves_a_single_dnsmasq_and_removes_the_networks_that_are_gone() {
         );
     }
 }
+
+/// the `when:` lines of the docker.yml task called `name`, empty when it has none.
+fn docker_gate(name: &str) -> String {
+    let book = fs::read_to_string(playbooks().join("docker.yml")).unwrap();
+    let start = book
+        .find(&format!("- name: {name}\n"))
+        .unwrap_or_else(|| panic!("no task {name}"));
+    let rest = &book[start + 1..];
+    let task = &rest[..rest.find("\n    - name:").unwrap_or(rest.len())];
+    task.lines()
+        .filter(|l| l.trim_start().starts_with("when:"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// the baseline runs docker.yml with no settings: the engine is installed and started and the
+/// base firewall is written, while everything that touches an interface waits for settings.
+#[test]
+fn a_baseline_with_no_settings_installs_docker_and_touches_no_interface() {
+    for name in [
+        "install docker on arch",
+        "install docker on debian",
+        "start docker",
+        "keep netbios, smb, dns and dhcp off the host network",
+        "load the firewall at boot",
+        "enable the firewall and load the current rules",
+    ] {
+        let gate = docker_gate(name);
+        assert!(
+            !gate.contains("defined"),
+            "{name} must not wait for settings: {gate}"
+        );
+    }
+    for name in [
+        "work out the host network and the lanlord networks",
+        "check the interface names and address in your settings",
+    ] {
+        assert!(docker_gate(name).contains("defined"), "{name}");
+    }
+    // the address loop runs over the configured networks, which are none without settings
+    assert!(docker_gate("find out which network manager is running").contains("lan_configured"));
+    assert!(docker_gate("give every lanlord network its address and mtu").is_empty());
+    // without a host network the firewall file has no interface rules at all
+    let book = r#"
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.builtin.template:
+        src: docker/firewall.nft.j2
+        dest: "{{ lookup('ansible.builtin.env', 'OUT') }}/firewall.nft"
+      vars: {host_interface: '', lan_interfaces: []}
+"#;
+    let out = run_harness("baseline", "{}\n", book, &[], |_| {}).unwrap();
+    let rules = fs::read_to_string(out.join("firewall.nft")).unwrap();
+    assert!(
+        !rules.contains("iifname") && !rules.contains("oifname"),
+        "{rules}"
+    );
+}

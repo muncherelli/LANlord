@@ -102,6 +102,19 @@ fn record(session: &Session, step: Step, ask_password: AskPassword) -> Result<()
     }
 }
 
+/// fail unless the docker engine answers on the server.
+fn verify_docker(session: &Session, ask_password: AskPassword) -> Result<()> {
+    let admin = login_user(session)?;
+    let script = "docker version --format '{{.Server.Version}}' >/dev/null 2>&1\n".to_string();
+    match run_as_root(session, &admin.name, script, ask_password)? {
+        0 => Ok(()),
+        _ => bail!(
+            "the baseline finished but docker does not answer on the server (`docker version` failed); \
+             check that the docker service is running and rerun the install"
+        ),
+    }
+}
+
 fn options_for(host: &str) -> Options {
     Options {
         host: host.to_string(),
@@ -203,6 +216,8 @@ fn do_step(
                 &mut *ask_password,
                 &mut line,
             )?;
+            // a module that was skipped still reports done, so look for the engine itself
+            verify_docker(session, &mut *ask_password)?;
             record(session, Step::Base, ask_password)
         }
         Step::Finish => record(session, Step::Finish, ask_password),
@@ -296,6 +311,7 @@ case "$last" in
     input=$(cat)
     case "$input" in
       *lanlord_doctor*) printf '%s' '@PROBE@' ;;
+      *"docker version"*) [ -f "$D/no-docker" ] && exit 1; exit 0 ;;
       "cat @MARKER@"*) cat "$D/marker" 2>/dev/null || true ;;
       "printf '%s\n' "*)
         word=$(printf '%s' "$input" | head -n 1 | cut -d' ' -f3)
@@ -491,6 +507,18 @@ esac"#
         assert_eq!(steps(&events).last(), Some(&(Step::Base, "failed")));
         assert!(events.contains(&Event::Line("boom".into())));
         // the bootstrap's marker stays, so the next run resumes at the baseline
+        assert_eq!(server.marker(), "bootstrap");
+    }
+
+    #[test]
+    fn a_baseline_that_leaves_no_working_docker_fails_the_step() {
+        let server = Server::new("nodocker", None, FINE);
+        std::fs::write(server.dir.join("no-docker"), "").unwrap();
+        let (result, events) = install(&server);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("docker does not answer"), "{err}");
+        assert_eq!(steps(&events).last(), Some(&(Step::Base, "failed")));
+        // the marker stays at the bootstrap, so the baseline runs again
         assert_eq!(server.marker(), "bootstrap");
     }
 
