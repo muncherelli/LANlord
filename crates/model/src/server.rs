@@ -3,6 +3,8 @@
 
 use anyhow::{bail, Result};
 
+use crate::routes;
+
 /// one network interface and what it is doing.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Iface {
@@ -109,11 +111,6 @@ pub fn parse_links(text: &str) -> Vec<Iface> {
         .collect()
 }
 
-/// the interface a `default via ... dev NAME` line leaves through.
-fn default_interface(route: &str) -> Option<&str> {
-    route.lines().find_map(|l| after(l, "dev"))
-}
-
 /// the facts in the output of the read script.
 pub fn parse(output: &str) -> Result<ServerFacts> {
     let mut parts = output.split("---link");
@@ -135,7 +132,11 @@ pub fn parse(output: &str) -> Result<ServerFacts> {
             iface.addresses.push(address.to_string());
         }
     }
-    if let Some(name) = default_interface(route) {
+    // `---route` holds the ipv4 defaults and, from newer scripts, `---route6` the ipv6 ones
+    let (route4, route6) = route.split_once("---route6").unwrap_or((route, ""));
+    let mut defaults = routes::from_text(route4, false);
+    defaults.extend(routes::from_text(route6, true));
+    if let Some(name) = routes::external(&defaults) {
         if let Some(iface) = interfaces.iter_mut().find(|i| i.name == name) {
             iface.default_route = true;
         }

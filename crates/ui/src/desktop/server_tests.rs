@@ -197,6 +197,60 @@ fn networks_opens_dns_and_dhcp_for_a_lanlord_network_only() {
 }
 
 #[test]
+fn networks_has_a_tab_per_network_with_its_connection_status() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = NETWORKS.into();
+    desktop.open(Target::Networks);
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| {
+        d.networks.rows.belongs_to("me@gw") && d.networks.status.data.is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    let status = desktop.networks.status.data.clone().unwrap();
+    let external = status.iter().find(|s| s.default_route).unwrap();
+    assert_eq!(external.name, "eth0");
+    assert!(fake
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c == "network-status me@gw"));
+    // the other network's tab is a click away
+    assert_eq!(desktop.networks.selected, 0);
+    assert!(press(&mut desktop, &ctx, "retronet"));
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(desktop.networks.selected, 1);
+    assert_eq!(enabled(&ctx, "DNS & DHCP..."), Some(true));
+    // details opens the connection's property list and closes again
+    assert!(press(&mut desktop, &ctx, "Details..."));
+    assert_eq!(desktop.networks.connection.as_ref().unwrap().name, "eth1");
+    assert!(press(&mut desktop, &ctx, "Close"));
+    assert!(desktop.networks.connection.is_none());
+}
+
+#[test]
+fn a_failed_status_read_says_why_and_refresh_tries_again() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = NETWORKS.into();
+    *fake.network_error.lock().unwrap() = Some("ip is not installed".into());
+    desktop.open(Target::Networks);
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| {
+        d.networks.rows.belongs_to("me@gw") && d.networks.status.note.is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.networks.status.data.is_none());
+    let note = desktop.networks.status.note.clone().unwrap();
+    assert!(note.0 && note.1.contains("ip is not installed"));
+    // a failure is not retried on its own; Refresh does
+    *fake.network_error.lock().unwrap() = None;
+    frames(&mut desktop, &ctx, 3);
+    assert!(desktop.networks.status.data.is_none());
+    assert!(press(&mut desktop, &ctx, "Refresh"));
+    until(&mut desktop, &ctx, |d| d.networks.status.data.is_some());
+}
+
+#[test]
 fn the_server_windows_say_so_without_a_server() {
     let (mut desktop, ctx, _fake) = desktop();
     desktop.open(Target::MyServer);

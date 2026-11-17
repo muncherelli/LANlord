@@ -57,7 +57,7 @@ impl Target {
                 _ => (480.0, 320.0),
             },
             Self::MyServer => (440.0, 480.0),
-            Self::Networks => (760.0, 340.0),
+            Self::Networks => (560.0, 440.0),
             Self::Console => (600.0, 300.0),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
