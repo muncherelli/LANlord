@@ -3,6 +3,7 @@
 //! carries the typed operations the browser sends. it never runs commands from raw text.
 
 mod auth;
+mod monitor;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -79,6 +80,8 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
         )
         .route("/api/logout", post(auth::logout))
         .route("/api/session", get(auth::session))
+        .route("/api/monitor", get(monitor::sample))
+        .route("/api/monitor/end", post(monitor::end))
         .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
         .with_state(auth)
         .fallback(move |request: Request| web(dir.clone(), request))
