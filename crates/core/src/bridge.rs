@@ -307,6 +307,118 @@ mod tests {
         assert_eq!(lines.len(), 6);
     }
 
+    /// a session whose "gateway" runs `body` after answering `id -un` as root.
+    #[cfg(unix)]
+    fn gateway(body: &str) -> Session {
+        let session = Session::fake(&format!(
+            "for a; do last=$a; done\ncase \"$last\" in\n  \"id -un\") echo root ;;\n  *) {body} ;;\nesac"
+        ));
+        session.no_bridge.store(false, Ordering::Relaxed);
+        session
+    }
+
+    #[cfg(unix)]
+    fn no_password(_: &str) -> Result<String> {
+        bail!("no password expected")
+    }
+
+    #[cfg(unix)]
+    const HELLO: &str = r#"echo '{"proto":1,"version":"t"}'"#;
+    #[cfg(unix)]
+    const REPLY: &str =
+        r#"echo '{"kind":"reply","id":1,"reply":{"reply":"names","value":["UTC"]}}'"#;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reply_comes_back_with_its_log_lines() {
+        let log = r#"echo '{"kind":"log","id":1,"line":"working"}'"#;
+        let gw = gateway(&format!("{HELLO}; read req; {log}; echo '{{\"kind\":\"sample\",\"id\":1,\"topic\":\"t\",\"value\":\"1\"}}'; {REPLY}"));
+        let mut bridge = gw.bridge(false, &mut no_password).unwrap();
+        let mut lines = Vec::new();
+        let reply = bridge.call(&Op::ClockZones, &mut |l| lines.push(l.to_string()));
+        assert_eq!(reply.unwrap(), Reply::Names(vec!["UTC".into()]));
+        assert_eq!(lines, ["working"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_root_bridge_runs_directly_for_root() {
+        let gw = gateway(&format!("{HELLO}; read req; {REPLY}"));
+        let got = try_call(&gw, &Op::ClockUpdateNow, &mut no_password).unwrap();
+        assert_eq!(got, Some(Reply::Names(vec!["UTC".into()])));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_request_is_an_error_with_the_bridges_words() {
+        let err = r#"echo '{"kind":"error","id":1,"message":"unknown time zone: X"}'"#;
+        let gw = gateway(&format!("{HELLO}; read req; {err}"));
+        let got = try_call(&gw, &Op::ClockZones, &mut no_password).unwrap_err();
+        assert!(got.to_string().contains("unknown time zone: X"), "{got}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_or_missing_answer_is_an_error() {
+        let gw = gateway(&format!("{HELLO}; read req; echo nonsense"));
+        let err = try_call(&gw, &Op::ClockZones, &mut no_password).unwrap_err();
+        assert!(err.to_string().contains("broken frame"), "{err}");
+        let gw = gateway(&format!("{HELLO}; read req"));
+        let err = try_call(&gw, &Op::ClockZones, &mut no_password).unwrap_err();
+        assert!(err.to_string().contains("without an answer"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_bridge_falls_back_once_and_is_not_tried_again() {
+        let gw = gateway("echo 'sh: lanlord: not found' >&2; exit 127");
+        assert_eq!(
+            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            None
+        );
+        assert!(gw.no_bridge.load(Ordering::Relaxed));
+        assert_eq!(
+            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn another_protocol_falls_back_with_the_update_advice() {
+        let gw = gateway(r#"echo '{"proto":99,"version":"9.0.0"}'"#);
+        let err = gw.bridge(false, &mut no_password).err().unwrap();
+        let text = err.to_string();
+        assert!(
+            text.contains("lanlord update") && text.contains("9.0.0"),
+            "{text}"
+        );
+        assert!(matches!(
+            err.downcast_ref::<BridgeError>(),
+            Some(BridgeError::Mismatch(_))
+        ));
+        assert_eq!(
+            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            None
+        );
+        assert!(gw.no_bridge.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn the_errors_say_what_is_wrong() {
+        assert!(BridgeError::Missing
+            .to_string()
+            .contains("no lanlord bridge"));
+        assert_eq!(BridgeError::Mismatch("why".into()).to_string(), "why");
+    }
+
+    #[test]
+    fn a_bad_frame_does_not_stop_the_bridge() {
+        let lines = frames("{}\n", &mut |_, _| Ok(Reply::Done));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("not a request"), "{}", lines[1]);
+    }
+
     #[test]
     fn an_op_the_bridge_does_not_run_is_an_error() {
         let err = run_local(&Op::Doctor, &mut |_| {}).unwrap_err();

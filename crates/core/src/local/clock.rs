@@ -110,14 +110,15 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".lanlord-{}.tmp", std::process::id()));
     let result = (|| -> Result<()> {
-        let mut file = std::fs::File::create(&tmp)?;
+        // no chmod: the file gets the process umask like the shell's `>` did (0644 under sudo's
+        // 022), so services can read it and nobody else can write it
+        let _ = std::fs::remove_file(&tmp);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))?;
-        }
         std::fs::rename(&tmp, path)?;
         Ok(())
     })();
@@ -209,27 +210,33 @@ mod bus {
 #[cfg(not(target_os = "linux"))]
 mod bus {
     use anyhow::{bail, Result};
+    use std::io;
 
+    /// the same calls as the linux proxy; there is no timedate1 here, so each one fails.
     pub struct TimedateProxy<'a>(std::marker::PhantomData<&'a ()>);
 
+    fn none<T>() -> io::Result<T> {
+        Err(io::Error::other("this machine has no timedate1"))
+    }
+
     impl TimedateProxy<'_> {
-        pub fn set_timezone(&self, _: &str, _: bool) -> Result<()> {
-            bail!("this machine has no timedate1")
+        pub fn set_timezone(&self, _: &str, _: bool) -> io::Result<()> {
+            none()
         }
-        pub fn set_ntp(&self, _: bool, _: bool) -> Result<()> {
-            bail!("this machine has no timedate1")
+        pub fn set_ntp(&self, _: bool, _: bool) -> io::Result<()> {
+            none()
         }
-        pub fn list_timezones(&self) -> Result<Vec<String>> {
-            bail!("this machine has no timedate1")
+        pub fn list_timezones(&self) -> io::Result<Vec<String>> {
+            none()
         }
-        pub fn timezone(&self) -> Result<String> {
-            bail!("this machine has no timedate1")
+        pub fn timezone(&self) -> io::Result<String> {
+            none()
         }
-        pub fn ntp(&self) -> Result<bool> {
-            bail!("this machine has no timedate1")
+        pub fn ntp(&self) -> io::Result<bool> {
+            none()
         }
-        pub fn ntp_synchronized(&self) -> Result<bool> {
-            bail!("this machine has no timedate1")
+        pub fn ntp_synchronized(&self) -> io::Result<bool> {
+            none()
         }
     }
 
@@ -684,6 +691,54 @@ mod tests {
                 (got, expect) => panic!("{name}: got {got:?}, wanted {expect:?}"),
             }
         }
+    }
+
+    #[test]
+    fn this_machine_can_be_read_and_an_empty_change_does_nothing() {
+        let state = read().unwrap();
+        assert!(!state.timezone.is_empty());
+        assert!(state.utc_secs > 1_700_000_000);
+        let facts = facts();
+        assert!(facts
+            .chrony_units
+            .iter()
+            .all(|u| CHRONY_UNITS.contains(&u.as_str())));
+        let said = apply(&Change::default(), &mut |_| panic!("no step to log")).unwrap();
+        assert!(said.is_empty());
+        // listing zones needs timedated; without it the answer is an error, never an empty list
+        if let Ok(zones) = zones() {
+            assert!(!zones.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_zone_is_looked_up_in_the_zoneinfo_folder() {
+        if zone_file("UTC").is_file() {
+            let now = zone_now("UTC").unwrap();
+            assert_eq!(now.offset_secs, 0);
+            assert!(!now.abbrev.is_empty());
+        }
+        assert!(zone_now("../etc/passwd")
+            .unwrap_err()
+            .to_string()
+            .contains("not a time zone"));
+        assert!(zone_now("Nowhere/Land")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown time zone"));
+    }
+
+    #[test]
+    fn running_a_command_reports_failure_and_missing_programs() {
+        assert!(output("true", &[]).is_ok());
+        assert!(output("false", &[])
+            .unwrap_err()
+            .to_string()
+            .contains("failed"));
+        assert!(output("lanlord-no-such-program", &[]).is_err());
+        assert!(succeeds("true", &[]) && !succeeds("false", &[]));
+        assert!(!succeeds("lanlord-no-such-program", &[]));
+        assert!(!unit_active("lanlord-no-such.service"));
     }
 
     #[test]

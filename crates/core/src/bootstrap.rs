@@ -708,6 +708,16 @@ esac"#,
         }
 
         #[test]
+        fn a_program_runs_as_root_with_the_password_alone_on_the_first_line() {
+            let (remote, first) = plan_argv(&["lanlord", "bridge"], None);
+            assert_eq!(remote, ["sudo", "-n", "lanlord", "bridge"]);
+            assert_eq!(first, "");
+            let (remote, first) = plan_argv(&["lanlord", "bridge"], Some("hunter2"));
+            assert_eq!(remote, ["sudo", "-S", "-p", "", "lanlord", "bridge"]);
+            assert_eq!(first, "hunter2\n");
+        }
+
+        #[test]
         fn a_failing_script_is_an_error() {
             let record = temp("fail");
             let mut ask = |_: &str| Ok(String::new());
