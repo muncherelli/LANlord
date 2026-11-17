@@ -3,6 +3,7 @@
 //! background through `Services`.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use eframe::egui::{self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, Sense, Ui, Vec2};
@@ -38,6 +39,7 @@ use lanlord_app::console::Console;
 use lanlord_app::desktop::Target;
 use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
+use lanlord_app::login::WebSession;
 use lanlord_app::services::Services;
 use lanlord_app::tasks::PasswordRequest;
 use lanlord_app::welcome::Welcome;
@@ -100,7 +102,13 @@ pub struct Desktop {
     auth: Option<Arc<dyn Auth>>,
     /// the logon box, shown instead of the desktop until someone is signed in.
     login: Option<LoginBox>,
+    /// how the browser logs on and off; `None` everywhere else.
+    web: Option<Rc<dyn WebSession>>,
     signed_in: Option<SignedIn>,
+    /// windows a `?open=` link asked for, opened once someone is logged on.
+    open_after_logon: Option<String>,
+    /// the browser's logout, waiting for the server to say the session is gone.
+    logging_off: Option<std::sync::mpsc::Receiver<Result<bool, String>>>,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
@@ -165,6 +173,9 @@ impl Desktop {
             add_host: None,
             auth: None,
             login: None,
+            web: None,
+            logging_off: None,
+            open_after_logon: None,
             signed_in: None,
             admin_setup: None,
             #[cfg(feature = "native")]
@@ -219,6 +230,16 @@ impl Desktop {
         self.login = Some(login);
     }
 
+    /// the browser starts at the logon box too, unless the page's session is still good: the
+    /// gateway has one server, and its own accounts log on through `session`.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn require_web_login(&mut self, session: Rc<dyn WebSession>) {
+        let mut login = LoginBox::web(session.clone(), &self.ctx, None);
+        login.resume_web();
+        self.login = Some(login);
+        self.web = Some(session);
+    }
+
     /// start at the logon box. lanlord on the gateway itself has one server and no logon.
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
@@ -232,13 +253,47 @@ impl Desktop {
 }
 
 impl Desktop {
+    /// is the account an administrator? one that signed in without the flag (local) is.
+    fn is_admin(&self) -> bool {
+        self.signed_in.as_ref().is_none_or(|s| s.identity.admin)
+    }
+
+    /// drop everything one session left open: windows, dialogs and the state behind them, so the
+    /// next account starts clean and cannot answer a box the last one opened.
+    fn reset_session_ui(&mut self) {
+        self.windows.clear();
+        self.active = None;
+        self.selected = None;
+        self.start_open = false;
+        self.confirm = None;
+        self.password = None;
+        self.add_host = None;
+        self.open_next = None;
+        self.compat_next = false;
+        self.close_requests.clear();
+        self.settings = SettingsEditor::default();
+        self.nt4 = Nt4Window::default();
+        self.dns = DnsPanel::default();
+        self.commands = CommandPanel::default();
+        self.my_server = MyServer::default();
+        self.networks = Networks::default();
+        self.components = Components::default();
+        self.clock.reset();
+    }
+
     fn open(&mut self, target: Target) {
+        if target.needs_admin() && !self.is_admin() {
+            return;
+        }
         match self.windows.iter_mut().find(|w| w.target == target) {
             Some(window) => window.minimized = false,
             None => {
                 if target == Target::DateTime {
                     // a fresh reading of the server every time the window opens
                     self.clock.reset();
+                }
+                if target == Target::MyServer {
+                    self.my_server.set_read_only(!self.is_admin());
                 }
                 if target == Target::Components {
                     self.components.open();
@@ -276,6 +331,16 @@ impl Desktop {
             return Vec::new();
         };
         lanlord_app::compat::problems(&report, &enabled)
+    }
+
+    /// like `open_spec`, but when the logon box is up the windows wait until someone is on.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn open_spec_after_logon(&mut self, spec: &str) {
+        if self.login.is_some() {
+            self.open_after_logon = Some(spec.to_string());
+        } else {
+            self.open_spec(spec);
+        }
     }
 
     /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
@@ -371,7 +436,14 @@ impl Desktop {
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         self.sync_window_title(&ctx);
 
+        self.poll_log_off();
         if self.login.is_some() {
+            self.show_login(ui, &ctx);
+            return;
+        }
+        if self.web.is_some() && self.services.session_ended() {
+            // any call the server turned down for want of a login sends the person back to the box
+            self.return_to_web_login(Some("Your session ended. Log on again."), false);
             self.show_login(ui, &ctx);
             return;
         }
@@ -442,13 +514,14 @@ impl Desktop {
     /// the screen that creates the first administrator before anything else.
     fn finish_login(&mut self, signed_in: SignedIn) {
         self.login = None;
-        if let Err(error) = self.hosts.add(&signed_in.target) {
-            emit(Kind::Err, error);
+        // the browser's one server is the gateway itself, not an entry in the list
+        if self.web.is_none() {
+            if let Err(error) = self.hosts.add(&signed_in.target) {
+                emit(Kind::Err, error);
+            }
         }
-        self.windows.clear();
-        self.active = None;
-        self.selected = None;
-        self.start_open = false;
+        self.services.session_restored();
+        self.reset_session_ui();
         if signed_in.identity.is_root() {
             self.admin_setup = Some(AdminSetup::new());
         }
@@ -457,6 +530,9 @@ impl Desktop {
         self.compat_alert.reset();
         if self.welcome.logon(&account) {
             self.open(Target::Welcome);
+        }
+        if let Some(spec) = self.open_after_logon.take() {
+            self.open_spec(&spec);
         }
     }
 
@@ -511,8 +587,83 @@ impl Desktop {
 
     /// back to the logon box, closing the connection that was kept open for this server.
     fn log_off(&mut self) {
+        if self.web.is_some() {
+            self.return_to_web_login(None, true);
+            return;
+        }
         let last = self.signed_in.as_ref().map(|s| s.target.clone());
         self.return_to_login(last, None);
+    }
+
+    /// the browser's way back to the logon box: the name stays filled in, and `log_off` says the
+    /// server still has the session, so it is ended first. the box waits for the server's answer:
+    /// a logout that failed leaves the person signed in, and one still in flight cannot clear
+    /// the cookie of a later logon.
+    fn return_to_web_login(&mut self, note: Option<&str>, log_off: bool) {
+        let Some(session) = self.web.clone() else {
+            return;
+        };
+        if log_off {
+            if self.logging_off.is_some() {
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = self.ctx.clone();
+            lanlord_app::login::spawn_local(async move {
+                session.logout().await;
+                // the logout is done when the server says it no longer knows the session; if it
+                // could not be asked, the session may well still be there
+                let answer = match session.current().await {
+                    Ok(now) => Ok(now.is_none()),
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = tx.send(answer);
+                ctx.request_repaint();
+            });
+            self.logging_off = Some(rx);
+            return;
+        }
+        self.show_web_login(session, note);
+    }
+
+    /// once a frame: when the logout answered, show the box, or say it did not work.
+    fn poll_log_off(&mut self) {
+        let Some(rx) = &self.logging_off else {
+            return;
+        };
+        let ended = match rx.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Ok(false),
+        };
+        self.logging_off = None;
+        if ended == Ok(true) {
+            if let Some(session) = self.web.clone() {
+                self.show_web_login(session, None);
+            }
+        } else {
+            let text = match ended {
+                Err(_) => {
+                    "Could not reach the server to end your session, so you are still logged on."
+                }
+                _ => "The server did not end your session, so you are still logged on.",
+            };
+            emit(Kind::Err, text);
+            self.confirm = Some((
+                Confirm::Failure,
+                Form::new("log-off-failed", "Log off", text),
+            ));
+        }
+    }
+
+    fn show_web_login(&mut self, session: Rc<dyn WebSession>, note: Option<&str>) {
+        let last = self.signed_in.take().map(|s| s.identity.user);
+        self.reset_session_ui();
+        let mut login = LoginBox::web(session, &self.ctx, last.as_deref());
+        if let Some(note) = note {
+            login.note(note);
+        }
+        self.login = Some(login);
     }
 
     /// show the logon box again with `last` filled in and `note` in its status bar.
@@ -524,9 +675,7 @@ impl Desktop {
             let closer = auth.clone();
             std::thread::spawn(move || closer.sign_out(&target));
         }
-        self.windows.clear();
-        self.active = None;
-        self.start_open = false;
+        self.reset_session_ui();
         let mut login = LoginBox::new(auth, &self.ctx, last.as_deref());
         if let Some(note) = note {
             login.note(&note);
@@ -1001,6 +1150,7 @@ impl Desktop {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
             Target::MyServer => {
                 let host = self.host();
+                self.my_server.set_read_only(!self.is_admin());
                 my_server::show(&mut self.my_server, ui, &self.services, host.as_deref());
             }
             Target::Networks => {
