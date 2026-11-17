@@ -10,7 +10,7 @@
 #   netbios_name: LANLORD        # the server's name; default: this machine's hostname
 #   network: retronet            # which lanlord network it is on; default: the first (see networks.yml)
 #   address: 172.16.120.1/22     # default: that network's address
-#   samba_version: 4.22.11       # which samba to run (tag nt4-<version>); default: follow the rolling nt4 tag
+#   samba_version: 4.22.11       # which samba to run (tag nt4-<version>, or a reissue like 4.22.11-r2); default: follow the rolling nt4 tag
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
 #   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
 #   software: false              # true adds a software share (S: at logon): domain users read it,
@@ -119,7 +119,7 @@
     - name: build the image here when it could not be pulled
       ansible.builtin.command: >-
         docker build --quiet -t {{ image }}
-        {{ ('--build-arg SAMBA_VERSION=' ~ samba_version) if samba_version | string | length > 0 else '' }}
+        {{ ('--build-arg SAMBA_VERSION=' ~ (samba_version | string | regex_replace('-r[0-9]+$', ''))) if samba_version | string | length > 0 else '' }}
         {{ image_dir }}
       changed_when: false
       when: nt4 is defined and image_pull.rc != 0

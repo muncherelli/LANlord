@@ -71,7 +71,7 @@ CI publishes one image, `ghcr.io/muncherelli/lanlord/lanlord-server-component`, 
 - `nt4` (rolling) and `nt4-<samba version>` (for example `nt4-4.22.11`, never overwritten: CI skips a versioned tag that is already published, and a deliberate reissue gets a `-r2` style tag): samba built from the signature-checked source tarball as a classic (non-AD) server, with SMB1/NT1 still allowed. Its Dockerfile is in `playbooks/nt4-domain/image/`, next to the samba release key it checks the tarball against.
 - `network-services` (rolling) and `network-services-<dnsmasq version>`: dnsmasq on Alpine, from `playbooks/dns/image/`.
 
-The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf` and `dnsmasq.conf` are mounted into the container when it runs, so a rolling tag keeps working with older LANlord installs. Without `nt4-domain.samba_version` the playbook follows `nt4`; with it (say `4.22.11`) it runs `nt4-4.22.11`. Each apply pulls the tag first, which is how a rolling tag moves forward; if the pull fails it builds the same Dockerfile on the gateway instead.
+The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf` and `dnsmasq.conf` are mounted into the container when it runs, so a rolling tag keeps working with older LANlord installs. Without `nt4-domain.samba_version` the playbook follows `nt4`; with it (say `4.22.11`) it runs `nt4-4.22.11`. A reissue of a version (`nt4-4.22.11-r2`) only reaches installs that pin `samba_version: 4.22.11-r2`; installs on the rolling tag get it automatically. Each apply pulls the tag first, which is how a rolling tag moves forward; if the pull fails it builds the same Dockerfile on the gateway instead.
 
 ## Joining NT4 machines
 

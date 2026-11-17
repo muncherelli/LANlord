@@ -1,0 +1,4 @@
+[
+  {"component": "nt4", "version": "4.22.11", "tag": "4.22.11", "latest": true, "context": "ansible/playbooks/nt4-domain/image", "arg": "SAMBA_VERSION"},
+  {"component": "network-services", "version": "2.91", "tag": "2.91", "latest": true, "context": "ansible/playbooks/dns/image", "arg": "DNSMASQ_VERSION"}
+]
