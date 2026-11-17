@@ -34,7 +34,7 @@
     image_dir: /opt/lanlord/playbooks/nt4-domain/image
     # the image is pinned to the X.Y.Z in its VERSION file, which ships with this playbook
     image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
-    image: "ghcr.io/muncherelli/lanlord-nt4-services:{{ image_version }}"
+    image: "ghcr.io/muncherelli/lanlord-nt4-server-components:{{ image_version }}"
     container: lanlord-nt4
     state_dir: /opt/lanlord/nt4
   tasks:

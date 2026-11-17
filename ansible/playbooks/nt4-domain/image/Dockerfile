@@ -2,7 +2,7 @@
 # samba release key in this folder) as a classic, non-ad server: smbd, nmbd, tdbsam, smbpasswd,
 # pdbedit and net, with smb1 (nt1) still available. only upstream software is in the image;
 # lanlord's entrypoint.sh, lanlord-user and smb.conf are mounted when the container runs.
-#   docker build --build-arg IMAGE_VERSION=1.0.0 -t lanlord-nt4-services:1.0.0 .
+#   docker build --build-arg IMAGE_VERSION=1.0.0 -t lanlord-nt4-server-components:1.0.0 .
 # VERSION is this image's X.Y.Z (the tag); the samba version is the ARG below and a label
 ARG ALPINE=3.22
 FROM alpine:${ALPINE} AS build
@@ -66,7 +66,7 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
 FROM alpine:${ALPINE}
 ARG SAMBA_VERSION=4.22.11
 ARG IMAGE_VERSION=dev
-LABEL org.opencontainers.image.title="lanlord-nt4-services" \
+LABEL org.opencontainers.image.title="lanlord-nt4-server-components" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       io.lanlord.samba.version="${SAMBA_VERSION}"

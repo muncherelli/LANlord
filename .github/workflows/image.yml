@@ -1,8 +1,8 @@
 name: image
 
 # publishes two images, one package each, versioned independently:
-#   ghcr.io/muncherelli/lanlord-nt4-services      samba built from source
-#   ghcr.io/muncherelli/lanlord-network-services  dnsmasq on alpine
+#   ghcr.io/muncherelli/lanlord-nt4-server-components      samba built from source
+#   ghcr.io/muncherelli/lanlord-networking-components  dnsmasq on alpine
 # each image owns a directory (see .github/images.json) with its Dockerfile and a VERSION
 # file holding X.Y.Z. the images hold only upstream software; lanlord's scripts and config
 # are mounted by the playbooks. the upstream versions (samba, dnsmasq) are not tags: they
@@ -40,7 +40,7 @@ on:
       image:
         description: image to publish (a version that is already published is still never overwritten)
         type: choice
-        options: [all, nt4-services, network-services]
+        options: [all, nt4-server-components, networking-components]
         default: all
 
 permissions:

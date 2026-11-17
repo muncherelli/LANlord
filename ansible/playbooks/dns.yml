@@ -29,7 +29,7 @@
     image_dir: /opt/lanlord/playbooks/dns/image
     # the image is pinned to the X.Y.Z in its VERSION file, which ships with this playbook
     image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
-    image: "ghcr.io/muncherelli/lanlord-network-services:{{ image_version }}"
+    image: "ghcr.io/muncherelli/lanlord-networking-components:{{ image_version }}"
     state_root: /opt/lanlord/dns
     label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
   tasks:
