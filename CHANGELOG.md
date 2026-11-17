@@ -13,5 +13,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Every window opens as tall as its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small (#105)
+- Every window opens fitted to its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small; the console, hosts and changelog open at a working size and stay resizable. The Changelog window shows plain text without the template's intro (#105)
 - The Welcome window shows the version and has a Changelog topic that opens the changelog (#105)

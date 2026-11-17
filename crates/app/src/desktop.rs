@@ -55,6 +55,12 @@ impl Target {
         }
     }
 
+    /// the contents can grow (a console, a list, a text): the window opens at `size` rather than
+    /// as tall as its contents, the user may resize it and the growable part fills it.
+    pub fn growable(self) -> bool {
+        matches!(self, Self::Console | Self::Hosts | Self::Changelog)
+    }
+
     /// a dialog has only a close button, cannot be resized and is as tall as its contents.
     pub fn is_dialog(self) -> bool {
         matches!(self, Self::Welcome | Self::DateTime | Self::Components)
@@ -82,7 +88,7 @@ impl Target {
             },
             Self::MyServer => (440.0, 480.0),
             Self::Networks => (560.0, 440.0),
-            Self::Console => (600.0, 300.0),
+            Self::Console => (680.0, 440.0),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
