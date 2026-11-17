@@ -52,8 +52,12 @@ impl Services {
     pub fn spawn<T: Send + 'static>(
         &self,
         host: &str,
-        work: impl FnOnce(&dyn Gateway, AskPassword) -> Result<T> + Send + 'static,
+        work: impl Fn(&dyn Gateway, AskPassword) -> Result<T> + Send + Sync + 'static,
     ) -> Option<Job<T>> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(http) = self.gateway.http() {
+            return self.tasks.spawn_web(&self.wake, host, http.clone(), work);
+        }
         let gateway = self.gateway.clone();
         self.tasks.spawn(&self.wake, host, move |ask| {
             let mut ask = cached(ask);
@@ -64,8 +68,12 @@ impl Services {
     /// run a small read with the gateway in the background, without marking any host busy.
     pub fn quiet<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&dyn Gateway) -> Result<T> + Send + 'static,
+        work: impl Fn(&dyn Gateway) -> Result<T> + Send + Sync + 'static,
     ) -> Job<T> {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(http) = self.gateway.http() {
+            return self.tasks.quiet_web(&self.wake, http.clone(), work);
+        }
         let gateway = self.gateway.clone();
         self.tasks.quiet(&self.wake, move || work(&*gateway))
     }
@@ -75,6 +83,11 @@ impl Services {
         let target = host.to_string();
         self.spawn(host, move |gateway, ask| gateway.bootstrap(&target, ask))
             .is_some()
+    }
+
+    /// has the server said this login is over? the desktop shows its logon box again.
+    pub fn session_ended(&self) -> bool {
+        self.gateway.session_ended()
     }
 
     /// is lanlord running on the gateway itself?

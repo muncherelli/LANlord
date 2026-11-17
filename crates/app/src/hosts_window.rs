@@ -98,8 +98,9 @@ mod tests {
         let mut hosts = HostList::new(None);
         hosts.add("me@gw").unwrap();
         let (release, wait) = mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
         let held = services.spawn("me@gw", move |_, _| {
-            let _ = wait.recv();
+            let _ = wait.lock().unwrap().recv();
             Ok(())
         });
         assert!(held.is_some() && !ready(&hosts, &services));

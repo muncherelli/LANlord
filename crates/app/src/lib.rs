@@ -5,6 +5,8 @@
 
 pub mod admin_setup;
 pub mod ask;
+#[cfg(target_arch = "wasm32")]
+pub mod browser;
 pub mod clock_window;
 pub mod command_panel;
 pub mod compat;
@@ -27,6 +29,7 @@ pub mod my_server;
 pub mod nt4_panel;
 pub mod prompt;
 pub mod remote;
+pub mod replay;
 pub mod services;
 pub mod settings_window;
 pub mod tasks;
