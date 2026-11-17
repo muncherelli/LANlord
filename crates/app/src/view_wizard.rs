@@ -32,10 +32,10 @@ pub struct CheckList<M> {
 /// a one-line text field that tells its owner which one it is: each change sends
 /// `edit(key, new text)`.
 pub struct KeyedInput<M> {
-    pub key: usize,
+    pub key: (usize, usize),
     pub value: String,
     pub width: f32,
-    pub edit: fn(usize, String) -> M,
+    pub edit: fn((usize, usize), String) -> M,
 }
 
 /// the white band at the top of a wizard page: a bold title, a line under it and an icon on

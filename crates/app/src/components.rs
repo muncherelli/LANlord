@@ -20,9 +20,6 @@ use crate::services::Services;
 use crate::view::{self, Button, Dialog, Node};
 use crate::view_wizard::{CheckList, CheckRow, KeyedInput};
 
-/// address fields are keyed by `component * KEYS + network`.
-const KEYS: usize = 64;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Step {
     #[default]
@@ -46,7 +43,7 @@ pub enum Msg {
     /// join or leave a network: (component on the networks page, network).
     ToggleNet(usize, usize),
     /// the address field `key` now holds this text.
-    Address(usize, String),
+    Address((usize, usize), String),
     Back,
     Next,
     Finish,
@@ -67,6 +64,10 @@ pub struct Components {
     draft: Option<Selection>,
     /// what was typed into the address fields, by (component, network).
     typed: BTreeMap<(String, String), String>,
+    /// the server `current` was read from.
+    taken_from: Option<String>,
+    /// the settings are read again at the next chance (the window opened or others saved).
+    stale: bool,
     pub step: Step,
     /// the highlighted row on the first page.
     pub row: usize,
@@ -89,6 +90,7 @@ impl Components {
 
     /// start over from what is switched on now.
     pub fn open(&mut self) {
+        self.invalidate();
         self.draft = self.current.clone();
         self.typed = BTreeMap::new();
         if let Some(draft) = &self.draft {
@@ -109,13 +111,24 @@ impl Components {
         self.done = false;
     }
 
+    /// the cached settings may be out of date (another window saved): read them again.
+    pub fn invalidate(&mut self) {
+        self.stale = true;
+    }
+
     /// the wizard finished or was cancelled, once.
     pub fn take_done(&mut self) -> bool {
         std::mem::take(&mut self.done)
     }
 
-    /// take over freshly read (or saved) settings.
-    pub fn take_settings(&mut self, settings: &Settings) {
+    /// take over freshly read (or saved) settings of `host`; a working copy made from another
+    /// server's settings is dropped.
+    pub fn take_settings(&mut self, settings: &Settings, host: &str) {
+        if self.taken_from.as_deref() != Some(host) {
+            self.draft = None;
+            self.typed = BTreeMap::new();
+            self.taken_from = Some(host.to_string());
+        }
         self.networks = networks_from_settings(settings);
         match Selection::from_settings(settings) {
             Ok(selection) => {
@@ -133,24 +146,27 @@ impl Components {
     pub fn refresh(&mut self, services: &Services, host: &str) {
         if self.settings.poll() {
             if let Some(settings) = self.settings.data.clone() {
-                self.take_settings(&settings);
+                self.take_settings(&settings, host);
             }
         }
         if self.saving.poll() {
             if let Some(settings) = self.saving.data.take() {
-                self.take_settings(&settings);
+                self.take_settings(&settings, host);
                 self.settings.data = Some(settings);
                 self.draft = None;
                 self.done = true;
             }
         }
-        if self.settings.wants_load(host, false) {
+        let reread = self.stale && !self.settings.busy() && !self.saving.busy();
+        if self.settings.wants_load(host, false) || reread {
             let target = host.to_string();
             let job = services.spawn(host, move |gateway, ask| {
                 gateway.load_settings(&target, ask)
             });
-            self.settings
+            let started = self
+                .settings
                 .track(host, job, "reading the components...", "", true);
+            self.stale = !started;
         }
     }
 
@@ -240,7 +256,9 @@ impl Components {
                         return;
                     }
                 }
-                if draft.enabled.remove(component.id()).is_none() {
+                if draft.enabled.remove(component.id()).is_some() {
+                    self.typed.retain(|(id, _), _| id != component.id());
+                } else {
                     if component.requires_docker {
                         draft.enabled.entry("docker".into()).or_default();
                     }
@@ -302,7 +320,7 @@ impl Components {
                 }
             }
             Msg::Address(key, text) => {
-                let (c, n) = (key / KEYS, key % KEYS);
+                let (c, n) = key;
                 if let (Some(component), Some(network)) =
                     (self.joining().into_iter().nth(c), self.networks.get(n))
                 {
@@ -527,7 +545,7 @@ impl Components {
                 if joined && component.own_address() && !network.external {
                     row.push(Node::Text("Address:".into()));
                     row.push(Node::KeyedInput(KeyedInput {
-                        key: c * KEYS + n,
+                        key: (c, n),
                         value: self
                             .typed
                             .get(&(component.id().to_string(), network.id.clone()))
@@ -671,7 +689,7 @@ mod tests {
         *fake.stored.lock().unwrap() = SETTINGS.into();
         let services = Services::new(fake.clone(), Wake::none());
         let mut window = Components::default();
-        window.take_settings(&Settings::parse(SETTINGS).unwrap());
+        window.take_settings(&Settings::parse(SETTINGS).unwrap(), "gw");
         window.open();
         (window, services, fake)
     }
@@ -713,6 +731,58 @@ mod tests {
     }
 
     #[test]
+    fn another_servers_settings_drop_the_working_copy() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        assert!(window.draft().is_enabled("nt4-domain"));
+        window.take_settings(&Settings::parse(SETTINGS).unwrap(), "gw");
+        assert!(window.draft().is_enabled("nt4-domain"), "same server");
+        window.take_settings(&Settings::parse(SETTINGS).unwrap(), "other");
+        assert!(!window.draft().is_enabled("nt4-domain"));
+        assert!(window.typed.is_empty());
+    }
+
+    #[test]
+    fn clearing_a_component_drops_what_was_typed_for_it() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        let nt4 = window
+            .joining()
+            .iter()
+            .position(|c| c.id() == "nt4-domain")
+            .unwrap();
+        window.update(
+            Msg::Address((nt4, 1), "192.0.2.150".into()),
+            &services,
+            "gw",
+        );
+        assert!(!window.typed.is_empty());
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        assert!(window.typed.is_empty());
+    }
+
+    #[test]
+    fn opening_reads_the_settings_again() {
+        let (mut window, services, fake) = ready();
+        window.refresh(&services, "gw");
+        while window.settings.busy() || !window.settings.belongs_to("gw") {
+            window.refresh(&services, "gw");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let reads = || fake.calls().iter().filter(|c| c.contains("load")).count();
+        let before = reads();
+        window.refresh(&services, "gw");
+        assert_eq!(reads(), before, "cached while nothing changed");
+        window.open();
+        window.refresh(&services, "gw");
+        while window.settings.busy() {
+            window.refresh(&services, "gw");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(reads(), before + 1);
+    }
+
+    #[test]
     fn the_pages_go_choose_networks_summary_and_back() {
         let (mut window, services, _) = ready();
         window.update(Msg::Next, &services, "gw");
@@ -743,24 +813,16 @@ mod tests {
         // inside the retro lan's dhcp range
         window.update(Msg::ToggleNet(nt4, 2), &services, "gw");
         window.update(
-            Msg::Address(nt4 * KEYS + 1, "192.0.2.150".into()),
+            Msg::Address((nt4, 1), "192.0.2.150".into()),
             &services,
             "gw",
         );
         window.update(Msg::Next, &services, "gw");
         assert_eq!(window.step, Step::Attach);
         assert!(window.problems()[0].contains("DHCP range"));
-        window.update(
-            Msg::Address(nt4 * KEYS + 1, "nonsense".into()),
-            &services,
-            "gw",
-        );
+        window.update(Msg::Address((nt4, 1), "nonsense".into()), &services, "gw");
         assert!(window.problems()[0].contains("not an ipv4 address"));
-        window.update(
-            Msg::Address(nt4 * KEYS + 1, "192.0.2.5".into()),
-            &services,
-            "gw",
-        );
+        window.update(Msg::Address((nt4, 1), "192.0.2.5".into()), &services, "gw");
         window.update(Msg::Next, &services, "gw");
         assert_eq!(window.step, Step::Summary);
         let (selection, _) = window.candidate();
@@ -837,7 +899,10 @@ mod tests {
     #[test]
     fn a_broken_components_section_is_shown_and_the_old_sections_still_count() {
         let (mut window, services, _) = ready();
-        window.take_settings(&Settings::parse("docker: {}\ndns: {}\ncomponents: 7\n").unwrap());
+        window.take_settings(
+            &Settings::parse("docker: {}\ndns: {}\ncomponents: 7\n").unwrap(),
+            "gw",
+        );
         assert!(window.current().unwrap().is_enabled("dns"));
         let page = window.view(true);
         assert!(page

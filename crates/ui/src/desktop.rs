@@ -865,6 +865,9 @@ impl Desktop {
             Target::Settings => {
                 let host = self.host();
                 self.settings.show(ui, &self.services, host.as_deref());
+                if self.settings.take_saved() {
+                    self.components.invalidate();
+                }
             }
             Target::DateTime => {
                 let host = self.host();
