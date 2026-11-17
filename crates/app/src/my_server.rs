@@ -1,8 +1,9 @@
 //! the My Server window: what the signed-in server is (General) and the one dangerous thing you
 //! can do to it (Advanced): take lanlord back off.
 
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::server::ServerFacts;
+use lanlord_model::server::ServerFacts;
+
+use crate::log::{emit, Kind};
 
 use crate::remote::Remote;
 use crate::services::Services;
