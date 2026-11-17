@@ -539,6 +539,10 @@ fn a_baseline_with_no_settings_installs_docker_and_touches_no_interface() {
     // the address loop runs over the configured networks, which are none without settings
     assert!(docker_gate("find out which network manager is running").contains("lan_configured"));
     assert!(docker_gate("give every lanlord network its address and mtu").is_empty());
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
     // without a host network the firewall file has no interface rules at all
     let book = r#"
 - hosts: localhost
