@@ -11,6 +11,8 @@ listen-address={{ net.ip }}
 bind-dynamic
 interface={{ net.interface }}
 except-interface={{ host_interface }}
+# interface= adds lo by itself; a second network's dnsmasq then cannot bind 127.0.0.1
+except-interface=lo
 {% for other in dns_others %}
 except-interface={{ other }}
 {% endfor %}
