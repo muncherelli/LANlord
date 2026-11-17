@@ -104,27 +104,32 @@ fn servers_in(text: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// write `text` to `path` so a reader sees the old file or the new one, never half of it.
+/// make the folder lanlord owns (like timesyncd.conf.d) and set it to 0755, even when it
+/// exists with another mode or the umask is strict, as `install -d -m 0755` did. never call this
+/// on a system folder like /etc.
+fn owned_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+/// write `text` to `path` so a reader sees the old file or the new one, never half of it. the
+/// file ends up 0644 whatever the umask, because services read it; the folder is left alone
+/// (see [`owned_dir`]).
 pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
     let dir = path.parent().context("the file has no folder")?;
-    // 0755 and 0644 on purpose, whatever the umask: services read what lanlord writes here
-    // (the old script used `install -d -m 0755`)
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o755)
-            .create(dir)?;
-    }
+    std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".lanlord-{}.tmp", std::process::id()));
     let result = (|| -> Result<()> {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::remove_file(&tmp);
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode(0o644)
             .open(&tmp)?;
+        // the open is masked by the umask; the mode is set after it
+        file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         std::fs::rename(&tmp, path)?;
@@ -419,6 +424,7 @@ fn run(step: &Step) -> Result<Option<String>> {
             None
         }
         Step::SetServers(servers) => {
+            owned_dir(Path::new(TIMESYNCD_FILE).parent().context("no folder")?)?;
             write_atomic(Path::new(TIMESYNCD_FILE), &dropin(servers))?;
             None
         }
@@ -781,13 +787,47 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "two\n");
         let left: Vec<_> = std::fs::read_dir(file.parent().unwrap()).unwrap().collect();
         assert_eq!(left.len(), 1, "no temporary file stays");
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&file), 0o644);
-            assert_eq!(mode(file.parent().unwrap()), 0o755);
-        }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// the umask is per process, so the check runs in a child started under 077.
+    #[test]
+    fn modes_hold_under_a_strict_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lanlord-local-umask-{}", std::process::id()));
+        let conf = dir.join("conf.d");
+        if std::env::var_os("LANLORD_UMASK_CHILD").is_some() {
+            std::fs::create_dir_all(&conf).unwrap();
+            // an existing folder with another mode is reset
+            std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o700)).unwrap();
+            owned_dir(&conf).unwrap();
+            write_atomic(&conf.join("a.conf"), "x\n").unwrap();
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&conf), 0o755);
+            assert_eq!(mode(&conf.join("a.conf")), 0o644);
+            // a plain file write leaves its folder alone
+            let other = dir.join("etc");
+            std::fs::create_dir_all(&other).unwrap();
+            std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o710)).unwrap();
+            write_atomic(&other.join("timezone"), "UTC\n").unwrap();
+            assert_eq!(mode(&other), 0o710);
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let name = format!("{}::modes_hold_under_a_strict_umask", module_path!());
+        let name = name
+            .split_once("::")
+            .map_or(name.as_str(), |(_, rest)| rest);
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg("umask 077; exec \"$0\" --exact \"$1\" --test-threads=1")
+            .arg(exe)
+            .arg(name)
+            .env("LANLORD_UMASK_CHILD", "1")
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(status.success());
     }
 
     #[test]

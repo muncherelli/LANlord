@@ -155,7 +155,8 @@ impl Session {
     /// (sudo, asking for the password once if it has to). the first frame is checked, so a
     /// bridge that is missing or speaks another protocol is a [`BridgeError`].
     pub fn bridge(&self, root: bool, ask_password: AskPassword) -> Result<Bridge> {
-        let argv = [BRIDGE_BIN, "bridge"];
+        // LC_ALL=C keeps the messages in English for the not-found check (exit 127 comes first)
+        let argv = ["env", "LC_ALL=C", BRIDGE_BIN, "bridge"];
         let (remote, first) = if root {
             let admin = config::admin(self)?;
             root_argv(self, &admin, &argv, ask_password)?
