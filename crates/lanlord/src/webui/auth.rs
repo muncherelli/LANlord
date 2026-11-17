@@ -286,6 +286,15 @@ impl Auth {
 
     /// the user a token belongs to, when its session is still valid; a use keeps it alive.
     fn user_of(&self, token: &str) -> Option<(String, bool)> {
+        self.lookup(token, true)
+    }
+
+    /// as `user_of`, but a background poll: it validates without counting as activity.
+    fn peek_of(&self, token: &str) -> Option<(String, bool)> {
+        self.lookup(token, false)
+    }
+
+    fn lookup(&self, token: &str, touch: bool) -> Option<(String, bool)> {
         let now = self.now();
         let key = digest(token);
         let mut book = self.book();
@@ -297,7 +306,9 @@ impl Auth {
             book.sessions.remove(&key);
             return None;
         }
-        session.last = now;
+        if touch {
+            session.last = now;
+        }
         Some((session.user.clone(), session.admin))
     }
 
@@ -308,6 +319,11 @@ impl Auth {
     /// the user of the session a request's cookie names.
     pub fn session(&self, headers: &HeaderMap) -> Option<(String, bool)> {
         self.user_of(&cookie_token(headers)?)
+    }
+
+    /// the user of the session a request names, without keeping the session alive.
+    pub fn peek(&self, headers: &HeaderMap) -> Option<(String, bool)> {
+        self.peek_of(&cookie_token(headers)?)
     }
 }
 
@@ -396,6 +412,14 @@ pub fn same_origin_json(headers: &HeaderMap) -> Result<(), Response> {
 #[allow(clippy::result_large_err)]
 pub fn require(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
     auth.session(headers)
+        .ok_or_else(|| json(StatusCode::UNAUTHORIZED, r#"{"error":"login required"}"#))
+}
+
+/// as `require`, for a request the page makes on its own (a live meter): the session must be
+/// valid, but the request does not count as activity, so the idle logout still fires.
+#[allow(clippy::result_large_err)]
+pub fn require_peek(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
+    auth.peek(headers)
         .ok_or_else(|| json(StatusCode::UNAUTHORIZED, r#"{"error":"login required"}"#))
 }
 
@@ -676,6 +700,51 @@ mod tests {
         send(rig, builder.body(Body::from("{}")).unwrap()).await.0
     }
 
+    async fn get_monitor(rig: &Rig, cookie: Option<&str>) -> StatusCode {
+        let mut builder = Request::builder().uri("/api/monitor");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        send(rig, builder.body(Body::empty()).unwrap()).await.0
+    }
+
+    async fn post_end(rig: &Rig, cookie: &str, body: &str) -> StatusCode {
+        let request = page("POST", "/api/monitor/end", body)
+            .header(header::COOKIE, cookie)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        send(rig, request).await.0
+    }
+
+    #[test]
+    fn any_signed_in_user_may_watch_but_only_an_admin_may_end_a_process() {
+        runtime().block_on(async {
+            let rig = rig();
+            assert_eq!(get_monitor(&rig, None).await, StatusCode::UNAUTHORIZED);
+            let user = session_for(&rig, "carol").await;
+            let admin = session_for(&rig, "admin").await;
+            for cookie in [&user, &admin] {
+                let status = get_monitor(&rig, Some(cookie)).await;
+                // a host without /proc says so; one with it answers
+                assert!(
+                    status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
+                    "{status}"
+                );
+            }
+            // refused for an ordinary user before the pid is even read
+            assert_eq!(
+                post_end(&rig, &user, r#"{"pid":1}"#).await,
+                StatusCode::FORBIDDEN
+            );
+            // an admin gets past the check; the init process is refused by the sampler
+            assert_eq!(
+                post_end(&rig, &admin, r#"{"pid":1}"#).await,
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(post_end(&rig, &admin, "[]").await, StatusCode::BAD_REQUEST);
+        });
+    }
+
     #[test]
     fn a_login_sets_a_locked_down_cookie() {
         runtime().block_on(async {
@@ -918,6 +987,27 @@ mod tests {
                 assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::OK);
             }
             rig.offset.fetch_add(15 * 60, Ordering::SeqCst);
+            assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
+        });
+    }
+
+    #[test]
+    fn monitor_polls_do_not_keep_an_idle_session_alive() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "admin").await;
+            rig.offset.fetch_add(10 * 60, Ordering::SeqCst);
+            // the meter polls, but the person has done nothing
+            assert_ne!(
+                get_monitor(&rig, Some(&cookie)).await,
+                StatusCode::UNAUTHORIZED
+            );
+            // twenty minutes after the last real use the poll finds the session gone
+            rig.offset.fetch_add(10 * 60, Ordering::SeqCst);
+            assert_eq!(
+                get_monitor(&rig, Some(&cookie)).await,
+                StatusCode::UNAUTHORIZED
+            );
             assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
         });
     }

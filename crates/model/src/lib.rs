@@ -2,6 +2,7 @@
 //! with their parsing and validation. nothing here touches the network, files or processes,
 //! so it also builds for the browser.
 
+pub mod bridge;
 pub mod clock;
 pub mod compat;
 pub mod components;
@@ -11,6 +12,7 @@ pub mod leases;
 pub mod log;
 pub mod logon;
 pub mod modules;
+pub mod monitor;
 pub mod netstatus;
 pub mod network;
 pub mod networks;

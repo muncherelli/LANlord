@@ -687,6 +687,7 @@ fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least(
     use eframe::egui::Vec2;
     let size = Vec2::new(1280.0, 720.0);
     let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
     desktop.open(Target::Networks);
     frames_on(&mut desktop, &ctx, size, 6);
     let rect = |d: &Desktop| {
@@ -715,7 +716,7 @@ fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least(
         (rect(&desktop).height() - taller.height()).abs() < 1.5,
         "snapped back"
     );
-    // smaller than it opened, which a window as tall as its contents could not be
+    // and smaller again, down to what its parts that cannot shrink need
     drag_corner(
         &mut desktop,
         &ctx,
@@ -725,8 +726,8 @@ fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least(
     );
     let smaller = rect(&desktop);
     assert!(
-        smaller.height() < opened.height() - 80.0,
-        "{opened:?} {smaller:?}"
+        smaller.height() < taller.height() - 80.0,
+        "{taller:?} {smaller:?}"
     );
     // and down to the least it can be, no further
     drag_corner(
@@ -736,14 +737,17 @@ fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least(
         Target::Networks,
         Vec2::new(-2000.0, -2000.0),
     );
-    let least = crate::windows::least_size(&ctx);
+    let least = crate::windows::least_size(&ctx, "Networks", crate::controls::FILL_MIN);
     let tiny = rect(&desktop);
     assert!(
         tiny.width() >= least.x - 1.0 && tiny.height() >= least.y - 1.0,
         "{tiny:?} {least:?}"
     );
-    // the controls decide how narrow it gets; the height is only the least
-    assert!(tiny.height() <= least.y + 4.0, "{tiny:?} {least:?}");
+    // the list shrinks to its least and the rest of the window stays
+    assert!(
+        tiny.height() < taller.height() - 80.0,
+        "{tiny:?} {taller:?}"
+    );
 }
 
 #[test]
@@ -751,23 +755,12 @@ fn a_form_window_has_a_fixed_size_and_ignores_a_drag_on_its_corner() {
     use eframe::egui::Vec2;
     let size = Vec2::new(1280.0, 720.0);
     let (mut desktop, ctx, _) = desktop();
-    desktop.open(Target::Settings);
+    let form = module("web-proxy");
+    desktop.open(form);
     frames_on(&mut desktop, &ctx, size, 6);
-    let rect = |d: &Desktop| {
-        d.measured
-            .iter()
-            .find(|m| m.0 == Target::Settings)
-            .unwrap()
-            .1
-    };
+    let rect = |d: &Desktop| d.measured.iter().find(|m| m.0 == form).unwrap().1;
     let opened = rect(&desktop);
-    drag_corner(
-        &mut desktop,
-        &ctx,
-        size,
-        Target::Settings,
-        Vec2::new(-100.0, -100.0),
-    );
+    drag_corner(&mut desktop, &ctx, size, form, Vec2::new(-100.0, -100.0));
     assert!((rect(&desktop).size() - opened.size()).abs().max_elem() < 1.5);
 }
 
@@ -835,5 +828,26 @@ fn no_welcome_topic_label_is_wider_than_its_button_and_no_paragraph_leaves_the_p
                 }
             }
         }
+    }
+}
+
+#[test]
+fn a_growable_window_opens_as_tall_as_its_contents_up_to_the_desktop() {
+    use eframe::egui::Vec2;
+    for size in [Vec2::new(1280.0, 720.0), Vec2::new(800.0, 500.0)] {
+        let (mut desktop, ctx, _) = desktop();
+        for target in [Target::Changelog, Target::Hosts] {
+            desktop.open(target);
+        }
+        frames_on(&mut desktop, &ctx, size, 8);
+        let area = super::desktop_area(&ctx);
+        let height = |d: &Desktop, t| d.measured.iter().find(|m| m.0 == t).unwrap().1.height();
+        // the changelog is long: it fills the desktop, no more
+        let log = height(&desktop, Target::Changelog);
+        assert!(log <= area.height() + 1.0, "{size:?}: {log}");
+        assert!(log >= area.height().min(400.0) - 1.0, "{size:?}: {log}");
+        // the hosts list has a few buttons and a short list: shorter than the old 280 default
+        let hosts = height(&desktop, Target::Hosts);
+        assert!(hosts < 280.0, "{size:?}: {hosts}");
     }
 }

@@ -155,10 +155,57 @@ pub fn group<R>(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui) -> R) -> R
     framed.inner
 }
 
+/// the least a part of a window that takes extra room (a list, a log, a text) shrinks to.
+pub const FILL_MIN: f32 = 80.0;
+
 /// the height from the cursor to the bottom of what is visible, for a pane that should fill a
 /// window whose contents scroll.
 pub fn fill_height(ui: &Ui) -> f32 {
-    (ui.clip_rect().bottom() - ui.cursor().top() - 10.0).max(80.0)
+    (ui.clip_rect().bottom() - ui.cursor().top() - 10.0).max(FILL_MIN)
+}
+
+/// what a window tells the growable parts of its contents: the room it has to spare, and what the
+/// parts that took it were without it.
+#[derive(Clone, Copy, Default)]
+pub struct Spare {
+    /// the room left over, until a part takes it
+    pub extra: f32,
+    /// the heights the parts that grow have on their own, added up
+    pub claimed: f32,
+}
+
+fn spare_id() -> egui::Id {
+    egui::Id::unique("window-spare-room")
+}
+
+/// the window gives its contents `extra` points of room to spare, and takes back what they used.
+pub fn lend_room<R>(ctx: &egui::Context, extra: f32, contents: impl FnOnce() -> R) -> (R, Spare) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            spare_id(),
+            Some(Spare {
+                extra,
+                claimed: 0.0,
+            }),
+        )
+    });
+    let result = contents();
+    let back = ctx.data_mut(|d| d.remove_temp::<Option<Spare>>(spare_id()));
+    (result, back.flatten().unwrap_or_default())
+}
+
+/// the height of a part that can grow, whose height on its own is `natural`: that plus the room
+/// the window has to spare, which the first such part takes. outside a window it is `natural`.
+pub fn grow(ui: &Ui, natural: f32) -> f32 {
+    ui.ctx().data_mut(
+        |d| match d.get_temp_mut_or_default::<Option<Spare>>(spare_id()) {
+            Some(spare) => {
+                spare.claimed += natural;
+                natural + std::mem::take(&mut spare.extra)
+            }
+            None => natural,
+        },
+    )
 }
 
 /// a row of buttons pushed to the right edge; the row is one button high, so what comes
