@@ -37,7 +37,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           python3 -m venv "$HOME/ansible-venv"
-          "$HOME/ansible-venv/bin/pip" install --quiet ansible-core==2.22.0
+          "$HOME/ansible-venv/bin/pip" install --quiet ansible-core
           echo "$HOME/ansible-venv/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
