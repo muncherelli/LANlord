@@ -175,6 +175,7 @@ mod tests {
             ready: true,
             updates,
             developer: false,
+            modules: Vec::new(),
         };
         rows(&state)
             .into_iter()
