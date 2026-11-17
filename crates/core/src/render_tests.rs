@@ -319,7 +319,7 @@ fn ansible_renders_three_networks_each_pinned_to_its_own_address() {
     for drop in [
         "    iifname \"eth0\" udp dport { 137, 138 } drop",
         "    iifname \"eth0\" tcp dport { 139, 445 } drop",
-        "    iifname \"eth0\" udp dport { 53, 67, 68 } drop",
+        "    iifname \"eth0\" udp dport { 53, 67 } drop",
         "    iifname \"eth0\" tcp dport 53 drop",
         "    oifname \"eth0\" udp sport 67 drop",
     ] {
@@ -560,4 +560,18 @@ fn a_baseline_with_no_settings_installs_docker_and_touches_no_interface() {
         !rules.contains("iifname") && !rules.contains("oifname"),
         "{rules}"
     );
+}
+
+/// the host-side input rules never drop dhcp replies (port 68) to the server's own uplink client,
+/// and never drop established traffic.
+#[test]
+fn the_firewall_keeps_dhcp_replies_and_established_traffic() {
+    let rules = fs::read_to_string(playbooks().join("docker/firewall.nft.j2")).unwrap();
+    for line in rules
+        .lines()
+        .filter(|l| l.contains("iifname \"{{ host_interface }}\""))
+    {
+        assert!(!line.contains("68"), "{line}");
+    }
+    assert!(!rules.contains("established"), "{rules}");
 }

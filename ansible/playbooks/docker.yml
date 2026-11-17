@@ -115,8 +115,9 @@
           on zfs give /var/lib/docker its own ext4 volume.
       when: storage_driver.stdout not in ['overlay2', 'overlayfs']
 
-    - name: check that containers run
-      ansible.builtin.command: docker run --rm hello-world
+    # no image pull, so this works offline
+    - name: check that the docker engine answers
+      ansible.builtin.command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
       changed_when: false
 
     - name: work out which networks get their address, mtu and firewall settings from lanlord
