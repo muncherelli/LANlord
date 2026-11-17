@@ -79,22 +79,7 @@ fn run_limited(
     }
 }
 
-/// where a newer version would come from, and so how to install it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// new commits on trunk in the checkout this build was made from.
-    Git,
-    /// a new release; the page to open.
-    Release { url: String },
-}
-
-/// what is new, for the notice and its box.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Update {
-    pub source: Source,
-    pub headline: String,
-    pub lines: Vec<String>,
-}
+pub use lanlord_model::update::{Source, Update};
 
 /// the checkout a development build can be rebuilt from: LANLORD_DEV, else the place this
 /// build was made (debug builds only), when it is still a git checkout.

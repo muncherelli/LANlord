@@ -4,13 +4,13 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use eframe::egui;
-use lanlord_core::leases::Lease;
-use lanlord_core::network::Internal;
+use lanlord_model::leases::Lease;
+use lanlord_model::network::Internal;
 
 use super::harness::*;
 use super::*;
-use crate::gateway::Fake;
 use crate::nt4_window::Tab;
+use lanlord_app::gateway::Fake;
 
 const NT4: &str =
     "nt4-domain:\n  mode: domain\n  name: RETRONET\n  users:\n    - name: dana\n      admin: true\n";
@@ -60,8 +60,8 @@ fn logins() -> (Desktop, egui::Context, Arc<Fake>) {
 /// fill the open form's fields.
 fn fill(form: Option<&mut crate::form::Form>, values: &[&str]) {
     let form = form.expect("a form is open");
-    for (field, value) in form.fields.iter_mut().zip(values) {
-        field.value = (*value).into();
+    for (i, value) in values.iter().enumerate() {
+        form.set(i, value);
     }
 }
 
@@ -226,7 +226,7 @@ fn the_dns_window_loads_makes_a_lease_static_and_saves_and_applies() {
         (form.value(0), form.value(1)),
         ("win98", "aa:bb:cc:dd:ee:00")
     );
-    form.fields[2].value = "172.16.120.101".into();
+    form.set(2, "172.16.120.101");
     assert!(press(&mut desktop, &ctx, "OK"));
     assert_eq!(desktop.dns.draft.dhcp.as_ref().unwrap().hosts.len(), 2);
     assert!(desktop.dns.dirty());
@@ -260,7 +260,7 @@ fn problems_are_shown_and_block_saving() {
         .dns
         .draft
         .records
-        .push(lanlord_core::settings::Record {
+        .push(lanlord_model::settings::Record {
             name: "ok".into(),
             address: "10.0.0.1".into(),
         });
@@ -335,7 +335,7 @@ fn dhcp_can_be_switched_off_and_a_failed_probe_is_reported() {
         Some(true),
         "unchecked addresses still save"
     );
-    desktop.dns.draft.dhcp = Some(lanlord_core::settings::Dhcp::default());
+    desktop.dns.draft.dhcp = Some(lanlord_model::settings::Dhcp::default());
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Add lease..."), Some(true));
 }

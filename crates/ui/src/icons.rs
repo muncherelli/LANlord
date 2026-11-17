@@ -41,7 +41,7 @@ pub fn art(id: &str) -> &'static [&'static str] {
         "remote-commands" => &data::COMMANDS,
         "dns" => &data::DNS,
         "console" => &data::CONSOLE,
-        "settings" => &data::SETTINGS,
+        "settings" | "components" => &data::SETTINGS,
         "folder" => &data::FOLDER,
         "my-server" => &data::MYSERVER,
         "networks" => &data::NETWORKS,
@@ -59,7 +59,7 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "remote-commands" => &data::SMALL_COMMANDS,
         "dns" => &data::SMALL_DNS,
         "console" => &data::SMALL_CONSOLE,
-        "settings" => &data::SMALL_SETTINGS,
+        "settings" | "components" => &data::SMALL_SETTINGS,
         "folder" => &data::SMALL_FOLDER,
         "my-server" => &data::SMALL_MYSERVER,
         "networks" => &data::SMALL_NETWORKS,
@@ -71,32 +71,39 @@ pub fn small(id: &str) -> &'static [&'static str] {
 }
 
 /// how many frames the update icon in the tray has: one full turn of its globe.
+#[cfg(feature = "native")]
 pub const UPDATE_FRAMES: usize = data::SMALL_UPDATE_FRAMES.len();
 
 /// frame `i` of the update icon, wrapping round; frame 0 is the still `small("update")`.
+#[cfg(feature = "native")]
 pub fn update_frame(i: usize) -> &'static [&'static str] {
     &data::SMALL_UPDATE_FRAMES[i % UPDATE_FRAMES]
 }
 
 /// how many frames the installing animation has: a progress strip that fills and wraps.
+#[cfg(feature = "native")]
 pub const INSTALL_FRAMES: usize = data::SMALL_UPDATE_INSTALL_FRAMES.len();
 
 /// frame `i` of the installing animation, wrapping round.
+#[cfg(feature = "native")]
 pub fn install_frame(i: usize) -> &'static [&'static str] {
     &data::SMALL_UPDATE_INSTALL_FRAMES[i % INSTALL_FRAMES]
 }
 
 /// the globe with a pause badge, for an update that is paused.
+#[cfg(feature = "native")]
 pub fn update_paused() -> &'static [&'static str] {
     &data::SMALL_UPDATE_PAUSED
 }
 
 /// the grey globe with a red cross, for an update that failed.
+#[cfg(feature = "native")]
 pub fn update_failed() -> &'static [&'static str] {
     &data::SMALL_UPDATE_FAILED
 }
 
 /// the globe with a green check, for an update that is installed and waits for a restart.
+#[cfg(feature = "native")]
 pub fn update_done() -> &'static [&'static str] {
     &data::SMALL_UPDATE_DONE
 }

@@ -8,15 +8,18 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Area, Color32, Frame, Id, Margin, Order, Sense, Ui, Vec2};
-use lanlord_core::prefs::{self, Prefs};
-use lanlord_core::update::{self, Runner, Source, Update};
+use lanlord_core::prefs;
+use lanlord_core::update::{self, Runner, Update};
 use lanlord_core::updater::{
     self, Clock, GitBackend, Pause, RealClock, State, Unsupported, Updater,
 };
 
-use crate::dialogs::modal;
 use crate::icons;
-use crate::theme::{self, BLACK};
+#[cfg(test)]
+use crate::theme;
+use crate::theme::BLACK;
+use crate::view;
+use lanlord_app::update_box;
 
 /// how long the balloon stays up in full before it starts to fade, and how long the fade takes.
 const BALLOON_FOR: Duration = Duration::from_secs(8);
@@ -85,46 +88,6 @@ fn span(d: Duration) -> String {
     }
 }
 
-/// the buttons the box shows in `state`; the first is the main one.
-fn buttons_for(state: &State) -> Vec<Choice> {
-    match state {
-        State::Idle | State::Available => vec![Choice::Install, Choice::Later],
-        State::Downloading => vec![Choice::Pause, Choice::Cancel],
-        State::Installing => vec![Choice::Cancel],
-        State::Paused(_) => vec![Choice::Resume, Choice::Cancel],
-        State::Failed(_) => vec![Choice::Install, Choice::Cancel],
-        State::Done => vec![Choice::Restart, Choice::Later],
-    }
-}
-
-fn label(choice: Choice, state: &State) -> &'static str {
-    match choice {
-        Choice::Install if matches!(state, State::Failed(_)) => "Try again",
-        Choice::Install => "Install",
-        Choice::Later => "Remind me later",
-        Choice::Pause => "Pause",
-        Choice::Resume => "Resume",
-        Choice::Cancel if matches!(state, State::Failed(_)) => "Dismiss",
-        Choice::Cancel => "Cancel",
-        Choice::Restart => "Restart now",
-    }
-}
-
-/// the line in the box that says what is going on.
-fn status_text(state: &State) -> String {
-    match state {
-        State::Idle | State::Available => String::new(),
-        State::Downloading => "Downloading the update...".into(),
-        State::Installing => "Installing the update...".into(),
-        State::Paused(Pause::Manual) => "Paused.".into(),
-        State::Paused(Pause::Offline { .. }) => {
-            "Waiting for the network; it tries again by itself.".into()
-        }
-        State::Failed(why) => format!("The update failed.\n{why}"),
-        State::Done => "Installed. Restart LANlord to use the new version.".into(),
-    }
-}
-
 /// how opaque the balloon is `age` after it went up: whole, then fading, then gone.
 fn balloon_opacity(age: Duration) -> Option<f32> {
     if age < BALLOON_FOR {
@@ -166,16 +129,7 @@ fn demo_state() -> Option<State> {
     })
 }
 
-/// what the box was answered with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Choice {
-    Install,
-    Later,
-    Pause,
-    Resume,
-    Cancel,
-    Restart,
-}
+pub use lanlord_app::update_box::Choice;
 
 pub struct Updates {
     runner: Arc<dyn Runner>,
@@ -283,7 +237,9 @@ impl Updates {
             }
         }
         if let Some(path) = &self.prefs_path {
-            let _ = prefs::save(path, &Prefs { check_updates: on });
+            let mut prefs = prefs::load(path);
+            prefs.check_updates = on;
+            let _ = prefs::save(path, &prefs);
         }
     }
 
@@ -590,48 +546,12 @@ impl Updates {
         let state = self.updater.state().clone();
         let mut automatic = self.enabled;
         let mut choice = None;
-        modal(ctx, "update-box", "LANlord Update", |ui| {
-            ui.horizontal(|ui| {
-                let (art, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-                icons::draw(ui.painter(), art.min, icons::small("update"), 1.0);
-                ui.label(egui::RichText::new(&update.headline).strong());
-            });
-            ui.label("The following updates are available:");
-            theme::sunken(ui, Color32::WHITE, |ui| {
-                ui.set_width(ui.available_width() - 6.0);
-                egui::ScrollArea::vertical()
-                    .max_height(140.0)
-                    .id_salt("update-list")
-                    .show(ui, |ui| {
-                        for line in &update.lines {
-                            ui.colored_label(BLACK, line);
-                        }
-                        if update.lines.is_empty() {
-                            ui.colored_label(BLACK, "(no details available)");
-                        }
-                    });
-            });
-            ui.add_space(4.0);
-            ui.label(match update.source {
-                Source::Git => {
-                    "Install updates LANlord from trunk, builds it, and then asks to restart."
-                }
-                Source::Release { .. } => "Install opens the download page.",
-            });
-            let status = status_text(&state);
-            if !status.is_empty() {
-                ui.colored_label(BLACK, status);
-            }
-            crate::controls::check(ui, &mut automatic, "Check for updates automatically");
-            ui.add_space(6.0);
-            crate::controls::buttons(ui, |ui| {
-                for button in buttons_for(&state).into_iter().rev() {
-                    if theme::button(ui, label(button, &state), false).clicked() {
-                        choice = Some(button);
-                    }
-                }
-            });
-        });
+        let dialog = update_box::view(&update, &state, automatic);
+        match view::dialog(ctx, &dialog) {
+            Some(update_box::Msg::Choose(c)) => choice = Some(c),
+            Some(update_box::Msg::ToggleAutomatic) => automatic = !automatic,
+            None => {}
+        }
         if automatic != self.enabled {
             self.set_enabled(automatic);
         }
@@ -648,6 +568,8 @@ impl Updates {
 mod tests {
     use super::*;
     use crate::testkit;
+    use lanlord_app::update_box::{buttons_for, label, status_text};
+    use lanlord_core::update::Source;
     use std::path::Path;
 
     /// a clock the tests move by hand.

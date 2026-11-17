@@ -5,12 +5,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{
-    self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
-};
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::modules::{Module, Status, MODULES};
+use eframe::egui::{self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, Sense, Ui, Vec2};
+use lanlord_app::log::{emit, Kind};
+#[cfg(feature = "native")]
 use lanlord_core::update;
+use lanlord_model::modules::{Module, MODULES};
 
 mod menu;
 
@@ -19,23 +18,30 @@ use menu::Confirm;
 use crate::admin_setup::{self, AdminSetup};
 use crate::clock_panel::{ClockFeed, ClockPanel};
 use crate::command_panel::CommandPanel;
-use crate::console::{self, Console};
+use crate::components_window::{self, Components};
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
 use crate::form::Form;
-use crate::hostlist::HostList;
 use crate::icons;
 use crate::login::{Auth, LoginBox, Outcome, SignedIn};
-use crate::my_server::MyServer;
+use crate::my_server::{self, MyServer};
 use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
-use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
-use crate::tasks::PasswordRequest;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
+#[cfg(feature = "native")]
 use crate::update_panel::{Choice, Updates};
+use crate::view;
 use crate::windows;
+use lanlord_app::console::Console;
+use lanlord_app::desktop::Target;
+use lanlord_app::gateway::Gateway;
+use lanlord_app::hostlist::HostList;
+use lanlord_app::services::Services;
+use lanlord_app::tasks::PasswordRequest;
+use lanlord_app::welcome::Welcome;
+use lanlord_app::{hosts_window, module_window};
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
@@ -46,44 +52,6 @@ const CLOCK: f32 = 72.0;
 const TRAY_ICON: f32 = 22.0;
 
 /// what an icon or a window shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Target {
-    Module(usize),
-    MyServer,
-    Networks,
-    Console,
-    Hosts,
-    Settings,
-    /// opened by double-clicking the clock; it has no desktop icon.
-    DateTime,
-}
-
-impl Target {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Module(i) => MODULES[i].id,
-            Self::MyServer => "my-server",
-            Self::Networks => "networks",
-            Self::Console => "console",
-            Self::Hosts => "hosts",
-            Self::Settings => "settings",
-            Self::DateTime => "datetime",
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Self::Module(i) => MODULES[i].name,
-            Self::MyServer => "My Server",
-            Self::Networks => "Networks",
-            Self::Console => "Console",
-            Self::Hosts => "Hosts",
-            Self::Settings => "Settings",
-            Self::DateTime => "Date/Time Properties",
-        }
-    }
-}
-
 struct Window {
     target: Target,
     minimized: bool,
@@ -98,14 +66,26 @@ pub struct Desktop {
     hosts: HostList,
     console: Console,
     services: Services,
+    /// the egui context background work wakes, and windows that need one (logon box, console).
+    ctx: egui::Context,
     settings: SettingsEditor,
     nt4: Nt4Window,
     dns: DnsPanel,
     commands: CommandPanel,
     my_server: MyServer,
     networks: Networks,
+    /// the components wizard, and which components the server has switched on.
+    components: Components,
+    welcome: Welcome,
+    /// tests pin the switched-on components here instead of reading them from the server.
+    #[cfg(test)]
+    pinned: Option<lanlord_app::components::Selection>,
     /// a window a window asked for; it opens once all the windows are drawn.
     open_next: Option<Target>,
+    /// the window opened from `open_next` shows My Server's Compatibility tab.
+    compat_next: bool,
+    /// the taskbar alert for what the components need and the server lacks.
+    compat_alert: crate::compat_alert::Alert,
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
     clock: ClockPanel,
     feed: ClockFeed,
@@ -124,26 +104,36 @@ pub struct Desktop {
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
+    #[cfg(feature = "native")]
     updates: Updates,
     /// the checkout a development build rebuilds from, and the build that is running.
     dev: Option<PathBuf>,
+    #[cfg(feature = "native")]
     exe: Option<PathBuf>,
     /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
+    #[cfg(feature = "native")]
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// how long the new build must stay alive before this window may close.
+    #[cfg(feature = "native")]
     relaunch_grace: update::Grace,
     /// the Developer submenu is open.
     dev_open: bool,
     /// the title the window has been given, so it is only sent when it changes.
     window_title: String,
+    /// the made-up demo server, not a real gateway: the title and the taskbar say so.
+    demo: bool,
 }
 
 impl Desktop {
-    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `services`.
-    pub fn new(services: Services, hosts_path: Option<PathBuf>) -> Self {
-        let mut icons = vec![Target::MyServer, Target::Networks];
-        icons.extend((0..MODULES.len()).map(Target::Module));
-        icons.extend([Target::Settings, Target::Console, Target::Hosts]);
+    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `gateway`;
+    /// background work wakes `ctx` when it finishes.
+    pub fn new(
+        gateway: Arc<dyn Gateway>,
+        ctx: &egui::Context,
+        hosts_path: Option<PathBuf>,
+    ) -> Self {
+        let services = Services::new(gateway, crate::wake(ctx));
+        let icons = lanlord_app::desktop::icons(None);
         Self {
             icons,
             selected: None,
@@ -151,7 +141,8 @@ impl Desktop {
             active: None,
             start_open: false,
             hosts: HostList::new(hosts_path),
-            console: Console::new(&services.ctx),
+            console: Console::new(crate::wake(ctx)),
+            ctx: ctx.clone(),
             services,
             settings: SettingsEditor::default(),
             nt4: Nt4Window::default(),
@@ -159,7 +150,13 @@ impl Desktop {
             commands: CommandPanel::default(),
             my_server: MyServer::default(),
             networks: Networks::default(),
+            components: Components::default(),
+            welcome: Welcome::new(None),
+            #[cfg(test)]
+            pinned: None,
             open_next: None,
+            compat_next: false,
+            compat_alert: Default::default(),
             clock: ClockPanel::default(),
             feed: ClockFeed::default(),
             close_requests: Vec::new(),
@@ -170,17 +167,23 @@ impl Desktop {
             login: None,
             signed_in: None,
             admin_setup: None,
+            #[cfg(feature = "native")]
             updates: Updates::quiet(),
             dev: None,
+            #[cfg(feature = "native")]
             exe: None,
+            #[cfg(feature = "native")]
             rebuilding: None,
+            #[cfg(feature = "native")]
             relaunch_grace: update::Grace::default(),
             dev_open: false,
             window_title: "LANlord".into(),
+            demo: false,
         }
     }
 
     /// look for updates in the background, and offer a rebuild when this is a development build.
+    #[cfg(feature = "native")]
     pub fn watch_updates(&mut self, updates: Updates, dev: Option<PathBuf>, exe: Option<PathBuf>) {
         self.updates = updates;
         if let (Some(repo), Some(exe)) = (&dev, &exe) {
@@ -190,34 +193,40 @@ impl Desktop {
         self.exe = exe;
     }
 
+    /// this desktop shows the made-up demo server (the browser demo); say so in the title and
+    /// the taskbar, so nobody mistakes it for a real gateway.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn mark_demo(&mut self) {
+        self.demo = true;
+    }
+
     /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
     /// can be looked at without one; the host list lives in memory only.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn use_demo_server(&mut self) {
         self.hosts = HostList::new(None);
         let _ = self.hosts.add("demo@gateway");
     }
 
     /// the logon box for `host`, signing in at once with whatever the agent offers.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn resume(&mut self, host: &str) {
         let Some(auth) = self.auth.clone() else {
             return;
         };
-        let mut login = LoginBox::new(auth, &self.services.ctx, Some(host));
+        let mut login = LoginBox::new(auth, &self.ctx, Some(host));
         login.submit();
         self.login = Some(login);
     }
 
     /// start at the logon box. lanlord on the gateway itself has one server and no logon.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
         if self.services.is_local() {
             return;
         }
         let last = self.hosts.selected().map(String::from);
-        self.login = Some(LoginBox::new(
-            auth.clone(),
-            &self.services.ctx,
-            last.as_deref(),
-        ));
+        self.login = Some(LoginBox::new(auth.clone(), &self.ctx, last.as_deref()));
         self.auth = Some(auth);
     }
 }
@@ -231,6 +240,12 @@ impl Desktop {
                     // a fresh reading of the server every time the window opens
                     self.clock.reset();
                 }
+                if target == Target::Components {
+                    self.components.open();
+                }
+                if target == Target::Welcome {
+                    self.welcome.reopen();
+                }
                 self.windows.push(Window {
                     target,
                     minimized: false,
@@ -239,6 +254,28 @@ impl Desktop {
         }
         self.active = Some(target);
         self.start_open = false;
+    }
+
+    /// put My Server on its Compatibility tab.
+    fn show_compat_tab(&mut self) {
+        let host = self.host().unwrap_or_default();
+        self.my_server.update(
+            my_server::Msg::Tab(my_server::COMPATIBILITY),
+            &self.services,
+            &host,
+        );
+    }
+
+    /// the failing or warning checks that what the server has switched on needs.
+    fn compat_problems(&self) -> Vec<lanlord_model::doctor::Check> {
+        let Some(host) = self.host() else {
+            return Vec::new();
+        };
+        let (Some(report), Some(enabled)) = (self.services.compat().report(&host), self.enabled())
+        else {
+            return Vec::new();
+        };
+        lanlord_app::compat::problems(&report, &enabled)
     }
 
     /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
@@ -255,13 +292,31 @@ impl Desktop {
             } else if id == "developer" {
                 self.start_open = true;
                 self.dev_open = true;
-            } else if let Some(target) = self.icons.iter().copied().find(|t| t.id() == id) {
+            } else if id == "components" {
+                self.open(Target::Components);
+            } else if id == "welcome" {
+                self.open(Target::Welcome);
+            } else if let Some(target) = self
+                .icons
+                .iter()
+                .copied()
+                .find(|t| t.id() == id)
+                .or_else(|| MODULES.iter().position(|m| m.id == id).map(Target::Module))
+            {
                 self.open(target);
                 if id == "my-server" {
                     // @1 is the Advanced tab, @2 also asks before a purge
-                    self.my_server.tab = usize::from(tab == "1" || tab == "2");
+                    let page = match tab {
+                        "1" | "2" => my_server::ADVANCED,
+                        "3" | "compat" => my_server::COMPATIBILITY,
+                        _ => my_server::GENERAL,
+                    };
+                    let host = self.host().unwrap_or_default();
+                    self.my_server
+                        .update(my_server::Msg::Tab(page), &self.services, &host);
                     if let (true, Some(host)) = (tab == "2", self.host()) {
-                        self.my_server.ask_to_purge(&self.services, &host);
+                        self.my_server
+                            .update(my_server::Msg::AskPurge, &self.services, &host);
                     }
                 }
                 if id == "nt4-domain" {
@@ -275,26 +330,17 @@ impl Desktop {
         }
     }
 
-    /// "LANlord Client v0.1.0" on a mac or pc, "LANlord Server v0.1.0" when lanlord runs on the
-    /// gateway itself (server mode, which is also what the web ui is).
-    fn app_title(&self) -> String {
-        let side = if self.services.is_local() {
-            "Server"
-        } else {
-            "Client"
-        };
-        format!("LANlord {side} v{}", env!("CARGO_PKG_VERSION"))
-    }
-
     /// the window is titled with the app and its version, plus the signed-in server once someone
     /// is signed in.
     fn sync_window_title(&mut self, ctx: &egui::Context) {
-        let title = match (self.signed_in.as_ref(), self.host()) {
-            (Some(_), Some(host)) => format!("{} - {host}", self.app_title()),
-            _ => self.app_title(),
-        };
+        let host = self.signed_in.as_ref().and(self.host());
+        let mut title =
+            lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
+        if self.demo {
+            title.push_str(" (demo)");
+        }
         if title != self.window_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            crate::platform::set_title(ctx, &title);
             self.window_title = title;
         }
     }
@@ -333,6 +379,7 @@ impl Desktop {
             self.show_admin_setup(ui, &ctx);
             return;
         }
+        self.sync_components();
         egui::Panel::bottom("taskbar")
             .exact_size(TASKBAR)
             .frame(
@@ -347,8 +394,11 @@ impl Desktop {
             .show(ui, |ui| self.icons(ui));
 
         self.console.drain();
-        self.updates.tick(&ctx);
-        self.poll_rebuild(&ctx);
+        #[cfg(feature = "native")]
+        {
+            self.updates.tick(&ctx);
+            self.poll_rebuild(&ctx);
+        }
         self.settings.poll();
         self.nt4.poll();
         self.dns.poll();
@@ -402,7 +452,17 @@ impl Desktop {
         if signed_in.identity.is_root() {
             self.admin_setup = Some(AdminSetup::new());
         }
+        let account = signed_in.identity.user.clone();
         self.signed_in = Some(signed_in);
+        self.compat_alert.reset();
+        if self.welcome.logon(&account) {
+            self.open(Target::Welcome);
+        }
+    }
+
+    /// keep the Welcome screen's tick box in the preferences file at `path`.
+    pub fn set_prefs(&mut self, path: Option<std::path::PathBuf>) {
+        self.welcome = Welcome::new(path);
     }
 
     /// the create-an-administrator screen, on the bare desktop colour.
@@ -466,7 +526,7 @@ impl Desktop {
         self.windows.clear();
         self.active = None;
         self.start_open = false;
-        let mut login = LoginBox::new(auth, &self.services.ctx, last.as_deref());
+        let mut login = LoginBox::new(auth, &self.ctx, last.as_deref());
         if let Some(note) = note {
             login.note(&note);
         }
@@ -476,7 +536,7 @@ impl Desktop {
     /// the modal boxes: a task's password prompt and the add-host box.
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.password.is_none() {
-            self.password = self.services.tasks.next_request().map(|request| {
+            self.password = self.services.next_request().map(|request| {
                 let dialog = TextDialog::new("password", "Password", &request.prompt, true);
                 (request, dialog)
             });
@@ -497,11 +557,19 @@ impl Desktop {
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.networks.dialog(ctx);
-        self.my_server.dialog(ctx, &self.services);
+        my_server::dialog(&mut self.my_server, ctx, &self.services);
+        components_window::dialog(&mut self.components, ctx, &self.services, host.as_deref());
         if let Some(host) = self.my_server.take_purged() {
             self.after_purge(&host);
         }
         self.confirmation(ctx);
+        let raised = !self.compat_problems().is_empty();
+        self.compat_alert.tick(raised, ctx.input(|i| i.time));
+        if self.compat_alert.balloon(ctx, TASKBAR) {
+            self.open(Target::MyServer);
+            self.show_compat_tab();
+        }
+        #[cfg(feature = "native")]
         self.update_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
@@ -519,6 +587,7 @@ impl Desktop {
 }
 
 // updates and rebuilding a development build
+#[cfg(feature = "native")]
 impl Desktop {
     /// the balloon and the box of the update notice, and what they ask for.
     fn update_notice(&mut self, ctx: &egui::Context) {
@@ -548,7 +617,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
         let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.services.ctx.clone();
+        let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = update::verify_built(&exe)
                 .and_then(|()| update::relaunch(&exe, host.as_deref(), grace));
@@ -581,7 +650,7 @@ impl Desktop {
     }
 
     /// is a rebuild running?
-    pub(super) fn is_rebuilding(&self) -> bool {
+    pub(super) fn is_rebuilding_native(&self) -> bool {
         self.rebuilding.is_some()
     }
 
@@ -605,7 +674,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
         let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.services.ctx.clone();
+        let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = update::install_build(&repo, &exe, host.as_deref(), pull, grace);
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));
@@ -758,8 +827,12 @@ impl Desktop {
                 let clock = self.feed.text();
                 // the tray: a shallow sunken panel holding the update shield and the clock, whose
                 // text is flat inside it
-                let shield = self.updates.visible();
-                let width = 6.0 + CLOCK + if shield { TRAY_ICON } else { 0.0 };
+                let shield = self.update_shield();
+                let warn = !self.compat_problems().is_empty();
+                let width = 6.0
+                    + CLOCK
+                    + if shield { TRAY_ICON } else { 0.0 }
+                    + if warn { TRAY_ICON } else { 0.0 };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
                 let clock_at = Rect::from_min_size(
@@ -781,22 +854,80 @@ impl Desktop {
                 if clock_hit.double_clicked() {
                     self.open(Target::DateTime);
                 }
-                if shield {
-                    let icon_at = Rect::from_min_size(
+                if self.demo {
+                    // a sunken note beside the tray: the data here is made up
+                    let note = "Demo: made-up data";
+                    let (at, _) = ui.allocate_exact_size(Vec2::new(124.0, 22.0), Sense::hover());
+                    controls::thin_bevel(ui, at, false);
+                    ui.painter().text(
+                        at.center(),
+                        Align2::CENTER_CENTER,
+                        note,
+                        theme::font(),
+                        BLACK,
+                    );
+                }
+                if warn {
+                    let sign_at = Rect::from_min_size(
                         Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
                         Vec2::splat(TRAY_ICON),
                     );
-                    let clicked = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
-                            self.updates.shield(ui)
-                        })
-                        .inner;
-                    if clicked {
-                        self.updates.open_dialog();
+                    let tip =
+                        "This server is missing features some components need. Click for details.";
+                    if crate::compat_alert::tray_sign(ui, sign_at, tip) {
+                        self.open(Target::MyServer);
+                        self.show_compat_tab();
                     }
+                }
+                if shield {
+                    let shift = if warn { TRAY_ICON } else { 0.0 };
+                    let icon_at = Rect::from_min_size(
+                        Pos2::new(clock_at.left() - TRAY_ICON - shift, tray.top()),
+                        Vec2::splat(TRAY_ICON),
+                    );
+                    #[cfg(feature = "native")]
+                    {
+                        let clicked = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
+                                self.updates.shield(ui)
+                            })
+                            .inner;
+                        if clicked {
+                            self.updates.open_dialog();
+                        }
+                    }
+                    #[cfg(not(feature = "native"))]
+                    let _ = icon_at;
                 }
             });
         });
+    }
+}
+
+// what the taskbar and the menu ask about updates, on builds with or without them
+impl Desktop {
+    /// is the update shield showing in the tray?
+    fn update_shield(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.updates.visible();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// is a rebuild running?
+    pub(super) fn is_rebuilding(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.is_rebuilding_native();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// are automatic updates on? `None` where there are no updates to turn on (the browser).
+    fn updates_enabled(&self) -> Option<bool> {
+        #[cfg(feature = "native")]
+        return Some(self.updates.enabled());
+        #[cfg(not(feature = "native"))]
+        None
     }
 }
 
@@ -808,20 +939,8 @@ fn desktop_area(ctx: &egui::Context) -> Rect {
 
 /// how big a window opens, before it is cut down to fit the desktop.
 fn window_size(target: Target) -> Vec2 {
-    match target {
-        Target::Module(i) => match MODULES[i].id {
-            "nt4-domain" => Vec2::new(600.0, 600.0),
-            "dns" => Vec2::new(620.0, 580.0),
-            "remote-commands" => Vec2::new(580.0, 580.0),
-            _ => Vec2::new(480.0, 320.0),
-        },
-        Target::MyServer => Vec2::new(440.0, 480.0),
-        Target::Networks => Vec2::new(760.0, 340.0),
-        Target::Console => Vec2::new(600.0, 300.0),
-        Target::Hosts => Vec2::new(380.0, 280.0),
-        Target::Settings => Vec2::new(600.0, 520.0),
-        Target::DateTime => Vec2::new(430.0, 420.0),
-    }
+    let (w, h) = target.size();
+    Vec2::new(w, h)
 }
 
 /// where the `n`th window opens: stepped down and right of the last one, and never so far
@@ -869,6 +988,9 @@ impl Desktop {
         self.windows = windows;
         if let Some(target) = self.open_next.take() {
             self.open(target);
+            if std::mem::take(&mut self.compat_next) {
+                self.show_compat_tab();
+            }
         }
         if close.contains(&Target::DateTime) {
             // what the window changed shows on the taskbar clock, and so does the server's own drift
@@ -881,7 +1003,7 @@ impl Desktop {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
             Target::MyServer => {
                 let host = self.host();
-                self.my_server.show(ui, &self.services, host.as_deref());
+                my_server::show(&mut self.my_server, ui, &self.services, host.as_deref());
             }
             Target::Networks => {
                 let host = self.host();
@@ -898,6 +1020,9 @@ impl Desktop {
             Target::Settings => {
                 let host = self.host();
                 self.settings.show(ui, &self.services, host.as_deref());
+                if self.settings.take_saved() {
+                    self.components.invalidate();
+                }
             }
             Target::DateTime => {
                 let host = self.host();
@@ -905,27 +1030,78 @@ impl Desktop {
                     self.close_requests.push(Target::DateTime);
                 }
             }
+            Target::Welcome => {
+                let windows = lanlord_app::desktop::windows(&self.icons);
+                if let Some(msg) = view::show(ui, &self.welcome.view(&windows)) {
+                    self.welcome.update(msg, &windows);
+                }
+                if self.welcome.take_compat() {
+                    self.compat_next = true;
+                }
+                if let Some(target) = self.welcome.take_open() {
+                    self.open_next = Some(target);
+                }
+                if self.welcome.take_done() {
+                    self.close_requests.push(Target::Welcome);
+                }
+            }
+            Target::Components => {
+                let host = self.host();
+                components_window::show(&mut self.components, ui, &self.services, host.as_deref());
+                if self.components.take_done() {
+                    self.close_requests.push(Target::Components);
+                }
+                if self.components.take_compat() {
+                    self.open_next = Some(Target::MyServer);
+                    self.compat_next = true;
+                }
+            }
         }
     }
 
+    /// keep the components of the server in step, and the desktop icons with them: the
+    /// built-in windows plus the components it has switched on.
+    fn sync_components(&mut self) {
+        let host = self.host();
+        #[cfg(test)]
+        if let Some(pinned) = &self.pinned {
+            let icons = lanlord_app::desktop::icons(Some(pinned));
+            if icons != self.icons {
+                self.icons = icons;
+            }
+            return;
+        }
+        if let Some(host) = &host {
+            self.components.refresh(&self.services, host);
+        }
+        let icons = lanlord_app::desktop::icons(self.enabled().as_ref());
+        if icons != self.icons {
+            self.icons = icons;
+            self.selected = None;
+        }
+    }
+
+    /// what the server has switched on, once its settings were read.
+    fn enabled(&self) -> Option<lanlord_app::components::Selection> {
+        #[cfg(test)]
+        if let Some(pinned) = &self.pinned {
+            return Some(pinned.clone());
+        }
+        let host = self.host()?;
+        self.components
+            .settings
+            .belongs_to(&host)
+            .then(|| self.components.current().cloned())
+            .flatten()
+    }
+
+    /// the positions in `MODULES` of the components the server has switched on.
+    fn enabled_modules(&self) -> Vec<usize> {
+        lanlord_app::desktop::modules(self.enabled().as_ref())
+    }
+
     fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
-        ui.horizontal(|ui| {
-            icons::draw(ui.painter(), ui.cursor().min, icons::art(module.id), 1.0);
-            ui.add_space(40.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(module.name).size(16.0).strong());
-                let status = match module.status {
-                    Status::Available => "available",
-                    Status::Planned => "planned - not built yet",
-                };
-                ui.label(format!("Status: {status}"));
-            });
-        });
-        ui.add_space(2.0);
-        ui.label(module.summary);
-        ui.add_space(4.0);
-        controls::separator(ui);
-        ui.add_space(4.0);
+        view::show::<()>(ui, &module_window::header(module));
         let host = self.host();
         match module.id {
             "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
@@ -935,109 +1111,40 @@ impl Desktop {
                 self.commands
                     .show(ui, &self.services, host.as_deref(), machines);
             }
-            _ => self.plain_module(ui, module, host),
-        }
-    }
-
-    /// a module with nothing to edit yet: its example settings and an Apply button.
-    fn plain_module(&mut self, ui: &mut Ui, module: &'static Module, host: Option<String>) {
-        controls::group(ui, "Settings (in your settings file)", |ui| {
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(module.example).monospace());
-            });
-        });
-        ui.add_space(6.0);
-        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-        let ready = module.status == Status::Available && !busy;
-        controls::buttons(ui, |ui| {
-            let apply = theme::action(ui, "Apply", ready && host.is_some());
-            if let (true, Some(host)) = (apply.clicked(), &host) {
-                self.services.apply(host, vec![module.id.to_string()]);
+            _ => {
+                let nodes = module_window::plain(module, &self.services, host.as_deref());
+                if let Some(msg) = view::show(ui, &nodes) {
+                    module_window::update(msg, module, &self.services, host.as_deref());
+                }
             }
-        });
-        let status = match (&host, busy) {
-            (None, _) => "No host selected".to_string(),
-            (Some(host), true) => format!("Host: {host} - working..."),
-            (Some(host), false) => format!("Host: {host}"),
-        };
-        controls::status_bar(ui, &status, false);
+        }
     }
 
     fn console_window(&mut self, ui: &mut Ui) {
-        let height = controls::fill_height(ui);
-        theme::sunken(ui, BLACK, |ui| {
-            ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .max_height(height)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.set_min_height(height);
-                    for line in self.console.lines() {
-                        let text = RichText::new(&line.text)
-                            .monospace()
-                            .color(console::colour(line.kind));
-                        ui.label(text);
-                    }
-                });
-        });
+        view::show::<()>(ui, &self.console.view());
     }
 
     fn hosts_window(&mut self, ui: &mut Ui) {
-        if self.services.is_local() {
-            ui.label("This computer is the server; there are no other hosts to pick.");
+        let nodes = hosts_window::view(&self.hosts, &self.services, self.services.is_local());
+        let Some(msg) = view::show(ui, &nodes) else {
             return;
+        };
+        let ask = hosts_window::update(msg, &mut self.hosts, &self.services);
+        if ask == Some(hosts_window::Ask::AddHost) && self.add_host.is_none() {
+            self.add_host = Some(TextDialog::new(
+                "add-host",
+                "Add a host",
+                "Gateway as user@host:",
+                false,
+            ));
         }
-        let mut picked = None;
-        controls::group(ui, "Gateways lanlord manages", |ui| {
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(100.0);
-                if self.hosts.hosts().is_empty() {
-                    ui.label("No gateways yet. Click Add... and type user@gateway.");
-                }
-                for (i, host) in self.hosts.hosts().iter().enumerate() {
-                    if theme::list_row(ui, host, self.hosts.selected_index() == i).clicked() {
-                        picked = Some(i);
-                    }
-                }
-            });
-        });
-        if let Some(i) = picked {
-            self.hosts.select(i);
-        }
-        ui.add_space(6.0);
-        let host = self.host();
-        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-        let ready = host.is_some() && !busy;
-        ui.horizontal(|ui| {
-            if theme::action(ui, "Add...", true).clicked() && self.add_host.is_none() {
-                self.add_host = Some(TextDialog::new(
-                    "add-host",
-                    "Add a host",
-                    "Gateway as user@host:",
-                    false,
-                ));
-            }
-            if theme::action(ui, "Remove", ready).clicked() {
-                if let Err(error) = self.hosts.remove_selected() {
-                    emit(Kind::Err, error);
-                }
-            }
-            if theme::action(ui, "Bootstrap", ready).clicked() {
-                if let Some(host) = &host {
-                    self.services.bootstrap(host);
-                }
-            }
-        });
-        ui.add_space(6.0);
-        controls::status_bar(ui, if busy { "working..." } else { "ready" }, false);
     }
 }
 
 #[cfg(test)]
 mod clock_tests;
+#[cfg(test)]
+mod components_tests;
 #[cfg(test)]
 mod harness;
 #[cfg(test)]
@@ -1054,7 +1161,7 @@ mod window_tests;
 mod tests {
     use super::harness::*;
     use super::*;
-    use lanlord_core::log::Kind;
+    use lanlord_app::log::Kind;
 
     #[test]
     fn the_empty_desktop_draws() {
@@ -1302,7 +1409,7 @@ mod tests {
         with_host(&mut desktop, &ctx);
         desktop.open(Target::Hosts);
         frames(&mut desktop, &ctx, 2);
-        let seen = lanlord_core::log::subscribe();
+        let seen = lanlord_app::log::subscribe();
         assert!(press(&mut desktop, &ctx, "Bootstrap"));
         until(&mut desktop, &ctx, |d| d.password.is_some());
         frame(&mut desktop, &ctx, vec![key(egui::Key::Escape)]);
@@ -1474,7 +1581,7 @@ mod tests {
             (Kind::Info, "desk-test-info"),
             (Kind::Debug, "desk-test-debug"),
         ] {
-            lanlord_core::log::emit(kind, text);
+            lanlord_app::log::emit(kind, text);
         }
         until(&mut desktop, &ctx, |d| {
             d.console

@@ -185,6 +185,8 @@ pub struct TaskbarLayout {
     pub menu: Rect,
     pub buttons: Vec<Rect>,
     pub clock: Rect,
+    /// the warning item beside the clock, when there is one.
+    pub alert: Option<Rect>,
 }
 
 /// the taskbar: one gray row with the raised LANlord menu button, a button per open window
@@ -195,6 +197,8 @@ pub struct Taskbar<'a> {
     pub menu_open: bool,
     pub buttons: &'a [TaskButton<'a>],
     pub clock: &'a str,
+    /// a warning item left of the clock, such as `! Compatibility`.
+    pub alert: Option<&'a str>,
     pub palette: Palette,
 }
 
@@ -217,13 +221,23 @@ impl Taskbar<'_> {
             clock_width.min(area.width),
             1,
         );
+        let alert = self.alert.map(|label| {
+            let width = label.chars().count() as u16 + 2;
+            Rect::new(
+                clock.x.saturating_sub(width + 1).max(area.x),
+                area.y,
+                width.min(clock.x.saturating_sub(area.x)),
+                1,
+            )
+        });
+        let limit = alert.map_or(clock.x, |a| a.x);
         let mut x = menu.right() + 1;
         let buttons = self
             .buttons
             .iter()
             .map(|b| {
                 let width = row_button_width(b.label, b.icon.is_some()).min(TASK_BUTTON);
-                let width = width.min(clock.x.saturating_sub(x + 1));
+                let width = width.min(limit.saturating_sub(x + 1));
                 let rect = Rect::new(x, area.y, width, 1);
                 x = x.saturating_add(width + 1);
                 rect
@@ -233,6 +247,7 @@ impl Taskbar<'_> {
             menu,
             buttons,
             clock,
+            alert,
         }
     }
 }
@@ -307,6 +322,18 @@ impl Widget for Taskbar<'_> {
                 button.label,
                 button.pressed,
                 palette,
+            );
+        }
+        if let (Some(label), Some(rect)) = (self.alert, layout.alert) {
+            // black on yellow, so it stands out on the gray bar
+            fill(buf, rect, palette, (255, 255, 0));
+            text(
+                buf,
+                rect.x + 1,
+                rect.y,
+                rect.width.saturating_sub(1),
+                label,
+                bold(style(palette, BLACK, (255, 255, 0))),
             );
         }
         let clock = layout.clock;
@@ -488,6 +515,7 @@ mod tests {
                 pressed: true,
             }],
             clock: "10:55 AM",
+            alert: None,
             palette: palette(),
         }
         .render(Rect::new(4, 3, 60, 1), &mut buf);
@@ -586,6 +614,7 @@ mod tests {
             menu_open: false,
             buttons: &buttons,
             clock: "10:55 AM",
+            alert: None,
             palette: palette(),
         };
         let layout = bar.layout(buf.area);

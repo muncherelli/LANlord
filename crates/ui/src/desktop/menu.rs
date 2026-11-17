@@ -1,75 +1,19 @@
 //! the LANlord menu: the windows, the servers, power actions and quitting.
 
 use eframe::egui::{self, Align2, Area, Id, Order, Painter, Pos2, Rect, Sense, Stroke, Ui, Vec2};
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::modules::MODULES;
-use lanlord_core::power::Power;
+use lanlord_app::log::{emit, Kind};
+use lanlord_model::power::Power;
 
-use super::{Desktop, Target, MENU_BUTTON, TASKBAR};
-use crate::form::{Form, FormAnswer};
+pub use lanlord_app::menu::{self, Action, Row};
+
+use super::{Desktop, MENU_BUTTON, TASKBAR};
+use crate::form::{Form, FormAnswer, ShowForm};
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
 
 const MENU_WIDTH: f32 = 200.0;
 const ROW: f32 = 26.0;
 const SEPARATOR: f32 = 8.0;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Action {
-    Open(Target),
-    /// back to the logon box to pick another server.
-    SwitchServer,
-    /// back to the logon box.
-    LogOff,
-    Power(Power),
-    /// switch the background update check on or off.
-    ToggleUpdates,
-    /// open or close the Developer submenu.
-    Developer,
-    /// rebuild this build from its checkout and start it again.
-    Rebuild,
-    /// look for an update now.
-    CheckUpdates,
-    About,
-    Quit,
-    /// the server line at the top of the menu, which only names the server.
-    ServerLine,
-}
-
-pub enum Row {
-    Item(Item),
-    Separator,
-}
-
-pub struct Item {
-    label: String,
-    art: Option<&'static str>,
-    action: Action,
-    ticked: bool,
-    arrow: bool,
-    enabled: bool,
-    /// a line of text that names something and does nothing when clicked.
-    header: bool,
-}
-
-impl Item {
-    #[cfg(test)]
-    pub(super) fn label(&self) -> &str {
-        &self.label
-    }
-
-    fn new(label: &str, action: Action) -> Self {
-        Self {
-            label: label.into(),
-            art: None,
-            action,
-            ticked: false,
-            arrow: false,
-            enabled: true,
-            header: false,
-        }
-    }
-}
 
 /// what a confirmation box is about.
 pub enum Confirm {
@@ -79,6 +23,7 @@ pub enum Confirm {
     /// rebuild and relaunch; the box has one tick for pulling trunk first.
     Rebuild,
     /// a rebuild that did not work; the box only says why.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     Failure,
 }
 
@@ -203,86 +148,27 @@ fn paint(ui: &mut Ui, rows: &[Row], rect: Rect, rects: &[Rect], strip: bool) -> 
 impl Desktop {
     /// the main menu.
     pub(super) fn menu_rows(&self) -> Vec<Row> {
-        let mut rows = vec![Row::Item(Item {
-            header: true,
-            ..Item::new(&self.server_line(), Action::ServerLine)
-        })];
-        if self.auth.is_some() {
-            rows.push(Row::Item(Item::new(
-                "Switch server...",
-                Action::SwitchServer,
-            )));
-            let who = self
-                .signed_in
-                .as_ref()
-                .map_or("", |s| s.identity.user.as_str());
-            rows.push(Row::Item(Item::new(
-                &format!("Log off {who}..."),
-                Action::LogOff,
-            )));
-        }
-        rows.push(Row::Separator);
-        rows.extend(MODULES.iter().enumerate().map(|(i, m)| {
-            Row::Item(Item {
-                art: Some(m.id),
-                ..Item::new(m.name, Action::Open(Target::Module(i)))
-            })
-        }));
-        for target in [
-            Target::MyServer,
-            Target::Networks,
-            Target::Settings,
-            Target::Console,
-        ] {
-            let item = Item::new(target.title(), Action::Open(target));
-            rows.push(Row::Item(Item {
-                art: Some(target.id()),
-                ..item
-            }));
-        }
-        rows.push(Row::Separator);
-        let ready = self.host().is_some_and(|h| !self.services.busy(&h));
-        for (label, power) in [
-            ("Reboot server...", Power::Reboot),
-            ("Shut down server...", Power::PowerOff),
-        ] {
-            rows.push(Row::Item(Item {
-                enabled: ready,
-                ..Item::new(label, Action::Power(power))
-            }));
-        }
-        rows.push(Row::Separator);
-        rows.push(Row::Item(Item {
-            ticked: self.updates.enabled(),
-            ..Item::new("Automatic updates", Action::ToggleUpdates)
-        }));
-        if self.dev.is_some() {
-            rows.push(Row::Item(Item {
-                arrow: true,
-                ..Item::new("Developer", Action::Developer)
-            }));
-        }
-        rows.push(Row::Separator);
-        rows.push(Row::Item(Item::new("About LANlord", Action::About)));
-        rows.push(Row::Item(Item::new("Quit LANlord", Action::Quit)));
-        rows
+        let host = self.host();
+        let who = self.signed_in.as_ref().map(|s| s.identity.user.clone());
+        menu::rows(&menu::State {
+            host: host.as_deref(),
+            signed_in: self.auth.as_ref().map(|_| who.as_deref().unwrap_or("")),
+            ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
+            updates: self.updates_enabled(),
+            developer: self.dev.is_some(),
+            modules: self.enabled_modules(),
+        })
     }
 
     /// the line at the top of the menu naming the server every action targets.
+    #[cfg(test)]
     pub(super) fn server_line(&self) -> String {
-        self.host()
-            .map_or_else(|| "No server".to_string(), |h| format!("Server: {h}"))
+        menu::server_line(self.host().as_deref())
     }
 
     /// the Developer submenu, only there in a development build.
     pub(super) fn dev_rows(&self) -> Vec<Row> {
-        vec![
-            Row::Item(Item {
-                enabled: !self.is_rebuilding(),
-                ..Item::new("Rebuild and relaunch...", Action::Rebuild)
-            }),
-            Row::Item(Item::new("Check for updates now", Action::CheckUpdates)),
-        ]
+        menu::developer_rows(self.is_rebuilding())
     }
 
     /// where the Developer submenu sits, beside the Developer row of the main menu.
@@ -376,6 +262,7 @@ impl Desktop {
                 self.dev_open = !self.dev_open;
                 return;
             }
+            #[cfg(feature = "native")]
             Action::ToggleUpdates => {
                 let on = !self.updates.enabled();
                 self.updates.set_enabled(on);
@@ -383,10 +270,14 @@ impl Desktop {
                     self.updates.check_now(ctx);
                 }
             }
+            #[cfg(feature = "native")]
             Action::CheckUpdates => {
                 emit(Kind::Info, "looking for updates");
                 self.updates.check_now(ctx);
             }
+            // the browser build is updated on the gateway, not from here
+            #[cfg(not(feature = "native"))]
+            Action::ToggleUpdates | Action::CheckUpdates => {}
             Action::Rebuild => self.ask_rebuild(),
             Action::Open(target) => self.open(target),
             Action::SwitchServer | Action::LogOff => self.log_off(),
@@ -447,7 +338,10 @@ impl Desktop {
                         emit(Kind::Err, format!("{host} is busy; try again in a moment"));
                     }
                 }
+                #[cfg(feature = "native")]
                 Confirm::Rebuild => self.start_rebuild(form.checked(0)),
+                #[cfg(not(feature = "native"))]
+                Confirm::Rebuild => {}
                 Confirm::About | Confirm::Failure => {}
             },
         }

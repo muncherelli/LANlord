@@ -6,14 +6,14 @@ use eframe::egui;
 
 use super::harness::*;
 use super::*;
-use crate::gateway::Fake;
+use lanlord_app::gateway::Fake;
 
 fn server() -> (Desktop, egui::Context, Arc<Fake>) {
     let (mut desktop, ctx, fake) = desktop();
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts.belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw")
     });
     frames(&mut desktop, &ctx, 2);
     (desktop, ctx, fake)
@@ -21,14 +21,13 @@ fn server() -> (Desktop, egui::Context, Arc<Fake>) {
 
 /// open the box that asks before a purge, and wait for its preview.
 fn ask_to_purge(desktop: &mut Desktop, ctx: &egui::Context) {
-    desktop.my_server.tab = 1;
+    desktop
+        .my_server
+        .update(my_server::Msg::Tab(1), &desktop.services, "me@gw");
     frames(desktop, ctx, 2);
     assert!(press(desktop, ctx, "Remove LANlord from this server..."));
     until(desktop, ctx, |d| {
-        d.my_server
-            .purge
-            .as_ref()
-            .is_some_and(|p| p.preview.data.is_some())
+        d.my_server.purge().is_some_and(|p| p.preview().is_some())
     });
     frames(desktop, ctx, 2);
 }
@@ -48,7 +47,7 @@ fn the_icons_come_first_and_the_menu_lists_them() {
 fn general_reads_what_the_server_is() {
     let (desktop, _ctx, fake) = server();
     assert_eq!(fake.calls(), ["facts me@gw"]);
-    let facts = desktop.my_server.facts.data.clone().unwrap();
+    let facts = desktop.my_server.facts().data.clone().unwrap();
     assert_eq!(facts.hostname, "demo");
     assert!(facts.is_root && facts.lanlord_installed);
 }
@@ -59,7 +58,11 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
     ask_to_purge(&mut desktop, &ctx);
     assert!(desktop.my_server.purging());
     assert_eq!(enabled(&ctx, "Remove"), Some(false), "needs the name");
-    desktop.my_server.purge.as_mut().unwrap().typed = "me@gx".into();
+    desktop.my_server.update(
+        my_server::Msg::Typed("me@gx".into()),
+        &desktop.services,
+        "me@gw",
+    );
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Remove"), Some(false), "a wrong name");
     // only the preview has run so far
@@ -67,7 +70,11 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
         fake.calls(),
         ["facts me@gw", "purge-preview me@gw admins=false"]
     );
-    desktop.my_server.purge.as_mut().unwrap().typed = "me@gw".into();
+    desktop.my_server.update(
+        my_server::Msg::Typed("me@gw".into()),
+        &desktop.services,
+        "me@gw",
+    );
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Remove"), Some(true));
     assert!(press(&mut desktop, &ctx, "Remove"));
@@ -91,14 +98,14 @@ fn cancel_closes_the_box_without_removing_anything() {
 #[test]
 fn the_admin_accounts_tick_needs_a_root_login() {
     let (mut desktop, ctx, fake) = desktop();
-    let mut facts = lanlord_core::server::demo();
+    let mut facts = lanlord_model::server::demo();
     facts.is_root = false;
     facts.user = "olive".into();
     *fake.facts.lock().unwrap() = Some(facts);
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts.belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw")
     });
     ask_to_purge(&mut desktop, &ctx);
     assert_eq!(
@@ -117,10 +124,7 @@ fn the_admin_accounts_tick_asks_for_a_new_preview() {
         "Also remove the administrator accounts"
     ));
     until(&mut desktop, &ctx, |d| {
-        d.my_server
-            .purge
-            .as_ref()
-            .is_some_and(|p| p.preview.data.is_some())
+        d.my_server.purge().is_some_and(|p| p.preview().is_some())
     });
     assert!(fake
         .calls()
@@ -130,15 +134,17 @@ fn the_admin_accounts_tick_asks_for_a_new_preview() {
 #[test]
 fn a_server_without_lanlord_cannot_be_purged() {
     let (mut desktop, ctx, fake) = desktop();
-    let mut facts = lanlord_core::server::demo();
+    let mut facts = lanlord_model::server::demo();
     facts.lanlord_installed = false;
     *fake.facts.lock().unwrap() = Some(facts);
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts.belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw")
     });
-    desktop.my_server.tab = 1;
+    desktop
+        .my_server
+        .update(my_server::Msg::Tab(1), &desktop.services, "me@gw");
     frames(&mut desktop, &ctx, 3);
     assert_eq!(
         enabled(&ctx, "Remove LANlord from this server..."),
@@ -191,11 +197,154 @@ fn networks_opens_dns_and_dhcp_for_a_lanlord_network_only() {
 }
 
 #[test]
+fn networks_has_a_tab_per_network_with_its_connection_status() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = NETWORKS.into();
+    desktop.open(Target::Networks);
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| {
+        d.networks.rows.belongs_to("me@gw") && d.networks.status.data.is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    let status = desktop.networks.status.data.clone().unwrap();
+    let external = status.iter().find(|s| s.default_route).unwrap();
+    assert_eq!(external.name, "eth0");
+    assert!(fake
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c == "network-status me@gw"));
+    // the other network's tab is a click away
+    assert_eq!(desktop.networks.selected, 0);
+    assert!(press(&mut desktop, &ctx, "retronet"));
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(desktop.networks.selected, 1);
+    assert_eq!(enabled(&ctx, "DNS & DHCP..."), Some(true));
+    // details opens the connection's property list and closes again
+    assert!(press(&mut desktop, &ctx, "Details..."));
+    assert_eq!(desktop.networks.connection.as_ref().unwrap().name, "eth1");
+    assert!(press(&mut desktop, &ctx, "Close"));
+    assert!(desktop.networks.connection.is_none());
+}
+
+#[test]
+fn a_failed_status_read_says_why_and_refresh_tries_again() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = NETWORKS.into();
+    *fake.network_error.lock().unwrap() = Some("ip is not installed".into());
+    desktop.open(Target::Networks);
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| {
+        d.networks.rows.belongs_to("me@gw") && d.networks.status.note.is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.networks.status.data.is_none());
+    let note = desktop.networks.status.note.clone().unwrap();
+    assert!(note.0 && note.1.contains("ip is not installed"));
+    // a failure is not retried on its own; Refresh does
+    *fake.network_error.lock().unwrap() = None;
+    frames(&mut desktop, &ctx, 3);
+    assert!(desktop.networks.status.data.is_none());
+    assert!(press(&mut desktop, &ctx, "Refresh"));
+    until(&mut desktop, &ctx, |d| d.networks.status.data.is_some());
+}
+
+#[test]
 fn the_server_windows_say_so_without_a_server() {
     let (mut desktop, ctx, _fake) = desktop();
     desktop.open(Target::MyServer);
     desktop.open(Target::Networks);
     frames(&mut desktop, &ctx, 3);
-    assert!(desktop.my_server.facts.data.is_none());
+    assert!(desktop.my_server.facts().data.is_none());
     assert!(desktop.networks.rows.data.is_none());
+}
+
+const LXC_WITHOUT_FEATURES: &str =
+    "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\nnesting=no\nkeyctl=no\n";
+
+/// a signed-in desktop whose server answers the doctor with `probe`, report read.
+fn probed(probe: &str) -> (Desktop, egui::Context) {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.probe.lock().unwrap() = probe.into();
+    with_host(&mut desktop, &ctx);
+    desktop
+        .services
+        .compat()
+        .recheck(&desktop.services, "me@gw");
+    until(&mut desktop, &ctx, |d| {
+        d.services.compat().report("me@gw").is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    (desktop, ctx)
+}
+
+#[test]
+fn the_tray_warns_only_when_something_switched_on_needs_what_fails() {
+    let (desktop, _ctx) = probed(LXC_WITHOUT_FEATURES);
+    assert!(
+        !desktop.compat_problems().is_empty(),
+        "docker components are on"
+    );
+    assert!(
+        desktop.compat_alert.balloon_up(),
+        "the balloon goes up once"
+    );
+
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    desktop.pinned = Some(Default::default());
+    frames(&mut desktop, &ctx, 2);
+    assert!(
+        desktop.compat_problems().is_empty(),
+        "nothing on needs them"
+    );
+
+    let (desktop, _ctx) =
+        probed("virt_container=lxc\nvirt_vm=none\nuid_map=0 0 4294967295\nnesting=yes\n");
+    assert!(
+        desktop.compat_problems().is_empty(),
+        "a privileged container is fine"
+    );
+    assert!(!desktop.compat_alert.balloon_up());
+}
+
+#[test]
+fn clicking_the_tray_sign_opens_the_compatibility_tab() {
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    assert!(press(&mut desktop, &ctx, "compat-tray"));
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}
+
+#[test]
+fn the_welcome_button_opens_my_server_on_the_compatibility_tab() {
+    let (mut desktop, ctx, _fake) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::Welcome);
+    desktop.welcome.update(
+        lanlord_app::welcome::Msg::Topic(2),
+        &lanlord_app::desktop::windows(&desktop.icons),
+    );
+    frames(&mut desktop, &ctx, 2);
+    assert!(press(&mut desktop, &ctx, "Open Compatibility"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}
+
+#[test]
+fn a_welcome_with_no_request_does_not_wipe_the_components_request_in_the_same_frame() {
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    // components draws first, welcome after it in the same frame
+    desktop.open(Target::Components);
+    desktop.open(Target::Welcome);
+    desktop.components.update(
+        lanlord_app::components::Msg::Compat,
+        &desktop.services,
+        "me@gw",
+    );
+    frames(&mut desktop, &ctx, 3);
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
 }

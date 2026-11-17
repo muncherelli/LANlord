@@ -208,6 +208,7 @@ impl Demo {
             menu_open: self.menu_open,
             buttons: &buttons,
             clock: &clock,
+            alert: None,
             palette,
         };
         let layout = taskbar.layout(bar);

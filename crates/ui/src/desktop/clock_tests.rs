@@ -7,7 +7,7 @@ use eframe::egui;
 
 use super::harness::{click_at, desktop, enabled, frames, idle, press, until, with_host};
 use super::{theme, Desktop, Target};
-use crate::gateway::Fake;
+use lanlord_app::gateway::Fake;
 
 fn open(desktop: &mut Desktop, ctx: &egui::Context) {
     desktop.open(Target::DateTime);

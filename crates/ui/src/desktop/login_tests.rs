@@ -60,7 +60,11 @@ fn signing_in_shows_the_desktop_for_that_server() {
     assert!(desktop.admin_setup.is_none(), "alice is not root");
     desktop.open(Target::Console);
     frames(&mut desktop, &ctx, 2);
-    assert_eq!(desktop.windows.len(), 1);
+    assert_eq!(
+        desktop.windows.len(),
+        2,
+        "the console and the welcome screen"
+    );
 }
 
 #[test]
@@ -111,7 +115,7 @@ fn root_screen() -> (
     Desktop,
     egui::Context,
     Arc<FakeAuth>,
-    Arc<crate::gateway::Fake>,
+    Arc<lanlord_app::gateway::Fake>,
 ) {
     let (mut desktop, ctx, fake) = desktop();
     let auth = Arc::new(FakeAuth::default());
@@ -364,6 +368,18 @@ fn log_off_does_nothing_without_a_logon() {
 }
 
 #[test]
+fn a_demo_desktop_says_so_in_its_title() {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.local.lock().unwrap() = true;
+    desktop.mark_demo();
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(
+        desktop.window_title,
+        format!("LANlord Server v{} (demo)", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn the_local_mode_never_shows_the_box() {
     let (mut desktop, ctx, fake) = desktop();
     *fake.local.lock().unwrap() = true;
@@ -374,4 +390,50 @@ fn the_local_mode_never_shows_the_box() {
         desktop.window_title,
         format!("LANlord Server v{}", env!("CARGO_PKG_VERSION"))
     );
+}
+
+fn welcome_open(desktop: &Desktop) -> bool {
+    desktop.windows.iter().any(|w| w.target == Target::Welcome)
+}
+
+#[test]
+fn the_welcome_window_opens_after_logon_only_while_its_box_is_ticked() {
+    let dir = std::env::temp_dir().join(format!("lanlord-ui-welcome-{}", std::process::id()));
+    let file = dir.join("prefs");
+    // the first logon: nothing remembered, so it opens
+    let (mut desktop, ctx, auth) = logon();
+    desktop.set_prefs(Some(file.clone()));
+    auth.push(Ok(id("alice", 1000)));
+    sign_in(&mut desktop, &ctx, "alice", "gw.lan");
+    until(&mut desktop, &ctx, logged_on);
+    assert!(welcome_open(&desktop));
+    // clearing the box is remembered for alice, and Close closes the window
+    desktop
+        .welcome
+        .update(lanlord_app::welcome::Msg::Toggle, &[Target::Networks]);
+    assert!(press(&mut desktop, &ctx, "Close"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(!welcome_open(&desktop));
+    // the next logon of alice does not show it, bob's does
+    for (user, shown) in [("alice", false), ("bob", true)] {
+        let (mut desktop, ctx, auth) = logon();
+        desktop.set_prefs(Some(file.clone()));
+        auth.push(Ok(id(user, 1000)));
+        sign_in(&mut desktop, &ctx, user, "gw.lan");
+        until(&mut desktop, &ctx, logged_on);
+        assert_eq!(welcome_open(&desktop), shown, "{user}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_menu_has_a_welcome_row_that_opens_the_window() {
+    let (mut desktop, ctx, _) = desktop();
+    assert!(!welcome_open(&desktop));
+    desktop.do_action(&ctx, Action::Open(Target::Welcome));
+    frames(&mut desktop, &ctx, 2);
+    assert!(welcome_open(&desktop));
+    assert!(press(&mut desktop, &ctx, "Close"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(!welcome_open(&desktop));
 }
