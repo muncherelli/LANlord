@@ -111,7 +111,12 @@ jobs:
               fi ;;
             *) echo "unknown event $EVENT" >&2; exit 1 ;;
           esac
-          if [ "$mode" = release ]; then version=${TAG#v}; else version=$(tools/image-version.sh); fi
+          if [ "$mode" = release ]; then
+            version=${TAG#v}
+            git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "::error::tag $TAG does not exist"; exit 1; }
+          else
+            version=$(tools/image-version.sh)
+          fi
           echo "mode $mode, version $version"
           # a development version whose release exists is frozen: nothing is rebuilt or overwritten
           if [ "$mode" = dev ] && [ -n "$(git tag --list "v$version")" ]; then
@@ -136,6 +141,10 @@ jobs:
               action=build; from=""; own=""
               if [ "$mode" = release ] || [ "$EVENT" = workflow_dispatch ]; then
                 [ "$PICK" = all ] || [ "$PICK" = "$name" ] || continue
+                # a release from before the image existed has nothing to publish
+                if [ "$mode" = release ] && ! git cat-file -e "v$version:$dir" 2>/dev/null; then
+                  echo "v$version has no $dir; skipping $name"; continue
+                fi
               else
                 hit=0
                 if [ -z "$base" ]; then
@@ -332,3 +341,39 @@ jobs:
           [ -z "$args" ] || docker buildx imagetools create $args $source
           # shellcheck disable=SC2086
           docker buildx imagetools create -t "$REPO:$VERSION" $source
+
+  # a waiting merge can be replaced by a newer waiting run of the same image (see its concurrency
+  # group), which would drop a release's tags. so a release run ends by checking that X.Y.Z is
+  # there with the revision it should have, and fails loudly when not: run the workflow again by
+  # hand with the same tag.
+  verify:
+    if: ${{ always() && github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name == 'workflow_dispatch' && inputs.tag != '' && needs.versions.outputs.any == 'true' }}
+    needs: [versions, merge]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.versions.outputs.images) }}
+    env:
+      IMAGE: ${{ matrix.image }}
+      VERSION: ${{ matrix.version }}
+      REVISION: ${{ matrix.revision }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: check the released tag
+        run: |
+          set -eu
+          have=$(tools/ghcr-own-versions.sh "$IMAGE" | sed -n "s/^$VERSION //p")
+          if [ "$have" != "$REVISION" ]; then
+            echo "::error::$IMAGE:$VERSION is missing or not from $REVISION; run the image workflow again with tag v$VERSION"
+            exit 1
+          fi

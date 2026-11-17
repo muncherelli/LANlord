@@ -33,6 +33,10 @@ fn main() {
     if let Some(common) = git(&["rev-parse", "--git-common-dir"]).map(resolve) {
         watch(&common.join("packed-refs"));
         watch(&common.join("refs/tags"));
+        // a commit on a branch moves the branch ref, not HEAD
+        if let Some(head) = git(&["symbolic-ref", "-q", "HEAD"]) {
+            watch(&common.join(head));
+        }
     }
     let fallback = std::env::var("CARGO_PKG_VERSION").unwrap();
     let version = Command::new("sh")
