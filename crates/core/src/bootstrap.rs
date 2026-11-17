@@ -206,6 +206,16 @@ pub fn bootstrap(opts: &Options, ask_password: AskPassword) -> Result<()> {
 }
 
 fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) -> Result<()> {
+    bootstrap_lines(session, opts, ask_password, &mut |_| {})
+}
+
+/// like `bootstrap` on an open session; every line the server prints also goes to `on_line`.
+pub(crate) fn bootstrap_lines(
+    session: &Session,
+    opts: &Options,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
     emit(Kind::Info, format!("checking {}", opts.host));
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
@@ -220,7 +230,7 @@ fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) 
             opts.host, opts.ansible
         ),
     );
-    match run_as_root(session, admin, script, ask_password)? {
+    match run_as_root_lines(session, admin, script, ask_password, on_line)? {
         0 => {
             emit(Kind::Info, "bootstrap finished");
             Ok(())
@@ -239,6 +249,18 @@ pub(crate) fn run_as_root(
 ) -> Result<i32> {
     let (remote, input) = root_command(session, admin, script, ask_password)?;
     session.run_with_stdin(&remote, input.as_bytes())
+}
+
+/// like `run_as_root`, and every line the script prints also goes to `on_line` as it arrives.
+pub(crate) fn run_as_root_lines(
+    session: &Session,
+    admin: &str,
+    script: String,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<i32> {
+    let (remote, input) = root_command(session, admin, script, ask_password)?;
+    session.run_with_stdin_lines(&remote, input.as_bytes(), on_line)
 }
 
 /// like `run_as_root`, but returns what the script printed.

@@ -189,6 +189,7 @@ mod tests {
             let root = dir.join("root");
             for file in [
                 "opt/lanlord/config/settings.age",
+                "opt/lanlord/install-state",
                 "opt/lanlord/nt4/lib/profiles/dana/ntuser.dat",
                 "etc/lanlord/firewall.nft",
                 "etc/systemd/system/lanlord-firewall.service",
@@ -362,6 +363,7 @@ esac"#,
         let root = fake.root();
         for gone in [
             "opt/lanlord",
+            "opt/lanlord/install-state",
             "etc/lanlord",
             "run/lanlord",
             "etc/systemd/system/lanlord-firewall.service",
@@ -461,6 +463,8 @@ esac"#,
         for item in wanted {
             assert!(s.contains(&item), "the purge does not know about {item}");
         }
+        // the install marker sits under a folder the purge removes whole
+        assert!(crate::install::MARKER.starts_with("/opt/lanlord/"));
         // bootstrap's sudoers files
         let bootstrap =
             fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bootstrap.rs"))
