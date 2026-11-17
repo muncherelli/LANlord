@@ -77,6 +77,49 @@ fi
     )
 }
 
+/// shell that creates the lanlord group and account, or brings an old one into line: the id
+/// and the home directory are fixed, and files under /opt/lanlord that the old ids owned follow.
+fn service_account(id: u32) -> String {
+    format!(
+        r#"old_uid=$(getent passwd lanlord | cut -d: -f3 || true)
+old_gid=$(getent group lanlord | cut -d: -f3 || true)
+if [ -n "$old_uid" ] && [ "$old_uid" != {id} ] && pids=$(pgrep -u "$old_uid" | tr '\n' ' ') && [ -n "$pids" ]; then
+  echo "the lanlord account is in use by processes $pids; stop them and run this again" >&2
+  exit 1
+fi
+# files the old ids owned move first, so an interrupted run still finds the old ids next time
+if [ -d /opt/lanlord ]; then
+  if [ -n "$old_uid" ] && [ "$old_uid" != {id} ]; then
+    find /opt/lanlord -xdev -uid "$old_uid" -exec chown -h {id} {{}} +
+  fi
+  if [ -n "$old_gid" ] && [ "$old_gid" != {id} ]; then
+    find /opt/lanlord -xdev -gid "$old_gid" -exec chgrp -h {id} {{}} +
+  fi
+fi
+if [ -z "$old_gid" ]; then
+  groupadd --gid {id} lanlord
+elif [ "$old_gid" != {id} ]; then
+  groupmod --gid {id} lanlord
+fi
+if [ -z "$old_uid" ]; then
+  useradd --uid {id} --gid {id} --home-dir /opt/lanlord --no-create-home \
+    --shell "$(command -v nologin || echo /usr/sbin/nologin)" lanlord
+else
+  # the home moves before the uid, because usermod --uid re-owns the files in the current home
+  if [ "$(getent passwd lanlord | cut -d: -f6)" != /opt/lanlord ]; then
+    usermod --home /opt/lanlord lanlord
+  fi
+  if [ "$(getent passwd lanlord | cut -d: -f4)" != {id} ]; then
+    usermod --gid {id} lanlord
+  fi
+  if [ "$old_uid" != {id} ]; then
+    usermod --uid {id} lanlord
+  fi
+fi
+"#
+    )
+}
+
 /// a unix account name safe to put in a sudoers file and a shell script.
 pub(crate) fn valid_user(name: &str) -> bool {
     let mut chars = name.chars();
@@ -133,11 +176,7 @@ else
   apt-get install -y -qq python3 python3-venv python3-pip sudo
 fi
 
-getent group lanlord >/dev/null || groupadd --gid {id} lanlord
-getent passwd lanlord >/dev/null || useradd --uid {id} --gid {id} \
-  --home-dir /opt/lanlord --no-create-home \
-  --shell "$(command -v nologin || echo /usr/sbin/nologin)" lanlord
-getent group {admins} >/dev/null || groupadd --gid {admins_id} {admins}
+{service_account}getent group {admins} >/dev/null || groupadd --gid {admins_id} {admins}
 {join_admins}# root owns /opt/lanlord so lanlord cannot swap out the venv; it owns only what it writes
 install -d -o root -g lanlord -m 0750 /opt/lanlord
 install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansible
@@ -146,6 +185,7 @@ install -d -o lanlord -g lanlord -m 0750 /opt/lanlord/config /opt/lanlord/.ansib
 {service_sudoers}
 # the people allowed to administer lanlord may use sudo, with one remembered password prompt
 {admins_sudoers}"#,
+        service_account = service_account(id),
         service_sudoers = install_sudoers("lanlord", "lanlord ALL=(ALL) NOPASSWD: ALL\n"),
         admins_sudoers = install_sudoers(ADMINS_GROUP, &admins_sudoers()),
     );
@@ -317,6 +357,27 @@ mod tests {
             ansible,
             passwordless_sudo,
         }
+    }
+
+    #[test]
+    fn an_old_lanlord_account_is_brought_to_9999_and_its_files_follow() {
+        let s = script(&opts(AnsibleMode::Local, false), "admin").unwrap();
+        assert!(s.contains("groupmod --gid 9999 lanlord"));
+        assert!(s.contains("usermod --uid 9999 lanlord"));
+        assert!(s.contains("usermod --gid 9999 lanlord"));
+        assert!(s.contains("usermod --home /opt/lanlord lanlord"));
+        // files move before the ids change, and the home before the uid, so an interrupted run
+        // converges and usermod never re-owns files outside /opt/lanlord
+        let at = |needle: &str| s.find(needle).unwrap();
+        assert!(at("-exec chown -h 9999") < at("groupmod --gid 9999"));
+        assert!(at("-exec chgrp -h 9999") < at("usermod --uid 9999"));
+        assert!(at("usermod --home /opt/lanlord") < at("usermod --uid 9999"));
+        assert!(at("pgrep -u") < at("-exec chown -h 9999"));
+        assert!(s.contains("find /opt/lanlord -xdev -uid \"$old_uid\" -exec chown -h 9999"));
+        assert!(s.contains("find /opt/lanlord -xdev -gid \"$old_gid\" -exec chgrp -h 9999"));
+        // the group and account are fixed up after the taken-id checks, before anything uses them
+        assert!(s.find("is already used by").unwrap() < s.find("groupmod").unwrap());
+        assert!(s.find("usermod --uid").unwrap() < s.find("install -d -o root").unwrap());
     }
 
     #[test]
