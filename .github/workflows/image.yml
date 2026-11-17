@@ -79,7 +79,10 @@ jobs:
           base=""
           case "$EVENT" in
             pull_request) base="$BASE" ;;
-            push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; esac ;;
+            # an all-zero "before" (a new branch) has no base: every image counts as changed
+            push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; *) base="" ;; esac ;;
+            workflow_dispatch) ;;
+            *) echo "unknown event $EVENT" >&2; exit 1 ;;
           esac
           if [ -n "$base" ] && ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
           changed=""

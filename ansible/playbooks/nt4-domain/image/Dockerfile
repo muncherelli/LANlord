@@ -21,7 +21,6 @@ RUN apk add --no-cache \
       gnupg \
       gnutls-dev \
       jansson-dev \
-      cmocka-dev \
       libarchive-dev \
       libcap-dev \
       libtirpc-dev \
