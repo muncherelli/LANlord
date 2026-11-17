@@ -261,6 +261,12 @@ fn tab_moves_the_keyboard_through_a_windows_controls() {
 fn the_menu_works_from_the_keyboard() {
     let mut shell = demo();
     frame(&mut shell);
+    // the menu grows once the server's components are read
+    let started = Instant::now();
+    while shell.enabled().is_none() && started.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(10));
+        frame(&mut shell);
+    }
     key(&mut shell, KeyCode::F(10));
     assert_eq!(shell.menu, Some(0));
     let rows = shell.menu_state();
@@ -775,4 +781,44 @@ fn cancel_closes_the_date_time_window() {
         shell.windows.iter().all(|w| w.target != Target::DateTime),
         "Cancel closed it"
     );
+}
+
+fn settle_components(shell: &mut Shell) -> String {
+    // the window reads the server's settings once; give the job a moment, drawing as we go
+    let started = Instant::now();
+    let mut text = frame(shell);
+    while started.elapsed() < Duration::from_secs(3) && !text.contains("Next >") {
+        std::thread::sleep(Duration::from_millis(10));
+        text = frame(shell);
+    }
+    text
+}
+
+#[test]
+fn the_components_window_opens_as_a_wizard_with_a_check_list() {
+    let mut shell = demo();
+    frame(&mut shell);
+    shell.open(Target::Components);
+    let text = settle_components(&mut shell);
+    assert!(!text.contains("not available in the text view"), "{text}");
+    for needle in ["LANlord Components", "[x] ", "Next >", "Cancel"] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    assert!(shell.windows.iter().any(|w| w.target == Target::Components));
+    // Cancel closes it
+    let regions = shell
+        .hits
+        .windows
+        .iter()
+        .find(|w| w.0 == Target::Components)
+        .map(|w| w.3.clone())
+        .expect("the window was drawn");
+    let cancel = regions
+        .iter()
+        .filter(|r| matches!(r.part, Part::Press(_)))
+        .max_by_key(|r| r.rect.x)
+        .expect("buttons");
+    click(&mut shell, middle(cancel.rect));
+    frame(&mut shell);
+    assert!(shell.windows.iter().all(|w| w.target != Target::Components));
 }

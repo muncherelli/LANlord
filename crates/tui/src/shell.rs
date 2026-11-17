@@ -8,6 +8,7 @@ use std::sync::Arc;
 use lanlord_app::admin_setup::{self, AdminSetup};
 use lanlord_app::clock_window::{ClockFeed, ClockPanel};
 use lanlord_app::command_panel::CommandPanel;
+use lanlord_app::components::{Components, Selection};
 use lanlord_app::console::Console;
 use lanlord_app::desktop::{self, Target};
 use lanlord_app::dns_panel::DnsPanel;
@@ -219,6 +220,7 @@ pub struct Shell {
     console: Console,
     my_server: MyServer,
     settings: SettingsWindow,
+    components: Components,
     users: UsersPanel,
     nt4: Nt4Panel,
     logon: LogonPanel,
@@ -269,6 +271,7 @@ impl Shell {
             console: Console::new(Wake::none()),
             my_server: MyServer::default(),
             settings: SettingsWindow::default(),
+            components: Components::default(),
             users: UsersPanel::default(),
             nt4: Nt4Panel::default(),
             logon: LogonPanel::default(),
@@ -281,7 +284,7 @@ impl Shell {
             login: None,
             signed_in: None,
             admin_setup: None,
-            icons: desktop::icons(),
+            icons: desktop::icons(None),
             selected: None,
             windows: Vec::new(),
             active: None,
@@ -420,6 +423,9 @@ impl Shell {
                 // a fresh reading of the server every time the window opens
                 self.clock_panel.reset();
             }
+            if target == Target::Components {
+                self.components.open();
+            }
             let rect = self.place(target);
             self.windows.push(Win {
                 target,
@@ -510,6 +516,29 @@ impl Shell {
         }
     }
 
+    /// keep the components of the server in step, and the desktop icons with them: the
+    /// built-in windows plus the components it has switched on.
+    fn sync_components(&mut self) {
+        if let Some(host) = self.host() {
+            self.components.refresh(&self.services, &host);
+        }
+        let icons = desktop::icons(self.enabled().as_ref());
+        if icons != self.icons {
+            self.icons = icons;
+            self.selected = None;
+        }
+    }
+
+    /// what the server has switched on, once its settings were read.
+    fn enabled(&self) -> Option<Selection> {
+        let host = self.host()?;
+        self.components
+            .settings
+            .belongs_to(&host)
+            .then(|| self.components.current().cloned())
+            .flatten()
+    }
+
     fn menu_state(&self) -> Vec<Row> {
         let host = self.host();
         menu::rows(&menu::State {
@@ -518,6 +547,7 @@ impl Shell {
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
             updates: false,
             developer: false,
+            modules: desktop::modules(self.enabled().as_ref()),
         })
     }
 
@@ -562,6 +592,10 @@ impl Shell {
         }
         self.console.drain();
         self.settings.poll();
+        if self.settings.take_saved() {
+            self.components.invalidate();
+        }
+        self.sync_components();
         self.users.poll();
         self.nt4.poll();
         self.logon.poll();
@@ -693,6 +727,24 @@ impl Shell {
                 }
                 answer
             }
+            Target::Components => match host.as_deref() {
+                Some(host) => {
+                    let nodes = self.components.view(!self.services.busy(host));
+                    let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                    if let Some(msg) = msg {
+                        self.components.update(msg, &self.services, host);
+                    }
+                    if self.components.take_done() {
+                        self.close_requests.push(Target::Components);
+                    }
+                    answer
+                }
+                None => {
+                    let nodes: Vec<Node<()>> =
+                        vec![Node::Text("No server yet. Sign in to one first.".into())];
+                    drive(&nodes, &mut pass, &state, palette).0
+                }
+            },
             Target::Networks => drive::<()>(&not_yet(), &mut pass, &state, palette).0,
         };
         if state.focus.is_none() {
@@ -876,6 +928,9 @@ impl Shell {
         if let Some(dialog) = self.dns.dialog() {
             return Some(dialog.id);
         }
+        if let Some(dialog) = self.components.dialog() {
+            return Some(dialog.id);
+        }
         self.my_server.dialog(&self.services).map(|d| d.id)
     }
 
@@ -977,6 +1032,13 @@ impl Shell {
             let title = dialog.title.clone();
             if let Some(msg) = msg {
                 self.dns.update_dialog(msg);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.components.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let (Some(msg), Some(host)) = (msg, self.host()) {
+                self.components.update(msg, &self.services, &host);
             }
             (title, answer)
         } else {
@@ -1543,7 +1605,7 @@ impl Shell {
             return;
         };
         let focus_key = match region.part {
-            Part::Row(_) => Some(focus_key(&region.path, "List")),
+            Part::Row(_) | Part::Mark(_) => Some(focus_key(&region.path, "List")),
             Part::Tab(_) => Some(focus_key(&region.path, "TabBar")),
             _ if region.focusable => Some(region.key.clone()),
             _ => None,
@@ -1555,6 +1617,7 @@ impl Shell {
             Part::Press(n) => Input::Press(n),
             Part::Toggle => Input::Toggle,
             Part::Row(n) => Input::Row(n),
+            Part::Mark(n) => Input::Mark(n),
             Part::Tab(n) => Input::Tab(n),
             Part::Open => {
                 self.open_dropdown(owner, &region);
@@ -1685,6 +1748,19 @@ impl Shell {
         }
         self.view_mut(owner)
             .scroll_by(&region.key, i32::from(lines) * 3);
+    }
+
+    /// Space on a check list ticks or clears the selected row.
+    fn list_mark(&mut self, owner: Owner, region: &Region) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        if let Some((Some(selected), _)) = answer.list {
+            self.send(owner, region.path.clone(), Input::Mark(selected));
+        }
     }
 
     fn list_step(&mut self, owner: Owner, region: &Region, step: i32) {
@@ -1836,6 +1912,7 @@ impl Shell {
             (Part::Fold, KeyCode::Enter | KeyCode::Char(' ')) => {
                 self.toggle_fold(owner, &region.key);
             }
+            (Part::List, KeyCode::Char(' ')) => self.list_mark(owner, &region),
             (Part::List, KeyCode::Up) => self.list_step(owner, &region, -1),
             (Part::List, KeyCode::Down) => self.list_step(owner, &region, 1),
             (Part::Spin(0), KeyCode::Up | KeyCode::Right) => {
