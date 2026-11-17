@@ -19,7 +19,9 @@ fn generate_password() -> String {
     passwords::generate_with(passwords::DEFAULT_LEN, |bytes| {
         #[cfg(target_arch = "wasm32")]
         if let Some(crypto) = web_sys::window().and_then(|w| w.crypto().ok()) {
-            let _ = crypto.get_random_values_with_u8_array(bytes);
+            crypto
+                .get_random_values_with_u8_array(bytes)
+                .expect("the browser has no crypto random source");
             return;
         }
         let _ = bytes;
