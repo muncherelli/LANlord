@@ -13,8 +13,20 @@ use lanlord_app::gateway::Fake;
 pub fn desktop() -> (Desktop, egui::Context, Arc<Fake>) {
     let ctx = egui::Context::default();
     let fake = Arc::new(Fake::new());
-    let desktop = Desktop::new(fake.clone(), &ctx, None);
+    let mut desktop = Desktop::new(fake.clone(), &ctx, None);
+    desktop.pinned = Some(every_component());
+    desktop.icons = lanlord_app::desktop::icons(desktop.pinned.as_ref());
     (desktop, ctx, fake)
+}
+
+/// every component switched on, so the windows of all of them can be tried.
+pub fn every_component() -> lanlord_app::components::Selection {
+    lanlord_app::components::Selection {
+        enabled: lanlord_core::modules::MODULES
+            .iter()
+            .map(|m| (m.id.to_string(), Default::default()))
+            .collect(),
+    }
 }
 
 pub fn frame(desktop: &mut Desktop, ctx: &egui::Context, events: Vec<egui::Event>) {

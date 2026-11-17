@@ -1,0 +1,1949 @@
+//! the terminal desktop: the same desktop, menu, windows and boxes the gui shows, drawn in
+//! character cells. the windows come from `lanlord_app` as layout trees, so this file only
+//! places them, routes the mouse and keyboard to them and hands their messages back.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use lanlord_app::admin_setup::{self, AdminSetup};
+use lanlord_app::clock_window::{ClockFeed, ClockPanel};
+use lanlord_app::command_panel::CommandPanel;
+use lanlord_app::console::Console;
+use lanlord_app::desktop::{self, Target};
+use lanlord_app::dns_panel::DnsPanel;
+use lanlord_app::form::{Form, FormAnswer};
+use lanlord_app::gateway::Gateway;
+use lanlord_app::hostlist::HostList;
+use lanlord_app::login::{self, Auth, LoginBox, SignedIn};
+use lanlord_app::logon_panel::LogonPanel;
+use lanlord_app::menu::{self, Action, Row};
+use lanlord_app::my_server::MyServer;
+use lanlord_app::nt4_panel::Nt4Panel;
+use lanlord_app::services::Services;
+use lanlord_app::settings_window::SettingsWindow;
+use lanlord_app::tasks::PasswordRequest;
+use lanlord_app::users_panel::UsersPanel;
+use lanlord_app::view::{Dialog, Node};
+use lanlord_app::wake::Wake;
+use lanlord_app::{hosts_window, module_window};
+use lanlord_core::modules::MODULES;
+use lanlord_core::power::Power;
+use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Position, Rect};
+use ratatui::widgets::Widget;
+use zeroize::Zeroizing;
+
+use crate::paint::chrome::{
+    Menu, MenuRow, TaskButton, Taskbar, TaskbarLayout, WindowFrame, WindowLayout,
+};
+use crate::paint::desktop::{icon_rect, Desktop as Teal, GlyphTile};
+use crate::paint::mouse::{Gesture, Mouse};
+use crate::paint::palette::{Palette, BLACK, GRAY, NAVY, WHITE};
+use crate::paint::{fill, style, text};
+use crate::view::{self, Input, Painter, Part, Region, ViewState};
+
+/// what a window body says when its window has not moved to the layout tree yet.
+pub const NOT_YET: &str = "This window is not available in the text view yet. Open it in the LANlord window or the web UI.";
+
+/// one open window: where it is and whether it is tucked into the taskbar.
+struct Win {
+    target: Target,
+    rect: Rect,
+    minimized: bool,
+    /// where it was before it was maximised.
+    restore: Option<Rect>,
+}
+
+/// a box that belongs to the desktop rather than to a window.
+enum Modal {
+    Confirm(Power, String, Form),
+    About(Form),
+    Password(PasswordRequest, Form),
+    AddHost(Form),
+    Secret(Form),
+}
+
+/// who a region or a keystroke belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Window(Target),
+    Dialog,
+}
+
+/// an open drop-down's owner, the path of its choice and each option's row and key.
+type OpenDropdown = (Owner, Vec<usize>, Vec<(Rect, usize)>);
+
+/// what was drawn last frame, for hit testing.
+#[derive(Default)]
+struct Hits {
+    desktop: Rect,
+    icons: Vec<Rect>,
+    taskbar: Option<TaskbarLayout>,
+    task_targets: Vec<Target>,
+    menu: Option<(Rect, Vec<(Rect, usize)>)>,
+    /// bottom to top.
+    windows: Vec<(Target, Rect, WindowLayout, Vec<Region>)>,
+    dialog: Option<(Rect, Vec<Region>)>,
+    dropdown: Option<OpenDropdown>,
+}
+
+/// one pass over a window's tree: draw it, act on it, or ask about one of its nodes.
+enum Pass<'b> {
+    Draw {
+        area: Rect,
+        buf: &'b mut Buffer,
+        active: bool,
+    },
+    Act {
+        path: Vec<usize>,
+        input: Input,
+    },
+    Query {
+        path: Vec<usize>,
+    },
+    /// how many rows the tree takes at `width`.
+    Measure {
+        width: u16,
+    },
+}
+
+/// what a pass found.
+#[derive(Default)]
+struct Answer {
+    regions: Vec<Region>,
+    want_focus: Option<String>,
+    field: Option<view::FieldValue>,
+    list: Option<(Option<usize>, usize)>,
+    tab: Option<(usize, usize)>,
+    choice: Option<(Vec<(usize, String)>, String)>,
+    /// the field at the queried path sends its own message on Enter.
+    enters: bool,
+    /// the calendar at the queried path: its month, selected day and whether it can be picked.
+    calendar: Option<(i32, u32, chrono::NaiveDate, bool)>,
+    height: u16,
+}
+
+/// run `pass` over `nodes`; the message it produced, if any.
+fn drive<M: Clone>(
+    nodes: &[Node<M>],
+    pass: &mut Pass,
+    state: &ViewState,
+    palette: Palette,
+) -> (Answer, Option<M>) {
+    drive_at(nodes, pass, state, palette, &[])
+}
+
+/// like `drive`, for a tree whose regions carry `prefix` in front of their paths, so that two
+/// trees can share one window (a tab strip and the page under it). an action or a question
+/// about a path without the prefix is not for this tree.
+fn drive_at<M: Clone>(
+    nodes: &[Node<M>],
+    pass: &mut Pass,
+    state: &ViewState,
+    palette: Palette,
+    prefix: &[usize],
+) -> (Answer, Option<M>) {
+    let mut answer = Answer::default();
+    let own = |path: &[usize]| path.strip_prefix(prefix).map(<[usize]>::to_vec);
+    match pass {
+        Pass::Draw { area, buf, active } => {
+            let area = *area;
+            let mut painter = Painter::new(palette, state, *active);
+            let total = painter.height(nodes, area.width, Some(area.height));
+            if total <= area.height {
+                painter.draw(nodes, area, buf, prefix);
+            } else {
+                // a body taller than its window scrolls with the wheel
+                let offset = state
+                    .scroll
+                    .get("#body")
+                    .copied()
+                    .unwrap_or(0)
+                    .min(usize::from(total - area.height)) as u16;
+                let mut tall = Buffer::empty(Rect::new(0, 0, area.width, total));
+                let whole = tall.area;
+                fill(&mut tall, whole, palette, GRAY);
+                painter.draw(nodes, whole, &mut tall, prefix);
+                view::blit(&tall, offset, area, buf);
+                painter
+                    .regions
+                    .retain(|r| r.rect.y >= offset && r.rect.bottom() <= offset + area.height);
+                for region in &mut painter.regions {
+                    region.rect.x += area.x;
+                    region.rect.y = region.rect.y - offset + area.y;
+                }
+                painter.regions.push(Region {
+                    rect: area,
+                    path: prefix.to_vec(),
+                    part: Part::Scroll,
+                    focusable: false,
+                    key: "#body".into(),
+                });
+            }
+            answer.want_focus = view::wants_focus(nodes, &painter.regions, prefix);
+            answer.regions = painter.regions;
+            (answer, None)
+        }
+        Pass::Act { path, input } => {
+            let msg = own(path).and_then(|path| view::act(nodes, &path, input.clone()));
+            (answer, msg)
+        }
+        Pass::Measure { width } => {
+            answer.height = Painter::new(palette, state, false).height(nodes, *width, None);
+            (answer, None)
+        }
+        Pass::Query { path } => {
+            if let Some(path) = own(path) {
+                answer.field = view::field_value(nodes, &path);
+                answer.list = view::list_state(nodes, &path);
+                answer.tab = view::tab_state(nodes, &path);
+                answer.choice = view::choice_state(nodes, &path);
+                answer.enters = view::field_enters(nodes, &path);
+                answer.calendar = view::calendar_state(nodes, &path);
+            }
+            (answer, None)
+        }
+    }
+}
+
+/// a placeholder body for a window that is still drawn by egui alone.
+fn not_yet<M>() -> Vec<Node<M>> {
+    vec![Node::Text(NOT_YET.into())]
+}
+
+pub struct Shell {
+    palette: Palette,
+    services: Services,
+    hosts: HostList,
+    console: Console,
+    my_server: MyServer,
+    settings: SettingsWindow,
+    users: UsersPanel,
+    nt4: Nt4Panel,
+    logon: LogonPanel,
+    dns: DnsPanel,
+    commands: CommandPanel,
+    /// the open tab of the NT4 Domain window: Settings, Logins or Logon scripts.
+    nt4_tab: usize,
+    /// the Date/Time Properties window, and the server's time shown in the taskbar.
+    clock_panel: ClockPanel,
+    feed: ClockFeed,
+    /// how to sign in; `None` when lanlord runs on the gateway itself (or in a test).
+    auth: Option<Arc<dyn Auth>>,
+    /// the logon box, shown instead of the desktop until someone is signed in.
+    login: Option<LoginBox>,
+    signed_in: Option<SignedIn>,
+    /// the screen root lands on to create the first administrator, before the desktop.
+    admin_setup: Option<AdminSetup>,
+    icons: Vec<Target>,
+    selected: Option<usize>,
+    /// bottom to top; the last visible one has the keyboard.
+    windows: Vec<Win>,
+    active: Option<Target>,
+    /// the LANlord menu is open, with the keyboard on this row.
+    menu: Option<usize>,
+    modal: Option<Modal>,
+    views: HashMap<&'static str, ViewState>,
+    dialog_view: ViewState,
+    /// the box the dialog view belongs to, so a new box starts fresh.
+    dialog_id: Option<&'static str>,
+    /// a window being dragged by its title bar, and where in the bar it was grabbed.
+    drag: Option<(Target, u16, u16)>,
+    /// windows that asked to be closed from inside (OK or Cancel).
+    close_requests: Vec<Target>,
+    mouse: Mouse,
+    hits: Hits,
+    /// the clock text; the local time unless a test sets it.
+    pub clock: Option<String>,
+    pub quit: bool,
+}
+
+impl Shell {
+    /// a desktop that talks to gateways through `gateway` and keeps its hosts in `hosts`.
+    pub fn new(gateway: Arc<dyn Gateway>, hosts: HostList, palette: Palette) -> Self {
+        Self {
+            palette,
+            services: Services::new(gateway, Wake::none()),
+            hosts,
+            console: Console::new(Wake::none()),
+            my_server: MyServer::default(),
+            settings: SettingsWindow::default(),
+            users: UsersPanel::default(),
+            nt4: Nt4Panel::default(),
+            logon: LogonPanel::default(),
+            dns: DnsPanel::default(),
+            commands: CommandPanel::default(),
+            nt4_tab: 0,
+            clock_panel: ClockPanel::default(),
+            feed: ClockFeed::default(),
+            auth: None,
+            login: None,
+            signed_in: None,
+            admin_setup: None,
+            icons: desktop::icons(),
+            selected: None,
+            windows: Vec::new(),
+            active: None,
+            menu: None,
+            modal: None,
+            views: HashMap::new(),
+            dialog_view: ViewState::default(),
+            dialog_id: None,
+            drag: None,
+            close_requests: Vec::new(),
+            mouse: Mouse::new(),
+            hits: Hits::default(),
+            clock: None,
+            quit: false,
+        }
+    }
+
+    /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), like the gui.
+    pub fn use_demo_server(&mut self) {
+        self.hosts = HostList::new(None);
+        let _ = self.hosts.add("demo@gateway");
+    }
+
+    /// the host every action targets.
+    fn host(&self) -> Option<String> {
+        match self.hosts.selected() {
+            Some(host) => Some(host.to_string()),
+            // lanlord on the gateway itself has one server and no list
+            None if self.services.is_local() => Some("local".into()),
+            None => None,
+        }
+    }
+
+    /// the title of the whole app, as the gui sets it: "LANlord Client v…" or "LANlord Server v…".
+    pub fn title(&self) -> String {
+        let host = self.signed_in.as_ref().and(self.host());
+        desktop::window_title(self.services.is_local(), host.as_deref())
+    }
+
+    /// start at the logon box, like the gui. lanlord on the gateway itself has one server and
+    /// no logon.
+    pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
+        if self.services.is_local() {
+            return;
+        }
+        let last = self.hosts.selected().map(String::from);
+        self.login = Some(LoginBox::new(auth.clone(), Wake::none(), last.as_deref()));
+        self.auth = Some(auth);
+    }
+
+    /// the logon box or the first-administrator screen is up instead of the desktop.
+    fn before_desktop(&self) -> bool {
+        self.login.is_some() || self.admin_setup.is_some()
+    }
+
+    /// someone signed in: the server joins the list and every action targets it. root goes to
+    /// the screen that creates the first administrator before anything else.
+    fn finish_login(&mut self, signed_in: SignedIn) {
+        self.login = None;
+        if let Err(error) = self.hosts.add(&signed_in.target) {
+            lanlord_core::log::emit(lanlord_core::log::Kind::Err, error);
+        }
+        self.windows.clear();
+        self.active = None;
+        self.selected = None;
+        self.menu = None;
+        if signed_in.identity.is_root() {
+            self.admin_setup = Some(AdminSetup::new());
+        }
+        self.signed_in = Some(signed_in);
+    }
+
+    fn admin_outcome(&mut self, outcome: admin_setup::Outcome) {
+        let Some(target) = self.signed_in.as_ref().map(|s| s.target.clone()) else {
+            self.admin_setup = None;
+            return;
+        };
+        match outcome {
+            admin_setup::Outcome::Skipped => self.admin_setup = None,
+            admin_setup::Outcome::Created(name) => {
+                // forget the root entry and ask for a logon as the new account
+                self.admin_setup = None;
+                if self.hosts.selected() == Some(target.as_str()) {
+                    let _ = self.hosts.remove_selected();
+                }
+                let host = target.split_once('@').map_or(target.as_str(), |(_, h)| h);
+                self.return_to_login(
+                    Some(format!("{name}@{host}")),
+                    Some(format!("Created {name}. Log on with it.")),
+                );
+            }
+        }
+    }
+
+    /// lanlord was removed from `host`: forget it and go back to the logon box.
+    fn after_purge(&mut self, host: &str) {
+        if let Some(i) = self.hosts.hosts().iter().position(|h| h == host) {
+            self.hosts.select(i);
+            let _ = self.hosts.remove_selected();
+        }
+        self.log_off();
+    }
+
+    /// back to the logon box, closing the connection that was kept open for this server.
+    fn log_off(&mut self) {
+        let last = self.signed_in.as_ref().map(|s| s.target.clone());
+        self.return_to_login(last, None);
+    }
+
+    /// show the logon box again with `last` filled in and `note` in its status bar.
+    fn return_to_login(&mut self, last: Option<String>, note: Option<String>) {
+        let Some(auth) = self.auth.clone() else {
+            return;
+        };
+        if let Some(target) = self.signed_in.take().map(|s| s.target) {
+            let closer = auth.clone();
+            std::thread::spawn(move || closer.sign_out(&target));
+        }
+        self.windows.clear();
+        self.active = None;
+        self.menu = None;
+        let mut login = LoginBox::new(auth, Wake::none(), last.as_deref());
+        if let Some(note) = note {
+            login.note(&note);
+        }
+        self.login = Some(login);
+    }
+
+    pub fn open(&mut self, target: Target) {
+        if let Some(i) = self.windows.iter().position(|w| w.target == target) {
+            let mut win = self.windows.remove(i);
+            win.minimized = false;
+            self.windows.push(win);
+        } else {
+            if target == Target::DateTime {
+                // a fresh reading of the server every time the window opens
+                self.clock_panel.reset();
+            }
+            let rect = self.place(target);
+            self.windows.push(Win {
+                target,
+                rect,
+                minimized: false,
+                restore: None,
+            });
+        }
+        self.active = Some(target);
+        self.menu = None;
+    }
+
+    /// where a new window goes: right of the icons, cascading, cut down to fit.
+    fn place(&self, target: Target) -> Rect {
+        let area = self.hits.desktop;
+        let area = if area.is_empty() {
+            Rect::new(0, 0, 100, 30)
+        } else {
+            area
+        };
+        let icons_right = (0..self.icons.len())
+            .map(|i| icon_rect(area, i).right())
+            .max()
+            .unwrap_or(0);
+        let (w, mut h) = target.size();
+        if target == Target::DateTime {
+            // the Date/Time tree is two columns of groups, a calendar of six weeks and a button
+            // row: taller than the gui's pixel height says once cells are 16 high
+            h = h.max(33.0 * 16.0);
+        }
+        let n = self.windows.len() as u16;
+        let x = (icons_right + 1 + n * 2).min(area.right().saturating_sub(20));
+        let y = area.y + (n % 6);
+        let width = ((w / 7.0) as u16)
+            .min(area.right().saturating_sub(x))
+            .max(20);
+        let height = ((h / 16.0) as u16 + 3)
+            .min(area.bottom().saturating_sub(y))
+            .max(8);
+        Rect::new(x, y, width, height)
+    }
+
+    fn close(&mut self, target: Target) {
+        self.windows.retain(|w| w.target != target);
+        if self.active == Some(target) {
+            self.active = self
+                .windows
+                .iter()
+                .rev()
+                .find(|w| !w.minimized)
+                .map(|w| w.target);
+        }
+    }
+
+    fn raise(&mut self, target: Target) {
+        if let Some(i) = self.windows.iter().position(|w| w.target == target) {
+            let mut win = self.windows.remove(i);
+            win.minimized = false;
+            self.windows.push(win);
+        }
+        self.active = Some(target);
+    }
+
+    fn minimize(&mut self, target: Target) {
+        if let Some(win) = self.windows.iter_mut().find(|w| w.target == target) {
+            win.minimized = true;
+        }
+        if self.active == Some(target) {
+            self.active = self
+                .windows
+                .iter()
+                .rev()
+                .find(|w| !w.minimized)
+                .map(|w| w.target);
+        }
+    }
+
+    fn toggle_maximise(&mut self, target: Target) {
+        let full = self.hits.desktop;
+        if let Some(win) = self.windows.iter_mut().find(|w| w.target == target) {
+            match win.restore.take() {
+                Some(rect) => win.rect = rect,
+                None => {
+                    win.restore = Some(win.rect);
+                    win.rect = full;
+                }
+            }
+        }
+    }
+
+    fn menu_state(&self) -> Vec<Row> {
+        let host = self.host();
+        menu::rows(&menu::State {
+            host: host.as_deref(),
+            signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
+            ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
+            updates: false,
+            developer: false,
+        })
+    }
+
+    fn do_action(&mut self, action: Action) {
+        self.menu = None;
+        match action {
+            Action::Open(target) => self.open(target),
+            Action::Power(power) => {
+                if let Some(host) = self.host() {
+                    let (title, verb) = match power {
+                        Power::Reboot => ("Reboot server", "Restart"),
+                        Power::PowerOff => ("Shut down server", "Shut down"),
+                    };
+                    let form = Form::new("power", title, &format!("{verb} {host} now?"));
+                    self.modal = Some(Modal::Confirm(power, host, form));
+                }
+            }
+            Action::About => {
+                let about = format!(
+                    "{}\nRetro networks, run from one desktop.",
+                    desktop::app_title(self.services.is_local())
+                );
+                self.modal = Some(Modal::About(Form::new("about", "About LANlord", &about)));
+            }
+            Action::Quit => self.quit = true,
+            Action::SwitchServer | Action::LogOff => self.log_off(),
+            // the logon box, updates and the developer menu live in the gui for now
+            _ => {}
+        }
+    }
+}
+
+// background work, once per frame
+impl Shell {
+    pub fn poll(&mut self) {
+        for target in std::mem::take(&mut self.close_requests) {
+            self.close(target);
+            if target == Target::DateTime {
+                // what the window changed shows on the taskbar clock
+                self.feed.refresh();
+            }
+        }
+        self.console.drain();
+        self.settings.poll();
+        self.users.poll();
+        self.nt4.poll();
+        self.logon.poll();
+        self.dns.poll();
+        self.commands.poll();
+        self.poll_clock();
+        self.my_server.refresh_purge();
+        if let Some(host) = self.my_server.take_purged() {
+            self.after_purge(&host);
+        }
+        if let Some(signed_in) = self.login.as_mut().and_then(LoginBox::poll) {
+            self.finish_login(signed_in);
+        }
+        if let Some(outcome) = self.admin_setup.as_mut().and_then(AdminSetup::poll) {
+            self.admin_outcome(outcome);
+        }
+        if self.modal.is_none() {
+            if let Some(request) = self.services.next_request() {
+                let form = Form::new("password", "Password", &request.prompt).secret("Password");
+                self.modal = Some(Modal::Password(request, form));
+            } else if let Some(path) = self.settings.asking().map(String::from) {
+                let form = Form::new("secret", "Set a secret", &path).secret("Value");
+                self.modal = Some(Modal::Secret(form));
+            }
+        }
+    }
+}
+
+// each window's tree, run through one pass
+impl Shell {
+    fn run_window(&mut self, target: Target, mut pass: Pass) -> Answer {
+        let key = target.id();
+        let mut state = self.views.remove(key).unwrap_or_default();
+        let palette = self.palette;
+        let host = self.host();
+        let answer = match target {
+            Target::MyServer => match host.as_deref() {
+                Some(host) => {
+                    if matches!(pass, Pass::Draw { .. }) {
+                        self.my_server.refresh(&self.services, host);
+                    }
+                    let nodes = self.my_server.view(!self.services.busy(host));
+                    let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                    if let Some(msg) = msg {
+                        self.my_server.update(msg, &self.services, host);
+                    }
+                    answer
+                }
+                None => {
+                    let nodes: Vec<Node<()>> =
+                        vec![Node::Text("No server yet. Sign in to one first.".into())];
+                    drive(&nodes, &mut pass, &state, palette).0
+                }
+            },
+            Target::Console => drive::<()>(&self.console.view(), &mut pass, &state, palette).0,
+            Target::Hosts => {
+                let nodes =
+                    hosts_window::view(&self.hosts, &self.services, self.services.is_local());
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let Some(msg) = msg {
+                    let ask = hosts_window::update(msg, &mut self.hosts, &self.services);
+                    if ask == Some(hosts_window::Ask::AddHost) && self.modal.is_none() {
+                        let form = Form::new("add-host", "Add a host", "Gateway as user@host:")
+                            .text("Host", "");
+                        self.modal = Some(Modal::AddHost(form));
+                    }
+                }
+                answer
+            }
+            Target::Settings => {
+                let nodes = self.settings.view(&self.services, host.as_deref());
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    self.settings.update(msg, &self.services, host);
+                }
+                answer
+            }
+            Target::Module(i) => {
+                let module = &MODULES[i];
+                match module.id {
+                    "nt4-domain" => self.nt4_window(module, pass, &state),
+                    "dns" => {
+                        let mut nodes = module_window::header(module);
+                        nodes.extend(self.dns.view(&self.services, host.as_deref()));
+                        let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                        if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                            self.dns.update(msg, &self.services, host);
+                        }
+                        answer
+                    }
+                    "remote-commands" => {
+                        let mut nodes = module_window::header(module);
+                        let machines = self.nt4.machines().to_vec();
+                        nodes.extend(self.commands.view(
+                            &self.services,
+                            host.as_deref(),
+                            &machines,
+                        ));
+                        let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                        if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                            self.commands.update(msg, &self.services, host);
+                        }
+                        answer
+                    }
+                    _ => {
+                        let mut nodes = module_window::header(module);
+                        nodes.extend(module_window::plain(
+                            module,
+                            &self.services,
+                            host.as_deref(),
+                        ));
+                        let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                        if let Some(msg) = msg {
+                            module_window::update(msg, module, &self.services, host.as_deref());
+                        }
+                        answer
+                    }
+                }
+            }
+            Target::DateTime => {
+                let nodes = self.clock_panel.view(&self.services, host.as_deref());
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    if self.clock_panel.update(msg, &self.services, host) {
+                        self.close_requests.push(Target::DateTime);
+                    }
+                } else if self.clock_panel.closing() {
+                    self.close_requests.push(Target::DateTime);
+                }
+                answer
+            }
+            Target::Networks => drive::<()>(&not_yet(), &mut pass, &state, palette).0,
+        };
+        if state.focus.is_none() {
+            state.focus = answer.want_focus.clone();
+        }
+        self.views.insert(key, state);
+        answer
+    }
+
+    /// keep the taskbar clock on the server's time: read it once, and take what the Date/Time
+    /// window reads or changes.
+    fn poll_clock(&mut self) {
+        let host = self.host();
+        self.feed.watch(&self.services, host.as_deref());
+        if let (Some(state), Some(host)) = (self.clock_panel.poll(), host.as_deref()) {
+            self.feed.set(host, state);
+        }
+    }
+
+    /// the NT4 Domain window: its header and tab strip, and the open tab's page under them.
+    /// the page's regions carry `PAGE` in front of their paths.
+    fn nt4_window(
+        &mut self,
+        module: &'static lanlord_core::modules::Module,
+        mut pass: Pass,
+        state: &ViewState,
+    ) -> Answer {
+        const PAGE: usize = 9;
+        let palette = self.palette;
+        let host = self.host();
+        let mut top: Vec<Node<usize>> = module_window::header(module);
+        top.push(Node::Tabs {
+            titles: vec!["Settings", "Logins", "Logon scripts"],
+            current: self.nt4_tab,
+            pick: |tab| tab,
+            body: Vec::new(),
+        });
+        // where the strip ends and the page starts
+        let (mut top_pass, mut page_pass) = match &mut pass {
+            Pass::Draw { area, buf, active } => {
+                let painter = Painter::new(palette, state, *active);
+                let strip = painter.height(&top[..top.len() - 1], area.width, None) + 1;
+                let strip = strip.min(area.height);
+                let page = Rect::new(area.x, area.y + strip, area.width, area.height - strip);
+                let face = page.intersection(buf.area);
+                if face.height >= 3 {
+                    crate::paint::chrome::Bevel {
+                        sunken: false,
+                        palette,
+                    }
+                    .render(face, buf);
+                }
+                let inner = Rect::new(
+                    page.x + 2,
+                    page.y + 1,
+                    page.width.saturating_sub(4),
+                    page.height.saturating_sub(2),
+                );
+                let top_area = Rect::new(area.x, area.y, area.width, strip);
+                let active = *active;
+                // two draws into one buffer, one after the other
+                let mut regions = {
+                    let mut p = Pass::Draw {
+                        area: top_area,
+                        buf,
+                        active,
+                    };
+                    drive(&top, &mut p, state, palette).0.regions
+                };
+                let page_answer = {
+                    let mut p = Pass::Draw {
+                        area: inner,
+                        buf,
+                        active,
+                    };
+                    self.nt4_page(&mut p, state, host.as_deref(), &[PAGE])
+                };
+                regions.extend(page_answer.regions);
+                return Answer {
+                    regions,
+                    want_focus: page_answer.want_focus,
+                    ..Answer::default()
+                };
+            }
+            Pass::Act { path, input } => (
+                Pass::Act {
+                    path: path.clone(),
+                    input: input.clone(),
+                },
+                Pass::Act {
+                    path: path.clone(),
+                    input: input.clone(),
+                },
+            ),
+            Pass::Query { path } => (
+                Pass::Query { path: path.clone() },
+                Pass::Query { path: path.clone() },
+            ),
+            Pass::Measure { width } => (
+                Pass::Measure { width: *width },
+                Pass::Measure { width: *width },
+            ),
+        };
+        let on_page = match &page_pass {
+            Pass::Act { path, .. } | Pass::Query { path } => path.first() == Some(&PAGE),
+            _ => false,
+        };
+        if on_page {
+            return self.nt4_page(&mut page_pass, state, host.as_deref(), &[PAGE]);
+        }
+        let (answer, tab) = drive(&top, &mut top_pass, state, palette);
+        if let Some(tab) = tab {
+            self.nt4_tab = tab;
+        }
+        answer
+    }
+
+    /// the open tab of the NT4 Domain window, run through `pass`.
+    fn nt4_page(
+        &mut self,
+        pass: &mut Pass,
+        state: &ViewState,
+        host: Option<&str>,
+        prefix: &[usize],
+    ) -> Answer {
+        let palette = self.palette;
+        match self.nt4_tab {
+            0 => {
+                let nodes = self.nt4.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.nt4.update(msg, &self.services, host);
+                }
+                answer
+            }
+            1 => {
+                let nodes = self.users.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.users.update(msg, &self.services, host);
+                }
+                answer
+            }
+            _ => {
+                let nodes = self.logon.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.logon.update(msg, &self.services, host);
+                }
+                answer
+            }
+        }
+    }
+
+    /// the box on top of everything, if there is one: the desktop's own, then a window's.
+    fn dialog_id(&mut self) -> Option<&'static str> {
+        if let Some(modal) = &self.modal {
+            return Some(match modal {
+                Modal::Confirm(..) => "power",
+                Modal::About(_) => "about",
+                Modal::Password(..) => "password",
+                Modal::AddHost(_) => "add-host",
+                Modal::Secret(_) => "secret",
+            });
+        }
+        if let Some(login) = &self.login {
+            return Some(login.overlay().map_or("logon", |d| d.id));
+        }
+        if let Some(setup) = &self.admin_setup {
+            return Some(setup.warning().map_or("admin-setup", |d| d.id));
+        }
+        if let Some(dialog) = self.users.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.nt4.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.logon.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.dns.dialog() {
+            return Some(dialog.id);
+        }
+        self.my_server.dialog(&self.services).map(|d| d.id)
+    }
+
+    fn run_dialog(&mut self, mut pass: Pass) -> Option<(String, Answer)> {
+        let id = self.dialog_id()?;
+        if self.dialog_id != Some(id) {
+            self.dialog_id = Some(id);
+            self.dialog_view = ViewState::default();
+        }
+        let state = std::mem::take(&mut self.dialog_view);
+        let palette = self.palette;
+        let escape = matches!(
+            &pass,
+            Pass::Act {
+                input: Input::Press(usize::MAX),
+                ..
+            }
+        );
+        let (title, answer) = if let Some(mut modal) = self.modal.take() {
+            let form = match &mut modal {
+                Modal::Confirm(_, _, f)
+                | Modal::About(f)
+                | Modal::Password(_, f)
+                | Modal::AddHost(f)
+                | Modal::Secret(f) => f,
+            };
+            let dialog = form.view();
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            let done = msg.and_then(|m| form.update(m));
+            self.modal = Some(modal);
+            if let Some(result) = done {
+                self.answer_modal(result);
+            }
+            (title, answer)
+        } else if let Some(overlay) = self.login.as_ref().and_then(LoginBox::overlay) {
+            let (answer, msg) = drive_dialog(&overlay, &mut pass, &state, palette, escape);
+            if let (Some(button), Some(login)) = (msg, self.login.as_mut()) {
+                login.answer_overlay(button);
+            }
+            (overlay.title.clone(), answer)
+        } else if let Some(login) = self.login.as_mut() {
+            let known = self.hosts.hosts().to_vec();
+            let nodes = login.view(&known);
+            let title = login.title().to_string();
+            let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+            match msg.and_then(|msg| login.update(msg, &known)) {
+                Some(login::Outcome::SignedIn(signed_in)) => self.finish_login(signed_in),
+                Some(login::Outcome::ShutDown) => self.quit = true,
+                None => {}
+            }
+            (title, answer)
+        } else if let Some(warning) = self.admin_setup.as_ref().and_then(AdminSetup::warning) {
+            let (answer, msg) = drive_dialog(&warning, &mut pass, &state, palette, escape);
+            if let (Some(button), Some(setup)) = (msg, self.admin_setup.as_mut()) {
+                setup.answer_warning(button);
+            }
+            (warning.title.clone(), answer)
+        } else if self.admin_setup.is_some() {
+            let target = self
+                .signed_in
+                .as_ref()
+                .map(|s| s.target.clone())
+                .unwrap_or_default();
+            let setup = self.admin_setup.as_mut().expect("checked above");
+            let nodes = setup.view();
+            let title = setup.title().to_string();
+            let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+            if let Some(outcome) = msg.and_then(|msg| setup.update(msg, &self.services, &target)) {
+                self.admin_outcome(outcome);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.users.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                let host = self.host();
+                self.users
+                    .update_dialog(msg, &self.services, host.as_deref());
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.nt4.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                let host = self.host();
+                self.nt4.update_dialog(msg, &self.services, host.as_deref());
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.logon.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                self.logon.update_dialog(msg);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.dns.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                self.dns.update_dialog(msg);
+            }
+            (title, answer)
+        } else {
+            let dialog = self.my_server.dialog(&self.services)?;
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                let host = self
+                    .my_server
+                    .purge()
+                    .map(|p| p.host().to_string())
+                    .unwrap_or_default();
+                self.my_server.update(msg, &self.services, &host);
+            }
+            (title, answer)
+        };
+        let mut state = state;
+        if state.focus.is_none() {
+            state.focus = answer.want_focus.clone();
+        }
+        self.dialog_view = state;
+        Some((title, answer))
+    }
+
+    /// a desktop box was answered.
+    fn answer_modal(&mut self, result: FormAnswer) {
+        let Some(modal) = self.modal.take() else {
+            return;
+        };
+        match (modal, result) {
+            (Modal::Confirm(power, host, _), FormAnswer::Ok) => {
+                self.services.power(&host, power);
+            }
+            (Modal::Password(request, form), answer) => {
+                // the password goes back zeroized, and is wiped here once the task has it
+                let password =
+                    (answer == FormAnswer::Ok).then(|| Zeroizing::new(form.value(0).to_string()));
+                let _ = request.reply.send(password);
+            }
+            (Modal::AddHost(mut form), FormAnswer::Ok) => {
+                let text = form.value(0).to_string();
+                if let Err(error) = self.hosts.add(&text) {
+                    form.error = Some(error);
+                    self.modal = Some(Modal::AddHost(form));
+                }
+            }
+            (Modal::Secret(form), answer) => {
+                let value =
+                    (answer == FormAnswer::Ok).then(|| Zeroizing::new(form.value(0).to_string()));
+                self.settings.answer_secret(value);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// like `drive`, but Escape (sent as `Press(usize::MAX)`) means the box's escape message.
+fn drive_dialog<M: Clone>(
+    dialog: &Dialog<M>,
+    pass: &mut Pass,
+    state: &ViewState,
+    palette: Palette,
+    escape: bool,
+) -> (Answer, Option<M>) {
+    if escape {
+        return (Answer::default(), dialog.escape.clone());
+    }
+    drive(&dialog.body, pass, state, palette)
+}
+
+// drawing
+impl Shell {
+    /// draw the whole desktop into `buf`.
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        let palette = self.palette;
+        let desktop = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
+        self.hits = Hits {
+            desktop,
+            ..Hits::default()
+        };
+        if self.before_desktop() {
+            // the logon box and the first-administrator screen sit on the bare desktop colour,
+            // with no icons or taskbar until someone is signed in
+            Teal { palette }.render(area, buf);
+            self.hits.desktop = area;
+            self.render_dialog(area, buf);
+            self.render_dropdown(buf);
+            return;
+        }
+        Teal { palette }.render(desktop, buf);
+        for (i, target) in self.icons.clone().into_iter().enumerate() {
+            let rect = icon_rect(desktop, i);
+            if rect.is_empty() {
+                continue;
+            }
+            GlyphTile {
+                id: target.id(),
+                label: target.title(),
+                selected: self.selected == Some(i),
+                palette,
+            }
+            .render(rect, buf);
+            self.hits.icons.push(rect);
+        }
+
+        // windows, bottom to top
+        let order: Vec<(Target, Rect)> = self
+            .windows
+            .iter()
+            .filter(|w| !w.minimized)
+            .map(|w| (w.target, w.rect.intersection(desktop)))
+            .collect();
+        let dialog_open = self.dialog_id().is_some();
+        for (target, rect) in order {
+            if rect.width < 10 || rect.height < 4 {
+                continue;
+            }
+            let active = self.active == Some(target);
+            WindowFrame {
+                title: target.title(),
+                icon: Some(target.id()),
+                active,
+                palette,
+            }
+            .render(rect, buf);
+            let layout = WindowFrame::layout(rect);
+            let body = Rect::new(
+                layout.body.x + 1,
+                layout.body.y,
+                layout.body.width.saturating_sub(2),
+                layout.body.height,
+            );
+            let answer = self.run_window(
+                target,
+                Pass::Draw {
+                    area: body,
+                    buf: &mut *buf,
+                    active: active && !dialog_open && self.menu.is_none(),
+                },
+            );
+            self.hits
+                .windows
+                .push((target, rect, layout, answer.regions));
+        }
+
+        self.render_taskbar(area, buf);
+        if let Some(hover) = self.menu {
+            self.render_menu(hover, buf);
+        }
+        self.render_dialog(desktop, buf);
+        self.render_dropdown(buf);
+    }
+
+    fn render_taskbar(&mut self, area: Rect, buf: &mut Buffer) {
+        let clock = self.clock.clone().unwrap_or_else(|| self.feed.text());
+        let shown: Vec<(Target, bool)> = self
+            .windows
+            .iter()
+            .map(|w| (w.target, self.active == Some(w.target) && !w.minimized))
+            .collect();
+        let buttons: Vec<TaskButton> = shown
+            .iter()
+            .map(|(target, pressed)| TaskButton {
+                icon: Some(target.id()),
+                label: target.title(),
+                pressed: *pressed,
+            })
+            .collect();
+        let bar = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+        let taskbar = Taskbar {
+            menu_label: "LANlord",
+            menu_icon: Some("lanlord"),
+            menu_open: self.menu.is_some(),
+            buttons: &buttons,
+            clock: &clock,
+            palette: self.palette,
+        };
+        self.hits.taskbar = Some(taskbar.layout(bar));
+        self.hits.task_targets = shown.iter().map(|(t, _)| *t).collect();
+        taskbar.render(bar, buf);
+    }
+
+    fn render_menu(&mut self, hover: usize, buf: &mut Buffer) {
+        let rows = self.menu_state();
+        let items: Vec<MenuRow> = rows
+            .iter()
+            .map(|row| match row {
+                Row::Item(item) => MenuRow::Item {
+                    label: &item.label,
+                    ticked: item.ticked,
+                    arrow: item.arrow,
+                    enabled: item.enabled,
+                    header: item.header,
+                },
+                Row::Separator => MenuRow::Separator,
+            })
+            .collect();
+        let menu = Menu {
+            rows: &items,
+            selected: Some(hover),
+            palette: self.palette,
+        };
+        let (w, h) = menu.size();
+        let desktop = self.hits.desktop;
+        let rect = Rect::new(
+            desktop.x,
+            desktop.bottom().saturating_sub(h),
+            w.min(desktop.width),
+            h.min(desktop.height),
+        );
+        let row_rects = menu.row_rects(rect).into_iter().zip(0..).collect();
+        menu.render(rect, buf);
+        self.hits.menu = Some((rect, row_rects));
+    }
+
+    fn render_dialog(&mut self, desktop: Rect, buf: &mut Buffer) {
+        let wide = if self.admin_setup.is_some() && self.login.is_none() {
+            72
+        } else {
+            60
+        };
+        let width = wide.min(desktop.width.saturating_sub(4)).max(20);
+        let Some((title, measured)) = self.run_dialog(Pass::Measure { width: width - 4 }) else {
+            return;
+        };
+        let height = (measured.height + 4).min(desktop.height);
+        let rect = Rect::new(
+            desktop.x + desktop.width.saturating_sub(width) / 2,
+            desktop.y + desktop.height.saturating_sub(height) / 2,
+            width,
+            height,
+        );
+        WindowFrame {
+            title: &title,
+            icon: None,
+            active: true,
+            palette: self.palette,
+        }
+        .render(rect, buf);
+        let layout = WindowFrame::layout(rect);
+        let body = Rect::new(
+            layout.body.x + 1,
+            layout.body.y + 1,
+            layout.body.width.saturating_sub(2),
+            layout.body.height.saturating_sub(1),
+        );
+        if let Some((_, answer)) = self.run_dialog(Pass::Draw {
+            area: body,
+            buf,
+            active: true,
+        }) {
+            // a box with no field asking for the cursor starts on its first field or button
+            if self.dialog_view.focus.is_none() {
+                let first = answer
+                    .regions
+                    .iter()
+                    .find(|r| r.part == Part::Field)
+                    .or_else(|| answer.regions.iter().find(|r| r.focusable));
+                self.dialog_view.focus = first.map(|r| r.key.clone());
+            }
+            self.hits.dialog = Some((rect, answer.regions));
+        }
+    }
+
+    fn render_dropdown(&mut self, buf: &mut Buffer) {
+        let owner_state = self
+            .active_owner()
+            .map(|o| (o, self.view_of(o).dropdown.clone()));
+        let Some((owner, Some(dropdown))) = owner_state else {
+            return;
+        };
+        let height = dropdown.options.len() as u16;
+        let rect = Rect::new(
+            dropdown.under.x,
+            dropdown.under.bottom(),
+            dropdown.under.width.max(12),
+            height,
+        )
+        .intersection(buf.area);
+        fill(buf, rect, self.palette, WHITE);
+        let mut rows = Vec::new();
+        for (n, (key, label)) in dropdown.options.iter().enumerate() {
+            let line = Rect::new(rect.x, rect.y + n as u16, rect.width, 1).intersection(buf.area);
+            if line.is_empty() {
+                continue;
+            }
+            let (fg, bg) = if *label == dropdown.current {
+                (WHITE, NAVY)
+            } else {
+                (BLACK, WHITE)
+            };
+            fill(buf, line, self.palette, bg);
+            text(
+                buf,
+                line.x,
+                line.y,
+                line.width,
+                label,
+                style(self.palette, fg, bg),
+            );
+            rows.push((line, *key));
+        }
+        self.hits.dropdown = Some((owner, dropdown.path.clone(), rows));
+    }
+}
+
+// input
+impl Shell {
+    /// the box or window the keyboard goes to.
+    fn active_owner(&self) -> Option<Owner> {
+        if self.hits.dialog.is_some() {
+            return Some(Owner::Dialog);
+        }
+        self.active
+            .filter(|t| self.windows.iter().any(|w| w.target == *t && !w.minimized))
+            .map(Owner::Window)
+    }
+
+    fn view_of(&self, owner: Owner) -> &ViewState {
+        static EMPTY: std::sync::OnceLock<ViewState> = std::sync::OnceLock::new();
+        match owner {
+            Owner::Dialog => &self.dialog_view,
+            Owner::Window(t) => self
+                .views
+                .get(t.id())
+                .unwrap_or_else(|| EMPTY.get_or_init(ViewState::default)),
+        }
+    }
+
+    fn view_mut(&mut self, owner: Owner) -> &mut ViewState {
+        match owner {
+            Owner::Dialog => &mut self.dialog_view,
+            Owner::Window(t) => self.views.entry(t.id()).or_default(),
+        }
+    }
+
+    fn regions_of(&self, owner: Owner) -> Vec<Region> {
+        match owner {
+            Owner::Dialog => self
+                .hits
+                .dialog
+                .as_ref()
+                .map(|d| d.1.clone())
+                .unwrap_or_default(),
+            Owner::Window(t) => self
+                .hits
+                .windows
+                .iter()
+                .find(|w| w.0 == t)
+                .map(|w| w.3.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn pass(&mut self, owner: Owner, pass: Pass) -> Answer {
+        match owner {
+            Owner::Dialog => self.run_dialog(pass).map(|(_, a)| a).unwrap_or_default(),
+            Owner::Window(t) => self.run_window(t, pass),
+        }
+    }
+
+    fn send(&mut self, owner: Owner, path: Vec<usize>, input: Input) {
+        self.pass(owner, Pass::Act { path, input });
+    }
+
+    /// handle one terminal event.
+    pub fn on_event(&mut self, event: Event, now: std::time::Instant) {
+        match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
+            Event::Mouse(mouse) => {
+                for gesture in self.mouse.feed(mouse, now) {
+                    self.on_gesture(gesture);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_gesture(&mut self, gesture: Gesture) {
+        match gesture {
+            Gesture::Press { at } => self.press(at),
+            Gesture::Click { at } => self.click(at),
+            Gesture::DoubleClick { at } => self.double_click(at),
+            Gesture::Drag { to, .. } => {
+                if let Some((target, dx, dy)) = self.drag {
+                    let desktop = self.hits.desktop;
+                    if let Some(win) = self.windows.iter_mut().find(|w| w.target == target) {
+                        let x =
+                            to.x.saturating_sub(dx)
+                                .min(desktop.right().saturating_sub(4));
+                        let y =
+                            to.y.saturating_sub(dy)
+                                .clamp(desktop.y, desktop.bottom().saturating_sub(1));
+                        win.rect.x = x;
+                        win.rect.y = y;
+                        win.restore = None;
+                    }
+                }
+            }
+            Gesture::DragEnd { .. } => self.drag = None,
+            Gesture::Scroll { at, lines } => self.scroll(at, lines),
+            Gesture::RightClick { .. } => {}
+        }
+    }
+
+    /// the left button went down: raise windows and start dragging title bars.
+    fn press(&mut self, at: Position) {
+        if self.hits.dialog.is_some() || self.menu.is_some() {
+            return;
+        }
+        let hit = self
+            .hits
+            .windows
+            .iter()
+            .rev()
+            .find(|w| w.1.contains(at))
+            .map(|w| (w.0, w.1, w.2));
+        if let Some((target, rect, layout)) = hit {
+            self.raise(target);
+            let on_button = [layout.minimise, layout.maximise, layout.close]
+                .iter()
+                .any(|r| r.contains(at));
+            if layout.title_bar.contains(at) && !on_button {
+                self.drag = Some((target, at.x - rect.x, at.y - rect.y));
+            }
+        }
+    }
+
+    /// a double-click comes after its own click, so it only does what a double-click adds:
+    /// open an icon, maximise from the title bar, open the clock.
+    fn double_click(&mut self, at: Position) {
+        if self.hits.dialog.is_some() || self.menu.is_some() {
+            return;
+        }
+        if self
+            .hits
+            .taskbar
+            .as_ref()
+            .is_some_and(|t| t.clock.contains(at))
+        {
+            self.open(Target::DateTime);
+            return;
+        }
+        let title = self
+            .hits
+            .windows
+            .iter()
+            .rev()
+            .find(|w| w.1.contains(at))
+            .map(|w| (w.0, w.2.title_bar.contains(at)));
+        match title {
+            Some((target, true)) => self.toggle_maximise(target),
+            Some(_) => {}
+            None => {
+                if let Some(i) = self.hits.icons.iter().position(|r| r.contains(at)) {
+                    if let Some(target) = self.icons.get(i).copied() {
+                        self.open(target);
+                    }
+                }
+            }
+        }
+    }
+
+    fn click(&mut self, at: Position) {
+        // an open drop-down takes the click, or closes
+        if let Some((owner, path, rows)) = self.hits.dropdown.take() {
+            self.view_mut(owner).dropdown = None;
+            if let Some((_, key)) = rows.iter().find(|(r, _)| r.contains(at)) {
+                self.send(owner, path, Input::Pick(*key));
+            }
+            return;
+        }
+        // a box on top takes every click
+        if let Some((rect, regions)) = self.hits.dialog.clone() {
+            if rect.contains(at) {
+                self.click_region(Owner::Dialog, &regions, at);
+            }
+            return;
+        }
+        if let Some((rect, rows)) = self.hits.menu.clone() {
+            if rect.contains(at) {
+                if let Some((_, n)) = rows.iter().find(|(r, _)| r.contains(at)) {
+                    self.pick_menu(*n);
+                }
+                return;
+            }
+            self.menu = None;
+            if self
+                .hits
+                .taskbar
+                .as_ref()
+                .is_some_and(|t| t.menu.contains(at))
+            {
+                return;
+            }
+        }
+        if let Some(bar) = self.hits.taskbar.clone() {
+            if bar.menu.contains(at) {
+                self.menu = Some(0);
+                return;
+            }
+            if bar.clock.contains(at) {
+                return;
+            }
+            if let Some(n) = bar.buttons.iter().position(|r| r.contains(at)) {
+                if let Some(target) = self.hits.task_targets.get(n).copied() {
+                    let showing = self
+                        .windows
+                        .iter()
+                        .any(|w| w.target == target && !w.minimized);
+                    if showing && self.active == Some(target) {
+                        self.minimize(target);
+                    } else {
+                        self.raise(target);
+                    }
+                }
+                return;
+            }
+            if at.y >= bar.menu.y {
+                return;
+            }
+        }
+        let hit = self
+            .hits
+            .windows
+            .iter()
+            .rev()
+            .find(|w| w.1.contains(at))
+            .map(|w| (w.0, w.2, w.3.clone()));
+        if let Some((target, layout, regions)) = hit {
+            self.active = Some(target);
+            if layout.close.contains(at) {
+                self.close(target);
+            } else if layout.minimise.contains(at) {
+                self.minimize(target);
+            } else if layout.maximise.contains(at) {
+                self.toggle_maximise(target);
+            } else {
+                self.click_region(Owner::Window(target), &regions, at);
+            }
+            return;
+        }
+        // the desktop: icons select, double-click opens, blank space clears
+        match self.hits.icons.iter().position(|r| r.contains(at)) {
+            Some(i) => {
+                self.selected = Some(i);
+                self.active = None;
+            }
+            None => {
+                self.selected = None;
+                self.active = None;
+            }
+        }
+    }
+
+    fn click_region(&mut self, owner: Owner, regions: &[Region], at: Position) {
+        // the smallest region under the click wins (a row before its list)
+        let Some(region) = regions
+            .iter()
+            .filter(|r| r.rect.contains(at))
+            .min_by_key(|r| u32::from(r.rect.width) * u32::from(r.rect.height))
+            .cloned()
+        else {
+            return;
+        };
+        let focus_key = match region.part {
+            Part::Row(_) => Some(focus_key(&region.path, "List")),
+            Part::Tab(_) => Some(focus_key(&region.path, "TabBar")),
+            _ if region.focusable => Some(region.key.clone()),
+            _ => None,
+        };
+        if let Some(key) = focus_key {
+            self.view_mut(owner).focus = Some(key);
+        }
+        let input = match region.part {
+            Part::Press(n) => Input::Press(n),
+            Part::Toggle => Input::Toggle,
+            Part::Row(n) => Input::Row(n),
+            Part::Tab(n) => Input::Tab(n),
+            Part::Open => {
+                self.open_dropdown(owner, &region);
+                return;
+            }
+            Part::Fold => {
+                self.toggle_fold(owner, &region.key);
+                return;
+            }
+            Part::Spin(dir) if dir != 0 => Input::Step(dir),
+            Part::Day(n) => Input::Day(n),
+            _ => return,
+        };
+        self.send(owner, region.path, input);
+    }
+
+    /// Enter in a box's field with nothing of its own presses the box's default button: the
+    /// last one of its bottom row, which the gui draws leftmost (OK before Cancel).
+    fn press_default(&mut self, owner: Owner, regions: &[Region]) {
+        if owner != Owner::Dialog {
+            return;
+        }
+        let default = regions
+            .iter()
+            .filter_map(|r| match r.part {
+                Part::Press(n) => Some((r.rect.y, n, r.path.clone())),
+                _ => None,
+            })
+            .max_by_key(|(y, n, _)| (*y, *n));
+        if let Some((_, n, path)) = default {
+            self.send(owner, path, Input::Press(n));
+        }
+    }
+
+    /// move a calendar's selected day by `days`; the calendar's own message does the rest
+    /// (a day in the next month moves the month with it).
+    fn day_step(&mut self, owner: Owner, region: &Region, days: i32) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        let Some((year, month, selected, enabled)) = answer.calendar else {
+            return;
+        };
+        if !enabled {
+            return;
+        }
+        let target = selected + chrono::TimeDelta::days(i64::from(days));
+        let grid = lanlord_app::clock_window::month_days(year, month);
+        // a day off the shown grid only exists in another month, which the window's spin boxes
+        // change; the selection stays on the last day shown
+        if let Some(n) = grid.iter().position(|d| *d == target) {
+            self.send(owner, region.path.clone(), Input::Day(n));
+        }
+    }
+
+    /// open or close a fold, which only the front end remembers.
+    fn toggle_fold(&mut self, owner: Owner, key: &str) {
+        let open = &mut self.view_mut(owner).open;
+        if !open.remove(key) {
+            open.insert(key.to_string());
+        }
+    }
+
+    fn open_dropdown(&mut self, owner: Owner, region: &Region) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        if let Some((options, current)) = answer.choice {
+            self.view_mut(owner).dropdown = Some(view::Dropdown {
+                path: region.path.clone(),
+                under: region.rect,
+                options,
+                current,
+            });
+        }
+    }
+
+    fn scroll(&mut self, at: Position, lines: i8) {
+        // a menu or a dialog is modal: the wheel does nothing behind it
+        if self.menu.is_some() || self.dialog_id().is_some() {
+            return;
+        }
+        let target = self
+            .hits
+            .windows
+            .iter()
+            .rev()
+            .find(|w| w.1.contains(at))
+            .map(|w| (w.0, w.3.clone()));
+        let Some((target, regions)) = target else {
+            return;
+        };
+        let Some(region) = regions
+            .iter()
+            .filter(|r| {
+                r.rect.contains(at)
+                    && matches!(
+                        r.part,
+                        Part::Scroll | Part::List | Part::Spin(0) | Part::Days
+                    )
+            })
+            .min_by_key(|r| u32::from(r.rect.width) * u32::from(r.rect.height))
+            .cloned()
+        else {
+            return;
+        };
+        let owner = Owner::Window(target);
+        if region.part == Part::List {
+            // the wheel moves a list's selection, like the arrow keys
+            self.list_step(owner, &region, i32::from(lines));
+            return;
+        }
+        if region.part == Part::Spin(0) {
+            // the wheel steps a spin box: up (negative lines) counts up
+            let dir = if lines < 0 { 1 } else { -1 };
+            self.send(owner, region.path, Input::Step(dir));
+            return;
+        }
+        if region.part == Part::Days {
+            self.day_step(owner, &region, 7 * i32::from(lines));
+            return;
+        }
+        self.view_mut(owner)
+            .scroll_by(&region.key, i32::from(lines) * 3);
+    }
+
+    fn list_step(&mut self, owner: Owner, region: &Region, step: i32) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        if let Some((selected, len)) = answer.list {
+            if len == 0 {
+                return;
+            }
+            let next = match selected {
+                Some(s) => (s as i32 + step).clamp(0, len as i32 - 1) as usize,
+                None => 0,
+            };
+            self.send(owner, region.path.clone(), Input::Row(next));
+        }
+    }
+
+    fn pick_menu(&mut self, n: usize) {
+        let rows = self.menu_state();
+        if let Some(Row::Item(item)) = rows.get(n) {
+            if item.enabled && !item.header {
+                self.do_action(item.action.clone());
+            }
+        }
+    }
+
+    fn on_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('q') {
+            self.quit = true;
+            return;
+        }
+        if key.code == KeyCode::F(10) && !self.before_desktop() {
+            self.menu = if self.menu.is_some() { None } else { Some(0) };
+            return;
+        }
+        if let Some(hover) = self.menu {
+            let count = self.menu_state().len();
+            match key.code {
+                KeyCode::Esc => self.menu = None,
+                KeyCode::Up => self.menu = Some(hover.checked_sub(1).unwrap_or(count - 1)),
+                KeyCode::Down => self.menu = Some((hover + 1) % count),
+                KeyCode::Enter => self.pick_menu(hover),
+                _ => {}
+            }
+            return;
+        }
+        match self.active_owner() {
+            Some(owner) => self.key_in(owner, key),
+            None => self.key_on_desktop(key),
+        }
+    }
+
+    fn key_on_desktop(&mut self, key: KeyEvent) {
+        let count = self.icons.len();
+        let at = self.selected.unwrap_or(0);
+        match key.code {
+            KeyCode::Down | KeyCode::Right => self.selected = Some((at + 1) % count),
+            KeyCode::Up | KeyCode::Left => {
+                self.selected = Some(at.checked_sub(1).unwrap_or(count - 1))
+            }
+            KeyCode::Enter => {
+                if let Some(target) = self.selected.and_then(|i| self.icons.get(i)).copied() {
+                    self.open(target);
+                }
+            }
+            KeyCode::Tab | KeyCode::F(6) => {
+                if let Some(win) = self.windows.iter().rev().find(|w| !w.minimized) {
+                    self.active = Some(win.target);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn key_in(&mut self, owner: Owner, key: KeyEvent) {
+        let regions = self.regions_of(owner);
+        let focusable: Vec<Region> = regions.iter().filter(|r| r.focusable).cloned().collect();
+        let focus = self.view_of(owner).focus.clone();
+        let current = focus
+            .as_deref()
+            .and_then(|k| focusable.iter().position(|r| r.key == k));
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab if !focusable.is_empty() => {
+                let back =
+                    key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT);
+                let n = focusable.len();
+                let next = match (current, back) {
+                    (Some(i), false) => (i + 1) % n,
+                    (Some(i), true) => (i + n - 1) % n,
+                    (None, false) => 0,
+                    (None, true) => n - 1,
+                };
+                self.view_mut(owner).focus = Some(focusable[next].key.clone());
+                return;
+            }
+            KeyCode::Esc => {
+                match owner {
+                    Owner::Dialog => self.send(owner, Vec::new(), Input::Press(usize::MAX)),
+                    Owner::Window(target) => {
+                        if self.view_of(owner).dropdown.is_some() {
+                            self.view_mut(owner).dropdown = None;
+                        } else {
+                            let _ = target;
+                            self.active = None;
+                        }
+                    }
+                }
+                return;
+            }
+            KeyCode::Char('w') if ctrl => {
+                if let Owner::Window(target) = owner {
+                    self.close(target);
+                }
+                return;
+            }
+            KeyCode::F(6) => {
+                // the next window gets the keyboard
+                let visible: Vec<Target> = self
+                    .windows
+                    .iter()
+                    .filter(|w| !w.minimized)
+                    .map(|w| w.target)
+                    .collect();
+                if let (Owner::Window(target), false) = (owner, visible.is_empty()) {
+                    let i = visible.iter().position(|t| *t == target).unwrap_or(0);
+                    let next = visible[(i + visible.len() - 1) % visible.len()];
+                    self.raise(next);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(region) = current.map(|i| focusable[i].clone()) else {
+            return;
+        };
+        match (&region.part, key.code) {
+            (Part::Press(n), KeyCode::Enter | KeyCode::Char(' ')) => {
+                self.send(owner, region.path, Input::Press(*n));
+            }
+            (Part::Toggle, KeyCode::Enter | KeyCode::Char(' ')) => {
+                self.send(owner, region.path, Input::Toggle);
+            }
+            (Part::Fold, KeyCode::Enter | KeyCode::Char(' ')) => {
+                self.toggle_fold(owner, &region.key);
+            }
+            (Part::List, KeyCode::Up) => self.list_step(owner, &region, -1),
+            (Part::List, KeyCode::Down) => self.list_step(owner, &region, 1),
+            (Part::Spin(0), KeyCode::Up | KeyCode::Right) => {
+                self.send(owner, region.path, Input::Step(1));
+            }
+            (Part::Spin(0), KeyCode::Down | KeyCode::Left) => {
+                self.send(owner, region.path, Input::Step(-1));
+            }
+            (Part::Days, KeyCode::Left) => self.day_step(owner, &region, -1),
+            (Part::Days, KeyCode::Right) => self.day_step(owner, &region, 1),
+            (Part::Days, KeyCode::Up) => self.day_step(owner, &region, -7),
+            (Part::Days, KeyCode::Down) => self.day_step(owner, &region, 7),
+            (Part::TabBar, KeyCode::Left | KeyCode::Right) => {
+                let answer = self.pass(
+                    owner,
+                    Pass::Query {
+                        path: region.path.clone(),
+                    },
+                );
+                if let Some((current, count)) = answer.tab {
+                    let next = if key.code == KeyCode::Left {
+                        current.checked_sub(1).unwrap_or(count - 1)
+                    } else {
+                        (current + 1) % count
+                    };
+                    self.send(owner, region.path, Input::Tab(next));
+                }
+            }
+            (Part::Open, KeyCode::Enter | KeyCode::Char(' ')) => self.open_dropdown(owner, &region),
+            (Part::Open, KeyCode::Up | KeyCode::Down) => {
+                let answer = self.pass(
+                    owner,
+                    Pass::Query {
+                        path: region.path.clone(),
+                    },
+                );
+                if let Some((options, current)) = answer.choice {
+                    let at = options.iter().position(|(_, l)| *l == current).unwrap_or(0);
+                    let next = if key.code == KeyCode::Up {
+                        at.saturating_sub(1)
+                    } else {
+                        (at + 1).min(options.len().saturating_sub(1))
+                    };
+                    if let Some((key, _)) = options.get(next) {
+                        self.send(owner, region.path, Input::Pick(*key));
+                    }
+                }
+            }
+            (Part::Field, code) => {
+                let answer = self.pass(
+                    owner,
+                    Pass::Query {
+                        path: region.path.clone(),
+                    },
+                );
+                let enters = answer.enters;
+                let input = match answer.field {
+                    Some(view::FieldValue::Secret(mut value)) => match code {
+                        KeyCode::Char(c) if !ctrl => {
+                            value.push(c);
+                            Input::SecretText(value)
+                        }
+                        KeyCode::Backspace => {
+                            value.pop();
+                            Input::SecretText(value)
+                        }
+                        KeyCode::Enter if enters => Input::SecretEnter(value),
+                        KeyCode::Enter => return self.press_default(owner, &regions),
+                        _ => return,
+                    },
+                    Some(view::FieldValue::Plain { mut text, multi }) => match code {
+                        KeyCode::Char(c) if !ctrl => {
+                            text.push(c);
+                            Input::Text(text)
+                        }
+                        KeyCode::Backspace => {
+                            text.pop();
+                            Input::Text(text)
+                        }
+                        KeyCode::Enter if multi => {
+                            text.push('\n');
+                            Input::Text(text)
+                        }
+                        // Enter carries the final text, like the gui
+                        KeyCode::Enter if enters => Input::Enter(text),
+                        KeyCode::Enter => return self.press_default(owner, &regions),
+                        _ => return,
+                    },
+                    None => return,
+                };
+                self.send(owner, region.path, input);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// the focus key of the whole list or tab row at `path`.
+fn focus_key(path: &[usize], part: &str) -> String {
+    let mut key = path
+        .iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(".");
+    key.push('#');
+    key.push_str(part);
+    key
+}
+
+#[cfg(test)]
+mod tests;

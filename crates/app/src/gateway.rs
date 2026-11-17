@@ -9,6 +9,7 @@
 use anyhow::{anyhow, Result};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::leases::Lease;
+use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
 use lanlord_model::ops::{Op, Reply, SecretUpdate, UserChange};
 use lanlord_model::power::{Outcome, Power};
@@ -182,6 +183,14 @@ pub trait Gateway: Send + Sync {
         match self.call(host, Op::ServerFacts, ask)? {
             Reply::Facts(facts) => Ok(facts),
             other => Err(unexpected("server_facts", other)),
+        }
+    }
+
+    /// the status of each network connection (read-only, no sudo).
+    fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {
+        match self.call(host, Op::NetworkStatus, &mut never)? {
+            Reply::Interfaces(all) => Ok(all),
+            other => Err(unexpected("network_status", other)),
         }
     }
 
@@ -367,19 +376,31 @@ mod native {
     /// the made-up answer of the demo server, for the ops that have one.
     fn server_demo(op: &Op) -> Option<Result<Reply>> {
         Some(match op {
-            Op::LoadDocument => Ok(Reply::Document(Document {
-                plain: DEMO_SETTINGS.to_string(),
-                ..Document::default()
-            })),
+            Op::LoadDocument => {
+                let saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                Ok(Reply::Document(Document {
+                    plain: saved.unwrap_or_else(|| DEMO_SETTINGS.to_string()),
+                    ..Document::default()
+                }))
+            }
+            Op::SaveDocument { plain, .. } => {
+                // the made-up server keeps what was saved until the app quits
+                *DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plain.clone());
+                Ok(Reply::Done)
+            }
             Op::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
             Op::ServerFacts => Ok(Reply::Facts(server::demo())),
+            Op::NetworkStatus => Ok(Reply::Interfaces(lanlord_model::netstatus::demo())),
             Op::PurgePreview { .. } => Ok(Reply::Lines(demo_purge())),
             Op::Purge { .. } => Err(anyhow!("demo mode: nothing is removed")),
             _ => return None,
         })
     }
 
-    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
+    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
+
+    /// what the made-up server's settings were last saved as.
+    static DEMO_SAVED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
     const DEMO_LEASES: &str = "1795000000 02:00:00:00:00:01 172.16.120.101 ws1 *\n1795000000 02:00:00:00:00:02 172.16.120.102 ws2 *\n1795000000 02:00:00:00:00:03 172.16.120.103 nt4pc *\n";
 
@@ -517,6 +538,8 @@ mod fake {
         pub facts: Mutex<Option<ServerFacts>>,
         /// the lines a purge preview and a purge answer with.
         pub purge_lines: Mutex<Vec<String>>,
+        /// when set, reading the network status fails with this.
+        pub network_error: Mutex<Option<String>>,
         /// the server's clock, changed by `clock_apply`.
         pub clock: Mutex<ClockState>,
         /// what `clock_apply` says about keeping the change in the settings.
@@ -551,6 +574,7 @@ mod fake {
                 outcome: Mutex::new(Outcome::Dropped),
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
+                network_error: Mutex::new(None),
                 kept: Mutex::new(Stored::Yes),
                 clock: Mutex::new(ClockState {
                     timezone: "Etc/UTC".into(),
@@ -655,6 +679,7 @@ mod fake {
                 Op::Run { command } => Reply::ExitCode(self.run(host, &command)?),
                 Op::Power { power } => Reply::Outcome(self.power(host, power, ask)?),
                 Op::ServerFacts => Reply::Facts(self.server_facts(host, ask)?),
+                Op::NetworkStatus => Reply::Interfaces(self.network_status(host)?),
                 Op::PurgePreview { remove_admins } => {
                     Reply::Lines(self.purge_preview(host, remove_admins, ask)?)
                 }
@@ -819,6 +844,17 @@ mod fake {
             self.enter(format!("facts {host}"), ask)?;
             let facts = self.facts.lock().unwrap().clone();
             Ok(facts.unwrap_or_else(server::demo))
+        }
+
+        pub fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("network-status {host}"));
+            match self.network_error.lock().unwrap().clone() {
+                Some(error) => Err(anyhow!(error)),
+                None => Ok(lanlord_model::netstatus::demo()),
+            }
         }
 
         pub fn purge_preview(

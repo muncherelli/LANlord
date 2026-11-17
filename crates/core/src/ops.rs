@@ -10,7 +10,9 @@ use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
-use crate::{account, apply, clock, crypto, doctor, leases, logon, network, nt4, power, purge};
+use crate::{
+    account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
+};
 use crate::{settings, users};
 
 /// the message when there is no key to decrypt the secrets with.
@@ -111,6 +113,7 @@ pub(crate) fn execute_with(
         }
         Op::Power { power } => Reply::Outcome(power::run_with(session, *power, ask)?),
         Op::ServerFacts => Reply::Facts(server::read(session)?),
+        Op::NetworkStatus => Reply::Interfaces(netstatus::read(session)?),
         Op::PurgePreview { remove_admins } => Reply::Lines(purge::preview(
             session,
             PurgeOptions {

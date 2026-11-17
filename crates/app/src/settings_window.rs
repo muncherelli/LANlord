@@ -43,6 +43,8 @@ pub enum Msg {
 pub struct SettingsWindow {
     /// the plain settings text.
     pub text: String,
+    /// a save went through since `take_saved` was last asked.
+    saved_now: bool,
     /// the text as it was last loaded or stored; differs once you edit.
     clean: String,
     /// the paths of the secrets that have a value on the gateway.
@@ -153,6 +155,11 @@ impl SettingsWindow {
         }
     }
 
+    /// a save went through, once.
+    pub fn take_saved(&mut self) -> bool {
+        std::mem::take(&mut self.saved_now)
+    }
+
     /// pick up the result of a load or save that finished.
     pub fn poll(&mut self) {
         match self.pending.take() {
@@ -192,6 +199,7 @@ impl SettingsWindow {
             }
         }
         self.legacy = false;
+        self.saved_now = true;
         self.say(false, format!("saved to {host}"));
         self.source = Some(host);
     }

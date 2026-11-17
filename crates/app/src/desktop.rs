@@ -1,6 +1,7 @@
 //! the desktop every front end shows: which icons it has and in what order, the windows they
 //! open, how big those windows start, and the title of the whole app.
 
+use lanlord_model::components::Selection;
 use lanlord_model::modules::MODULES;
 
 /// a window the desktop can open.
@@ -14,6 +15,8 @@ pub enum Target {
     Settings,
     /// opened by double-clicking the clock; it has no desktop icon.
     DateTime,
+    /// the components setup wizard, opened from the menu; it has no desktop icon.
+    Components,
 }
 
 impl Target {
@@ -27,6 +30,7 @@ impl Target {
             Self::Hosts => "hosts",
             Self::Settings => "settings",
             Self::DateTime => "datetime",
+            Self::Components => "components",
         }
     }
 
@@ -39,6 +43,7 @@ impl Target {
             Self::Hosts => "Hosts",
             Self::Settings => "Settings",
             Self::DateTime => "Date/Time Properties",
+            Self::Components => "LANlord Components",
         }
     }
 
@@ -52,22 +57,34 @@ impl Target {
                 _ => (480.0, 320.0),
             },
             Self::MyServer => (440.0, 480.0),
-            Self::Networks => (760.0, 340.0),
+            Self::Networks => (560.0, 440.0),
             Self::Console => (600.0, 300.0),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
+            Self::Components => (500.0, 470.0),
         }
     }
 }
 
 /// the desktop icons, top to bottom then left to right: the server and its networks, the
-/// modules, then the built-in windows.
-pub fn icons() -> Vec<Target> {
+/// components this host has switched on (none until its settings were read), then the built-in
+/// windows.
+pub fn icons(enabled: Option<&Selection>) -> Vec<Target> {
     let mut icons = vec![Target::MyServer, Target::Networks];
-    icons.extend((0..MODULES.len()).map(Target::Module));
+    icons.extend(modules(enabled).into_iter().map(Target::Module));
     icons.extend([Target::Settings, Target::Console, Target::Hosts]);
     icons
+}
+
+/// the positions in `MODULES` of the components switched on in `enabled`.
+pub fn modules(enabled: Option<&Selection>) -> Vec<usize> {
+    let Some(enabled) = enabled else {
+        return Vec::new();
+    };
+    (0..MODULES.len())
+        .filter(|&i| enabled.is_enabled(MODULES[i].id))
+        .collect()
 }
 
 /// "LANlord Client v0.1.0" on a mac or pc, "LANlord Server v0.1.0" when lanlord runs on the
@@ -104,9 +121,44 @@ mod tests {
 
     #[test]
     fn every_icon_has_its_own_id_and_the_clock_window_has_no_icon() {
-        let icons = icons();
+        let all = Selection {
+            enabled: MODULES
+                .iter()
+                .map(|m| (m.id.to_string(), Default::default()))
+                .collect(),
+        };
+        let icons = icons(Some(&all));
         let ids: std::collections::HashSet<_> = icons.iter().map(|t| t.id()).collect();
         assert_eq!(ids.len(), icons.len());
         assert!(!icons.contains(&Target::DateTime));
+        assert!(!icons.contains(&Target::Components));
+    }
+
+    #[test]
+    fn only_switched_on_components_get_icons() {
+        let builtins = [
+            Target::MyServer,
+            Target::Networks,
+            Target::Settings,
+            Target::Console,
+            Target::Hosts,
+        ];
+        assert_eq!(icons(None), builtins);
+        let mut some = Selection::default();
+        some.enabled.insert("dns".into(), Default::default());
+        some.enabled.insert("gateway".into(), Default::default());
+        let ids: Vec<_> = icons(Some(&some)).iter().map(|t| t.id()).collect();
+        assert_eq!(
+            ids,
+            [
+                "my-server",
+                "networks",
+                "gateway",
+                "dns",
+                "settings",
+                "console",
+                "hosts"
+            ]
+        );
     }
 }

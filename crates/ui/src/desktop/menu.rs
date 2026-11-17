@@ -156,6 +156,7 @@ impl Desktop {
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
             updates: self.updates_enabled(),
             developer: self.dev.is_some(),
+            modules: self.enabled_modules(),
         })
     }
 

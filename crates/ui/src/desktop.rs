@@ -18,6 +18,7 @@ use menu::Confirm;
 use crate::admin_setup::{self, AdminSetup};
 use crate::clock_panel::{ClockFeed, ClockPanel};
 use crate::command_panel::CommandPanel;
+use crate::components_window::{self, Components};
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
@@ -72,6 +73,11 @@ pub struct Desktop {
     commands: CommandPanel,
     my_server: MyServer,
     networks: Networks,
+    /// the components wizard, and which components the server has switched on.
+    components: Components,
+    /// tests pin the switched-on components here instead of reading them from the server.
+    #[cfg(test)]
+    pinned: Option<lanlord_app::components::Selection>,
     /// a window a window asked for; it opens once all the windows are drawn.
     open_next: Option<Target>,
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
@@ -121,7 +127,7 @@ impl Desktop {
         hosts_path: Option<PathBuf>,
     ) -> Self {
         let services = Services::new(gateway, crate::wake(ctx));
-        let icons = lanlord_app::desktop::icons();
+        let icons = lanlord_app::desktop::icons(None);
         Self {
             icons,
             selected: None,
@@ -138,6 +144,9 @@ impl Desktop {
             commands: CommandPanel::default(),
             my_server: MyServer::default(),
             networks: Networks::default(),
+            components: Components::default(),
+            #[cfg(test)]
+            pinned: None,
             open_next: None,
             clock: ClockPanel::default(),
             feed: ClockFeed::default(),
@@ -222,6 +231,9 @@ impl Desktop {
                     // a fresh reading of the server every time the window opens
                     self.clock.reset();
                 }
+                if target == Target::Components {
+                    self.components.open();
+                }
                 self.windows.push(Window {
                     target,
                     minimized: false,
@@ -246,7 +258,15 @@ impl Desktop {
             } else if id == "developer" {
                 self.start_open = true;
                 self.dev_open = true;
-            } else if let Some(target) = self.icons.iter().copied().find(|t| t.id() == id) {
+            } else if id == "components" {
+                self.open(Target::Components);
+            } else if let Some(target) = self
+                .icons
+                .iter()
+                .copied()
+                .find(|t| t.id() == id)
+                .or_else(|| MODULES.iter().position(|m| m.id == id).map(Target::Module))
+            {
                 self.open(target);
                 if id == "my-server" {
                     // @1 is the Advanced tab, @2 also asks before a purge
@@ -255,7 +275,8 @@ impl Desktop {
                     self.my_server
                         .update(my_server::Msg::Tab(page), &self.services, &host);
                     if let (true, Some(host)) = (tab == "2", self.host()) {
-                        self.my_server.ask_to_purge(&self.services, &host);
+                        self.my_server
+                            .update(my_server::Msg::AskPurge, &self.services, &host);
                     }
                 }
                 if id == "nt4-domain" {
@@ -318,6 +339,7 @@ impl Desktop {
             self.show_admin_setup(ui, &ctx);
             return;
         }
+        self.sync_components();
         egui::Panel::bottom("taskbar")
             .exact_size(TASKBAR)
             .frame(
@@ -486,6 +508,7 @@ impl Desktop {
         self.dns.dialog(ctx);
         self.networks.dialog(ctx);
         my_server::dialog(&mut self.my_server, ctx, &self.services);
+        components_window::dialog(&mut self.components, ctx, &self.services, host.as_deref());
         if let Some(host) = self.my_server.take_purged() {
             self.after_purge(&host);
         }
@@ -921,6 +944,9 @@ impl Desktop {
             Target::Settings => {
                 let host = self.host();
                 self.settings.show(ui, &self.services, host.as_deref());
+                if self.settings.take_saved() {
+                    self.components.invalidate();
+                }
             }
             Target::DateTime => {
                 let host = self.host();
@@ -928,7 +954,55 @@ impl Desktop {
                     self.close_requests.push(Target::DateTime);
                 }
             }
+            Target::Components => {
+                let host = self.host();
+                components_window::show(&mut self.components, ui, &self.services, host.as_deref());
+                if self.components.take_done() {
+                    self.close_requests.push(Target::Components);
+                }
+            }
         }
+    }
+
+    /// keep the components of the server in step, and the desktop icons with them: the
+    /// built-in windows plus the components it has switched on.
+    fn sync_components(&mut self) {
+        let host = self.host();
+        #[cfg(test)]
+        if let Some(pinned) = &self.pinned {
+            let icons = lanlord_app::desktop::icons(Some(pinned));
+            if icons != self.icons {
+                self.icons = icons;
+            }
+            return;
+        }
+        if let Some(host) = &host {
+            self.components.refresh(&self.services, host);
+        }
+        let icons = lanlord_app::desktop::icons(self.enabled().as_ref());
+        if icons != self.icons {
+            self.icons = icons;
+            self.selected = None;
+        }
+    }
+
+    /// what the server has switched on, once its settings were read.
+    fn enabled(&self) -> Option<lanlord_app::components::Selection> {
+        #[cfg(test)]
+        if let Some(pinned) = &self.pinned {
+            return Some(pinned.clone());
+        }
+        let host = self.host()?;
+        self.components
+            .settings
+            .belongs_to(&host)
+            .then(|| self.components.current().cloned())
+            .flatten()
+    }
+
+    /// the positions in `MODULES` of the components the server has switched on.
+    fn enabled_modules(&self) -> Vec<usize> {
+        lanlord_app::desktop::modules(self.enabled().as_ref())
     }
 
     fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
@@ -974,6 +1048,8 @@ impl Desktop {
 
 #[cfg(test)]
 mod clock_tests;
+#[cfg(test)]
+mod components_tests;
 #[cfg(test)]
 mod harness;
 #[cfg(test)]

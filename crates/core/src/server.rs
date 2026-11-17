@@ -41,6 +41,8 @@ echo "---addr"
 ip -o -4 addr show 2>/dev/null
 echo "---route"
 ip route show default 2>/dev/null
+echo "---route6"
+ip -6 route show default 2>/dev/null
 exit 0
 "#,
         os = os_snippet(etc, usr)

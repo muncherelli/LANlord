@@ -13,6 +13,7 @@ use crate::dialogs;
 use crate::icons;
 use crate::remote::RED;
 use crate::theme::{self, BLACK, GRAY, NAVY, SHADOW, WHITE};
+use crate::view_wizard;
 use crate::widgets::Table;
 
 /// draw `nodes` top to bottom; the message of a click, if there was one. a message changes the
@@ -50,6 +51,16 @@ fn nodes_ui<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
 
 fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
     match node {
+        Node::Banner(banner) => {
+            view_wizard::banner(ui, banner);
+            None
+        }
+        Node::CheckList(list) => view_wizard::check_list(ui, list),
+        Node::Description(text) => {
+            view_wizard::description(ui, text);
+            None
+        }
+        Node::KeyedInput(input) => view_wizard::keyed_input(ui, input),
         Node::Text(text) => {
             ui.label(text.as_str());
             None

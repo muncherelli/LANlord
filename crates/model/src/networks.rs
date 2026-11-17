@@ -125,7 +125,13 @@ fn listed_rows(ifaces: &[Iface], list: &[lan_networks::LanNetwork]) -> Vec<Netwo
     let external = ifaces
         .iter()
         .find(|i| i.default_route && !lan(i))
-        .or_else(|| ifaces.iter().find(|i| !i.loopback() && !lan(i)));
+        // when the default route leaves through a lanlord network, take the first other
+        // interface that has an address
+        .or_else(|| {
+            ifaces
+                .iter()
+                .find(|i| !i.loopback() && !lan(i) && !i.addresses.is_empty())
+        });
     if let Some(iface) = external {
         rows.push(row(iface, "External Network", Role::External));
     }
@@ -238,6 +244,23 @@ mod tests {
             ("eth9", "interface not found", 1400)
         );
         assert_eq!(rows[2].address, "10.9.0.1/24");
+    }
+
+    #[test]
+    fn the_external_row_survives_a_default_route_through_a_lanlord_network() {
+        let settings = Settings::parse(
+            "networks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n",
+        )
+        .unwrap();
+        let mut interfaces = demo().interfaces;
+        for iface in &mut interfaces {
+            iface.default_route = iface.name == "eth1";
+        }
+        let rows = rows(&interfaces, &settings, None);
+        assert_eq!(
+            (rows[0].role, rows[0].interface.as_str()),
+            (Role::External, "eth0")
+        );
     }
 
     #[test]

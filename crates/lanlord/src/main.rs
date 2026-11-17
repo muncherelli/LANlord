@@ -110,6 +110,13 @@ enum MachinesCommand {
 
 #[derive(Subcommand)]
 enum NetworksCommand {
+    /// show the status of each network connection on a server: link, speed, addresses,
+    /// gateway, dns, the dhcp lease and traffic
+    Status {
+        /// print the status as json
+        #[arg(long)]
+        json: bool,
+    },
     /// list the lanlord networks in your settings
     List,
     /// add a lanlord network on an interface, with its own dnsmasq
@@ -262,7 +269,8 @@ enum Command {
         #[command(subcommand)]
         action: UsersCommand,
     },
-    /// manage the lanlord networks: interfaces, addresses, dhcp and static leases
+    /// manage the lanlord networks (interfaces, addresses, dhcp and static leases) or show the
+    /// status of every network connection
     Networks {
         host: String,
         #[command(subcommand)]
@@ -431,6 +439,13 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
 }
 
 fn networks(host: &str, action: NetworksCommand) -> Result<()> {
+    match action {
+        NetworksCommand::Status { json } => network_status(host, json),
+        edit => change_networks(host, edit),
+    }
+}
+
+fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
     use lanlord_core::lan::{
         add_edit, change, networks_on, render_list, set_edit, AddArgs, Edit, SetArgs,
     };
@@ -439,6 +454,7 @@ fn networks(host: &str, action: NetworksCommand) -> Result<()> {
     let identity = crypto::load(&identity_path()?)?;
     let session = Session::new(host)?;
     let edit = match action {
+        NetworksCommand::Status { .. } => unreachable!("shown by `networks`"),
         NetworksCommand::List => {
             for line in render_list(&networks_on(&session, host, &identity, &mut ask)?) {
                 println!("{line}");
@@ -655,6 +671,47 @@ fn lease_lines(leases: &[lanlord_core::leases::Lease]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn network_status(host: &str, json: bool) -> Result<()> {
+    let Reply::Interfaces(all) = execute(host, &Op::NetworkStatus, &mut ask)? else {
+        bail!("the server answered something other than its network status");
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&all)?);
+        return Ok(());
+    }
+    let utc = |secs: i64| format!("{} UTC", lanlord_core::clock::local_text(secs, 0));
+    for (i, iface) in all.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let role = if iface.default_route {
+            " (external network)"
+        } else {
+            ""
+        };
+        println!("{}{role}", iface.name);
+        println!("  {:<22}{}", "status:", iface.connection.text());
+        println!("  {:<22}{}", "speed:", iface.speed());
+        println!(
+            "  {:<22}{} bytes, {} packets",
+            "sent:", iface.counters.sent_bytes, iface.counters.sent_packets
+        );
+        println!(
+            "  {:<22}{} bytes, {} packets",
+            "received:", iface.counters.received_bytes, iface.counters.received_packets
+        );
+        for (label, value) in iface.details(utc) {
+            let label = if label.is_empty() {
+                String::new()
+            } else {
+                format!("{}:", label.to_lowercase())
+            };
+            println!("  {label:<22}{value}");
+        }
+    }
+    Ok(())
 }
 
 fn power(host: &str, action: PowerChoice, confirm: Option<String>) -> Result<()> {
@@ -1040,6 +1097,10 @@ mod tests {
     fn leases_and_facts_take_a_host() {
         assert!(matches!(parse(&["leases", "gw"]), Command::Leases { host } if host == "gw"));
         assert!(matches!(parse(&["facts", "gw"]), Command::Facts { host } if host == "gw"));
+        assert!(matches!(
+            networks_action(&["status", "--json"]),
+            NetworksCommand::Status { json: true }
+        ));
     }
 
     #[test]

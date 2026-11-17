@@ -193,6 +193,12 @@ mod tests {
     }
 
     #[test]
+    fn a_capture_starts_and_switches_itself_off_when_dropped() {
+        let capture = Capture::start().expect("mouse reporting starts");
+        drop(capture);
+    }
+
+    #[test]
     fn two_quick_clicks_on_one_cell_are_a_double_click() {
         let mut mouse = Mouse::new();
         let start = Instant::now();
