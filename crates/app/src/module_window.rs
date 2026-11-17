@@ -1,7 +1,7 @@
 //! the frame of every module window (its icon, name, status and summary) and the window of a
 //! module that has nothing to edit yet.
 
-use lanlord_core::modules::{Module, Status};
+use lanlord_model::modules::{Module, Status};
 
 use crate::services::Services;
 use crate::view::{Button, Node};

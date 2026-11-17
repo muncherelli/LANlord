@@ -3,7 +3,7 @@
 
 use std::sync::mpsc::Receiver;
 
-use lanlord_core::log::{self, Kind, Line};
+use crate::log::{self, Kind, Line};
 
 use crate::services::Services;
 use crate::tasks::Job;

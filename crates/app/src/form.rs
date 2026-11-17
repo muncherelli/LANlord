@@ -2,11 +2,30 @@
 //! field is masked, can be filled with a generated password and can be shown while you copy it
 //! down.
 
-use lanlord_core::passwords;
-
+use lanlord_model::passwords;
 use zeroize::Zeroizing;
 
 use crate::view::{Button, Dialog, Node, Size};
+
+/// a random password from the operating system's source.
+#[cfg(feature = "native")]
+fn generate_password() -> String {
+    lanlord_core::passwords::generate(passwords::DEFAULT_LEN)
+}
+
+/// a random password from the browser's crypto source.
+#[cfg(not(feature = "native"))]
+fn generate_password() -> String {
+    passwords::generate_with(passwords::DEFAULT_LEN, |bytes| {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(crypto) = web_sys::window().and_then(|w| w.crypto().ok()) {
+            let _ = crypto.get_random_values_with_u8_array(bytes);
+            return;
+        }
+        let _ = bytes;
+        panic!("no random source here");
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormAnswer {
@@ -188,7 +207,7 @@ impl Form {
             }
             FormMsg::Generate(i) => {
                 if let Some(field) = self.fields.get_mut(i) {
-                    field.value = Zeroizing::new(passwords::generate(passwords::DEFAULT_LEN));
+                    field.value = Zeroizing::new(generate_password());
                     field.shown = true;
                 }
             }

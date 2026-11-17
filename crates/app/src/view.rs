@@ -8,9 +8,9 @@
 //!
 //! windows move to this tree one by one; the variants grow with them.
 
+pub use crate::log::Kind;
 use chrono::NaiveDate;
-pub use lanlord_core::log::Kind;
-use lanlord_core::settings::ValidationError;
+use lanlord_model::settings::ValidationError;
 use zeroize::Zeroizing;
 
 /// a piece of a window, carrying the message type `M` of the window it belongs to.

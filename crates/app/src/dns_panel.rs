@@ -3,11 +3,11 @@
 
 use std::net::Ipv4Addr;
 
+use crate::ask::AskPassword;
 use anyhow::Result;
-use lanlord_core::bootstrap::AskPassword;
-use lanlord_core::leases::Lease;
-use lanlord_core::network::Internal;
-use lanlord_core::settings::{
+use lanlord_model::leases::Lease;
+use lanlord_model::network::Internal;
+use lanlord_model::settings::{
     Dhcp, DnsSettings, Record, Settings, StaticLease, Subnet, ValidationError,
 };
 
@@ -457,7 +457,7 @@ impl DnsPanel {
             Msg::MakeStatic => {
                 let leases = self.current();
                 if let Some(lease) = self.current_row.and_then(|i| leases.get(i)) {
-                    let name = if lanlord_core::settings::valid_label(&lease.name) {
+                    let name = if lanlord_model::settings::valid_label(&lease.name) {
                         lease.name.clone()
                     } else {
                         String::new()
