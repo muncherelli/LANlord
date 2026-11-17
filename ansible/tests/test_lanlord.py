@@ -61,18 +61,45 @@ class NetworksTest(unittest.TestCase):
             lanlord.lanlord_networks(settings)
 
     def test_trailing_newline_is_rejected(self):
-        for tail in ('\n', '\r\n'):
-            for field, good in (('name', 'lab'), ('lease', '12h'), ('interface', 'eth1'), ('mac', 'aa:bb:cc:dd:ee:ff')):
-                host = {'name': 'box', 'mac': 'aa:bb:cc:dd:ee:ff', 'address': '192.0.2.5'}
-                item = {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24',
-                        'dhcp': {'range': ['192.0.2.10', '192.0.2.20'], 'lease': '12h', 'hosts': [host]}}
-                settings = {'networks_defined': True, 'networks': [item]}
-                target = host if field == 'mac' else item['dhcp'] if field == 'lease' else item
-                target[field] = good
-                lanlord.lanlord_networks(settings)
-                target[field] = good + tail
-                with self.assertRaises(lanlord.Error):
+        # (where to put the value, key, valid value)
+        fields = (
+            ('item', 'name', 'lab'),
+            ('item', 'zone', 'lab'),
+            ('item', 'interface', 'eth1'),
+            ('dhcp', 'lease', '12h'),
+            ('host', 'name', 'box'),
+            ('host', 'mac', 'aa:bb:cc:dd:ee:ff'),
+            ('record', 'name', 'www'),
+        )
+        for where, key, good in fields:
+            for tail in ('\n', '\r\n'):
+                with self.subTest(field=where + '.' + key, tail=tail):
+                    host = {'name': 'box', 'mac': 'aa:bb:cc:dd:ee:ff', 'address': '192.0.2.5'}
+                    record = {'name': 'www', 'address': '192.0.2.6'}
+                    dhcp = {'range': ['192.0.2.10', '192.0.2.20'], 'lease': '12h', 'hosts': [host]}
+                    item = {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24',
+                            'dhcp': dhcp, 'records': [record]}
+                    settings = {'networks_defined': True, 'networks': [item]}
+                    target = {'item': item, 'dhcp': dhcp, 'host': host, 'record': record}[where]
+                    target[key] = good
                     lanlord.lanlord_networks(settings)
+                    target[key] = good + tail
+                    with self.assertRaises(lanlord.Error):
+                        lanlord.lanlord_networks(settings)
+
+    def test_playbook_regexes_reject_trailing_newline(self):
+        try:
+            from ansible.plugins.test.core import match
+        except ImportError:
+            self.skipTest('ansible is not installed')
+        import yaml
+        play = os.path.join(os.path.dirname(__file__), '..', 'playbooks', 'dns.yml')
+        with open(play) as handle:
+            label_re = yaml.safe_load(handle)[0]['vars']['label_re']
+        for value, expected in (('lab', True), ('lab\n', False), ('lab\r\n', False)):
+            with self.subTest(value=value):
+                # `is match` in a playbook assert is this test plugin
+                self.assertEqual(match(value, label_re), expected)
 
     def test_netmask(self):
         self.assertEqual(lanlord.lanlord_netmask('22'), '255.255.252.0')
