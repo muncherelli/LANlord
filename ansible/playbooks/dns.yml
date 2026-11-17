@@ -26,8 +26,10 @@
   become: true
   tags: [dns]
   vars:
-    image: lanlord-dns
     image_dir: /opt/lanlord/playbooks/dns/image
+    # the image is pinned to the X.Y.Z in its VERSION file, which ships with this playbook
+    image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
+    image: "ghcr.io/muncherelli/lanlord-dhcp-dns-components:{{ image_version }}"
     state_root: /opt/lanlord/dns
     label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
   tasks:
@@ -50,25 +52,28 @@
         mode: "0750"
       when: dns_networks | length > 0
 
-    - name: work out the image tag from the files it is built from
-      ansible.builtin.shell: cat Dockerfile | sha256sum | cut -c1-12
-      args:
-        chdir: "{{ image_dir }}"
-      register: image_hash
-      changed_when: false
-      when: dns_networks | length > 0
-
-    - name: see whether the image is built
-      ansible.builtin.command: "docker image inspect {{ image }}:{{ image_hash.stdout }}"
-      register: image_present
+    # the image holds only dnsmasq; the configuration is mounted. pull first, and build the same
+    # Dockerfile here when it cannot be pulled
+    - name: pull the published image
+      ansible.builtin.command:
+        argv: [docker, pull, --quiet, "{{ image }}"]
+      register: image_pull
       changed_when: false
       failed_when: false
       when: dns_networks | length > 0
 
-    - name: build the image here
-      ansible.builtin.command: "docker build --quiet -t {{ image }}:{{ image_hash.stdout }} {{ image_dir }}"
+    - name: build the image here when it could not be pulled
+      ansible.builtin.command:
+        argv: [docker, build, --quiet, --build-arg, "IMAGE_VERSION={{ image_version }}", -t, "{{ image }}", "{{ image_dir }}"]
       changed_when: true
-      when: dns_networks | length > 0 and image_present.rc != 0
+      when: dns_networks | length > 0 and image_pull.rc != 0
+
+    - name: look at the image
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{% raw %}{{.Id}}{% endraw %}', "{{ image }}"]
+      register: image_id
+      changed_when: false
+      when: dns_networks | length > 0
 
     - name: move a single dnsmasq from before there was one per network
       ansible.builtin.include_tasks: dns-migrate.yml
@@ -80,6 +85,15 @@
       loop_control:
         loop_var: net
         label: "{{ net.name }}"
+
+    # the earlier locally built, hash-tagged image, once nothing runs it
+    - name: remove the old hash-tagged image
+      ansible.builtin.shell: |
+        for img in $(docker image ls --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}' | grep '^lanlord-dns:'); do
+          docker ps -a --filter "ancestor=$img" -q | grep -q . || docker image rm "$img" >/dev/null 2>&1 || true
+        done
+      changed_when: false
+      when: dns_networks | length > 0
 
     - name: remove the dnsmasq of networks that are gone
       ansible.builtin.include_tasks: dns-cleanup.yml

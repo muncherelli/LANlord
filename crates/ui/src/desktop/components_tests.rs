@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use eframe::egui;
 
-use super::harness::*;
-use super::*;
+use super::harness::{desktop, frames, press, until, with_host};
+use super::{menu, Desktop, Target, MODULES};
 use lanlord_app::components::Msg;
 use lanlord_app::gateway::Fake;
 

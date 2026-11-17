@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use eframe::egui;
 
-use super::harness::*;
-use super::*;
+use super::harness::{desktop, enabled, frames, press, until, with_host};
+use super::{my_server, Desktop, Target};
 use lanlord_app::gateway::Fake;
 
 fn server() -> (Desktop, egui::Context, Arc<Fake>) {

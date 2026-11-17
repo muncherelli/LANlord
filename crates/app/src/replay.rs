@@ -6,7 +6,7 @@
 //! stopped at and handed back to be sent. once the answer is recorded the task runs again
 //! from the start, so each op is sent exactly once.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{anyhow, Result};
 use lanlord_model::ops::{Op, Reply};
@@ -56,12 +56,12 @@ impl Replay {
     /// run `work` once more, from the start.
     pub fn pass<T>(&self, work: impl FnOnce(&dyn Gateway) -> Result<T>) -> Pass<T> {
         {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.cursor = 0;
             state.pending = None;
         }
         let outcome = work(self);
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         // a task that swallows the error it was given still has no final answer
         match state.pending.take() {
             Some(op) => Pass::Needs(op),
@@ -76,14 +76,14 @@ impl Replay {
             Err(err) if err.is::<SessionEnded>() => Recorded::SessionEnded,
             Err(err) => Recorded::Failed(err.to_string()),
         };
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.done.push((op, recorded));
     }
 }
 
 impl Gateway for Replay {
     fn call(&self, _host: &str, op: Op, _ask: AskPassword) -> Result<Reply> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.pending.is_some() {
             return Err(anyhow!(WAITING));
         }
