@@ -83,6 +83,27 @@ pub enum Op {
     ClockUpdateNow,
     /// what the server can do for lanlord's networks, and how to fix what it cannot.
     Doctor,
+    /// keep sending samples of `topic` (live monitoring). reserved: no server answers it yet.
+    Subscribe { topic: String },
+}
+
+impl Op {
+    /// does the op change the server, so that the bridge that runs it must be root?
+    pub fn needs_root(&self) -> bool {
+        matches!(self, Op::ClockApply { .. } | Op::ClockUpdateNow)
+    }
+
+    /// can `lanlord bridge` on the gateway run the op itself? the others stay on the shell path.
+    pub fn runs_on_bridge(&self) -> bool {
+        matches!(
+            self,
+            Op::ClockState
+                | Op::ClockZones
+                | Op::ClockZoneNow { .. }
+                | Op::ClockApply { .. }
+                | Op::ClockUpdateNow
+        )
+    }
 }
 
 /// a secret setting to change: its path in the settings and the new value.
@@ -306,6 +327,9 @@ mod tests {
             },
             Op::ClockUpdateNow,
             Op::Doctor,
+            Op::Subscribe {
+                topic: "clock".into(),
+            },
         ]
     }
 

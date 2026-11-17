@@ -736,6 +736,7 @@ mod fake {
                     Reply::ClockApplied { lines, stored }
                 }
                 Op::ClockUpdateNow => Reply::Lines(self.clock_update_now(host, ask)?),
+                Op::Subscribe { .. } => anyhow::bail!("live streams are not available yet"),
             })
         }
 

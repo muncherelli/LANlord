@@ -5,11 +5,13 @@
 use anyhow::{bail, Context, Result};
 
 use crate::bootstrap::{capture_as_root, AskPassword};
+use crate::bridge;
 use crate::config;
 use crate::crypto::Identity;
 use crate::log::{emit, Kind};
 use crate::settings::{self, Settings};
 use crate::ssh::Session;
+use lanlord_model::ops::{Op, Reply};
 
 pub use lanlord_model::clock::*;
 
@@ -118,14 +120,37 @@ fn render(template: &str, pairs: &[(&str, &str)]) -> String {
     render_in(template, TIMESYNCD_FILE, pairs)
 }
 
+/// the bridge's answer to `op`, or `None` when the gateway has no bridge and the shell scripts
+/// below must do it. an answer of the wrong kind is an error, not a reason to fall back.
+fn via_bridge(session: &Session, op: &Op, ask: AskPassword) -> Result<Option<Reply>> {
+    match bridge::try_call(session, op, ask)? {
+        Some(reply @ (Reply::Clock(_) | Reply::Names(_) | Reply::ZoneNow(_) | Reply::Lines(_))) => {
+            Ok(Some(reply))
+        }
+        Some(other) => bail!("the bridge answered {other:?} to {op:?}"),
+        None => Ok(None),
+    }
+}
+
+/// for ops that need no root: nothing to ask.
+fn no_root(_: &str) -> Result<String> {
+    bail!("this operation needs no password")
+}
+
 /// the server's clock; asks for nothing.
 pub fn read(session: &Session) -> Result<ClockState> {
+    if let Some(Reply::Clock(state)) = via_bridge(session, &Op::ClockState, &mut no_root)? {
+        return Ok(state);
+    }
     let script = render(READ, &[]);
     parse_state(&session.capture(&["sh".into(), "-c".into(), script])?)
 }
 
 /// the time zones the server knows, sorted as it lists them.
 pub fn zones(session: &Session) -> Result<Vec<String>> {
+    if let Some(Reply::Names(zones)) = via_bridge(session, &Op::ClockZones, &mut no_root)? {
+        return Ok(zones);
+    }
     let out = session.capture(&["sh".into(), "-c".into(), ZONES.into()])?;
     let zones: Vec<String> = out
         .lines()
@@ -143,6 +168,12 @@ pub fn zones(session: &Session) -> Result<Vec<String>> {
 pub fn zone_now(session: &Session, zone: &str) -> Result<ZoneNow> {
     if !valid_zone(zone) {
         bail!("{zone} is not a time zone name");
+    }
+    let op = Op::ClockZoneNow {
+        zone: zone.to_string(),
+    };
+    if let Some(Reply::ZoneNow(now)) = via_bridge(session, &op, &mut no_root)? {
+        return Ok(now);
     }
     let script = render(ZONE_NOW, &[("ZONE", zone)]);
     let out = session.capture(&["sh".into(), "-c".into(), script])?;
@@ -189,6 +220,12 @@ pub fn apply(session: &Session, change: &Change, ask_password: AskPassword) -> R
     if change.time.is_some() && ntp_on {
         bail!("a time can only be set while automatic synchronization is off");
     }
+    let op = Op::ClockApply {
+        change: change.clone(),
+    };
+    if let Some(Reply::Lines(lines)) = via_bridge(session, &op, ask_password)? {
+        return Ok(lines);
+    }
     // check everything before anything changes
     let ntp = change.ntp.as_ref().map(set_ntp_script).transpose()?;
     let time = change.time.as_deref().map(set_time_script).transpose()?;
@@ -207,6 +244,9 @@ pub fn apply(session: &Session, change: &Change, ask_password: AskPassword) -> R
 
 /// ask the time service to synchronize now and say how it went.
 pub fn update_now(session: &Session, ask_password: AskPassword) -> Result<Vec<String>> {
+    if let Some(Reply::Lines(lines)) = via_bridge(session, &Op::ClockUpdateNow, ask_password)? {
+        return Ok(lines);
+    }
     let out = root(session, render(UPDATE_NOW, &[]), ask_password)?;
     Ok(out.lines().map(str::to_string).collect())
 }

@@ -221,16 +221,37 @@ fn sudo(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// the remote command and stdin that run `script` as root; with a password,
-/// sudo reads it from the first line of stdin.
-fn plan(script: String, password: Option<&str>) -> (Vec<String>, String) {
+/// the remote command that runs `argv` as root, and what goes first on its stdin: with a
+/// password, sudo reads exactly one line (the password) and leaves the rest of the stream to
+/// the program.
+fn plan_argv(argv: &[&str], password: Option<&str>) -> (Vec<String>, String) {
     match password {
-        None => (sudo(&["-n", "sh", "-s"]), script),
+        None => (
+            sudo(
+                &["-n"]
+                    .into_iter()
+                    .chain(argv.iter().copied())
+                    .collect::<Vec<_>>(),
+            ),
+            String::new(),
+        ),
         Some(password) => (
-            sudo(&["-S", "-p", "", "sh", "-s"]),
-            format!("{password}\n{script}"),
+            sudo(
+                &["-S", "-p", ""]
+                    .into_iter()
+                    .chain(argv.iter().copied())
+                    .collect::<Vec<_>>(),
+            ),
+            format!("{password}\n"),
         ),
     }
+}
+
+/// the remote command and stdin that run `script` as root.
+#[cfg(test)]
+fn plan(script: String, password: Option<&str>) -> (Vec<String>, String) {
+    let (remote, first) = plan_argv(&["sh", "-s"], password);
+    (remote, first + &script)
 }
 
 /// asks the user for a password; the argument says what for.
@@ -320,13 +341,28 @@ fn root_command(
     script: String,
     ask_password: AskPassword,
 ) -> Result<(Vec<String>, String)> {
+    let (remote, first) = root_argv(session, admin, &["sh", "-s"], ask_password)?;
+    Ok((remote, first + &script))
+}
+
+/// the remote command that runs `argv` as root and what goes first on its stdin (a password
+/// line, or nothing).
+pub(crate) fn root_argv(
+    session: &Session,
+    admin: &str,
+    argv: &[&str],
+    ask_password: AskPassword,
+) -> Result<(Vec<String>, String)> {
     // root runs it directly
     if admin == "root" {
-        return Ok((vec!["sh".into(), "-s".into()], script));
+        return Ok((
+            argv.iter().map(ToString::to_string).collect(),
+            String::new(),
+        ));
     }
     // sudo -n fails when a password is needed; then ask once and let sudo remember it
     if session.capture(&sudo(&["-n", "true"])).is_ok() {
-        return Ok(plan(script, None));
+        return Ok(plan_argv(argv, None));
     }
     let password = ask_password(&format!("sudo password for {admin}"))?;
     if session
@@ -341,9 +377,9 @@ fn root_command(
     // the record is shared between ssh sessions once the sudoers rules from bootstrap exist;
     // before that (bootstrap itself) the password goes along with the command
     if session.capture(&sudo(&["-n", "true"])).is_ok() {
-        Ok(plan(script, None))
+        Ok(plan_argv(argv, None))
     } else {
-        Ok(plan(script, Some(&password)))
+        Ok(plan_argv(argv, Some(&password)))
     }
 }
 
