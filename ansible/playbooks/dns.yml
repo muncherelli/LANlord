@@ -31,7 +31,7 @@
     image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
     image: "ghcr.io/muncherelli/lanlord-dhcp-dns-components:{{ image_version }}"
     state_root: /opt/lanlord/dns
-    label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+    label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\Z'
   tasks:
     - name: work out the lanlord networks
       ansible.builtin.include_tasks: networks.yml

@@ -20,9 +20,9 @@
     - name: check the interface names and address in your settings
       ansible.builtin.assert:
         that:
-          - docker.host_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
-          - docker.internal_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
-          - docker.internal_address | default('10.0.0.1/8') is match('^[0-9a-fA-F:.]+/[0-9]{1,3}$')
+          - docker.host_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}\\Z')
+          - docker.internal_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}\\Z')
+          - docker.internal_address | default('10.0.0.1/8') is match('^[0-9a-fA-F:.]+/[0-9]{1,3}\\Z')
         fail_msg: "docker settings: interface names and the address need a plain value like eth1 and 172.16.120.2/22"
       when: docker is defined
 
