@@ -2,8 +2,8 @@
 # lanlord's dnsmasq.conf is mounted when the container runs.
 #   docker build --build-arg IMAGE_VERSION=1.0.0 -t lanlord-dhcp-dns-components:1.0.0 .
 # VERSION is this image's X.Y.Z (the tag); the dnsmasq version is the ARG below and a label
-# the multi-arch index digest of alpine 3.22, so a rebuild cannot pick up a moved tag
-ARG ALPINE_IMAGE=alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
+# the multi-arch index digest of alpine:3.22, so a rebuild cannot pick up a moved tag
+ARG ALPINE_IMAGE=alpine@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
 FROM ${ALPINE_IMAGE}
 ARG DNSMASQ_VERSION=2.91
 ARG IMAGE_VERSION=dev

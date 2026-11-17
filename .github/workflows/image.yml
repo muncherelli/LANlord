@@ -243,7 +243,7 @@ jobs:
           if grep -qxF "$VERSION" <<<"$tags"; then echo "$REPO:$VERSION appeared meanwhile; leaving it alone"; exit 0; fi
           minor=${VERSION%.*}; major=${VERSION%%.*}
           # a rolling tag only moves to this version when nothing newer exists in its range
-          newest() { printf '%s\n' "$VERSION" $(grep -E "$1" <<<"$tags" || true) | sort -V | tail -n1; }
+          newest() { local pattern=$1; printf '%s\n' "$VERSION" $(grep -E "$pattern" <<<"$tags" || true) | sort -V | tail -n1; }
           args=""
           [ "$(newest '^[0-9]+\.[0-9]+\.[0-9]+$')" = "$VERSION" ] && args="$args -t $REPO:latest"
           [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
