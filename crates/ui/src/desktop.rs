@@ -951,8 +951,6 @@ impl Desktop {
             if start.clicked() {
                 self.start_open = !self.start_open;
             }
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(2.0, 22.0), Sense::hover());
-            bevel(ui.painter(), rect, false);
             ui.add_space(2.0);
 
             let mut to_activate = None;
@@ -964,11 +962,10 @@ impl Desktop {
                 let down = active || response.is_pointer_button_down_on();
                 ui.painter().rect_filled(rect, 0.0, GRAY);
                 bevel(ui.painter(), rect, !down);
-                icons::draw(
+                icons::draw_small(
                     ui.painter(),
                     rect.left_top() + Vec2::new(4.0, 3.0),
-                    icons::small(window.target.id()),
-                    1.0,
+                    window.target.id(),
                 );
                 ui.painter().text(
                     rect.left_center() + Vec2::new(24.0, 0.0),
