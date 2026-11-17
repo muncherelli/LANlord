@@ -221,7 +221,7 @@ mod tests {
                     r#"case "$1 $2" in
   "inspect lanlord-nt4") exit 0 ;;
   "inspect "*) exit 1 ;;
-  "image ls") printf 'ghcr.io/x/lanlord-samba-nt4:abc\ncaddy:2-alpine\n'; exit 0 ;;
+  "image ls") printf 'ghcr.io/x/lanlord-nt4-server-components:1.0.0\ncaddy:2-alpine\n'; exit 0 ;;
   "ps -a") printf 'lanlord-dns-retronet\nlanlord-dns-lab-prev\nunrelated\n'; exit 0 ;;
 esac
 echo "docker $*" >> LOG"#,
@@ -331,7 +331,7 @@ esac"#,
         assert_eq!(code, 0, "{out}");
         for expected in [
             "remove container lanlord-nt4",
-            "remove image ghcr.io/x/lanlord-samba-nt4:abc",
+            "remove image ghcr.io/x/lanlord-nt4-server-components:1.0.0",
             "remove unit lanlord-firewall.service",
             "remove the firewall table inet lanlord",
             "remove /opt/lanlord",
@@ -399,7 +399,7 @@ esac"#,
             "docker rm -f lanlord-nt4",
             "docker rm -f lanlord-dns-retronet",
             "docker rm -f lanlord-dns-lab-prev",
-            "docker image rm ghcr.io/x/lanlord-samba-nt4:abc",
+            "docker image rm ghcr.io/x/lanlord-nt4-server-components:1.0.0",
             "nft delete table inet lanlord",
             "userdel lanlord",
             "groupdel lanlord-web",

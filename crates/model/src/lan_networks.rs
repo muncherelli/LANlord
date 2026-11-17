@@ -268,119 +268,166 @@ pub fn validate(
     complete: bool,
 ) -> Vec<ValidationError> {
     let mut errors = Vec::new();
-    let mut fail = |path: String, message: String| errors.push(ValidationError { path, message });
-    let mut names = BTreeSet::new();
-    let mut interfaces = BTreeSet::new();
-    let mut zones = BTreeSet::new();
-    let mut subnets: Vec<(usize, Subnet)> = Vec::new();
+    let mut seen = Seen::default();
     for (i, network) in list.iter().enumerate() {
         let path = format!("networks[{i}]");
-        if !valid_label(&network.name) {
-            fail(
-                format!("{path}.name"),
-                "must be a plain name: letters, digits and dashes".into(),
-            );
-        } else if !names.insert(network.name.to_ascii_lowercase()) {
-            fail(
-                format!("{path}.name"),
-                format!("{} is used twice", network.name),
-            );
-        }
-        if network.interface.is_empty() {
-            if complete {
-                fail(
-                    format!("{path}.interface"),
-                    "must say which interface the network is on, like eth1".into(),
-                );
-            }
-        } else if !plain_interface(&network.interface) {
-            fail(
-                format!("{path}.interface"),
-                "must be a plain interface name like eth1".into(),
-            );
-        } else if Some(network.interface.as_str()) == external {
-            fail(
-                format!("{path}.interface"),
-                format!("{} is the external network's interface", network.interface),
-            );
-        } else if !interfaces.insert(network.interface.clone()) {
-            fail(
-                format!("{path}.interface"),
-                format!("{} is used by two networks", network.interface),
-            );
-        }
-        if let Some(mtu) = network.mtu {
-            if !MTU_RANGE.contains(&mtu) {
-                fail(
-                    format!("{path}.mtu"),
-                    format!(
-                        "must be between {} and {}",
-                        MTU_RANGE.start(),
-                        MTU_RANGE.end()
-                    ),
-                );
-            }
-        }
-        if !valid_label(&network.zone) {
-            fail(
-                format!("{path}.zone"),
-                "must be a plain label like retronet".into(),
-            );
-        } else if !zones.insert(network.zone.to_ascii_lowercase()) {
-            fail(
-                format!("{path}.zone"),
-                format!("{} is used by two networks", network.zone),
-            );
-        }
+        errors.extend(seen.name_error(network, &path));
+        errors.extend(seen.interface_error(network, &path, external, complete));
+        errors.extend(mtu_error(network, &path));
+        errors.extend(seen.zone_error(network, &path));
         if network.address.is_empty() && !complete {
             continue;
         }
+        errors.extend(seen.address_errors(i, network, &path));
+    }
+    errors
+}
+
+/// the names, interfaces, zones and subnets of the networks checked so far.
+#[derive(Default)]
+struct Seen {
+    names: BTreeSet<String>,
+    interfaces: BTreeSet<String>,
+    zones: BTreeSet<String>,
+    subnets: Vec<(usize, Subnet)>,
+}
+
+fn fail(path: String, message: String) -> ValidationError {
+    ValidationError { path, message }
+}
+
+impl Seen {
+    fn name_error(&mut self, network: &LanNetwork, path: &str) -> Option<ValidationError> {
+        let message = if !valid_label(&network.name) {
+            "must be a plain name: letters, digits and dashes".into()
+        } else if !self.names.insert(network.name.to_ascii_lowercase()) {
+            format!("{} is used twice", network.name)
+        } else {
+            return None;
+        };
+        Some(fail(format!("{path}.name"), message))
+    }
+
+    fn interface_error(
+        &mut self,
+        network: &LanNetwork,
+        path: &str,
+        external: Option<&str>,
+        complete: bool,
+    ) -> Option<ValidationError> {
+        let interface = &network.interface;
+        let message = if interface.is_empty() {
+            if !complete {
+                return None;
+            }
+            "must say which interface the network is on, like eth1".into()
+        } else if !plain_interface(interface) {
+            "must be a plain interface name like eth1".into()
+        } else if Some(interface.as_str()) == external {
+            format!("{interface} is the external network's interface")
+        } else if !self.interfaces.insert(interface.clone()) {
+            format!("{interface} is used by two networks")
+        } else {
+            return None;
+        };
+        Some(fail(format!("{path}.interface"), message))
+    }
+
+    fn zone_error(&mut self, network: &LanNetwork, path: &str) -> Option<ValidationError> {
+        let message = if !valid_label(&network.zone) {
+            "must be a plain label like retronet".into()
+        } else if !self.zones.insert(network.zone.to_ascii_lowercase()) {
+            format!("{} is used by two networks", network.zone)
+        } else {
+            return None;
+        };
+        Some(fail(format!("{path}.zone"), message))
+    }
+
+    /// the address, its overlaps with earlier networks, and the DNS and DHCP settings.
+    fn address_errors(
+        &mut self,
+        i: usize,
+        network: &LanNetwork,
+        path: &str,
+    ) -> Vec<ValidationError> {
         let Some((ip, prefix)) = split_address(&network.address) else {
-            fail(
+            return vec![fail(
                 format!("{path}.address"),
                 format!(
                     "{:?} must look like 172.16.120.1/22 with a prefix from 8 to 30",
                     network.address
                 ),
-            );
-            continue;
+            )];
         };
         let subnet = Subnet::new(ip, prefix);
-        if ip == subnet.network || ip == subnet.broadcast() {
-            fail(
-                format!("{path}.address"),
-                format!("{ip} is the network or broadcast address of {subnet}"),
-            );
-        }
-        if ip.is_loopback() || ip.is_multicast() || ip.is_unspecified() || ip.is_link_local() {
-            fail(
-                format!("{path}.address"),
-                format!("{ip} cannot be a network's address"),
-            );
-        }
-        for (j, other) in &subnets {
-            if overlap(&subnet, other) {
-                fail(
-                    format!("{path}.address"),
-                    format!("{subnet} overlaps the network networks[{j}] ({other})"),
-                );
-            }
-        }
-        subnets.push((i, subnet));
-        let dns = DnsSettings {
-            zone: network.zone.clone(),
-            records: network.records.clone(),
-            dhcp: network.dhcp.clone(),
-        };
-        for error in dns.validate(&subnet, ip) {
-            // the zone was checked above
-            if error.path == "dns.zone" {
-                continue;
-            }
-            fail(error.path.replacen("dns", &path, 1), error.message);
-        }
+        let mut errors = ip_errors(ip, &subnet, path);
+        errors.extend(
+            self.subnets
+                .iter()
+                .filter(|(_, other)| overlap(&subnet, other))
+                .map(|(j, other)| {
+                    fail(
+                        format!("{path}.address"),
+                        format!("{subnet} overlaps the network networks[{j}] ({other})"),
+                    )
+                }),
+        );
+        errors.extend(dns_errors(network, &subnet, ip, path));
+        self.subnets.push((i, subnet));
+        errors
+    }
+}
+
+fn mtu_error(network: &LanNetwork, path: &str) -> Option<ValidationError> {
+    if network.mtu.is_none_or(|mtu| MTU_RANGE.contains(&mtu)) {
+        return None;
+    }
+    Some(fail(
+        format!("{path}.mtu"),
+        format!(
+            "must be between {} and {}",
+            MTU_RANGE.start(),
+            MTU_RANGE.end()
+        ),
+    ))
+}
+
+/// an address that is the network's own, or one no network can have.
+fn ip_errors(ip: Ipv4Addr, subnet: &Subnet, path: &str) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    if ip == subnet.network || ip == subnet.broadcast() {
+        errors.push(fail(
+            format!("{path}.address"),
+            format!("{ip} is the network or broadcast address of {subnet}"),
+        ));
+    }
+    if ip.is_loopback() || ip.is_multicast() || ip.is_unspecified() || ip.is_link_local() {
+        errors.push(fail(
+            format!("{path}.address"),
+            format!("{ip} cannot be a network's address"),
+        ));
     }
     errors
+}
+
+/// the problems of the network's DNS records and DHCP; the zone was checked already.
+fn dns_errors(
+    network: &LanNetwork,
+    subnet: &Subnet,
+    ip: Ipv4Addr,
+    path: &str,
+) -> Vec<ValidationError> {
+    let dns = DnsSettings {
+        zone: network.zone.clone(),
+        records: network.records.clone(),
+        dhcp: network.dhcp.clone(),
+    };
+    dns.validate(subnet, ip)
+        .into_iter()
+        .filter(|error| error.path != "dns.zone")
+        .map(|error| fail(error.path.replacen("dns", path, 1), error.message))
+        .collect()
 }
 
 /// find a network by name, ignoring case.
