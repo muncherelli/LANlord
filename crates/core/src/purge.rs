@@ -49,10 +49,11 @@ act() {
   fi
 }
 
-# an apply that is still running would be cut off halfway
-if [ "$DRY" = 0 ] && have pgrep && pgrep -u lanlord >/dev/null 2>&1; then
+# an apply that is still running would be cut off halfway; the web ui also runs as lanlord, so
+# only ansible counts. the line (not the exit status) tells the caller, so it reaches the user
+if [ "$DRY" = 0 ] && have pgrep && pgrep -u lanlord -f ansible-playbook >/dev/null 2>&1; then
   say "lanlord is busy (an apply is running); try again in a moment"
-  exit 3
+  exit 0
 fi
 
 # what you would lose
@@ -234,7 +235,15 @@ echo "docker $*" >> LOG"#,
 echo "nft $*" >> LOG"#,
                 ),
                 ("networkctl", r#"echo "networkctl $*" >> LOG"#),
-                ("pgrep", if pgrep_busy { "exit 0" } else { "exit 1" }),
+                // the web ui always runs as lanlord; only an ansible-playbook makes the server busy
+                (
+                    "pgrep",
+                    if pgrep_busy {
+                        r#"case "$*" in *ansible-playbook*) exit 0 ;; *) exit 1 ;; esac"#
+                    } else {
+                        r#"case "$*" in *ansible-playbook*) exit 1 ;; *) exit 0 ;; esac"#
+                    },
+                ),
                 (
                     "getent",
                     r#"case "$1 $2" in
@@ -424,7 +433,8 @@ esac"#,
     fn a_running_apply_stops_the_purge_before_it_removes_anything() {
         let fake = Fake::new("busy", true);
         let (code, out) = fake.run(false, OPTIONS);
-        assert_eq!(code, 3, "{out}");
+        // the line, not the exit status, tells purge() so the message reaches the user
+        assert_eq!(code, 0, "{out}");
         assert!(out.contains("lanlord is busy"));
         assert!(fake.log().is_empty());
         assert!(exists(&fake.root(), "opt/lanlord/config/settings.age"));
@@ -535,6 +545,16 @@ esac"#
         let err = preview(&session, options, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("root login"), "{err}");
         assert!(preview(&session, OPTIONS, &mut no_password).is_ok());
+    }
+
+    #[test]
+    fn a_running_web_ui_does_not_stop_the_purge() {
+        // the fake's other lanlord processes (the web ui) match pgrep -u lanlord, ansible does not
+        let fake = Fake::new("webui", false);
+        let (code, out) = fake.run(false, OPTIONS);
+        assert_eq!(code, 0, "{out}");
+        assert!(!out.contains("lanlord is busy"), "{out}");
+        assert!(!exists(&fake.root(), "opt/lanlord"));
     }
 
     #[test]
