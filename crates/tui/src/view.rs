@@ -86,7 +86,7 @@ impl Region {
     fn new(rect: Rect, path: &[usize], part: Part, focusable: bool) -> Self {
         let mut key = path
             .iter()
-            .map(|n| n.to_string())
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(".");
         key.push('#');

@@ -2120,7 +2120,7 @@ impl Shell {
 fn focus_key(path: &[usize], part: &str) -> String {
     let mut key = path
         .iter()
-        .map(|n| n.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(".");
     key.push('#');
