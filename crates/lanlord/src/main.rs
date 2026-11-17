@@ -304,6 +304,15 @@ enum Command {
         #[arg(long, value_name = "HOST")]
         confirm: Option<String>,
     },
+    /// install lanlord on a server, resuming an install that was interrupted
+    Install { host: String },
+    /// purge a server and install lanlord on it again
+    Reinstall {
+        host: String,
+        /// repeat the host name to confirm that everything on it is removed
+        #[arg(long, value_name = "HOST")]
+        confirm: String,
+    },
     /// list the dhcp leases the gateway has handed out
     Leases { host: String },
     /// reboot or shut down a server
@@ -621,6 +630,23 @@ fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()>
         let _ = lanlord_core::hosts::remove(&path, host);
     }
     Ok(())
+}
+
+/// print an install's steps and what the server says while it runs.
+fn print_install(event: lanlord_core::install::Event) {
+    use lanlord_core::install::{Event, Step};
+    let number = |step: Step| Step::ALL.iter().position(|s| *s == step).unwrap_or(0) + 1;
+    match event {
+        Event::StepStarted(step) => {
+            println!("[{}/{}] {}", number(step), Step::ALL.len(), step.title())
+        }
+        Event::Line(line) => println!("  {line}"),
+        Event::StepDone(step) => println!("[{}/{}] done", number(step), Step::ALL.len()),
+        // the error itself is printed once, by the caller
+        Event::Failed { step, .. } => {
+            eprintln!("[{}/{}] failed", number(step), Step::ALL.len())
+        }
+    }
 }
 
 /// the host name typed at a prompt, or the one given with --confirm.
@@ -1032,6 +1058,12 @@ fn main() -> Result<()> {
             remove_admins,
             confirm,
         }) => purge(&host, remove_admins, confirm),
+        Some(Command::Install { host }) => {
+            lanlord_core::install::run(&host, &mut ask, &mut print_install)
+        }
+        Some(Command::Reinstall { host, confirm }) => {
+            lanlord_core::install::reinstall(&host, &confirm, &mut ask, &mut print_install)
+        }
         Some(Command::Leases { host }) => leases(&host),
         Some(Command::Power {
             host,

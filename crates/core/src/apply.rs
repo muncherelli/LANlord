@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 
-use crate::bootstrap::{run_as_root, AskPassword};
+use crate::bootstrap::{run_as_root_lines, AskPassword};
 use crate::config::{wrap, INSTALLED_GUARD, NOT_INSTALLED_MESSAGE, NOT_INSTALLED_STATUS};
 use crate::log::{emit, Kind};
 use crate::modules;
@@ -70,6 +70,18 @@ pub(crate) fn apply_with(
     modules: &[String],
     ask_password: AskPassword,
 ) -> Result<()> {
+    apply_lines(session, host, identity, modules, ask_password, &mut |_| {})
+}
+
+/// like `apply_with`; every line the server prints also goes to `on_line` as it arrives.
+pub(crate) fn apply_lines(
+    session: &Session,
+    host: &str,
+    identity: Option<&age::x25519::Identity>,
+    modules: &[String],
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
     // only known module ids reach the shell script
     let mut tags = Vec::new();
     for id in modules {
@@ -102,11 +114,12 @@ pub(crate) fn apply_with(
             "no settings to apply; running the baseline only",
         ),
     }
-    match run_as_root(
+    match run_as_root_lines(
         session,
         admin,
         script(settings.as_deref(), &tags)?,
         ask_password,
+        on_line,
     )? {
         0 => {
             emit(Kind::Info, "apply finished");

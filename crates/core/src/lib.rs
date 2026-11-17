@@ -20,6 +20,7 @@ pub use lanlord_model::modules;
 pub mod netstatus;
 pub mod network;
 pub use lanlord_model::networks;
+pub mod install;
 pub mod nt4;
 pub mod ops;
 pub mod passwords;
