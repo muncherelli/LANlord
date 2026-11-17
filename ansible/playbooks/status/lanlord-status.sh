@@ -75,7 +75,11 @@ zone=${zone:-retronet}
 # dhcp leases and ip neighbours, merged by address so a machine is listed once
 machines() {
   local lines='' neigh='' ip mac host exp state
-  [[ -r $leases_file ]] && lines=$(awk 'NF >= 4 { print "L\t" $3 "\t" $2 "\t" $4 "\t" $1 }' "$leases_file")
+  local file
+  file=$(setting leases)
+  # the leases of this page's network; the single file of a server not yet moved to one dnsmasq per network
+  [[ -n $file && -r $file && -z ${LANLORD_LEASES:-} ]] || file=$leases_file
+  [[ -r $file ]] && lines=$(awk 'NF >= 4 { print "L\t" $3 "\t" $2 "\t" $4 "\t" $1 }' "$file")
   neigh=$("$ip_cmd" neigh show dev "$iface" 2>/dev/null | awk '
     $1 !~ /:/ { mac = "-"; for (i = 2; i < NF; i++) if ($i == "lladdr") mac = $(i + 1)
       s = $NF; if (s == "FAILED" || s == "INCOMPLETE" || mac == "-") next

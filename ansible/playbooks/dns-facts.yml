@@ -1,0 +1,29 @@
+# included by dns.yml (needs lanlord_networks from networks.yml, and label_re): which networks get a
+# dnsmasq, and the names every network answers for. nothing here changes the machine.
+- name: pick the networks that get a dnsmasq
+  ansible.builtin.set_fact:
+    dns_networks: "{{ lanlord_networks | default([]) | selectattr('dns_enabled') | list }}"
+    dns_proxy: "{{ lookup('ansible.builtin.vars', 'web-proxy', default={}) }}"
+    dns_nt4: "{{ lookup('ansible.builtin.vars', 'nt4-domain', default={}) }}"
+
+- name: work out the names every network answers for
+  ansible.builtin.set_fact:
+    dns_host: "{{ ansible_facts['hostname'] | lower }}"
+    dns_nt4_name: >-
+      {{ (dns_nt4.netbios_name | default(ansible_facts['hostname']) | lower)
+         if dns_nt4 | length > 0 else '' }}
+    # the network the nt4 domain controller is on; its name is only in that network's zone
+    dns_nt4_network: "{{ (dns_nt4.network | default((dns_networks | first).name if dns_networks | length > 0 else '')) | lower }}"
+    # the web ui is on the normal network only, so its name stays out of the lanlord zones
+    dns_proxy_hosts: >-
+      {{ (dns_proxy.sites | default([])) | map(attribute='host') | map('lower') | list }}
+  when: dns_networks | length > 0
+
+# these values end up in dnsmasq.conf, so only plain names are accepted
+- name: check the names
+  ansible.builtin.assert:
+    that:
+      - dns_host is match(label_re)
+      - dns_nt4_name == '' or dns_nt4_name is match(label_re)
+    fail_msg: "the hostname and the nt4-domain netbios name must be plain names like ntsrv1"
+  when: dns_networks | length > 0

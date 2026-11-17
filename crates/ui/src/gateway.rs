@@ -373,6 +373,8 @@ mod fake {
         pub network_error: Mutex<Option<String>>,
         /// the server's clock, changed by `clock_apply`.
         pub clock: Mutex<ClockState>,
+        /// what `clock_apply` says about keeping the change in the settings.
+        pub kept: Mutex<Stored>,
         /// the time zones it lists.
         pub zones: Mutex<Vec<String>>,
         /// the small reads that are not tasks (the taskbar clock).
@@ -398,6 +400,7 @@ mod fake {
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
                 network_error: Mutex::new(None),
+                kept: Mutex::new(Stored::Yes),
                 clock: Mutex::new(ClockState {
                     timezone: "Etc/UTC".into(),
                     utc_secs: 1_794_759_123,
@@ -668,7 +671,7 @@ mod fake {
                 state.ntp = ntp.enabled;
                 state.servers.clone_from(&ntp.servers);
             }
-            Ok((vec!["applied".into()], Stored::Yes))
+            Ok((vec!["applied".into()], self.kept.lock().unwrap().clone()))
         }
 
         fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
