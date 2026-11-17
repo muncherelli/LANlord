@@ -85,7 +85,7 @@
         webui_names: >-
           {{ ([webui_host] + (([host_address, ansible_facts['hostname'], ansible_facts['fqdn']]
               if webui_tls == 'internal' else [])
-              | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+              | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z')
               | reject('equalto', 'localhost') | list)) | unique | list }}
       when: wp is defined
 
@@ -100,17 +100,17 @@
       ansible.builtin.assert:
         that:
           - proxy_listen | length > 0
-          - proxy_listen | select('match', '^[0-9]{1,3}(\.[0-9]{1,3}){3}$') | list | length == proxy_listen | length
+          - proxy_listen | select('match', '^[0-9]{1,3}(\.[0-9]{1,3}){3}\\Z') | list | length == proxy_listen | length
           - proxy_tls in ['off', 'internal']
           - proxy_sites | length > 0 or webui_on
           - proxy_sites | map(attribute='host') | list | length == proxy_sites | map(attribute='host') | list | unique | length
-          - proxy_sites | map(attribute='host') | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$') | list | length == proxy_sites | length
-          - proxy_sites | map(attribute='upstream') | select('match', '^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$') | list | length == proxy_sites | length
+          - proxy_sites | map(attribute='host') | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\\Z') | list | length == proxy_sites | length
+          - proxy_sites | map(attribute='upstream') | select('match', '^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}\\Z') | list | length == proxy_sites | length
           - status_enabled is boolean
-          - status_host is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
-          - status_zone is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+          - status_host is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\\Z')
+          - status_zone is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\\Z')
           - not status_enabled or status_host not in (proxy_sites | map(attribute='host') | list)
-          - not status_enabled or (internal_ip | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+          - not status_enabled or (internal_ip | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}\\Z')
         fail_msg: >-
           web-proxy settings: listen is host, internal or ipv4 addresses (and the interface needs one), tls is off or internal, and every site
           has a unique host name like nostalgia.lan and an upstream like 172.16.120.20:80,
@@ -121,13 +121,13 @@
       ansible.builtin.assert:
         that:
           - webui_tls in ['internal', 'letsencrypt-dns', 'cloudflare-origin']
-          - webui_host is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+          - webui_host is match('^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\\Z')
           - webui_host not in (proxy_sites | map(attribute='host') | list)
-          - webui_port | string is match('^[0-9]{1,5}$') and (webui_port | int) >= 1 and (webui_port | int) <= 65535
+          - webui_port | string is match('^[0-9]{1,5}\\Z') and (webui_port | int) >= 1 and (webui_port | int) <= 65535
           - (webui_port | int) not in [80, 443]
-          - webui_upstream is match('^unix//run/lanlord-web/[A-Za-z0-9._-]+\.sock$') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$')
-          - (host_address | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
-          - webui_proxy_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+          - webui_upstream is match('^unix//run/lanlord-web/[A-Za-z0-9._-]+\.sock\\Z') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}\\Z')
+          - (host_address | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}\\Z')
+          - webui_proxy_user is match('^[a-z_][a-z0-9_-]{0,31}\\Z')
         fail_msg: >-
           web-proxy webui settings: the web ui is https only, so tls must name a certificate method: letsencrypt-dns,
           cloudflare-origin or internal (test gateways only); remove the webui section to leave the web ui out. host is a

@@ -9,7 +9,7 @@
     dns_names: >-
       {{ (['lanlord.' ~ net.zone, dns_host ~ '.' ~ net.zone]
           + ([dns_nt4_name ~ '.' ~ net.zone] if dns_nt4_name != '' and dns_nt4_network == net.name else [])
-          + (dns_proxy_hosts | select('match', '^[a-z0-9.-]+\.' ~ net.zone ~ '$') | list)) | unique | list }}
+          + (dns_proxy_hosts | select('match', '^[a-z0-9.-]+\.' ~ net.zone ~ '\Z') | list)) | unique | list }}
 
 - name: make the folder
   ansible.builtin.file:
