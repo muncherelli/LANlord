@@ -59,12 +59,7 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.0, if active { NAVY } else { SHADOW });
-    icons::draw(
-        ui.painter(),
-        rect.left_top() + Vec2::new(3.0, 2.0),
-        icons::small(icon),
-        1.0,
-    );
+    icons::draw_small(ui.painter(), rect.left_top() + Vec2::new(3.0, 2.0), icon);
     ui.painter().text(
         rect.left_center() + Vec2::new(23.0, 0.0),
         Align2::LEFT_CENTER,
