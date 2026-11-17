@@ -31,7 +31,7 @@
     image_version: "{{ lanlord_image_version }}"
     image: "ghcr.io/muncherelli/lanlord-network-server-components:{{ image_version }}"
     state_root: /opt/lanlord/dns
-    label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
+    label_re: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\Z'
   tasks:
     - name: work out the lanlord networks
       ansible.builtin.include_tasks: networks.yml
