@@ -440,198 +440,330 @@ impl Selection {
     /// everything wrong with this choice, given the host's networks.
     pub fn validate(&self, networks: &[Network]) -> Vec<ValidationError> {
         let catalogue = catalogue();
-        let mut errors = Vec::new();
-        let mut fail =
-            |path: String, message: String| errors.push(ValidationError { path, message });
-        for component in catalogue.iter().filter(|c| c.required) {
-            if !self.is_enabled(component.id()) {
-                fail(
-                    format!("{SECTION}.{}", component.id()),
-                    format!("{} cannot be removed", component.name()),
-                );
-            }
-        }
-        // (network, address or none for the gateway's, proto, port) -> the component on it
-        let mut ports: BTreeMap<(String, Option<Ipv4Addr>, Proto, u16), &str> = BTreeMap::new();
-        // (network, address) -> the components on it
-        let mut addresses: BTreeMap<(String, Option<Ipv4Addr>), Vec<&Component>> = BTreeMap::new();
-        // (network, role) -> the component providing it
-        let mut roles: BTreeMap<(String, String), &str> = BTreeMap::new();
-        let mut netbios: BTreeMap<String, &str> = BTreeMap::new();
-        let mut host_bound_netbios = 0;
+        let mut errors = self.required_errors(&catalogue);
+        let mut claims = Claims::default();
         for (id, choice) in &self.enabled {
-            let path = format!("{SECTION}.{id}");
             let Some(component) = catalogue.iter().find(|c| c.id() == id) else {
-                fail(path, format!("there is no component called {id}"));
+                errors.push(fail(
+                    format!("{SECTION}.{id}"),
+                    format!("there is no component called {id}"),
+                ));
                 continue;
             };
-            if component.requires_docker && !self.is_enabled("docker") {
-                fail(path.clone(), format!("{} needs Docker", component.name()));
-            }
-            if !component.mechanisms.contains(&choice.mechanism) {
-                fail(
-                    format!("{path}.mechanism"),
-                    format!("{} cannot run as {:?}", component.name(), choice.mechanism),
-                );
-            }
+            let site = Site {
+                component,
+                id,
+                choice,
+                path: format!("{SECTION}.{id}"),
+            };
+            errors.extend(self.component_errors(&site));
             if component.netbios && choice.mechanism == Mechanism::HostBind {
-                host_bound_netbios += 1;
+                claims.host_bound_netbios += 1;
             }
-            for sub in &choice.subcomponents {
-                if !component.subcomponents.iter().any(|p| p.id == sub) {
-                    fail(
-                        format!("{path}.subcomponents"),
-                        format!("{} has no part called {sub}", component.name()),
-                    );
-                }
-            }
-            let count = choice.attach.len();
-            if component.attach_max == Some(0) && count > 0 {
-                fail(
-                    format!("{path}.attach"),
-                    format!(
-                        "{} runs on the gateway itself and joins no network",
-                        component.name()
-                    ),
-                );
+            errors.extend(attach_count_errors(&site));
+            if component.attach_max == Some(0) && !choice.attach.is_empty() {
                 continue;
             }
-            if count < component.attach_min {
-                fail(
-                    format!("{path}.attach"),
-                    format!(
-                        "{} needs at least {} network{}",
-                        component.name(),
-                        component.attach_min,
-                        if component.attach_min == 1 { "" } else { "s" }
-                    ),
-                );
-            }
-            if let Some(max) = component.attach_max.filter(|max| count > *max) {
-                fail(
-                    format!("{path}.attach"),
-                    format!("{} joins at most {max} networks", component.name()),
-                );
-            }
             for (j, attachment) in choice.attach.iter().enumerate() {
-                let at = format!("{path}.attach[{j}]");
-                let Some(network) = networks.iter().find(|n| n.id == attachment.network) else {
-                    fail(
-                        format!("{at}.network"),
-                        format!("there is no network called {}", attachment.network),
-                    );
-                    continue;
-                };
-                if choice.attach[..j]
-                    .iter()
-                    .any(|a| a.network == attachment.network)
-                {
-                    fail(
-                        format!("{at}.network"),
-                        format!("{} joins {} twice", component.name(), network.name),
-                    );
-                    continue;
-                }
-                if network.external && !component.external {
-                    fail(
-                        format!("{at}.network"),
-                        format!("{} only joins LANlord networks", component.name()),
-                    );
-                    continue;
-                }
-                if let Some(address) = attachment.address {
-                    let problem = if network.external {
-                        Some("only the gateway's address can be used on the outside network".into())
-                    } else {
-                        network.address_problem(address)
-                    };
-                    if let Some(problem) = problem {
-                        fail(format!("{at}.address"), problem);
-                        continue;
-                    }
-                } else if choice.mechanism != Mechanism::HostBind {
-                    fail(
-                        format!("{at}.address"),
-                        format!(
-                            "{} runs as {:?} and needs an address of its own on {}",
-                            component.name(),
-                            choice.mechanism,
-                            network.name
-                        ),
-                    );
-                } else if component.needs_own_address {
-                    fail(
-                        format!("{at}.address"),
-                        format!(
-                            "{} needs an address of its own on {}",
-                            component.name(),
-                            network.name
-                        ),
-                    );
-                }
-                let spot = (network.id.clone(), attachment.address);
-                for &(proto, port) in component.ports {
-                    if let Some(other) = ports.insert((spot.0.clone(), spot.1, proto, port), id) {
-                        fail(
-                            format!("{at}.address"),
-                            format!(
-                                "{} and {other} both want {} on the same address of {}",
-                                component.name(),
-                                Component::port_text(proto, port),
-                                network.name
-                            ),
-                        );
-                    }
-                }
-                addresses.entry(spot).or_default().push(component);
-                for role in component.roles {
-                    let key = (network.id.clone(), format!("{role:?}"));
-                    if let Some(other) = roles.insert(key, id) {
-                        fail(
-                            format!("{at}.network"),
-                            format!(
-                                "{} and {other} both provide {role:?} on {}",
-                                component.name(),
-                                network.name
-                            ),
-                        );
-                    }
-                }
-                if component.netbios {
-                    if let Some(other) = netbios.insert(network.id.clone(), id) {
-                        fail(
-                            format!("{at}.network"),
-                            format!(
-                                "{} and {other} both speak NetBIOS on {}",
-                                component.name(),
-                                network.name
-                            ),
-                        );
-                    }
-                }
+                let earlier = &choice.attach[..j];
+                errors.extend(attachment_errors(
+                    &site,
+                    networks,
+                    (j, attachment, earlier),
+                    &mut claims,
+                ));
             }
         }
-        for ((network, address), on) in &addresses {
-            if on.len() > 1 {
-                if let (Some(lone), Some(address)) =
-                    (on.iter().find(|c| c.needs_own_address), address)
-                {
-                    fail(
-                        format!("{SECTION}.{}.attach", lone.id()),
-                        format!("{} must have {address} on {network} to itself", lone.name()),
-                    );
-                }
+        errors.extend(claims.shared_address_errors());
+        errors.extend(claims.netbios_host_error());
+        errors
+    }
+
+    /// required components that are switched off.
+    fn required_errors(&self, catalogue: &[Component]) -> Vec<ValidationError> {
+        catalogue
+            .iter()
+            .filter(|c| c.required && !self.is_enabled(c.id()))
+            .map(|c| {
+                fail(
+                    format!("{SECTION}.{}", c.id()),
+                    format!("{} cannot be removed", c.name()),
+                )
+            })
+            .collect()
+    }
+
+    /// docker, mechanism and subcomponent problems of one entry.
+    fn component_errors(&self, site: &Site) -> Vec<ValidationError> {
+        let (component, choice, path) = (site.component, site.choice, &site.path);
+        let docker = (component.requires_docker && !self.is_enabled("docker"))
+            .then(|| fail(path.clone(), format!("{} needs Docker", component.name())));
+        let mechanism = (!component.mechanisms.contains(&choice.mechanism)).then(|| {
+            fail(
+                format!("{path}.mechanism"),
+                format!("{} cannot run as {:?}", component.name(), choice.mechanism),
+            )
+        });
+        let parts = choice
+            .subcomponents
+            .iter()
+            .filter(|sub| !component.subcomponents.iter().any(|p| p.id == **sub))
+            .map(|sub| {
+                fail(
+                    format!("{path}.subcomponents"),
+                    format!("{} has no part called {sub}", component.name()),
+                )
+            });
+        docker.into_iter().chain(mechanism).chain(parts).collect()
+    }
+}
+
+/// one enabled entry and the catalogue component it names.
+struct Site<'a> {
+    component: &'a Component,
+    id: &'a str,
+    choice: &'a Choice,
+    path: String,
+}
+
+/// what the entries seen so far have taken, to spot clashes.
+#[derive(Default)]
+struct Claims<'a> {
+    /// (network, address or none for the gateway's, proto, port) -> the component on it
+    ports: BTreeMap<(String, Option<Ipv4Addr>, Proto, u16), &'a str>,
+    /// (network, address) -> the components on it
+    addresses: BTreeMap<(String, Option<Ipv4Addr>), Vec<&'a Component>>,
+    /// (network, role) -> the component providing it
+    roles: BTreeMap<(String, String), &'a str>,
+    netbios: BTreeMap<String, &'a str>,
+    host_bound_netbios: usize,
+}
+
+impl<'a> Claims<'a> {
+    /// take the ports, address, roles and NetBIOS of one attachment; report what was taken.
+    fn claim(
+        &mut self,
+        site: &Site<'a>,
+        network: &Network,
+        address: Option<Ipv4Addr>,
+        at: &str,
+    ) -> Vec<ValidationError> {
+        let mut errors = self.claim_ports(site, network, address, at);
+        self.addresses
+            .entry((network.id.clone(), address))
+            .or_default()
+            .push(site.component);
+        errors.extend(self.claim_roles(site, network, at));
+        errors.extend(self.claim_netbios(site, network, at));
+        errors
+    }
+
+    fn claim_ports(
+        &mut self,
+        site: &Site<'a>,
+        network: &Network,
+        address: Option<Ipv4Addr>,
+        at: &str,
+    ) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        for &(proto, port) in site.component.ports {
+            let key = (network.id.clone(), address, proto, port);
+            if let Some(other) = self.ports.insert(key, site.id) {
+                errors.push(fail(
+                    format!("{at}.address"),
+                    format!(
+                        "{} and {other} both want {} on the same address of {}",
+                        site.component.name(),
+                        Component::port_text(proto, port),
+                        network.name
+                    ),
+                ));
             }
         }
-        if host_bound_netbios > 1 {
+        errors
+    }
+
+    fn claim_roles(
+        &mut self,
+        site: &Site<'a>,
+        network: &Network,
+        at: &str,
+    ) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        for role in site.component.roles {
+            let key = (network.id.clone(), format!("{role:?}"));
+            if let Some(other) = self.roles.insert(key, site.id) {
+                errors.push(fail(
+                    format!("{at}.network"),
+                    format!(
+                        "{} and {other} both provide {role:?} on {}",
+                        site.component.name(),
+                        network.name
+                    ),
+                ));
+            }
+        }
+        errors
+    }
+
+    fn claim_netbios(
+        &mut self,
+        site: &Site<'a>,
+        network: &Network,
+        at: &str,
+    ) -> Option<ValidationError> {
+        if !site.component.netbios {
+            return None;
+        }
+        let other = self.netbios.insert(network.id.clone(), site.id)?;
+        Some(fail(
+            format!("{at}.network"),
+            format!(
+                "{} and {other} both speak NetBIOS on {}",
+                site.component.name(),
+                network.name
+            ),
+        ))
+    }
+
+    /// a component that must have its address to itself but shares it.
+    fn shared_address_errors(&self) -> Vec<ValidationError> {
+        self.addresses
+            .iter()
+            .filter(|(_, on)| on.len() > 1)
+            .filter_map(|((network, address), on)| {
+                let lone = on.iter().find(|c| c.needs_own_address)?;
+                let address = (*address)?;
+                Some(fail(
+                    format!("{SECTION}.{}.attach", lone.id()),
+                    format!("{} must have {address} on {network} to itself", lone.name()),
+                ))
+            })
+            .collect()
+    }
+
+    fn netbios_host_error(&self) -> Option<ValidationError> {
+        (self.host_bound_netbios > 1).then(|| {
             fail(
                 SECTION.into(),
                 "only one NetBIOS component can bind the gateway itself; give the others ipvlan"
                     .into(),
-            );
-        }
-        errors
+            )
+        })
     }
+}
+
+fn fail(path: String, message: String) -> ValidationError {
+    ValidationError { path, message }
+}
+
+/// too few or too many attachments for the component.
+fn attach_count_errors(site: &Site) -> Vec<ValidationError> {
+    let (component, path) = (site.component, &site.path);
+    let count = site.choice.attach.len();
+    if component.attach_max == Some(0) && count > 0 {
+        return vec![fail(
+            format!("{path}.attach"),
+            format!(
+                "{} runs on the gateway itself and joins no network",
+                component.name()
+            ),
+        )];
+    }
+    let few = (count < component.attach_min).then(|| {
+        fail(
+            format!("{path}.attach"),
+            format!(
+                "{} needs at least {} network{}",
+                component.name(),
+                component.attach_min,
+                if component.attach_min == 1 { "" } else { "s" }
+            ),
+        )
+    });
+    let many = component.attach_max.filter(|max| count > *max).map(|max| {
+        fail(
+            format!("{path}.attach"),
+            format!("{} joins at most {max} networks", component.name()),
+        )
+    });
+    few.into_iter().chain(many).collect()
+}
+
+/// everything wrong with one attachment, claiming what it takes as it goes.
+fn attachment_errors<'a>(
+    site: &Site<'a>,
+    networks: &[Network],
+    (j, attachment, earlier): (usize, &Attachment, &[Attachment]),
+    claims: &mut Claims<'a>,
+) -> Vec<ValidationError> {
+    let at = format!("{}.attach[{j}]", site.path);
+    let Some(network) = networks.iter().find(|n| n.id == attachment.network) else {
+        return vec![fail(
+            format!("{at}.network"),
+            format!("there is no network called {}", attachment.network),
+        )];
+    };
+    if let Some(error) = network_error(site, attachment, network, earlier, &at) {
+        return vec![error];
+    }
+    let mut errors = Vec::new();
+    if let Some(error) = address_error(site, attachment, network, &at) {
+        errors.push(error);
+        if attachment.address.is_some() {
+            return errors;
+        }
+    }
+    errors.extend(claims.claim(site, network, attachment.address, &at));
+    errors
+}
+
+/// a network the component cannot join, or joins twice.
+fn network_error(
+    site: &Site,
+    attachment: &Attachment,
+    network: &Network,
+    earlier: &[Attachment],
+    at: &str,
+) -> Option<ValidationError> {
+    let component = site.component;
+    let message = if earlier.iter().any(|a| a.network == attachment.network) {
+        format!("{} joins {} twice", component.name(), network.name)
+    } else if network.external && !component.external {
+        format!("{} only joins LANlord networks", component.name())
+    } else {
+        return None;
+    };
+    Some(fail(format!("{at}.network"), message))
+}
+
+/// an address that does not fit, or a missing one the component needs.
+fn address_error(
+    site: &Site,
+    attachment: &Attachment,
+    network: &Network,
+    at: &str,
+) -> Option<ValidationError> {
+    let (component, mechanism) = (site.component, site.choice.mechanism);
+    let message = match attachment.address {
+        Some(_) if network.external => {
+            "only the gateway's address can be used on the outside network".to_string()
+        }
+        Some(address) => network.address_problem(address)?,
+        None if mechanism != Mechanism::HostBind => format!(
+            "{} runs as {:?} and needs an address of its own on {}",
+            component.name(),
+            mechanism,
+            network.name
+        ),
+        None if component.needs_own_address => format!(
+            "{} needs an address of its own on {}",
+            component.name(),
+            network.name
+        ),
+        None => return None,
+    };
+    Some(fail(format!("{at}.address"), message))
 }
 
 impl Component {

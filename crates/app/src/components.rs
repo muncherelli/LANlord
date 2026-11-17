@@ -276,52 +276,8 @@ impl Components {
             Msg::Pick(row) => self.row = row.min(catalogue.len().saturating_sub(1)),
             Msg::Toggle(row) => {
                 self.row = row;
-                let Some(component) = catalogue.get(row) else {
-                    return;
-                };
-                if component.required {
-                    return;
-                }
-                let on = self.draft().is_enabled(component.id());
-                if !on && !self.blockers(component).is_empty() {
-                    return;
-                }
-                let first = self
-                    .networks
-                    .iter()
-                    .find(|n| !n.external)
-                    .map(|n| n.id.clone());
-                let draft = self.draft_mut();
-                if component.id() == "docker" {
-                    // like the nt wizard, a component others need stays ticked
-                    let needed = catalogue
-                        .iter()
-                        .any(|c| c.requires_docker && draft.is_enabled(c.id()));
-                    if needed {
-                        return;
-                    }
-                }
-                if draft.enabled.remove(component.id()).is_some() {
-                    self.typed.retain(|(id, _), _| id != component.id());
-                } else {
-                    if component.requires_docker {
-                        draft.enabled.entry("docker".into()).or_default();
-                    }
-                    let attach = match (component.attaches(), first) {
-                        (true, Some(network)) => vec![Attachment {
-                            network,
-                            address: None,
-                        }],
-                        _ => Vec::new(),
-                    };
-                    draft.enabled.insert(
-                        component.id().to_string(),
-                        Choice {
-                            attach,
-                            subcomponents: component.default_subcomponents(),
-                            ..Choice::default()
-                        },
-                    );
+                if let Some(component) = catalogue.get(row) {
+                    self.toggle(component, &catalogue);
                 }
             }
             Msg::Compat => self.show_compat = true,
@@ -331,42 +287,13 @@ impl Components {
                 });
             }
             Msg::TogglePart(i) => {
-                let Some(component) = catalogue.get(self.row) else {
-                    return;
-                };
-                let Some(part) = component.subcomponents.get(i) else {
-                    return;
-                };
-                if let Some(choice) = self.draft_mut().enabled.get_mut(component.id()) {
-                    let parts = &mut choice.subcomponents;
-                    if let Some(at) = parts.iter().position(|p| p == part.id) {
-                        parts.remove(at);
-                    } else {
-                        parts.push(part.id.to_string());
-                    }
+                if let Some(component) = catalogue.get(self.row) {
+                    self.toggle_part(component, i);
                 }
             }
             Msg::CloseDetails => self.details = false,
-            Msg::ToggleNet(c, n) => {
-                let (Some(component), Some(network)) = (
-                    self.joining().into_iter().nth(c),
-                    self.networks.get(n).cloned(),
-                ) else {
-                    return;
-                };
-                if let Some(choice) = self.draft_mut().enabled.get_mut(component.id()) {
-                    if let Some(at) = choice.attach.iter().position(|a| a.network == network.id) {
-                        choice.attach.remove(at);
-                    } else {
-                        choice.attach.push(Attachment {
-                            network: network.id,
-                            address: None,
-                        });
-                    }
-                }
-            }
-            Msg::Address(key, text) => {
-                let (c, n) = key;
+            Msg::ToggleNet(c, n) => self.toggle_net(c, n),
+            Msg::Address((c, n), text) => {
                 if let (Some(component), Some(network)) =
                     (self.joining().into_iter().nth(c), self.networks.get(n))
                 {
@@ -395,6 +322,92 @@ impl Components {
                 self.step = Step::Choose;
                 self.done = true;
             }
+        }
+    }
+
+    /// tick or untick a component, with what it brings along.
+    fn toggle(&mut self, component: &Component, catalogue: &[Component]) {
+        if component.required {
+            return;
+        }
+        let on = self.draft().is_enabled(component.id());
+        if !on && !self.blockers(component).is_empty() {
+            return;
+        }
+        let first = self
+            .networks
+            .iter()
+            .find(|n| !n.external)
+            .map(|n| n.id.clone());
+        let draft = self.draft_mut();
+        // like the nt wizard, a component others need stays ticked
+        if component.id() == "docker"
+            && catalogue
+                .iter()
+                .any(|c| c.requires_docker && draft.is_enabled(c.id()))
+        {
+            return;
+        }
+        if draft.enabled.remove(component.id()).is_some() {
+            self.typed.retain(|(id, _), _| id != component.id());
+            return;
+        }
+        if component.requires_docker {
+            draft.enabled.entry("docker".into()).or_default();
+        }
+        let attach = match (component.attaches(), first) {
+            (true, Some(network)) => vec![Attachment {
+                network,
+                address: None,
+            }],
+            _ => Vec::new(),
+        };
+        draft.enabled.insert(
+            component.id().to_string(),
+            Choice {
+                attach,
+                subcomponents: component.default_subcomponents(),
+                ..Choice::default()
+            },
+        );
+    }
+
+    /// tick or untick part `i` of the component.
+    fn toggle_part(&mut self, component: &Component, i: usize) {
+        let Some(part) = component.subcomponents.get(i) else {
+            return;
+        };
+        let Some(choice) = self.draft_mut().enabled.get_mut(component.id()) else {
+            return;
+        };
+        let parts = &mut choice.subcomponents;
+        match parts.iter().position(|p| p == part.id) {
+            Some(at) => {
+                parts.remove(at);
+            }
+            None => parts.push(part.id.to_string()),
+        }
+    }
+
+    /// join or leave network `n` for the `c`th component that joins networks.
+    fn toggle_net(&mut self, c: usize, n: usize) {
+        let (Some(component), Some(network)) = (
+            self.joining().into_iter().nth(c),
+            self.networks.get(n).cloned(),
+        ) else {
+            return;
+        };
+        let Some(choice) = self.draft_mut().enabled.get_mut(component.id()) else {
+            return;
+        };
+        match choice.attach.iter().position(|a| a.network == network.id) {
+            Some(at) => {
+                choice.attach.remove(at);
+            }
+            None => choice.attach.push(Attachment {
+                network: network.id,
+                address: None,
+            }),
         }
     }
 
