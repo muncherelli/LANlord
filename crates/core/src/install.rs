@@ -127,10 +127,12 @@ fn verify_docker(session: &Session, ask_password: AskPassword) -> Result<()> {
     }
 }
 
+/// the bootstrap options the installer uses. ansible always goes onto the gateway: apply runs it
+/// there, so an ansible on this machine must not make bootstrap skip the gateway's venv.
 fn options_for(host: &str) -> Options {
     Options {
         host: host.to_string(),
-        ansible: AnsibleMode::detect(),
+        ansible: AnsibleMode::Remote,
         passwordless_sudo: false,
     }
 }
@@ -431,6 +433,11 @@ esac"#
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn the_installer_always_puts_ansible_on_the_gateway() {
+        assert!(matches!(options_for("gw").ansible, AnsibleMode::Remote));
     }
 
     fn options() -> Options {
