@@ -131,10 +131,12 @@ jobs:
         if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
         with:
-          # wait for sonarcloud to finish so the gate and the issue check below see this analysis
+          # on pull requests, wait for sonarcloud to finish so the gate and the issue check below
+          # see this analysis; trunk only reports, because its gate has no new-code baseline to
+          # judge and would fail every push
           args: >
             -Dsonar.rust.lcov.reportPaths=${{ github.workspace }}/lcov.info
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=${{ github.event_name == 'pull_request' }}
             -Dsonar.qualitygate.timeout=600
       - name: no new sonarcloud issues
         if: env.SONAR_TOKEN != '' && github.event_name == 'pull_request'
