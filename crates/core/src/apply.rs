@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 
+use lanlord_model::apply::{self, ApplyEvent, TaskStatus};
+
 use crate::bootstrap::{run_as_root_lines, AskPassword};
 use crate::config::{wrap, INSTALLED_GUARD, NOT_INSTALLED_MESSAGE, NOT_INSTALLED_STATUS};
 use crate::log::{emit, Kind};
@@ -44,6 +46,7 @@ base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tar -x -C /opt/lanlord/playbo
 LANLORD_PAYLOAD
 {stage}cd /opt/lanlord
 sudo -n -u lanlord env HOME=/opt/lanlord PYTHONDONTWRITEBYTECODE=1 ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_STDOUT_CALLBACK=lanlord_progress ANSIBLE_CALLBACK_PLUGINS=/opt/lanlord/playbooks/callback_plugins \
   ANSIBLE_PYTHON_INTERPRETER=auto_silent ANSIBLE_LOCAL_TEMP=/opt/lanlord/.ansible/tmp \
   ANSIBLE_REMOTE_TEMP=/opt/lanlord/.ansible/tmp ANSIBLE_HOME=/opt/lanlord/.ansible \
   /opt/lanlord/venv/bin/ansible-playbook -i localhost,{vars}{tags} /opt/lanlord/playbooks/site.yml
@@ -124,6 +127,37 @@ pub(crate) fn apply_with_settings(
     run_tags(session, admin.trim(), tags, settings, ask_password, on_line)
 }
 
+/// send an event to the progress dialogs, and the readable part of it to the log.
+fn publish(event: &ApplyEvent) {
+    emit(
+        Kind::Event,
+        serde_json::to_string(event).unwrap_or_default(),
+    );
+    match event {
+        ApplyEvent::TaskDone {
+            name,
+            status,
+            changed,
+            msg,
+        } => {
+            let how = match (status, changed) {
+                (TaskStatus::Skipped, _) => "skipped",
+                (TaskStatus::Failed, _) => "FAILED",
+                (TaskStatus::Unreachable, _) => "UNREACHABLE",
+                (TaskStatus::Ok, true) => "changed",
+                (TaskStatus::Ok, false) => "ok",
+            };
+            if msg.is_empty() {
+                emit(Kind::Info, format!("{how}: {name}"));
+            } else {
+                emit(Kind::Info, format!("{how}: {name}: {msg}"));
+            }
+        }
+        ApplyEvent::Log { text } => emit(Kind::Out, text.as_str()),
+        _ => {}
+    }
+}
+
 fn run_tags(
     session: &Session,
     admin: &str,
@@ -145,13 +179,36 @@ fn run_tags(
             "no settings to apply; running the baseline only",
         ),
     }
-    match run_as_root_lines(
+    // (events seen, the run's own end seen)
+    let seen = std::cell::Cell::new((false, false));
+    let mut sink = |line: &str| match apply::parse_line(line) {
+        Some(event) => {
+            seen.set((
+                true,
+                seen.get().1 || matches!(event, ApplyEvent::Finished { .. }),
+            ));
+            publish(&event)
+        }
+        None => on_line(line),
+    };
+    let code = run_as_root_lines(
         session,
         admin,
         script(settings.as_deref(), tags)?,
         ask_password,
-        on_line,
-    )? {
+        &mut sink,
+    )?;
+    if seen.get() == (true, false) {
+        // the run stopped without its own summary, so close the dialog
+        let failed = u32::from(code != 0);
+        publish(&ApplyEvent::Finished {
+            stats: apply::Stats {
+                failed,
+                ..Default::default()
+            },
+        });
+    }
+    match code {
         0 => {
             emit(Kind::Info, "apply finished");
             Ok(())
@@ -211,6 +268,8 @@ esac"#,
             s.contains("PYTHONDONTWRITEBYTECODE=1"),
             "the venv is root-owned"
         );
+        assert!(s.contains("ANSIBLE_STDOUT_CALLBACK=lanlord_progress"));
+        assert!(s.contains("ANSIBLE_CALLBACK_PLUGINS=/opt/lanlord/playbooks/callback_plugins"));
         assert!(s.contains("ansible-playbook -i localhost, /opt/lanlord/playbooks/site.yml"));
         assert_eq!(s.matches("LANLORD_PAYLOAD").count(), 2);
         assert!(!s.contains("settings.yml"), "no settings, no extra vars");
@@ -304,6 +363,42 @@ esac"#,
             .decode(body)
             .unwrap();
         assert_eq!(plain, b"motd: hello\n");
+        let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn plugin_lines_become_events_and_the_rest_stays_output() {
+        let record = temp("events");
+        let events = [
+            r#"LANLORD_EVENT {"event":"total","n":1}"#,
+            r#"LANLORD_EVENT {"event":"task_done","name":"t","status":"ok","changed":true,"msg":""}"#,
+        ];
+        let rx = crate::log::subscribe();
+        let session = Session::fake(&format!(
+            r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit 0 ;;
+  "sh -c "*) ;;
+  *) cat >'{path}'; echo '{a}'; echo 'plain output'; echo '{b}' ;;
+esac"#,
+            path = record.display(),
+            a = events[0],
+            b = events[1],
+        ));
+        let mut raw = Vec::new();
+        apply_lines(&session, "gw", None, &[], &mut no_password, &mut |l| {
+            raw.push(l.to_string())
+        })
+        .unwrap();
+        assert_eq!(raw, ["plain output"], "events do not reach the plain sink");
+        let seen: Vec<_> = rx
+            .try_iter()
+            .filter(|l| l.kind == Kind::Event)
+            .map(|l| l.text)
+            .collect();
+        assert!(seen.iter().any(|t| t.contains(r#""event":"total""#)));
+        assert!(seen.iter().any(|t| t.contains(r#""event":"task_done""#)));
         let _ = std::fs::remove_file(record);
     }
 

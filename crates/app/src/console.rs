@@ -2,7 +2,8 @@
 
 use std::sync::mpsc::Receiver;
 
-use crate::log::{self, Line};
+use crate::apply_progress::ApplyProgress;
+use crate::log::{self, Kind, Line};
 
 use crate::view::Node;
 use crate::wake::Wake;
@@ -11,6 +12,8 @@ use crate::wake::Wake;
 const KEEP: usize = 2000;
 
 pub struct Console {
+    /// the progress of the apply that is running, fed from the same log.
+    pub apply: ApplyProgress,
     lines: Vec<Line>,
     incoming: Receiver<Line>,
 }
@@ -30,6 +33,7 @@ impl Console {
             }
         });
         Self {
+            apply: ApplyProgress::default(),
             lines: Vec::new(),
             incoming,
         }
@@ -40,6 +44,7 @@ impl Console {
     #[cfg(target_arch = "wasm32")]
     pub fn new(_wake: Wake) -> Self {
         Self {
+            apply: ApplyProgress::default(),
             lines: Vec::new(),
             incoming: log::subscribe(),
         }
@@ -47,7 +52,13 @@ impl Console {
 
     /// move what arrived since the last frame into the list.
     pub fn drain(&mut self) {
-        self.lines.extend(self.incoming.try_iter());
+        for line in self.incoming.try_iter() {
+            self.apply.line(&line);
+            // events are for the progress dialog, not for reading
+            if line.kind != Kind::Event {
+                self.lines.push(line);
+            }
+        }
         if self.lines.len() > KEEP {
             self.lines.drain(..self.lines.len() - KEEP);
         }
@@ -74,8 +85,6 @@ impl Console {
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
-
-    use crate::log::Kind;
 
     use super::*;
 

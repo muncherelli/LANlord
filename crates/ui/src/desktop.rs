@@ -466,6 +466,14 @@ impl Desktop {
             .show(ui, |ui| self.icons(ui));
 
         self.console.drain();
+        self.console.apply.tick(ctx.input(|i| i.time));
+        if self.console.apply.running() {
+            // the elapsed time on the progress dialog keeps counting between events
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        if self.console.apply.take_started() {
+            self.open(Target::Progress);
+        }
         #[cfg(feature = "native")]
         {
             self.updates.tick(&ctx);
@@ -1191,6 +1199,14 @@ impl Desktop {
                 }
                 if self.welcome.take_done() {
                     self.close_requests.push(Target::Welcome);
+                }
+            }
+            Target::Progress => {
+                if let Some(msg) = view::show(ui, &self.console.apply.view()) {
+                    self.console.apply.update(msg);
+                }
+                if self.console.apply.take_done() {
+                    self.close_requests.push(Target::Progress);
                 }
             }
             Target::Components => {

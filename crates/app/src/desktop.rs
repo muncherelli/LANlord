@@ -19,6 +19,8 @@ pub enum Target {
     Components,
     /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
     Welcome,
+    /// the progress of an apply; it opens by itself when one starts and has no desktop icon.
+    Progress,
 }
 
 impl Target {
@@ -34,6 +36,7 @@ impl Target {
             Self::DateTime => "datetime",
             Self::Components => "components",
             Self::Welcome => "welcome",
+            Self::Progress => "apply-progress",
         }
     }
 
@@ -48,6 +51,7 @@ impl Target {
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
+            Self::Progress => "Applying Settings",
         }
     }
 
@@ -75,6 +79,7 @@ impl Target {
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
             Self::Welcome => (580.0, 380.0),
+            Self::Progress => (480.0, 360.0),
         }
     }
 }

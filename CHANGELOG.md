@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Applying settings shows a progress dialog with a bar, the task being worked on, the elapsed time and the tasks done so far, with the raw output under Details
 - The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
 - The web interface logs in with the gateway's accounts and keeps sessions (#101)
 - The browser desktop runs every server operation over HTTP (#98)
