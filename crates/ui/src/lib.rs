@@ -204,5 +204,10 @@ fn query(name: &str) -> Option<String> {
         .split('&')
         .filter_map(|pair| pair.split_once('='))
         .find(|(key, _)| *key == name)
-        .map(|(_, value)| value.replace("%2C", ",").replace("%40", "@"))
+        .map(|(_, value)| {
+            value
+                .replace("%2C", ",")
+                .replace("%2c", ",")
+                .replace("%40", "@")
+        })
 }

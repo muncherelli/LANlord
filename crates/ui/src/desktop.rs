@@ -175,8 +175,6 @@ impl Desktop {
         self.exe = exe;
     }
 
-    /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
-    /// can be looked at without one; the host list lives in memory only.
     /// this desktop shows the made-up demo server (the browser demo); say so in the title and
     /// the taskbar, so nobody mistakes it for a real gateway.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -184,6 +182,8 @@ impl Desktop {
         self.demo = true;
     }
 
+    /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
+    /// can be looked at without one; the host list lives in memory only.
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn use_demo_server(&mut self) {
         self.hosts = HostList::new(None);
