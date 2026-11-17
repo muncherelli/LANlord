@@ -98,7 +98,7 @@ fn cancel_closes_the_box_without_removing_anything() {
 #[test]
 fn the_admin_accounts_tick_needs_a_root_login() {
     let (mut desktop, ctx, fake) = desktop();
-    let mut facts = lanlord_core::server::demo();
+    let mut facts = lanlord_model::server::demo();
     facts.is_root = false;
     facts.user = "olive".into();
     *fake.facts.lock().unwrap() = Some(facts);
@@ -134,7 +134,7 @@ fn the_admin_accounts_tick_asks_for_a_new_preview() {
 #[test]
 fn a_server_without_lanlord_cannot_be_purged() {
     let (mut desktop, ctx, fake) = desktop();
-    let mut facts = lanlord_core::server::demo();
+    let mut facts = lanlord_model::server::demo();
     facts.lanlord_installed = false;
     *fake.facts.lock().unwrap() = Some(facts);
     desktop.open(Target::MyServer);

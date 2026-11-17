@@ -2,7 +2,7 @@
 //! `lanlord_app::console`.
 
 use eframe::egui::Color32;
-use lanlord_core::log::Kind;
+use lanlord_app::log::Kind;
 
 /// the colour a line is shown in on the black console.
 pub fn colour(kind: Kind) -> Color32 {

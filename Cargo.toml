@@ -10,6 +10,16 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-lanlord-app = { path = "crates/app", version = "0.1.0" }
+lanlord-app = { path = "crates/app", version = "0.1.0", default-features = false }
 lanlord-model = { path = "crates/model", version = "0.1.0" }
 serde_json = "1"
+
+# the browser build (crates/web/Trunk.toml picks it): every visitor downloads it, so it trades
+# build time for size. measured on the demo build: whole-program lto, one codegen unit and abort on
+# panic give the smallest file (4.6 MB, against 5.0 MB for plain release); opt-level "s"/"z" came
+# out larger before compression. native release builds keep the plain release profile.
+[profile.web]
+inherits = "release"
+lto = true
+codegen-units = 1
+panic = "abort"

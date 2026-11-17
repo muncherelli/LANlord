@@ -4,9 +4,9 @@
 //! Connection Details list. it only shows them in this version.
 
 use eframe::egui::{self, Ui};
-use lanlord_core::netstatus::InterfaceStatus;
-use lanlord_core::networks::{self, NetworkRow, Role};
-use lanlord_core::settings::Settings;
+use lanlord_model::netstatus::InterfaceStatus;
+use lanlord_model::networks::{self, NetworkRow, Role};
+use lanlord_model::settings::Settings;
 
 use crate::controls;
 use crate::dialogs;
@@ -298,7 +298,7 @@ fn local_time(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lanlord_core::server::demo;
+    use lanlord_model::server::demo;
 
     #[test]
     fn rows_name_one_tab_per_network() {

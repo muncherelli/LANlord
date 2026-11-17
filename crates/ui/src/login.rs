@@ -10,7 +10,9 @@ use eframe::egui::{self, Align2, Area, Frame, Id, Margin, Order, Vec2};
 pub use lanlord_app::login::fake;
 #[cfg(test)]
 pub use lanlord_app::login::Stage;
-pub use lanlord_app::login::{Auth, Outcome, SignedIn, SystemAuth};
+#[cfg(feature = "native")]
+pub use lanlord_app::login::SystemAuth;
+pub use lanlord_app::login::{Auth, Outcome, SignedIn};
 
 use crate::theme::{self, GRAY, NAVY, WHITE};
 use crate::view;

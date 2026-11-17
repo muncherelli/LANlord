@@ -4,6 +4,8 @@ trunk-version = "=0.22.1"
 
 [build]
 target = "index.html"
+# the size-tuned profile from the workspace Cargo.toml
+cargo_profile = "web"
 dist = "../../target/web-dist"
 # like cargo --locked: fail instead of updating Cargo.lock
 locked = true

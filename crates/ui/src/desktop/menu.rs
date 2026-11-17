@@ -1,8 +1,8 @@
 //! the LANlord menu: the windows, the servers, power actions and quitting.
 
 use eframe::egui::{self, Align2, Area, Id, Order, Painter, Pos2, Rect, Sense, Stroke, Ui, Vec2};
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::power::Power;
+use lanlord_app::log::{emit, Kind};
+use lanlord_model::power::Power;
 
 pub use lanlord_app::menu::{self, Action, Row};
 
@@ -23,6 +23,7 @@ pub enum Confirm {
     /// rebuild and relaunch; the box has one tick for pulling trunk first.
     Rebuild,
     /// a rebuild that did not work; the box only says why.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     Failure,
 }
 
@@ -153,7 +154,7 @@ impl Desktop {
             host: host.as_deref(),
             signed_in: self.auth.as_ref().map(|_| who.as_deref().unwrap_or("")),
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
-            updates: self.updates.enabled(),
+            updates: self.updates_enabled(),
             developer: self.dev.is_some(),
             modules: self.enabled_modules(),
         })
@@ -261,6 +262,7 @@ impl Desktop {
                 self.dev_open = !self.dev_open;
                 return;
             }
+            #[cfg(feature = "native")]
             Action::ToggleUpdates => {
                 let on = !self.updates.enabled();
                 self.updates.set_enabled(on);
@@ -268,10 +270,14 @@ impl Desktop {
                     self.updates.check_now(ctx);
                 }
             }
+            #[cfg(feature = "native")]
             Action::CheckUpdates => {
                 emit(Kind::Info, "looking for updates");
                 self.updates.check_now(ctx);
             }
+            // the browser build is updated on the gateway, not from here
+            #[cfg(not(feature = "native"))]
+            Action::ToggleUpdates | Action::CheckUpdates => {}
             Action::Rebuild => self.ask_rebuild(),
             Action::Open(target) => self.open(target),
             Action::SwitchServer | Action::LogOff => self.log_off(),
@@ -332,7 +338,10 @@ impl Desktop {
                         emit(Kind::Err, format!("{host} is busy; try again in a moment"));
                     }
                 }
+                #[cfg(feature = "native")]
                 Confirm::Rebuild => self.start_rebuild(form.checked(0)),
+                #[cfg(not(feature = "native"))]
+                Confirm::Rebuild => {}
                 Confirm::About | Confirm::Failure => {}
             },
         }

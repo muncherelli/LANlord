@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui::{self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, Sense, Ui, Vec2};
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::modules::{Module, MODULES};
+use lanlord_app::log::{emit, Kind};
+#[cfg(feature = "native")]
 use lanlord_core::update;
+use lanlord_model::modules::{Module, MODULES};
 
 mod menu;
 
@@ -29,6 +30,7 @@ use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
 use crate::settings_editor::SettingsEditor;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
+#[cfg(feature = "native")]
 use crate::update_panel::{Choice, Updates};
 use crate::view;
 use crate::windows;
@@ -96,18 +98,24 @@ pub struct Desktop {
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     /// the update notice beside the clock.
+    #[cfg(feature = "native")]
     updates: Updates,
     /// the checkout a development build rebuilds from, and the build that is running.
     dev: Option<PathBuf>,
+    #[cfg(feature = "native")]
     exe: Option<PathBuf>,
     /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
+    #[cfg(feature = "native")]
     rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     /// how long the new build must stay alive before this window may close.
+    #[cfg(feature = "native")]
     relaunch_grace: update::Grace,
     /// the Developer submenu is open.
     dev_open: bool,
     /// the title the window has been given, so it is only sent when it changes.
     window_title: String,
+    /// the made-up demo server, not a real gateway: the title and the taskbar say so.
+    demo: bool,
 }
 
 impl Desktop {
@@ -150,17 +158,23 @@ impl Desktop {
             login: None,
             signed_in: None,
             admin_setup: None,
+            #[cfg(feature = "native")]
             updates: Updates::quiet(),
             dev: None,
+            #[cfg(feature = "native")]
             exe: None,
+            #[cfg(feature = "native")]
             rebuilding: None,
+            #[cfg(feature = "native")]
             relaunch_grace: update::Grace::default(),
             dev_open: false,
             window_title: "LANlord".into(),
+            demo: false,
         }
     }
 
     /// look for updates in the background, and offer a rebuild when this is a development build.
+    #[cfg(feature = "native")]
     pub fn watch_updates(&mut self, updates: Updates, dev: Option<PathBuf>, exe: Option<PathBuf>) {
         self.updates = updates;
         if let (Some(repo), Some(exe)) = (&dev, &exe) {
@@ -170,14 +184,23 @@ impl Desktop {
         self.exe = exe;
     }
 
+    /// this desktop shows the made-up demo server (the browser demo); say so in the title and
+    /// the taskbar, so nobody mistakes it for a real gateway.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn mark_demo(&mut self) {
+        self.demo = true;
+    }
+
     /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), so the server windows
     /// can be looked at without one; the host list lives in memory only.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn use_demo_server(&mut self) {
         self.hosts = HostList::new(None);
         let _ = self.hosts.add("demo@gateway");
     }
 
     /// the logon box for `host`, signing in at once with whatever the agent offers.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn resume(&mut self, host: &str) {
         let Some(auth) = self.auth.clone() else {
             return;
@@ -188,6 +211,7 @@ impl Desktop {
     }
 
     /// start at the logon box. lanlord on the gateway itself has one server and no logon.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub fn require_login(&mut self, auth: Arc<dyn Auth>) {
         if self.services.is_local() {
             return;
@@ -270,9 +294,13 @@ impl Desktop {
     /// is signed in.
     fn sync_window_title(&mut self, ctx: &egui::Context) {
         let host = self.signed_in.as_ref().and(self.host());
-        let title = lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
+        let mut title =
+            lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
+        if self.demo {
+            title.push_str(" (demo)");
+        }
         if title != self.window_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            crate::platform::set_title(ctx, &title);
             self.window_title = title;
         }
     }
@@ -326,8 +354,11 @@ impl Desktop {
             .show(ui, |ui| self.icons(ui));
 
         self.console.drain();
-        self.updates.tick(&ctx);
-        self.poll_rebuild(&ctx);
+        #[cfg(feature = "native")]
+        {
+            self.updates.tick(&ctx);
+            self.poll_rebuild(&ctx);
+        }
         self.settings.poll();
         self.nt4.poll();
         self.dns.poll();
@@ -482,6 +513,7 @@ impl Desktop {
             self.after_purge(&host);
         }
         self.confirmation(ctx);
+        #[cfg(feature = "native")]
         self.update_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
             match dialog.show(ctx) {
@@ -499,6 +531,7 @@ impl Desktop {
 }
 
 // updates and rebuilding a development build
+#[cfg(feature = "native")]
 impl Desktop {
     /// the balloon and the box of the update notice, and what they ask for.
     fn update_notice(&mut self, ctx: &egui::Context) {
@@ -561,7 +594,7 @@ impl Desktop {
     }
 
     /// is a rebuild running?
-    pub(super) fn is_rebuilding(&self) -> bool {
+    pub(super) fn is_rebuilding_native(&self) -> bool {
         self.rebuilding.is_some()
     }
 
@@ -738,7 +771,7 @@ impl Desktop {
                 let clock = self.feed.text();
                 // the tray: a shallow sunken panel holding the update shield and the clock, whose
                 // text is flat inside it
-                let shield = self.updates.visible();
+                let shield = self.update_shield();
                 let width = 6.0 + CLOCK + if shield { TRAY_ICON } else { 0.0 };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
@@ -761,22 +794,67 @@ impl Desktop {
                 if clock_hit.double_clicked() {
                     self.open(Target::DateTime);
                 }
+                if self.demo {
+                    // a sunken note beside the tray: the data here is made up
+                    let note = "Demo: made-up data";
+                    let (at, _) = ui.allocate_exact_size(Vec2::new(124.0, 22.0), Sense::hover());
+                    controls::thin_bevel(ui, at, false);
+                    ui.painter().text(
+                        at.center(),
+                        Align2::CENTER_CENTER,
+                        note,
+                        theme::font(),
+                        BLACK,
+                    );
+                }
                 if shield {
                     let icon_at = Rect::from_min_size(
                         Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
                         Vec2::splat(TRAY_ICON),
                     );
-                    let clicked = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
-                            self.updates.shield(ui)
-                        })
-                        .inner;
-                    if clicked {
-                        self.updates.open_dialog();
+                    #[cfg(feature = "native")]
+                    {
+                        let clicked = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(icon_at), |ui| {
+                                self.updates.shield(ui)
+                            })
+                            .inner;
+                        if clicked {
+                            self.updates.open_dialog();
+                        }
                     }
+                    #[cfg(not(feature = "native"))]
+                    let _ = icon_at;
                 }
             });
         });
+    }
+}
+
+// what the taskbar and the menu ask about updates, on builds with or without them
+impl Desktop {
+    /// is the update shield showing in the tray?
+    fn update_shield(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.updates.visible();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// is a rebuild running?
+    pub(super) fn is_rebuilding(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.is_rebuilding_native();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// are automatic updates on? `None` where there are no updates to turn on (the browser).
+    fn updates_enabled(&self) -> Option<bool> {
+        #[cfg(feature = "native")]
+        return Some(self.updates.enabled());
+        #[cfg(not(feature = "native"))]
+        None
     }
 }
 
@@ -988,7 +1066,7 @@ mod window_tests;
 mod tests {
     use super::harness::*;
     use super::*;
-    use lanlord_core::log::Kind;
+    use lanlord_app::log::Kind;
 
     #[test]
     fn the_empty_desktop_draws() {
@@ -1236,7 +1314,7 @@ mod tests {
         with_host(&mut desktop, &ctx);
         desktop.open(Target::Hosts);
         frames(&mut desktop, &ctx, 2);
-        let seen = lanlord_core::log::subscribe();
+        let seen = lanlord_app::log::subscribe();
         assert!(press(&mut desktop, &ctx, "Bootstrap"));
         until(&mut desktop, &ctx, |d| d.password.is_some());
         frame(&mut desktop, &ctx, vec![key(egui::Key::Escape)]);
@@ -1408,7 +1486,7 @@ mod tests {
             (Kind::Info, "desk-test-info"),
             (Kind::Debug, "desk-test-debug"),
         ] {
-            lanlord_core::log::emit(kind, text);
+            lanlord_app::log::emit(kind, text);
         }
         until(&mut desktop, &ctx, |d| {
             d.console

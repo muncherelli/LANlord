@@ -545,7 +545,7 @@ impl Shell {
             host: host.as_deref(),
             signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
-            updates: false,
+            updates: Some(false),
             developer: false,
             modules: desktop::modules(self.enabled().as_ref()),
         })

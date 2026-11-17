@@ -72,7 +72,8 @@ pub struct State<'a> {
     pub signed_in: Option<&'a str>,
     /// the server is there and nothing is running against it.
     pub ready: bool,
-    pub updates: bool,
+    /// automatic updates are on; `None` where lanlord is not updated from the menu (the browser).
+    pub updates: Option<bool>,
     /// this is a development build with a Developer submenu.
     pub developer: bool,
     /// the positions in `MODULES` of the components this host has switched on.
@@ -134,10 +135,12 @@ pub fn rows(state: &State) -> Vec<Row> {
         }));
     }
     rows.push(Row::Separator);
-    rows.push(Row::Item(Item {
-        ticked: state.updates,
-        ..Item::new("Automatic updates", Action::ToggleUpdates)
-    }));
+    if let Some(on) = state.updates {
+        rows.push(Row::Item(Item {
+            ticked: on,
+            ..Item::new("Automatic updates", Action::ToggleUpdates)
+        }));
+    }
     if state.developer {
         rows.push(Row::Item(Item {
             arrow: true,
@@ -159,4 +162,33 @@ pub fn developer_rows(rebuilding: bool) -> Vec<Row> {
         }),
         Row::Item(Item::new("Check for updates now", Action::CheckUpdates)),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn labels(updates: Option<bool>) -> Vec<String> {
+        let state = State {
+            host: Some("local"),
+            signed_in: None,
+            ready: true,
+            updates,
+            developer: false,
+            modules: Vec::new(),
+        };
+        rows(&state)
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Item(item) => Some(item.label().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_updates_row_is_only_there_where_lanlord_can_update() {
+        assert!(labels(Some(true)).iter().any(|l| l == "Automatic updates"));
+        assert!(!labels(None).iter().any(|l| l == "Automatic updates"));
+    }
 }
