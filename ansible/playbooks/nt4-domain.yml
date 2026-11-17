@@ -62,11 +62,11 @@
       ansible.builtin.assert:
         that:
           - nt4_mode in ['domain', 'workgroup']
-          - nt4_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
-          - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}$')
-          - nt4_address is match('^[0-9.]+/[0-9]{1,2}$')
+          - nt4_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}\\Z')
+          - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}\\Z')
+          - nt4_address is match('^[0-9.]+/[0-9]{1,2}\\Z')
           - nt4_mode == 'workgroup' or (nt4.admin_password | default('')) | length > 0
-          - (nt4.machines | default([])) | select('match', '^[A-Za-z][A-Za-z0-9-]{0,14}$') | list | length == (nt4.machines | default([])) | length
+          - (nt4.machines | default([])) | select('match', '^[A-Za-z][A-Za-z0-9-]{0,14}\\Z') | list | length == (nt4.machines | default([])) | length
         fail_msg: >-
           nt4-domain settings: mode must be domain or workgroup; name is the domain or workgroup
           (up to 15 letters, digits, - or _); address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
