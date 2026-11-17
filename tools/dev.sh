@@ -11,7 +11,12 @@ usage: tools/dev.sh <command> [options]
 
   gui [options]        build and open the desktop window from this checkout
   tui [options]        build and open the terminal ui from this checkout
-  web                  build the browser version (see tools/build-web.sh)
+  web [--serve] [--port N]
+                       build the browser version; --serve also runs it here (default port 8080)
+  linux-build [--target x86_64|aarch64] [--debug]
+                       cross-compile the server binary for linux (needs zig and cargo-zigbuild)
+  deploy HOST [options]
+                       put the server binary and browser build on a test server
   app                  build and install the macos app (see tools/build-app.sh)
   launchers            create the dev and preview launchers (see tools/dev-launchers.sh)
 
@@ -21,10 +26,19 @@ options for gui and tui:
   --open LIST          open these windows at start, like dns,my-server (gui)
   --release            build optimised instead of debug
 
+deploy options (HOST is user@host, always given, never stored):
+  --dry-run            read the server and show what would change, change nothing
+  --yes                skip typing the host to confirm
+  --no-build           use the binary and browser build already built
+  --rollback           put the previous version back
+  --target ARCH        x86_64 (default) or aarch64
+
 examples:
   tools/dev.sh gui --demo --open networks
   tools/dev.sh tui --clean
   tools/dev.sh launchers
+  tools/dev.sh web --serve
+  tools/dev.sh deploy root@gateway.example.lan --dry-run
 EOF
 }
 
@@ -94,7 +108,38 @@ case "$cmd" in
     exec env "${env_args[@]}" "$bin"
     ;;
   web)
-    exec "$root/tools/build-web.sh"
+    serve=0
+    port=8080
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --serve) serve=1 ;;
+        --port)
+          shift
+          [ $# -gt 0 ] || { echo "--port needs a number" >&2; exit 2; }
+          port=$1
+          ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+      esac
+      shift
+    done
+    case "$port" in '' | *[!0-9]*) echo "the port must be a number" >&2; exit 2 ;; esac
+    "$root/tools/build-web.sh"
+    if [ "$serve" = 1 ]; then
+      # the real web server from this checkout, on this machine only, so the page comes with the
+      # same headers as on a gateway
+      cargo build -q -p lanlord --no-default-features --features webui
+      target=${CARGO_TARGET_DIR:-$root/target}
+      echo "serving the browser build at http://127.0.0.1:$port/ (ctrl-c to stop)"
+      echo "this build is a stand-in page: it shows no server data and talks to no server."
+      if [ "$(uname -s)" = Darwin ]; then (sleep 2; open "http://127.0.0.1:$port/") & fi
+      exec "$target/debug/lanlord" webui --listen "127.0.0.1:$port" --static "$target/web-dist"
+    fi
+    ;;
+  linux-build)
+    exec "$root/tools/dev-linux-build.sh" "$@"
+    ;;
+  deploy)
+    exec "$root/tools/dev-deploy.sh" "$@"
     ;;
   launchers)
     exec "$root/tools/dev-launchers.sh" install "$@"

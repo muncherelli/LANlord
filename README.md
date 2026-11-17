@@ -60,8 +60,15 @@ Double-click the clock in the taskbar to open Date/Time Properties for the serve
 `tools/dev.sh` opens a build from a checkout without installing anything:
 
 - `tools/dev.sh gui` and `tools/dev.sh tui` build and open the desktop window or the terminal ui. Add `--demo` for canned data and a fake update (no server is touched), `--clean` for an empty config in a throwaway folder, `--open dns,networks` to start with windows open, and `--release` for an optimised build.
-- `tools/dev.sh app` builds and installs the macOS app, and `tools/dev.sh web` builds the browser version.
+- `tools/dev.sh app` builds and installs the macOS app.
 - `cargo gui` and `cargo tui` are shorter ways to run the same builds.
+
+For the web UI and a test server:
+
+- `tools/dev.sh web --serve` builds the browser version and serves it on this machine only (`http://127.0.0.1:8080/`, or `--port N`), with the same web server and headers a gateway uses. The browser build is still a stand-in page: it shows no server data and talks to no server. It needs `trunk` and the wasm target, which `tools/build-web.sh` tells you how to install.
+- `tools/dev.sh linux-build` cross-compiles the server binary (no window, with the web server) for a Linux machine, `--target x86_64` (default) or `aarch64`. It needs zig and cargo-zigbuild, and installs nothing itself: `brew install zig`, `cargo install cargo-zigbuild --locked` and `rustup target add x86_64-unknown-linux-gnu`.
+- `tools/dev.sh deploy user@gateway.example.lan` builds both, shows what would change on the server (the binary, the web files), asks you to type the host, then installs them over SSH and restarts only the `lanlord-webui` service. It touches only `/opt/lanlord/bin/lanlord` and `/opt/lanlord/web`, keeps the previous versions as `lanlord.prev` and `web.prev`, and puts them back by itself if the service does not answer within 10 seconds. `--dry-run` changes nothing, `--no-build` reuses the last build, and `deploy HOST --rollback` restores the previous version. The host is always an argument and is never stored. Sign in as root, or as a user with passwordless sudo.
+- `tools/test-dev-pipeline.sh` tries the deploy, rollback and failure paths against a folder that stands in for a server, with no network.
 
 `tools/dev-launchers.sh install` creates launchers for them (app bundles in `~/Applications` on macOS, desktop entries on Linux): the GUI and TUI from your checkout's debug build, and a preview build that merges `origin/trunk` with every open pull request (the ones that conflict are skipped and listed), with a Preview Update launcher that rebuilds it. It keeps launchers that already exist unless you pass `--force`, and `tools/dev-launchers.sh remove --yes` takes them away. A debug build also has a Developer entry in the LANlord menu that rebuilds and relaunches it.
 
