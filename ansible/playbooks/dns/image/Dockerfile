@@ -1,12 +1,12 @@
 # dnsmasq for the retro network, on a pinned alpine. only upstream software is in the image;
 # lanlord's dnsmasq.conf is mounted when the container runs.
-#   docker build --build-arg IMAGE_VERSION=1.0.0 -t lanlord-networking-components:1.0.0 .
+#   docker build --build-arg IMAGE_VERSION=1.0.0 -t lanlord-dhcp-dns-components:1.0.0 .
 # VERSION is this image's X.Y.Z (the tag); the dnsmasq version is the ARG below and a label
 ARG ALPINE=3.22
 FROM alpine:${ALPINE}
 ARG DNSMASQ_VERSION=2.91
 ARG IMAGE_VERSION=dev
-LABEL org.opencontainers.image.title="lanlord-networking-components" \
+LABEL org.opencontainers.image.title="lanlord-dhcp-dns-components" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       io.lanlord.dnsmasq.version="${DNSMASQ_VERSION}"

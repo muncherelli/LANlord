@@ -69,7 +69,7 @@ Settings from before there was a list still work: a `dns:` section, `docker.inte
 CI publishes two images, one package each, versioned independently:
 
 - `ghcr.io/muncherelli/lanlord-nt4-server-components`: samba built from the signature-checked source tarball as a classic (non-AD) server, with SMB1/NT1 still allowed. Its Dockerfile is in `playbooks/nt4-domain/image/`, next to the samba release key it checks the tarball against.
-- `ghcr.io/muncherelli/lanlord-networking-components`: dnsmasq on Alpine, from `playbooks/dns/image/`.
+- `ghcr.io/muncherelli/lanlord-dhcp-dns-components`: dnsmasq on Alpine, from `playbooks/dns/image/`.
 
 Tags are versions only. Each image has an immutable `X.Y.Z` tag, from the `VERSION` file in its directory (they start at `1.0.0`), plus rolling `X.Y`, `X` and `latest` tags that move to the newest release. The upstream versions are not tags: they are labels (`org.opencontainers.image.version` is the image's own version; `io.lanlord.samba.version` and `io.lanlord.dnsmasq.version` are the upstream ones, set from the `ARG` in the Dockerfile). To change what is inside an image (a newer samba, a fixed Dockerfile), edit it and raise its `VERSION` on purpose.
 
