@@ -121,10 +121,12 @@ jobs:
           if [ -n "$base" ] && ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
           changed=""
           [ -n "$base" ] && changed=$(git diff --name-only "$base" HEAD)
-          # true when the image inputs are the same in commit $2 and the release tag of $1
+          # true when the image inputs are the same in a commit and at the release tag
           unchanged() {
-            git cat-file -e "$2^{commit}" 2>/dev/null || return 1
-            git diff --quiet "$2" "v$version" -- $(jq -r --arg d "$(jq -r .dir <<<"$1")" '.inputs[] | $d + "/" + .' <<<"$1")
+            local entry=$1 commit=$2 dir
+            dir=$(jq -r .dir <<<"$entry")
+            git cat-file -e "$commit^{commit}" 2>/dev/null || return 1
+            git diff --quiet "$commit" "v$version" -- $(jq -r --arg d "$dir" '.inputs[] | $d + "/" + .' <<<"$entry")
           }
           include='[]'
           own=""
