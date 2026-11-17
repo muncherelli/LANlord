@@ -4,6 +4,7 @@
 
 use serde_yaml_ng::Value;
 
+use crate::lan_networks;
 use crate::server::Iface;
 use crate::settings::{DnsSettings, Settings};
 
@@ -87,6 +88,12 @@ fn has_address(iface: &Iface, address: &str) -> bool {
 /// the external network and, when the settings define one, the lanlord network, with its dhcp
 /// range and the number of `leases` it has handed out.
 pub fn rows(ifaces: &[Iface], settings: &Settings, leases: Option<usize>) -> Vec<NetworkRow> {
+    // settings with a `networks:` list name every network and its interface
+    if let Ok(networks) = lan_networks::read(settings) {
+        if !networks.legacy && !networks.list.is_empty() {
+            return listed_rows(ifaces, &networks.list);
+        }
+    }
     let internal = internal_address(settings)
         .and_then(|address| ifaces.iter().find(|i| has_address(i, &address)));
     let mut rows = Vec::new();
@@ -107,6 +114,41 @@ pub fn rows(ifaces: &[Iface], settings: &Settings, leases: Option<usize>) -> Vec
             .map(|d| format!("{} - {}", d.range_start, d.range_end));
         lanlord.leases = lanlord.dhcp.as_ref().and(leases);
         rows.push(lanlord);
+    }
+    rows
+}
+
+/// the external network and every network in the settings' `networks:` list, on its own interface.
+fn listed_rows(ifaces: &[Iface], list: &[lan_networks::LanNetwork]) -> Vec<NetworkRow> {
+    let lan = |iface: &Iface| list.iter().any(|n| n.interface == iface.name);
+    let mut rows = Vec::new();
+    let external = ifaces
+        .iter()
+        .find(|i| i.default_route && !lan(i))
+        .or_else(|| ifaces.iter().find(|i| !i.loopback() && !lan(i)));
+    if let Some(iface) = external {
+        rows.push(row(iface, "External Network", Role::External));
+    }
+    for network in list {
+        let dhcp = network
+            .dhcp
+            .as_ref()
+            .map(|d| format!("{} - {}", d.range_start, d.range_end));
+        let mut entry = match ifaces.iter().find(|i| i.name == network.interface) {
+            Some(iface) => row(iface, &network.name, Role::Lanlord),
+            None => NetworkRow {
+                name: network.name.clone(),
+                role: Role::Lanlord,
+                interface: network.interface.clone(),
+                address: network.address.clone(),
+                mtu: network.mtu.unwrap_or(0),
+                link: "interface not found".to_string(),
+                dhcp: None,
+                leases: None,
+            },
+        };
+        entry.dhcp = dhcp;
+        rows.push(entry);
     }
     rows
 }
@@ -163,6 +205,39 @@ mod tests {
             "eth0"
         );
         assert!(super::rows(&[], &Settings::empty(), None).is_empty());
+    }
+
+    #[test]
+    fn a_networks_list_gives_a_row_per_network_on_its_own_interface() {
+        let settings = Settings::parse("networks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    dhcp:\n      range: [172.16.120.100, 172.16.120.200]\n  - name: far\n    interface: eth9\n    address: 10.9.0.1/24\n    mtu: 1400\n").unwrap();
+        let rows = rows(&demo().interfaces, &settings, Some(3));
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            (rows[0].role, rows[0].interface.as_str()),
+            (Role::External, "eth0")
+        );
+        assert_eq!(
+            (
+                rows[1].name.as_str(),
+                rows[1].interface.as_str(),
+                rows[1].mtu
+            ),
+            ("retronet", "eth1", 1450)
+        );
+        assert_eq!(
+            rows[1].dhcp.as_deref(),
+            Some("172.16.120.100 - 172.16.120.200")
+        );
+        // an interface the server does not have is still listed, as not found
+        assert_eq!(
+            (
+                rows[2].interface.as_str(),
+                rows[2].link.as_str(),
+                rows[2].mtu
+            ),
+            ("eth9", "interface not found", 1400)
+        );
+        assert_eq!(rows[2].address, "10.9.0.1/24");
     }
 
     #[test]

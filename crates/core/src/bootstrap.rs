@@ -198,7 +198,11 @@ pub type AskPassword<'a> = &'a mut dyn FnMut(&str) -> Result<String>;
 
 /// set up the gateway on `opts.host`; the ssh user needs sudo.
 pub fn bootstrap(opts: &Options, ask_password: AskPassword) -> Result<()> {
-    bootstrap_with(&Session::new(&opts.host)?, opts, ask_password)
+    let session = Session::new(&opts.host)?;
+    bootstrap_with(&session, opts, &mut *ask_password)?;
+    // after the bootstrap sudo remembers the password, so this asks for nothing more
+    crate::env::note(&session, ask_password);
+    Ok(())
 }
 
 fn bootstrap_with(session: &Session, opts: &Options, ask_password: AskPassword) -> Result<()> {

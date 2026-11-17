@@ -13,7 +13,7 @@ fn server() -> (Desktop, egui::Context, Arc<Fake>) {
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts.belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw")
     });
     frames(&mut desktop, &ctx, 2);
     (desktop, ctx, fake)
@@ -21,14 +21,13 @@ fn server() -> (Desktop, egui::Context, Arc<Fake>) {
 
 /// open the box that asks before a purge, and wait for its preview.
 fn ask_to_purge(desktop: &mut Desktop, ctx: &egui::Context) {
-    desktop.my_server.tab = 1;
+    desktop
+        .my_server
+        .update(my_server::Msg::Tab(1), &desktop.services, "me@gw");
     frames(desktop, ctx, 2);
     assert!(press(desktop, ctx, "Remove LANlord from this server..."));
     until(desktop, ctx, |d| {
-        d.my_server
-            .purge
-            .as_ref()
-            .is_some_and(|p| p.preview.data.is_some())
+        d.my_server.purge().is_some_and(|p| p.preview().is_some())
     });
     frames(desktop, ctx, 2);
 }
@@ -48,7 +47,7 @@ fn the_icons_come_first_and_the_menu_lists_them() {
 fn general_reads_what_the_server_is() {
     let (desktop, _ctx, fake) = server();
     assert_eq!(fake.calls(), ["facts me@gw"]);
-    let facts = desktop.my_server.facts.data.clone().unwrap();
+    let facts = desktop.my_server.facts().data.clone().unwrap();
     assert_eq!(facts.hostname, "demo");
     assert!(facts.is_root && facts.lanlord_installed);
 }
@@ -59,7 +58,11 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
     ask_to_purge(&mut desktop, &ctx);
     assert!(desktop.my_server.purging());
     assert_eq!(enabled(&ctx, "Remove"), Some(false), "needs the name");
-    desktop.my_server.purge.as_mut().unwrap().typed = "me@gx".into();
+    desktop.my_server.update(
+        my_server::Msg::Typed("me@gx".into()),
+        &desktop.services,
+        "me@gw",
+    );
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Remove"), Some(false), "a wrong name");
     // only the preview has run so far
@@ -67,7 +70,11 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
         fake.calls(),
         ["facts me@gw", "purge-preview me@gw admins=false"]
     );
-    desktop.my_server.purge.as_mut().unwrap().typed = "me@gw".into();
+    desktop.my_server.update(
+        my_server::Msg::Typed("me@gw".into()),
+        &desktop.services,
+        "me@gw",
+    );
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Remove"), Some(true));
     assert!(press(&mut desktop, &ctx, "Remove"));
@@ -98,7 +105,7 @@ fn the_admin_accounts_tick_needs_a_root_login() {
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts.belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw")
     });
     ask_to_purge(&mut desktop, &ctx);
     assert_eq!(
@@ -117,10 +124,7 @@ fn the_admin_accounts_tick_asks_for_a_new_preview() {
         "Also remove the administrator accounts"
     ));
     until(&mut desktop, &ctx, |d| {
-        d.my_server
-            .purge
-            .as_ref()
-            .is_some_and(|p| p.preview.data.is_some())
+        d.my_server.purge().is_some_and(|p| p.preview().is_some())
     });
     assert!(fake
         .calls()
@@ -136,9 +140,11 @@ fn a_server_without_lanlord_cannot_be_purged() {
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts.belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw")
     });
-    desktop.my_server.tab = 1;
+    desktop
+        .my_server
+        .update(my_server::Msg::Tab(1), &desktop.services, "me@gw");
     frames(&mut desktop, &ctx, 3);
     assert_eq!(
         enabled(&ctx, "Remove LANlord from this server..."),
@@ -196,6 +202,6 @@ fn the_server_windows_say_so_without_a_server() {
     desktop.open(Target::MyServer);
     desktop.open(Target::Networks);
     frames(&mut desktop, &ctx, 3);
-    assert!(desktop.my_server.facts.data.is_none());
+    assert!(desktop.my_server.facts().data.is_none());
     assert!(desktop.networks.rows.data.is_none());
 }

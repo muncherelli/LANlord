@@ -33,11 +33,36 @@ To find a failed replacement's logs, read the "last log lines of the failed ..."
 
 Adding a file here means adding it to the list in `crates/core/src/payload.rs`. A test fails if a file is missing from it.
 
-## The DNS module
+## Networks and the DNS module
 
-`playbooks/dns.yml` runs dnsmasq in the `lanlord-dns` container on the host network, bound to the internal interface and never to the host one. It answers only for its zone (`retronet` by default) and never forwards a query, so nothing resolves outside the retronet. `lanlord.<zone>`, the gateway's hostname, the NT4 Domain's NetBIOS name and any Web Proxy host ending in `.<zone>` point at the internal address; `records` adds more.
+LANlord manages any number of lanlord networks, each on its own interface, next to the server's normal (external) network. They are the `networks:` list in the settings:
 
-With a `dhcp:` section it also hands out leases, with no router option, the gateway as DNS and WINS server, and the zone as the domain name. The configuration is `/opt/lanlord/dns/dnsmasq.conf` and the leases are in `/opt/lanlord/dns/dnsmasq.leases`. The Docker module's firewall also drops DNS and DHCP traffic on the host interface. The image is built on the gateway from `playbooks/dns/image/`, tagged with a hash of its files.
+```yaml
+networks:
+  - name: retronet             # a plain label; names the container lanlord-dns-<name>
+    interface: eth1            # the interface the network is on
+    address: 172.16.120.1/22   # the server's own address there, with its prefix
+    mtu: 1450                  # optional
+    zone: retronet             # the dns zone; default: the name
+    records:                   # extra names in the zone
+      - {name: ntsrv1, address: 172.16.120.10}
+    dhcp:                      # optional; no dhcp server without it
+      range: [172.16.123.1, 172.16.123.254]
+      lease: 7d                # 30m, 12h, 7d or infinite; default 7d
+      hosts:                   # static leases by mac
+        - {name: ntsrv1, mac: "aa:bb:cc:dd:ee:ff", address: 172.16.121.1}
+  - name: lab
+    interface: eth2
+    address: 192.168.50.1/24
+```
+
+`lanlord networks HOST list | add | set | remove | lease` edits the list, checks it and applies the docker and dns modules. The checks are the same in the program and in the playbooks: names, interfaces and zones are unique, an interface is not the external network's, addresses are real networks that do not overlap, and a dhcp range or a static lease is inside its network and is not the server's own address.
+
+`playbooks/dns.yml` runs one dnsmasq in Docker for every network: the container `lanlord-dns-<name>` on the host network, with its files in `/opt/lanlord/dns/<name>` (`dnsmasq.conf` and `dnsmasq.leases`). Each one listens only on its network's address and interface (`listen-address`, `bind-dynamic`, `interface=`), never on another lanlord network's or the host's, and serves dhcp only there (`no-dhcp-interface` for every other interface). It answers only for its zone and never forwards a query, so nothing resolves outside the zone. With a `dhcp:` section it hands out leases with no router option, the server as DNS and WINS server, and the zone as the domain name. `lanlord.<zone>`, the server's hostname, the nt4-domain netbios name (in the zone of the network the domain controller is on) and the web-proxy hosts ending in `.<zone>` all point at the network's address. A network taken out of the list has its container and folder removed on the next apply. The Docker module puts each network's address and mtu on its interface (a systemd-networkd drop-in or a NetworkManager connection), and its firewall accepts every lanlord interface first, so the rules that keep netbios, smb, dns and dhcp off the external network can never cut one off.
+
+`nt4-domain.network` names the network the domain controller is on (default: the first). The web-proxy status page is on the first network.
+
+Settings from before there was a list still work: a `dns:` section, `docker.internal_address` and the interface settings are read as one network called `retronet`, and the first `lanlord networks` change writes them back as a `networks:` list (and removes the old keys). On the first apply the single `lanlord-dns` container is replaced by `lanlord-dns-retronet`, and its leases move into `/opt/lanlord/dns/retronet`, so clients keep their leases. `lanlord networks list` shows a network read this way, and says so. The playbooks read both shapes through `playbooks/filter_plugins/lanlord.py` and `playbooks/networks.yml`.
 
 ## The Samba image
 
@@ -61,3 +86,30 @@ Every domain logon runs `lanlord.bat` from the `netlogon` share, which LANlord w
 
 The software share is off by default too. Set `software: true` to add a `software` share that maps to `S:` at logon, for service packs and installers. Domain users read it; domain admins and the Software Admins domain group write to it (the group shows up in User Manager for Domains, but LANlord decides who is in it). To let someone write without making them a domain admin, give their entry in `users` `software_admin: true`. Files you put in the share from the gateway land in `/opt/lanlord/nt4/lib/software`.
 
+## The web UI
+
+The web UI runs only on the gateway. `lanlord webui` listens on the unix socket `/run/lanlord-web/web.sock` (no TCP port) as the unprivileged `lanlord` account, through the `lanlord-webui` systemd service that the Web Proxy module installs. It serves the browser build from `/opt/lanlord/web` (the `web` folder beside the binary's `bin` folder, or `--static DIR`), looking for it on every request, so a new build needs no restart. Until a build is there it shows a placeholder page, and a missing file such as a `.wasm` or `.js` is always a 404, never a page. Dot files and anything a link leads to outside the build are never served. Caddy answers on port 8443 of the normal network address only, never the retronet, and proxies to the socket.
+
+The socket and its own folder, `/run/lanlord-web`, belong to the `lanlord-web` group (gid 9990), which gives access to nothing else. It is deliberately not `/run/lanlord`, where an apply keeps the decrypted settings. The proxy reaches the socket in one of two ways:
+
+- this module's Caddy container runs as root and gets only `/run/lanlord-web` mounted, read-only (the folder survives service restarts, so the mount stays valid). This is the default, `proxy_user: root`.
+- a Caddy installed from a package runs as its own account. Set `proxy_user: caddy` (or whatever account it runs as) and the module adds that existing account to `lanlord-web` (it never creates one); restart that Caddy afterwards so it picks up the group.
+
+Every web UI response carries a content security policy (the app's page lists the hashes of its own inline loader script; anything else gets the plain policy), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`, from the app and again from Caddy, which also drops its `Server` header and adds `Strict-Transport-Security` with a real certificate (not with `internal`). The service runs with a private network, no capabilities and a system call filter.
+
+```yaml
+web-proxy:
+  webui:
+    tls: internal               # required: letsencrypt-dns, cloudflare-origin, or internal (test gateways only)
+    host: gateway.example.lan   # default: the normal network address
+    port: 8443                  # the default
+    proxy_user: root            # the default; caddy for a packaged caddy
+```
+
+The web UI is HTTPS only, so a `webui` section must name a certificate method in `tls`, or the apply stops and says so. Leave the section out to have no web UI.
+
+- `cloudflare-origin` uses a Cloudflare origin certificate, for traffic that comes through Cloudflare. Put the certificate at `/opt/lanlord/caddy/config/webui-origin.pem` and its key at `/opt/lanlord/caddy/config/webui-origin.key`.
+- `letsencrypt-dns` (Let's Encrypt through a Cloudflare DNS challenge) is planned; it needs a Caddy build with the Cloudflare DNS module, so the module refuses it for now.
+- `internal` uses Caddy's own certificate authority. Browsers do not trust it, so it is for test gateways only.
+
+The service waits for the `lanlord` binary at `/opt/lanlord/bin/lanlord`. Its name never goes into the retronet DNS zone.

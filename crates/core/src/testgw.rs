@@ -27,6 +27,15 @@ pub struct Gateway {
 
 impl Gateway {
     pub fn new(name: &str) -> Self {
+        Self::build(name, true)
+    }
+
+    /// a gateway where lanlord was never installed: there is no lanlord account or /opt/lanlord.
+    pub fn not_installed(name: &str) -> Self {
+        Self::build(name, false)
+    }
+
+    fn build(name: &str, installed: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("lanlord-gw-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -36,6 +45,7 @@ for a; do last=$a; done
 case "$last" in
   "id -un") echo tester ;;
   "sudo -n true") exit 0 ;;
+  "sh -c "*"getent passwd lanlord"*) echo @INSTALLED@ ;;
   "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;
   *)
 input=$(cat)
@@ -45,6 +55,7 @@ case "$input" in
   *"base64 < /opt/lanlord/config/settings.age"*) if [ -f "$D/age" ]; then base64 < "$D/age"; fi ;;
 esac ;;
 esac"#
+            .replace("@INSTALLED@", if installed { "yes" } else { "no" })
             .replace("@DIR@", &dir.display().to_string())
             .replace("@PAYLOAD@", payload);
         Self {
