@@ -1,7 +1,8 @@
 # the docker module: docker itself, an address for the internal (retro) network
-# and a firewall that keeps netbios and smb off the host network. it does
-# nothing until your settings have a `docker:` section, and it works on lxc
-# containers, virtual machines and bare metal.
+# and a firewall that keeps netbios and smb off the host network. the docker engine,
+# its service and the base firewall (host network only) always run, even with no settings;
+# anything that touches an interface or an address waits for a `docker:` or `networks:`
+# section. it works on lxc containers, virtual machines and bare metal.
 #
 # docker:
 #   internal_address: 172.16.120.2/22   # an extra address on the internal network; optional,
@@ -34,7 +35,6 @@
       register: doctor
       changed_when: false
       failed_when: false
-      when: docker is defined
 
     - name: work out which lxc features are definitely missing
       ansible.builtin.set_fact:
@@ -44,7 +44,6 @@
              | join(' and ') }}
       vars:
         lines: "{{ doctor.stdout_lines | default([]) if 'virt_container=lxc' in (doctor.stdout_lines | default([])) else [] }}"
-      when: docker is defined
 
     - name: stop when an lxc container lacks nesting or keyctl
       ansible.builtin.assert:
@@ -54,35 +53,41 @@
           fix: on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1`
           (replace <CTID> with this container's number) and restart the container with
           `pct reboot <CTID>`; lanlord cannot do this from inside the container
-      when: docker is defined
 
+    # with settings, the shared network tasks work out the host network and the lanlord networks.
+    # without, only the host network is read (the base firewall needs it) and nothing else is
+    # looked at, so no interface is ever picked or configured.
     - name: work out the host network and the lanlord networks
       ansible.builtin.include_tasks: networks.yml
-      when: docker is defined
+      when: docker is defined or networks is defined
+
+    - name: read the host network, with no lanlord networks
+      ansible.builtin.set_fact:
+        host_interface: "{{ ansible_facts['default_ipv4']['interface'] | default('') }}"
+        lanlord_networks: []
+      when: docker is not defined and networks is not defined
 
     - name: say what this machine is
       ansible.builtin.debug:
         msg: >-
           {{ ansible_facts['virtualization_type'] | default('bare metal') or 'bare metal' }};
-          host network {{ host_interface }}, lanlord networks
-          {{ lan_interfaces | default([]) | join(', ') if lan_interfaces | default([]) | length > 0 else 'none' }}
-      when: docker is defined
+          host network {{ host_interface | default('unknown', true) }}, lanlord networks
+          {{ lanlord_networks | map(attribute='interface') | join(', ') if lanlord_networks | length > 0 else 'none' }}
 
     - name: install docker on arch
       ansible.builtin.command: pacman -S --needed --noconfirm docker
       register: pacman_docker
       changed_when: "'there is nothing to do' not in pacman_docker.stdout"
-      when: docker is defined and ansible_facts['os_family'] == 'Archlinux'
+      when: ansible_facts['os_family'] == 'Archlinux'
 
     - name: install docker on debian
       ansible.builtin.apt:
         name: docker.io
         state: present
         update_cache: true
-      when: docker is defined and ansible_facts['os_family'] == 'Debian'
+      when: ansible_facts['os_family'] == 'Debian'
 
     - name: start docker
-      when: docker is defined
       block:
         - name: start docker now and at boot
           ansible.builtin.systemd:
@@ -101,7 +106,6 @@
       ansible.builtin.command: docker info --format '{% raw %}{{.Driver}}{% endraw %}'
       register: storage_driver
       changed_when: false
-      when: docker is defined
 
     # docker 29 calls its overlay driver overlayfs, older versions overlay2
     - name: warn when docker is not using an overlay driver
@@ -109,18 +113,17 @@
         msg: >-
           docker uses the {{ storage_driver.stdout }} storage driver instead of overlay.
           on zfs give /var/lib/docker its own ext4 volume.
-      when: docker is defined and storage_driver.stdout not in ['overlay2', 'overlayfs']
+      when: storage_driver.stdout not in ['overlay2', 'overlayfs']
 
-    - name: check that containers run
-      ansible.builtin.command: docker run --rm hello-world
+    # no image pull, so this works offline
+    - name: check that the docker engine answers
+      ansible.builtin.command: docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'
       changed_when: false
-      when: docker is defined
 
     - name: work out which networks get their address, mtu and firewall settings from lanlord
       ansible.builtin.set_fact:
         lan_interfaces: "{{ lanlord_networks | map(attribute='interface') | list }}"
         lan_configured: "{{ lanlord_networks | selectattr('configure_address') | list }}"
-      when: docker is defined
 
     - name: find out which network manager is running
       ansible.builtin.shell: |
@@ -130,7 +133,7 @@
         echo none
       register: net_manager
       changed_when: false
-      when: docker is defined and lan_configured | length > 0
+      when: lan_configured | length > 0
 
     - name: stop on a network manager we cannot configure
       ansible.builtin.fail:
@@ -138,7 +141,7 @@
           network manager '{{ net_manager.stdout }}' is not supported yet (systemd-networkd and
           NetworkManager are). add the addresses {{ lan_configured | map(attribute='address') | list }} to
           {{ lan_configured | map(attribute='interface') | list }} yourself and take them out of your settings.
-      when: docker is defined and lan_configured | length > 0 and net_manager.stdout == 'none'
+      when: lan_configured | length > 0 and net_manager.stdout == 'none'
 
     - name: give every lanlord network its address and mtu
       ansible.builtin.include_tasks: network-address.yml
@@ -146,14 +149,12 @@
       loop_control:
         loop_var: lan
         label: "{{ lan.name }}"
-      when: docker is defined
 
     - name: make a place for lanlord's firewall rules
       ansible.builtin.file:
         path: /etc/lanlord
         state: directory
         mode: "0750"
-      when: docker is defined
 
     - name: keep netbios, smb, dns and dhcp off the host network
       ansible.builtin.template:
@@ -162,7 +163,6 @@
         mode: "0600"
         validate: nft -c -f %s
       register: firewall_rules
-      when: docker is defined
 
     - name: load the firewall at boot
       ansible.builtin.copy:
@@ -181,7 +181,6 @@
           WantedBy=multi-user.target
         mode: "0640"
       register: firewall_unit
-      when: docker is defined
 
     - name: enable the firewall and load the current rules
       ansible.builtin.systemd:
@@ -189,12 +188,11 @@
         enabled: true
         state: restarted
         daemon_reload: true
-      when: docker is defined and (firewall_rules is changed or firewall_unit is changed)
+      when: (firewall_rules is changed or firewall_unit is changed)
 
     - name: report
       ansible.builtin.debug:
         msg: >-
           docker is running ({{ storage_driver.stdout }});
-          {{ host_interface }} drops netbios and smb and the lanlord networks
+          {{ host_interface | default('the host network', true) }} drops netbios and smb and the lanlord networks
           ({{ lan_interfaces | join(', ') if lan_interfaces | length > 0 else 'none' }}) are left alone
-      when: docker is defined

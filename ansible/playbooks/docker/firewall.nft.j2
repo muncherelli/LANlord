@@ -10,13 +10,17 @@ table inet lanlord {
 {% if lan_interfaces | length > 0 %}
     iifname { {% for name in lan_interfaces %}"{{ name }}"{% if not loop.last %}, {% endif %}{% endfor %} } accept
 {% endif %}
+{% if host_interface | default('') != '' %}
     iifname "{{ host_interface }}" udp dport { 137, 138 } drop
     iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
-    iifname "{{ host_interface }}" udp dport { 53, 67, 68 } drop
+    iifname "{{ host_interface }}" udp dport { 53, 67 } drop
     iifname "{{ host_interface }}" tcp dport 53 drop
+{% endif %}
   }
   chain output {
     type filter hook output priority -10; policy accept;
+{% if host_interface | default('') != '' %}
     oifname "{{ host_interface }}" udp sport 67 drop
+{% endif %}
   }
 }
