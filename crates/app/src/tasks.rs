@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::ask::AskPassword;
 use crate::log::{emit, Kind};
 use anyhow::{anyhow, Result};
+use zeroize::Zeroizing;
 
 use crate::wake::Wake;
 
@@ -16,7 +17,8 @@ use crate::wake::Wake;
 /// cancelled, goes back through `reply`.
 pub struct PasswordRequest {
     pub prompt: String,
-    pub reply: Sender<Option<String>>,
+    /// the password, or `None` when it was cancelled; zeroized wherever it is dropped.
+    pub reply: Sender<Option<Zeroizing<String>>>,
 }
 
 /// the result of a task that is still running or has just finished.
@@ -152,10 +154,12 @@ fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> R
             })
             .map_err(|_| anyhow!("the ui is gone"))?;
         wake.wake();
+        // core's prompt takes a plain string, so the only plain copy is made here
         answer
             .recv()
             .ok()
             .flatten()
+            .map(|password| password.to_string())
             .ok_or_else(|| anyhow!("cancelled"))
     }
 }
@@ -243,7 +247,10 @@ mod tests {
         let start = Instant::now();
         loop {
             if let Some(request) = tasks.next_request() {
-                request.reply.send(reply.map(String::from)).unwrap();
+                request
+                    .reply
+                    .send(reply.map(|r| Zeroizing::new(r.to_string())))
+                    .unwrap();
                 return request.prompt;
             }
             assert!(

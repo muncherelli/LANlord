@@ -7,7 +7,7 @@ use lanlord_core::power::Power;
 pub use lanlord_app::menu::{self, Action, Row};
 
 use super::{Desktop, MENU_BUTTON, TASKBAR};
-use crate::form::{Form, FormAnswer};
+use crate::form::{Form, FormAnswer, ShowForm};
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
 

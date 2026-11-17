@@ -1,85 +1,41 @@
-//! a modal box with one line of text and OK / Cancel; used for the sudo
-//! password (masked) and for adding a host.
+//! the modal box frame every dialog is drawn in, and the one-line text box (the sudo password,
+//! a new host, a secret), whose contents live in `lanlord_app::prompt`.
 
-use eframe::egui::{self, Color32, Frame, Id, Key, Margin, Rect, TextEdit, Vec2};
+use std::ops::{Deref, DerefMut};
 
-use crate::controls;
+use eframe::egui::{self, Color32, Frame, Id, Margin, Vec2};
+
 use crate::theme::{self, GRAY, NAVY, WHITE};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Answer {
-    Ok(String),
-    Cancel,
+pub use lanlord_app::prompt::Answer;
+use lanlord_app::prompt::Prompt;
+
+/// the one-line box, drawn from `lanlord_app::prompt`.
+pub struct TextDialog(Prompt);
+
+impl Deref for TextDialog {
+    type Target = Prompt;
+
+    fn deref(&self) -> &Prompt {
+        &self.0
+    }
 }
 
-pub struct TextDialog {
-    id: &'static str,
-    title: String,
-    prompt: String,
-    input: String,
-    masked: bool,
-    /// shown under the text box, for input that was refused.
-    pub error: Option<String>,
-    /// where the OK and Cancel buttons were drawn last frame.
-    buttons: Option<(Rect, Rect)>,
-    focused: bool,
+impl DerefMut for TextDialog {
+    fn deref_mut(&mut self) -> &mut Prompt {
+        &mut self.0
+    }
 }
 
 impl TextDialog {
     pub fn new(id: &'static str, title: &str, prompt: &str, masked: bool) -> Self {
-        Self {
-            id,
-            title: title.into(),
-            prompt: prompt.into(),
-            input: String::new(),
-            masked,
-            error: None,
-            buttons: None,
-            focused: false,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn prompt(&self) -> &str {
-        &self.prompt
+        Self(Prompt::new(id, title, prompt, masked))
     }
 
     /// draw the dialog; `Some` once the user answered it.
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Answer> {
-        let mut answer = None;
-        modal(ctx, self.id, &self.title, |ui| {
-            ui.label(&self.prompt);
-            let width = ui.available_width() - 10.0;
-            let edit = controls::field(ui, |ui| {
-                ui.add(
-                    TextEdit::singleline(&mut self.input)
-                        .password(self.masked)
-                        .desired_width(width)
-                        .frame(Frame::new())
-                        .margin(Margin::ZERO),
-                )
-            });
-            if !self.focused {
-                edit.request_focus();
-                self.focused = true;
-            }
-            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-            if let Some(error) = &self.error {
-                ui.colored_label(Color32::from_rgb(160, 0, 0), error);
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let ok = theme::button(ui, "OK", false);
-                let cancel = theme::button(ui, "Cancel", false);
-                self.buttons = Some((ok.rect, cancel.rect));
-                if ok.clicked() || enter {
-                    answer = Some(Answer::Ok(self.input.clone()));
-                } else if cancel.clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                    answer = Some(Answer::Cancel);
-                }
-            });
-        });
-        answer
+        let dialog = self.0.view();
+        crate::view::dialog(ctx, &dialog).and_then(|msg| self.0.update(msg))
     }
 }
 
@@ -120,7 +76,8 @@ pub fn modal<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{Event, Modifiers, PointerButton, Pos2, RawInput};
+    use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
+    use zeroize::Zeroizing;
 
     fn frame(dialog: &mut TextDialog, ctx: &egui::Context, events: Vec<Event>) -> Option<Answer> {
         let input = RawInput {
@@ -172,7 +129,18 @@ mod tests {
         assert_eq!(dialog.prompt(), "Say it");
         assert!(frame(&mut dialog, &ctx, vec![Event::Text("pw".into())]).is_none());
         let answer = frame(&mut dialog, &ctx, vec![key(Key::Enter)]);
-        assert_eq!(answer, Some(Answer::Ok("pw".into())));
+        assert_eq!(answer, Some(Answer::Ok(Zeroizing::new("pw".into()))));
+    }
+
+    #[test]
+    fn text_typed_in_the_same_frame_as_enter_is_kept() {
+        let (mut dialog, ctx) = open(true);
+        let answer = frame(
+            &mut dialog,
+            &ctx,
+            vec![Event::Text("pass".into()), key(Key::Enter)],
+        );
+        assert_eq!(answer, Some(Answer::Ok(Zeroizing::new("pass".into()))));
     }
 
     #[test]
@@ -188,17 +156,18 @@ mod tests {
     fn the_buttons_answer() {
         let (mut dialog, ctx) = open(false);
         frame(&mut dialog, &ctx, vec![Event::Text("x".into())]);
-        let (ok, cancel) = dialog.buttons.unwrap();
+        let (cancel, _) = theme::probe::find(&ctx, "Cancel").unwrap();
         let mut answers = Vec::new();
         for events in click(cancel.center()).into_iter().map(|e| vec![e]) {
             answers.push(frame(&mut dialog, &ctx, events));
         }
         assert!(answers.contains(&Some(Answer::Cancel)));
+        let (ok, _) = theme::probe::find(&ctx, "OK").unwrap();
         let mut answers = Vec::new();
         for events in click(ok.center()).into_iter().map(|e| vec![e]) {
             answers.push(frame(&mut dialog, &ctx, events));
         }
-        assert!(answers.contains(&Some(Answer::Ok("x".into()))));
+        assert!(answers.contains(&Some(Answer::Ok(Zeroizing::new("x".into())))));
     }
 
     #[test]
