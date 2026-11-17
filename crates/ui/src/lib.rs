@@ -188,22 +188,6 @@ fn safe_open_spec(spec: &str) -> String {
         .join(",")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::safe_open_spec;
-
-    #[test]
-    fn links_open_only_known_windows_and_never_the_purge_prompt() {
-        assert_eq!(safe_open_spec("my-server@2,networks"), "my-server,networks");
-        assert_eq!(
-            safe_open_spec("my-server@1, nt4-domain@2"),
-            "my-server@1,nt4-domain"
-        );
-        assert_eq!(safe_open_spec("developer,unknown,menu"), "menu");
-        assert_eq!(safe_open_spec("dns@12,hosts@x"), "dns,hosts");
-    }
-}
-
 /// the value of `name` in the page address's query string.
 #[cfg(target_arch = "wasm32")]
 fn query(name: &str) -> Option<String> {
@@ -219,4 +203,20 @@ fn query(name: &str) -> Option<String> {
                 .replace("%2c", ",")
                 .replace("%40", "@")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_open_spec;
+
+    #[test]
+    fn links_open_only_known_windows_and_never_the_purge_prompt() {
+        assert_eq!(safe_open_spec("my-server@2,networks"), "my-server,networks");
+        assert_eq!(
+            safe_open_spec("my-server@1, nt4-domain@2"),
+            "my-server@1,nt4-domain"
+        );
+        assert_eq!(safe_open_spec("developer,unknown,menu"), "menu");
+        assert_eq!(safe_open_spec("dns@12,hosts@x"), "dns,hosts");
+    }
 }

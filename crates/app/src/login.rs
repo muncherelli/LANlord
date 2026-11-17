@@ -691,7 +691,7 @@ pub mod fake {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use super::*;
+    use super::{Auth, Identity, LocalFuture, SigninError, WebSession, Zeroizing};
 
     #[derive(Default)]
     pub struct FakeAuth {

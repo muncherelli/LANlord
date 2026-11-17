@@ -20,7 +20,7 @@ pub fn probe(session: &Session) -> Result<Internal> {
 }
 
 fn words(parts: &[&str]) -> Vec<String> {
-    parts.iter().map(|p| p.to_string()).collect()
+    parts.iter().map(ToString::to_string).collect()
 }
 
 #[cfg(all(test, unix))]

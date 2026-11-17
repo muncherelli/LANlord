@@ -3,9 +3,9 @@
 use lanlord_app::log;
 use lanlord_model::power::Power;
 
-use super::harness::*;
+use super::harness::{click_at, desktop, frames, idle, press, screen, type_text, until, with_host};
 use super::menu::Action;
-use super::*;
+use super::{egui, theme, Desktop, Target};
 
 fn open_menu(desktop: &mut Desktop, ctx: &egui::Context) {
     desktop.start_open = true;

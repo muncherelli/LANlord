@@ -11,11 +11,13 @@ except ImportError:  # the tests run this file without ansible
     class Error(Exception):
         pass
 
-LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
-INTERFACE = re.compile(r'^[A-Za-z0-9_.:-]{1,15}$')
-LEASE = re.compile(r'^([0-9]{1,5}[mhd]|infinite)$')
-MAC = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\Z')
+INTERFACE = re.compile(r'^[A-Za-z0-9_.:-]{1,15}\Z')
+LEASE = re.compile(r'^(\d{1,5}[mhd]|infinite)\Z', re.ASCII)
+MAC = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\Z')
 LEGACY_NAME = 'retronet'
+NAME = '.name'
+ADDRESS = '.address'
 
 
 def _ip(text, path):
@@ -53,6 +55,26 @@ def _inside(ip, network, gateway, path):
         raise Error('%s: %s is the network or broadcast address of %s' % (path, ip, network))
 
 
+def _hosts(raw, network, gateway, path, strict):
+    hosts = []
+    macs, addresses = set(), set()
+    for i, host in enumerate(raw or []):
+        where = '%s.hosts[%d]' % (path, i)
+        name = _label(host.get('name', ''), where + NAME)
+        mac = str(host.get('mac', ''))
+        if not MAC.match(mac):
+            raise Error('%s.mac must look like aa:bb:cc:dd:ee:ff' % where)
+        address = _ip(host.get('address', ''), where + ADDRESS)
+        if strict:
+            _inside(address, network, gateway, where + ADDRESS)
+            if mac.lower() in macs or address in addresses:
+                raise Error('%s: the mac or the address is used twice' % where)
+        macs.add(mac.lower())
+        addresses.add(address)
+        hosts.append({'name': name, 'mac': mac.lower(), 'address': str(address)})
+    return hosts
+
+
 def _dhcp(raw, network, gateway, path, strict):
     if not isinstance(raw, dict):
         raise Error('%s must be a mapping' % path)
@@ -69,22 +91,7 @@ def _dhcp(raw, network, gateway, path, strict):
     lease = str(raw.get('lease', '7d')).lower()
     if not LEASE.match(lease):
         raise Error('%s.lease must look like 30m, 12h, 7d or infinite' % path)
-    hosts = []
-    macs, addresses = set(), set()
-    for i, host in enumerate(raw.get('hosts') or []):
-        where = '%s.hosts[%d]' % (path, i)
-        name = _label(host.get('name', ''), where + '.name')
-        mac = str(host.get('mac', ''))
-        if not MAC.match(mac):
-            raise Error('%s.mac must look like aa:bb:cc:dd:ee:ff' % where)
-        address = _ip(host.get('address', ''), where + '.address')
-        if strict:
-            _inside(address, network, gateway, where + '.address')
-            if mac.lower() in macs or address in addresses:
-                raise Error('%s: the mac or the address is used twice' % where)
-        macs.add(mac.lower())
-        addresses.add(address)
-        hosts.append({'name': name, 'mac': mac.lower(), 'address': str(address)})
+    hosts = _hosts(raw.get('hosts'), network, gateway, path, strict)
     return {'range': [str(start), str(end)], 'lease': lease, 'hosts': hosts}
 
 
@@ -93,8 +100,8 @@ def _records(raw, path):
     for i, record in enumerate(raw or []):
         where = '%s.records[%d]' % (path, i)
         records.append({
-            'name': _label(record.get('name', ''), where + '.name'),
-            'address': str(_ip(record.get('address', ''), where + '.address')),
+            'name': _label(record.get('name', ''), where + NAME),
+            'address': str(_ip(record.get('address', ''), where + ADDRESS)),
         })
     return records
 
@@ -102,12 +109,12 @@ def _records(raw, path):
 def _network(item, path, strict, defaults=None):
     """one normalised network. `defaults` fills what the older settings leave to be detected."""
     defaults = defaults or {}
-    name = _label(item.get('name', ''), path + '.name')
+    name = _label(item.get('name', ''), path + NAME)
     interface = str(item.get('interface') or defaults.get('interface') or '')
     if not INTERFACE.match(interface):
         raise Error('%s.interface must be a plain interface name like eth1' % path)
     address = str(item.get('address') or defaults.get('address') or '')
-    ip, network = _address(address, path + '.address')
+    ip, network = _address(address, path + ADDRESS)
     mtu = item.get('mtu')
     if mtu is not None:
         if not isinstance(mtu, int) or isinstance(mtu, bool) or not 576 <= mtu <= 9000:
@@ -139,18 +146,26 @@ def lanlord_networks(settings, detected=None):
     """
     detected = detected or {}
     if settings.get('networks_defined'):
-        raw = settings.get('networks') or []
-        if not isinstance(raw, list):
-            raise Error('networks must be a list')
-        networks = []
-        for i, item in enumerate(raw):
-            if not isinstance(item, dict):
-                raise Error('networks[%d] must be a mapping' % i)
-            net = _network(item, 'networks[%d]' % i, True)
-            net.update({'dns_enabled': True, 'configure_address': True})
-            networks.append(net)
-        _unique(networks)
-        return networks
+        return _listed_networks(settings)
+    return _legacy_networks(settings, detected)
+
+
+def _listed_networks(settings):
+    raw = settings.get('networks') or []
+    if not isinstance(raw, list):
+        raise Error('networks must be a list')
+    networks = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise Error('networks[%d] must be a mapping' % i)
+        net = _network(item, 'networks[%d]' % i, True)
+        net.update({'dns_enabled': True, 'configure_address': True})
+        networks.append(net)
+    _unique(networks)
+    return networks
+
+
+def _legacy_networks(settings, detected):
     docker = settings.get('docker') or {}
     dns = settings.get('dns') if settings.get('dns_defined') else None
     legacy_address = docker.get('internal_address')
