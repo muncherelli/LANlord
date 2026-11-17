@@ -6,14 +6,15 @@ use std::time::Duration;
 
 use crate::protocol::{read_request, valid_user, Request, Verdict};
 
-/// the gid of the `admins` group, whose members may administer lanlord. it is fixed by
+/// the gid of the `admins` group, whose members may administer lanlord; any other account may
+/// log in too, but is told apart. it is fixed by
 /// lanlord's id scheme (built-in groups live in 9000-9998), the same on every gateway.
 pub const ADMINS_GID: u32 = 9998;
 
 /// its name, for the journal.
 pub const ADMINS_GROUP: &str = "admins";
 
-/// every answer but `ok` takes this long (plus up to `JITTER`), counted from when the helper
+/// every answer but `ok` and `ok user` takes this long (plus up to `JITTER`), counted from when the helper
 /// started. it is the only delay: libpam's own failure delay is switched off, because it only
 /// applies to a wrong password and would tell that apart from a right password for an account
 /// that may not log in or is not an admin.
@@ -55,17 +56,20 @@ pub enum Decision {
     Ok,
     /// pam said no: wrong password, unknown user, expired or locked account.
     Refused,
-    /// the password is right, but the user is not in the admins group.
+    /// the password is right, and the user is an ordinary account outside the admins group.
     NotAdmin,
+    /// the password is right, but the account is a system or service account.
+    System,
     Error(&'static str),
 }
 
 impl Decision {
-    /// what the caller hears: `Refused` and `NotAdmin` are the same to it.
+    /// what the caller hears: `Refused` and `System` are the same to it.
     pub fn verdict(self) -> Verdict {
         match self {
             Decision::Ok => Verdict::Ok,
-            Decision::Refused | Decision::NotAdmin => Verdict::Denied,
+            Decision::NotAdmin => Verdict::User,
+            Decision::Refused | Decision::System => Verdict::Denied,
             Decision::Error(code) => Verdict::Error(code),
         }
     }
@@ -79,6 +83,13 @@ pub fn caller(args: &[String]) -> Result<Option<String>, &'static str> {
         [flag, name] if flag == "--caller" && valid_user(name) => Ok(Some(name.clone())),
         _ => Err("usage"),
     }
+}
+
+/// whether a uid is no person's: below 1000 are system accounts (root among them), 9000-9999 is
+/// lanlord's own range (its service accounts, such as the web ui's at 9999) and 65534 is nobody.
+/// lanlord's people live from 10000 up, other accounts from 1000.
+pub fn reserved_uid(uid: u32) -> bool {
+    uid < 1000 || (9000..=9999).contains(&uid) || uid == 65534
 }
 
 /// pam first, always, so an unknown user costs the same as a known one; the group only after
@@ -132,13 +143,13 @@ pub fn answer(
             say(format!("refused uid {uid}: cannot set socket timeouts"));
             return Verdict::Error(code);
         }
-        let Some(caller) = caller else {
+        let Some(ref caller) = caller else {
             say(format!(
                 "refused uid {uid}: no --caller account to compare with"
             ));
             return Verdict::Error("usage");
         };
-        match system.uid_of(&caller) {
+        match system.uid_of(caller) {
             Ok(Some(allowed)) if allowed == uid => {}
             Ok(_) => {
                 say(format!("refused uid {uid}: only {caller} may ask"));
@@ -160,7 +171,15 @@ pub fn answer(
             return Verdict::Error(code);
         }
     };
-    let decision = decide(&request, pam, groups);
+    let mut decision = decide(&request, pam, groups);
+    if matches!(decision, Decision::Ok | Decision::NotAdmin) {
+        let named_caller = caller.as_deref() == Some(request.user.as_str());
+        match system.uid_of(&request.user) {
+            Ok(Some(uid)) if !reserved_uid(uid) && !named_caller => {}
+            Ok(_) => decision = Decision::System,
+            Err(code) => decision = Decision::Error(code),
+        }
+    }
     let user = match decision {
         Decision::Refused | Decision::Error(_)
             if !matches!(system.uid_of(&request.user), Ok(Some(_))) =>
@@ -174,21 +193,23 @@ pub fn answer(
         .as_deref()
         .map_or_else(String::new, |rhost| format!(" from {rhost}"));
     say(match decision {
-        Decision::Ok => format!("web ui login for {user}{client}: ok"),
+        Decision::Ok => format!("web ui login for {user}{client}: ok, admin"),
         Decision::Refused => format!("web ui login for {user}{client}: denied"),
         Decision::NotAdmin => format!(
-            "web ui login for {user}{client}: denied, right password but not in group \
-             {ADMINS_GROUP} (gid {ADMINS_GID})"
+            "web ui login for {user}{client}: ok, not in group {ADMINS_GROUP} (gid {ADMINS_GID})"
         ),
+        Decision::System => {
+            format!("web ui login for {user}{client}: denied, a system account")
+        }
         Decision::Error(code) => format!("web ui login for {user}{client}: error {code}"),
     });
     decision.verdict()
 }
 
 /// how much longer to wait before answering `verdict`, `elapsed` after the helper started, with
-/// `jitter` (at most `JITTER`) added to every answer but `ok`.
+/// `jitter` (at most `JITTER`) added to every answer but a success.
 pub fn padding(verdict: Verdict, elapsed: Duration, jitter: Duration) -> Duration {
-    if verdict == Verdict::Ok {
+    if matches!(verdict, Verdict::Ok | Verdict::User) {
         Duration::ZERO
     } else {
         (FAIL_DELAY + jitter.min(JITTER)).saturating_sub(elapsed)
@@ -263,6 +284,7 @@ mod tests {
             match user {
                 "lanlord" => self.lanlord,
                 "alice" => Ok(Some(10000)),
+                "root" => Ok(Some(0)),
                 _ => Ok(None),
             }
         }
@@ -317,6 +339,16 @@ mod tests {
     }
 
     #[test]
+    fn only_people_may_log_in() {
+        for uid in [0, 1, 999, 9000, 9999, 65534] {
+            assert!(reserved_uid(uid), "{uid}");
+        }
+        for uid in [1000, 1500, 8999, 10000, 20000] {
+            assert!(!reserved_uid(uid), "{uid}");
+        }
+    }
+
+    #[test]
     fn a_wrong_password_is_refused_without_looking_at_groups() {
         let groups = FakeGroups::new(Ok(true));
         assert_eq!(
@@ -341,9 +373,10 @@ mod tests {
     }
 
     #[test]
-    fn the_caller_cannot_tell_a_wrong_password_from_a_non_admin() {
+    fn the_caller_cannot_tell_a_wrong_password_from_a_system_account() {
         assert_eq!(Decision::Refused.verdict(), Verdict::Denied);
-        assert_eq!(Decision::NotAdmin.verdict(), Verdict::Denied);
+        assert_eq!(Decision::System.verdict(), Verdict::Denied);
+        assert_eq!(Decision::NotAdmin.verdict(), Verdict::User);
         assert_eq!(Decision::Ok.verdict(), Verdict::Ok);
         assert_eq!(Decision::Error("pam").verdict(), Verdict::Error("pam"));
     }
@@ -364,7 +397,7 @@ mod tests {
         let request = b"alice\0secret\x00192.0.2.7\0";
         let (verdict, log) = run(&system, &lanlord(), request, Ok(true), true);
         assert_eq!(verdict, Verdict::Ok);
-        assert_eq!(log, "web ui login for alice from 192.0.2.7: ok\n");
+        assert_eq!(log, "web ui login for alice from 192.0.2.7: ok, admin\n");
         assert!(system.timeouts_set.get(), "a socket gets timeouts");
 
         let (verdict, log) = run(&system, &lanlord(), request, Ok(false), true);
@@ -372,12 +405,22 @@ mod tests {
         assert_eq!(log, "web ui login for alice from 192.0.2.7: denied\n");
 
         let (verdict, log) = run(&system, &lanlord(), request, Ok(true), false);
-        assert_eq!(verdict, Verdict::Denied);
+        assert_eq!(verdict, Verdict::User);
         assert_eq!(
             log,
-            "web ui login for alice from 192.0.2.7: denied, right password but not in group \
-             admins (gid 9998)\n"
+            "web ui login for alice from 192.0.2.7: ok, not in group admins (gid 9998)\n"
         );
+
+        // a system account or the web ui's own is refused even with the right password
+        for name in ["root", "lanlord"] {
+            let bytes = format!("{name}\0secret\0");
+            let (verdict, log) = run(&system, &lanlord(), bytes.as_bytes(), Ok(true), true);
+            assert_eq!(verdict, Verdict::Denied, "{name}");
+            assert_eq!(
+                log,
+                format!("web ui login for {name}: denied, a system account\n")
+            );
+        }
 
         let (verdict, log) = run(&system, &lanlord(), b"alice\0secret\0", Err("pam"), true);
         assert_eq!(verdict, Verdict::Error("pam"));
@@ -505,7 +548,7 @@ mod tests {
         let jitter = Duration::from_millis(100);
         let waits: Vec<Duration> = [
             Decision::Refused,
-            Decision::NotAdmin,
+            Decision::System,
             Decision::Error("pam"),
             Decision::Error("bad-request"),
         ]
@@ -517,6 +560,7 @@ mod tests {
             "{waits:?}"
         );
         assert_eq!(padding(Verdict::Ok, elapsed, jitter), Duration::ZERO);
+        assert_eq!(padding(Verdict::User, elapsed, jitter), Duration::ZERO);
     }
 
     #[test]

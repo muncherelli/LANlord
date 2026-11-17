@@ -3,7 +3,9 @@
 //! the request is `user NUL password NUL`, optionally followed by the client's ip address and a
 //! NUL (handed to pam as the remote host), nothing before or after it, and the caller then shuts
 //! down its writing side so the helper sees the end. the answer is one line:
-//! `ok`, `denied` or `error <code>`, and the exit status says the same (0, 1, 2).
+//! `ok` (the password is right and the user is in the admins group), `ok user` (the password is
+//! right, the user is an ordinary account), `denied` or `error <code>`, and the exit status says
+//! the same (0, 0, 1, 2).
 
 use std::fmt;
 use std::io::Read;
@@ -37,10 +39,12 @@ impl fmt::Debug for Request {
 /// what the helper answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// the password is right and the user may administer lanlord.
+    /// the password is right and the user is in the admins group.
     Ok,
+    /// the password is right and the user may log in, but is not in the admins group.
+    User,
     /// anything else about the login: an unknown user, a wrong password, an expired or locked
-    /// account, or a user outside the admins group. all of them look the same to the caller.
+    /// account, or a system or service account. all of them look the same to the caller.
     Denied,
     /// the request or the helper itself is broken; the code says how, never anything about
     /// the user.
@@ -52,6 +56,7 @@ impl Verdict {
     pub fn line(&self) -> String {
         match self {
             Verdict::Ok => "ok".to_string(),
+            Verdict::User => "ok user".to_string(),
             Verdict::Denied => "denied".to_string(),
             Verdict::Error(code) => format!("error {code}"),
         }
@@ -59,7 +64,7 @@ impl Verdict {
 
     pub fn exit_code(&self) -> u8 {
         match self {
-            Verdict::Ok => 0,
+            Verdict::Ok | Verdict::User => 0,
             Verdict::Denied => 1,
             Verdict::Error(_) => 2,
         }
@@ -249,6 +254,10 @@ mod tests {
         assert_eq!(
             (Verdict::Ok.line(), Verdict::Ok.exit_code()),
             ("ok".into(), 0)
+        );
+        assert_eq!(
+            (Verdict::User.line(), Verdict::User.exit_code()),
+            ("ok user".into(), 0)
         );
         assert_eq!(
             (Verdict::Denied.line(), Verdict::Denied.exit_code()),
