@@ -9,11 +9,11 @@
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 
-use lanlord_core::settings::Settings;
 pub use lanlord_model::components::Selection;
 use lanlord_model::components::{
     catalogue, networks_from_settings, Attachment, Choice, Component, Network,
 };
+use lanlord_model::settings::Settings;
 
 use crate::remote::Remote;
 use crate::services::Services;
@@ -670,6 +670,7 @@ impl Components {
             id: "component-details",
             title: component.name().to_string(),
             body,
+            escape: Some(Msg::CloseDetails),
         })
     }
 }

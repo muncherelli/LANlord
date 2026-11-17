@@ -1,12 +1,13 @@
 //! the My Server window: what the signed-in server is (General) and the one dangerous thing you
 //! can do to it (Advanced): take lanlord back off.
 
-use lanlord_core::log::{emit, Kind};
-use lanlord_core::server::ServerFacts;
+use lanlord_model::server::ServerFacts;
+
+use crate::log::{emit, Kind};
 
 use crate::remote::Remote;
 use crate::services::Services;
-use crate::view::{self, Button, Dialog, Node};
+use crate::view::{self, Button, Dialog, Node, Size};
 
 pub const GENERAL: usize = 0;
 
@@ -322,8 +323,11 @@ impl MyServer {
             Node::Text(format!("Type {} to confirm:", purge.host)),
             Node::Input {
                 value: purge.typed.clone(),
-                width: 240.0,
-                edit: Msg::Typed,
+                size: Size::Points(240.0),
+                hint: String::new(),
+                focus: false,
+                edit: Box::new(Msg::Typed),
+                enter: None,
             },
             Node::Gap(6.0),
             Node::Buttons(vec![
@@ -343,6 +347,7 @@ impl MyServer {
             id: "purge-box",
             title: "Remove LANlord".into(),
             body,
+            escape: None,
         })
     }
 

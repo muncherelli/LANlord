@@ -1,8 +1,8 @@
 //! the LANlord menu: the server it works on, the windows, power actions, updates and quitting.
 //! the rows are built here; each front end draws them and hands back the chosen action.
 
-use lanlord_core::modules::MODULES;
-use lanlord_core::power::Power;
+use lanlord_model::modules::MODULES;
+use lanlord_model::power::Power;
 
 use crate::desktop::Target;
 

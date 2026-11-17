@@ -2983,8 +2983,14 @@ name = "lanlord-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "lanlord-core",
  "lanlord-model",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "zeroize",
 ]
 

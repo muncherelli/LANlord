@@ -3,8 +3,50 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "native")]
 use lanlord_core::hosts;
-use lanlord_core::ssh::Session;
+
+/// the browser has no hosts file (and only ever manages the gateway it came from), so the list
+/// lives in memory there.
+#[cfg(not(feature = "native"))]
+mod hosts {
+    use std::io;
+    use std::path::Path;
+
+    pub fn load(_path: &Path) -> Vec<String> {
+        Vec::new()
+    }
+
+    pub fn add(_path: &Path, _host: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no hosts file here",
+        ))
+    }
+
+    pub fn remove(_path: &Path, _host: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no hosts file here",
+        ))
+    }
+}
+
+/// is `host` something ssh can reach, like user@gateway?
+#[cfg(feature = "native")]
+fn check(host: &str) -> Result<(), String> {
+    lanlord_core::ssh::Session::new(host)
+        .map(drop)
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(not(feature = "native"))]
+fn check(host: &str) -> Result<(), String> {
+    if host.chars().any(char::is_whitespace) {
+        return Err(format!("{host} is not a host name"));
+    }
+    Ok(())
+}
 
 pub struct HostList {
     path: Option<PathBuf>,
@@ -48,7 +90,7 @@ impl HostList {
         if host.is_empty() {
             return Err("type a host like user@gateway".into());
         }
-        Session::new(host).map_err(|err| err.to_string())?;
+        check(host)?;
         let saved = match &self.path {
             Some(path) => hosts::add(path, host).map(|()| self.hosts = hosts::load(path)),
             None => Ok(()),
