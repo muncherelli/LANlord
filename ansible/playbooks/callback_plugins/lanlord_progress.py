@@ -21,6 +21,26 @@ DOCUMENTATION = """
 MARKER = "LANLORD_EVENT "
 
 
+def runs(task, only_tags, skip_tags):
+    """does this one task count: not meta, and not left out by --tags or --skip-tags?"""
+    if getattr(task, "action", "") in ("meta", "ansible.builtin.meta"):
+        return False
+    if not (only_tags or skip_tags):
+        return True
+    try:
+        return bool(task.evaluate_tags(only_tags or [], skip_tags or [], {}))
+    except Exception:
+        return True
+
+
+def count_block(block, only_tags, skip_tags):
+    """tasks in a block, its rescue and its always section."""
+    n = 0
+    for part in ("block", "rescue", "always"):
+        n += count_tasks(getattr(block, part, None), only_tags, skip_tags)
+    return n
+
+
 def count_tasks(blocks, only_tags=None, skip_tags=None):
     """tasks in `blocks`, flattened: blocks count by what is in them, meta tasks not at all,
     and tasks that --tags or --skip-tags leave out never run, so they are not counted."""
@@ -28,21 +48,10 @@ def count_tasks(blocks, only_tags=None, skip_tags=None):
     for item in blocks or []:
         if isinstance(item, list):
             n += count_tasks(item, only_tags, skip_tags)
-            continue
-        if item.__class__.__name__ == "Block":
-            n += count_tasks(item.block, only_tags, skip_tags)
-            n += count_tasks(getattr(item, "rescue", None), only_tags, skip_tags)
-            n += count_tasks(getattr(item, "always", None), only_tags, skip_tags)
-            continue
-        if getattr(item, "action", "") in ("meta", "ansible.builtin.meta"):
-            continue
-        if only_tags or skip_tags:
-            try:
-                if not item.evaluate_tags(only_tags or [], skip_tags or [], {}):
-                    continue
-            except Exception:
-                pass
-        n += 1
+        elif item.__class__.__name__ == "Block":
+            n += count_block(item, only_tags, skip_tags)
+        elif runs(item, only_tags, skip_tags):
+            n += 1
     return n
 
 
