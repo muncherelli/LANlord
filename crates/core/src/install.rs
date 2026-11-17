@@ -390,7 +390,7 @@ tar -C /opt/lanlord/web-stage/web -xf "*) ;;
       *'mkdir -p "$S/web"'*) echo web-prepare >> "$D/log" ;;
       "sha256sum "*)
         for f in up-server up-helper up-web; do
-          printf '%s  x\n' "$(shasum -a 256 "$D/$f" | cut -d' ' -f1)"
+          printf '%s  x\n' "$({ sha256sum "$D/$f" 2>/dev/null || shasum -a 256 "$D/$f"; } | cut -d' ' -f1)"
         done
         if [ -f "$D/bad-upload" ]; then echo "0000  x"; fi ;;
       "rm -rf /opt/lanlord/web-stage"*|"rm -rf '/opt/lanlord/web-stage'"*) echo web-clean >> "$D/log" ;;

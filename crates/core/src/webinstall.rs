@@ -465,7 +465,12 @@ mod tests {
             );
             stub("chown", "exit 0".into());
             stub("systemctl", "exit 0".into());
-            stub("sha256sum", "exec shasum -a 256 \"$@\"".into());
+            stub(
+                "sha256sum",
+                "for d in /usr/bin /bin; do [ -x \"$d/sha256sum\" ] && exec \"$d/sha256sum\" \"$@\"; done\n\
+                 exec shasum -a 256 \"$@\""
+                    .into(),
+            );
             Scratch(dir)
         }
 
