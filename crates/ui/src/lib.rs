@@ -91,6 +91,7 @@ pub fn run() -> anyhow::Result<()> {
                 update::dev_repo(),
                 std::env::current_exe().ok(),
             );
+            desktop.set_prefs(prefs::path());
             if std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1") {
                 desktop.use_demo_server();
             }

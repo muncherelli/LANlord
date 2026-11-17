@@ -17,6 +17,8 @@ pub enum Target {
     DateTime,
     /// the components setup wizard, opened from the menu; it has no desktop icon.
     Components,
+    /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
+    Welcome,
 }
 
 impl Target {
@@ -31,6 +33,7 @@ impl Target {
             Self::Settings => "settings",
             Self::DateTime => "datetime",
             Self::Components => "components",
+            Self::Welcome => "welcome",
         }
     }
 
@@ -44,6 +47,7 @@ impl Target {
             Self::Settings => "Settings",
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
+            Self::Welcome => "Welcome",
         }
     }
 
@@ -63,6 +67,7 @@ impl Target {
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
+            Self::Welcome => (580.0, 380.0),
         }
     }
 }
@@ -75,6 +80,14 @@ pub fn icons(enabled: Option<&Selection>) -> Vec<Target> {
     icons.extend(modules(enabled).into_iter().map(Target::Module));
     icons.extend([Target::Settings, Target::Console, Target::Hosts]);
     icons
+}
+
+/// the windows that exist for `icons`: the desktop icons plus the Components wizard, which has
+/// none.
+pub fn windows(icons: &[Target]) -> Vec<Target> {
+    let mut windows = icons.to_vec();
+    windows.push(Target::Components);
+    windows
 }
 
 /// the positions in `MODULES` of the components switched on in `enabled`.
@@ -132,6 +145,7 @@ mod tests {
         assert_eq!(ids.len(), icons.len());
         assert!(!icons.contains(&Target::DateTime));
         assert!(!icons.contains(&Target::Components));
+        assert!(!icons.contains(&Target::Welcome));
     }
 
     #[test]

@@ -148,6 +148,10 @@ pub fn rows(state: &State) -> Vec<Row> {
         }));
     }
     rows.push(Row::Separator);
+    rows.push(Row::Item(Item::new(
+        "Welcome...",
+        Action::Open(Target::Welcome),
+    )));
     rows.push(Row::Item(Item::new("About LANlord", Action::About)));
     rows.push(Row::Item(Item::new("Quit LANlord", Action::Quit)));
     rows

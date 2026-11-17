@@ -822,3 +822,42 @@ fn the_components_window_opens_as_a_wizard_with_a_check_list() {
     frame(&mut shell);
     assert!(shell.windows.iter().all(|w| w.target != Target::Components));
 }
+
+#[test]
+fn the_welcome_window_opens_after_logon_only_while_its_box_is_ticked() {
+    let dir = std::env::temp_dir().join(format!("lanlord-tui-welcome-{}", std::process::id()));
+    let file = dir.join("prefs");
+    let signed_in = |user: &str| lanlord_app::login::SignedIn {
+        target: format!("{user}@gw.lan"),
+        identity: lanlord_core::signin::Identity {
+            user: user.into(),
+            uid: 1000,
+        },
+    };
+    let mut shell = demo();
+    shell.set_prefs(Some(file.clone()));
+    shell.finish_login(signed_in("alice"));
+    let text = frame(&mut shell);
+    assert!(shell.windows.iter().any(|w| w.target == Target::Welcome));
+    for needle in [
+        "Networks",
+        "Open Networks",
+        "Show this Welcome screen",
+        "Close",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    // clearing the box is remembered for that account only
+    shell.welcome.update(lanlord_app::welcome::Msg::Toggle, &[]);
+    for (user, shown) in [("alice", false), ("bob", true)] {
+        let mut shell = demo();
+        shell.set_prefs(Some(file.clone()));
+        shell.finish_login(signed_in(user));
+        assert_eq!(
+            shell.windows.iter().any(|w| w.target == Target::Welcome),
+            shown,
+            "{user}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -26,6 +26,7 @@ use lanlord_app::tasks::PasswordRequest;
 use lanlord_app::users_panel::UsersPanel;
 use lanlord_app::view::{Dialog, Node};
 use lanlord_app::wake::Wake;
+use lanlord_app::welcome::Welcome;
 use lanlord_app::{hosts_window, module_window};
 use lanlord_core::modules::MODULES;
 use lanlord_core::power::Power;
@@ -221,6 +222,7 @@ pub struct Shell {
     my_server: MyServer,
     settings: SettingsWindow,
     components: Components,
+    welcome: Welcome,
     users: UsersPanel,
     nt4: Nt4Panel,
     logon: LogonPanel,
@@ -254,6 +256,8 @@ pub struct Shell {
     drag: Option<(Target, u16, u16)>,
     /// windows that asked to be closed from inside (OK or Cancel).
     close_requests: Vec<Target>,
+    /// windows a click asked to open, opened after the frame.
+    open_next: Vec<Target>,
     mouse: Mouse,
     hits: Hits,
     /// the clock text; the local time unless a test sets it.
@@ -272,6 +276,7 @@ impl Shell {
             my_server: MyServer::default(),
             settings: SettingsWindow::default(),
             components: Components::default(),
+            welcome: Welcome::new(None),
             users: UsersPanel::default(),
             nt4: Nt4Panel::default(),
             logon: LogonPanel::default(),
@@ -295,6 +300,7 @@ impl Shell {
             dialog_id: None,
             drag: None,
             close_requests: Vec::new(),
+            open_next: Vec::new(),
             mouse: Mouse::new(),
             hits: Hits::default(),
             clock: None,
@@ -354,7 +360,16 @@ impl Shell {
         if signed_in.identity.is_root() {
             self.admin_setup = Some(AdminSetup::new());
         }
+        let account = signed_in.identity.user.clone();
         self.signed_in = Some(signed_in);
+        if self.welcome.logon(&account) {
+            self.open(Target::Welcome);
+        }
+    }
+
+    /// keep the Welcome screen's tick box in the preferences file at `path`.
+    pub fn set_prefs(&mut self, path: Option<std::path::PathBuf>) {
+        self.welcome = Welcome::new(path);
     }
 
     fn admin_outcome(&mut self, outcome: admin_setup::Outcome) {
@@ -425,6 +440,9 @@ impl Shell {
             }
             if target == Target::Components {
                 self.components.open();
+            }
+            if target == Target::Welcome {
+                self.welcome.reopen();
             }
             let rect = self.place(target);
             self.windows.push(Win {
@@ -590,6 +608,9 @@ impl Shell {
                 self.feed.refresh();
             }
         }
+        for target in std::mem::take(&mut self.open_next) {
+            self.open(target);
+        }
         self.console.drain();
         self.settings.poll();
         if self.settings.take_saved() {
@@ -724,6 +745,21 @@ impl Shell {
                     }
                 } else if self.clock_panel.closing() {
                     self.close_requests.push(Target::DateTime);
+                }
+                answer
+            }
+            Target::Welcome => {
+                let windows = desktop::windows(&self.icons);
+                let nodes = self.welcome.view(&windows);
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let Some(msg) = msg {
+                    self.welcome.update(msg, &windows);
+                }
+                if let Some(target) = self.welcome.take_open() {
+                    self.open_next.push(target);
+                }
+                if self.welcome.take_done() {
+                    self.close_requests.push(Target::Welcome);
                 }
                 answer
             }
