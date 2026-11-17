@@ -78,7 +78,7 @@ type Keys = fn() -> Result<Option<crypto::Identity>>;
 
 /// run `op` through `session` for `caller`. `host` names the server in the settings and
 /// messages.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn execute_with(
     session: &Session,
     host: &str,
