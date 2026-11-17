@@ -9,6 +9,30 @@
     mode: "0750"
   when: net_manager.stdout == 'systemd-networkd'
 
+# a drop-in only extends a .network file that matches the interface. proxmox writes one for each
+# container nic, but a nic added on incus or bare metal often has none and stays unmanaged
+- name: see which .network file manages the interface (systemd-networkd)
+  ansible.builtin.command: "networkctl status -n0 --no-pager {{ lan.interface }}"
+  register: networkd_status
+  changed_when: false
+  failed_when: false
+  when: net_manager.stdout == 'systemd-networkd'
+
+- name: give an unmanaged interface a .network file of its own (systemd-networkd)
+  ansible.builtin.copy:
+    dest: "/etc/systemd/network/{{ lan.interface }}.network"
+    content: |
+      # written by lanlord because nothing else managed this interface; the address is in the drop-in
+      [Match]
+      Name={{ lan.interface }}
+    force: false
+    group: systemd-network
+    mode: "0640"
+  register: networkd_base
+  when:
+    - net_manager.stdout == 'systemd-networkd'
+    - networkd_status.stdout is search('Network File:\\s+n/a')
+
 # proxmox rewrites the main .network file of a container, but never this drop-in
 - name: give the interface its address (systemd-networkd)
   ansible.builtin.copy:
@@ -29,7 +53,7 @@
 - name: apply the new address (systemd-networkd)
   ansible.builtin.command: networkctl reload
   changed_when: true
-  when: networkd_address is changed
+  when: networkd_address is changed or networkd_base is changed
 
 - name: find the NetworkManager connection of the interface
   ansible.builtin.command: "nmcli -g GENERAL.CONNECTION device show {{ lan.interface }}"
