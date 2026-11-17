@@ -55,6 +55,9 @@ pub trait Gateway: Send + Sync {
         false
     }
 
+    /// forget that the session ended, once the person has signed in again.
+    fn session_restored(&self) {}
+
     /// set the gateway up for lanlord.
     fn bootstrap(&self, host: &str, ask: AskPassword) -> Result<()> {
         done(self.call(host, Op::Bootstrap, ask)?, "bootstrap")

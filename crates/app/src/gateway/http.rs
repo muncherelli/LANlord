@@ -66,6 +66,10 @@ impl Gateway for Http {
     fn session_ended(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
     }
+
+    fn session_restored(&self) {
+        self.ended.store(false, Ordering::SeqCst);
+    }
 }
 
 async fn post(endpoint: &str, request: Request) -> Result<Reply> {

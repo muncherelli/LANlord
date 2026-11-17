@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, Result};
 use lanlord_model::ops::{Op, Reply, Response};
+use lanlord_model::secret::Secret;
 
 /// what a retry with a password that still did not work says.
 pub const WRONG_PASSWORD: &str = "wrong password";
@@ -54,7 +55,12 @@ impl std::error::Error for SessionEnded {}
 /// minutes get longer than the server's own 15 minute limit, so its answer is the one shown.
 pub fn timeout_ms(op: &Op) -> i32 {
     match op {
-        Op::Apply { .. } | Op::Power { .. } | Op::ClockApply { .. } => 16 * 60 * 1000,
+        Op::Apply { .. }
+        | Op::Power { .. }
+        | Op::ClockApply { .. }
+        | Op::Purge { .. }
+        | Op::Run { .. }
+        | Op::Bootstrap => 16 * 60 * 1000,
         _ => 30_000,
     }
 }
@@ -79,9 +85,31 @@ fn is_session_error(body: &str) -> bool {
         .is_some_and(|v| v.get("error").and_then(|e| e.as_str()) == Some("session"))
 }
 
+/// the answer to the retry that carried `given`, and the password to keep for the task's later
+/// ops: only one the server did not ask for again, so a wrong one is never sent twice.
+pub fn after_retry(given: Secret, again: Result<Reply>) -> (Option<Secret>, Result<Reply>) {
+    let keep = !matches!(again, Ok(Reply::NeedsPassword { .. }));
+    (keep.then_some(given), retried(again))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrong_password_is_not_kept_for_later_ops() {
+        let asked = || Ok(Reply::NeedsPassword { prompt: "x".into() });
+        let (kept, answer) = after_retry(Secret::from("bad"), asked());
+        assert!(kept.is_none());
+        assert_eq!(answer.unwrap_err().to_string(), WRONG_PASSWORD);
+        // the next op has no password, so it asks again
+        assert!(matches!(first(asked()), Step::Ask(_)));
+        let (kept, answer) = after_retry(Secret::from("good"), Ok(Reply::Done));
+        assert_eq!(kept, Some(Secret::from("good")));
+        assert!(answer.is_ok());
+        let (kept, _) = after_retry(Secret::from("pw"), Err(anyhow!("down")));
+        assert!(kept.is_some());
+    }
 
     #[test]
     fn a_401_session_answer_is_typed_and_other_401s_are_not() {
@@ -119,6 +147,13 @@ mod tests {
             Op::Power {
                 power: lanlord_model::power::Power::Reboot,
             },
+            Op::Purge {
+                remove_admins: false,
+            },
+            Op::Run {
+                command: vec!["true".into()],
+            },
+            Op::Bootstrap,
         ] {
             assert!(timeout_ms(&op) > 15 * 60 * 1000);
         }

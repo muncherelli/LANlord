@@ -46,8 +46,9 @@ pub async fn run<T>(
                     None => Err(anyhow!(CANCELLED)),
                     Some(given) => {
                         let again = http.exchange(op.clone(), Some(given.clone())).await;
-                        password = Some(given);
-                        round_trip::retried(again)
+                        let (kept, answer) = round_trip::after_retry(given, again);
+                        password = kept;
+                        answer
                     }
                 },
             },

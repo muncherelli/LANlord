@@ -90,6 +90,11 @@ impl Services {
         self.gateway.session_ended()
     }
 
+    /// the person signed in again: stop reporting the session as ended.
+    pub fn session_restored(&self) {
+        self.gateway.session_restored()
+    }
+
     /// is lanlord running on the gateway itself?
     pub fn is_local(&self) -> bool {
         self.gateway.is_local()
