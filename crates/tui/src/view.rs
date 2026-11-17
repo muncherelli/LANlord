@@ -913,7 +913,21 @@ impl<'a> Painter<'a> {
                     let label_room = inner.width.saturating_sub(7 + detail + 1);
                     text(buf, inner.x + 6, y, label_room, &row.label, self.st(fg, bg));
                     let at = inner.right().saturating_sub(detail + 1).max(inner.x);
-                    text(buf, at, y, detail + 1, &row.detail, self.st(fg, bg));
+                    match lanlord_app::compat::parse_mark(&row.detail) {
+                        Some((status, rest)) => {
+                            let mark = lanlord_app::compat::mark(status);
+                            text(buf, at, y, 1, mark, bold(self.st(mark_colour(status), bg)));
+                            text(
+                                buf,
+                                at + 3,
+                                y,
+                                detail.saturating_sub(2),
+                                rest,
+                                self.st(fg, bg),
+                            );
+                        }
+                        None => text(buf, at, y, detail + 1, &row.detail, self.st(fg, bg)),
+                    }
                     self.push(line, path, Part::Row(n), false);
                     if row.enabled {
                         let box_rect = Rect::new(inner.x, y, 3.min(inner.width), 1);
@@ -1104,14 +1118,31 @@ impl<'a> Painter<'a> {
                             .get(c)
                             .copied()
                             .unwrap_or(inner.right().saturating_sub(x));
-                        text(
-                            buf,
-                            x,
-                            y,
-                            w.min(inner.right().saturating_sub(x)),
-                            cell,
-                            self.st(fg, bg),
-                        );
+                        let room = w.min(inner.right().saturating_sub(x));
+                        match lanlord_app::compat::parse_mark(cell) {
+                            Some((status, rest)) => {
+                                let mark = lanlord_app::compat::mark(status);
+                                text(
+                                    buf,
+                                    x,
+                                    y,
+                                    room,
+                                    mark,
+                                    bold(self.st(mark_colour(status), bg)),
+                                );
+                                if !rest.is_empty() {
+                                    text(
+                                        buf,
+                                        x + 3,
+                                        y,
+                                        room.saturating_sub(3),
+                                        rest,
+                                        self.st(fg, bg),
+                                    );
+                                }
+                            }
+                            None => text(buf, x, y, room, cell, self.st(fg, bg)),
+                        }
                         x = x.saturating_add(w);
                     }
                     self.push(line, path, Part::Row(n), false);
@@ -1552,6 +1583,17 @@ fn size_cells(size: &Size, room: u16) -> u16 {
     }
 }
 
+/// the colour of a status mark: green, red, amber or grey.
+fn mark_colour(status: lanlord_app::compat::Status) -> Rgb {
+    use lanlord_app::compat::Status;
+    match status {
+        Status::Ok => (0, 140, 0),
+        Status::Fail => (200, 0, 0),
+        Status::Warn => (176, 120, 0),
+        Status::Unknown => (110, 110, 110),
+    }
+}
+
 /// the yellow of the warning sign.
 const YELLOW: Rgb = (255, 255, 0);
 
@@ -1837,6 +1879,37 @@ mod tests {
         let (_, regions) = paint(&nodes, &ViewState::default());
         assert!(regions.iter().all(|r| r.part != Part::Press(0)));
         assert_eq!(act(&nodes, &[0], Input::Press(0)), None);
+    }
+
+    #[test]
+    fn status_marks_in_a_table_and_a_check_list_are_drawn_in_their_colours() {
+        use lanlord_app::compat::{mark, Status};
+        let all = [Status::Ok, Status::Fail, Status::Warn, Status::Unknown];
+        let nodes: Vec<Node<Msg>> = vec![Node::Table(Table {
+            id: "t",
+            headings: vec!["", "Check"],
+            widths: vec![20.0],
+            rows: all
+                .iter()
+                .map(|s| vec![mark(*s).to_string(), "a check".into()])
+                .collect(),
+            selected: None,
+            bad: Vec::new(),
+            height: 80.0,
+            select: Msg::Pick,
+        })];
+        let (buf, _) = paint(&nodes, &ViewState::default());
+        for status in all {
+            let want = style(Palette::default(), mark_colour(status), WHITE).fg;
+            let cell = buf
+                .content()
+                .iter()
+                .find(|c| c.symbol() == mark(status))
+                .unwrap_or_else(|| panic!("no mark for {status:?}"));
+            assert_eq!(cell.style().fg, want, "{status:?}");
+        }
+        assert_eq!(mark(Status::Ok), "\u{2713}");
+        assert_eq!(mark(Status::Fail), "\u{2717}");
     }
 
     #[test]

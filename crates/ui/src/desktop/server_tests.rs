@@ -259,3 +259,92 @@ fn the_server_windows_say_so_without_a_server() {
     assert!(desktop.my_server.facts().data.is_none());
     assert!(desktop.networks.rows.data.is_none());
 }
+
+const LXC_WITHOUT_FEATURES: &str =
+    "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\nnesting=no\nkeyctl=no\n";
+
+/// a signed-in desktop whose server answers the doctor with `probe`, report read.
+fn probed(probe: &str) -> (Desktop, egui::Context) {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.probe.lock().unwrap() = probe.into();
+    with_host(&mut desktop, &ctx);
+    desktop
+        .services
+        .compat()
+        .recheck(&desktop.services, "me@gw");
+    until(&mut desktop, &ctx, |d| {
+        d.services.compat().report("me@gw").is_some()
+    });
+    frames(&mut desktop, &ctx, 2);
+    (desktop, ctx)
+}
+
+#[test]
+fn the_tray_warns_only_when_something_switched_on_needs_what_fails() {
+    let (desktop, _ctx) = probed(LXC_WITHOUT_FEATURES);
+    assert!(
+        !desktop.compat_problems().is_empty(),
+        "docker components are on"
+    );
+    assert!(
+        desktop.compat_alert.balloon_up(),
+        "the balloon goes up once"
+    );
+
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    desktop.pinned = Some(Default::default());
+    frames(&mut desktop, &ctx, 2);
+    assert!(
+        desktop.compat_problems().is_empty(),
+        "nothing on needs them"
+    );
+
+    let (desktop, _ctx) =
+        probed("virt_container=lxc\nvirt_vm=none\nuid_map=0 0 4294967295\nnesting=yes\n");
+    assert!(
+        desktop.compat_problems().is_empty(),
+        "a privileged container is fine"
+    );
+    assert!(!desktop.compat_alert.balloon_up());
+}
+
+#[test]
+fn clicking_the_tray_sign_opens_the_compatibility_tab() {
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    assert!(press(&mut desktop, &ctx, "compat-tray"));
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    frames(&mut desktop, &ctx, 2);
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}
+
+#[test]
+fn the_welcome_button_opens_my_server_on_the_compatibility_tab() {
+    let (mut desktop, ctx, _fake) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::Welcome);
+    desktop.welcome.update(
+        lanlord_app::welcome::Msg::Topic(2),
+        &lanlord_app::desktop::windows(&desktop.icons),
+    );
+    frames(&mut desktop, &ctx, 2);
+    assert!(press(&mut desktop, &ctx, "Open Compatibility"));
+    frames(&mut desktop, &ctx, 2);
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}
+
+#[test]
+fn a_welcome_with_no_request_does_not_wipe_the_components_request_in_the_same_frame() {
+    let (mut desktop, ctx) = probed(LXC_WITHOUT_FEATURES);
+    // components draws first, welcome after it in the same frame
+    desktop.open(Target::Components);
+    desktop.open(Target::Welcome);
+    desktop.components.update(
+        lanlord_app::components::Msg::Compat,
+        &desktop.services,
+        "me@gw",
+    );
+    frames(&mut desktop, &ctx, 3);
+    assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
+    assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}

@@ -18,6 +18,8 @@ pub enum Msg {
     Topic(usize),
     /// open the window the topic is about.
     Open,
+    /// open My Server on its Compatibility tab.
+    OpenCompat,
     Close,
     /// tick or clear the show-each-time box.
     Toggle,
@@ -58,6 +60,7 @@ const TOPICS: &[Topic] = &[
         title: "My Server",
         text: &[
             "My Server is the computer LANlord runs on: its name, its address and what it is doing.",
+            "Its Compatibility tab checks what the server can do for the components, such as running docker in a container, and shows how to fix what is missing.",
             "Its Advanced page holds the actions that cannot be undone, such as a purge.",
         ],
         open: "Open My Server",
@@ -85,6 +88,7 @@ pub struct Welcome {
     prefs: Option<PathBuf>,
     done: bool,
     open: Option<Target>,
+    compat: bool,
 }
 
 impl Welcome {
@@ -97,6 +101,7 @@ impl Welcome {
             prefs,
             done: false,
             open: None,
+            compat: false,
         }
     }
 
@@ -145,6 +150,11 @@ impl Welcome {
         self.open.take()
     }
 
+    /// the Compatibility button was clicked, once: the desktop opens My Server on that tab.
+    pub fn take_compat(&mut self) -> bool {
+        std::mem::take(&mut self.compat)
+    }
+
     fn target(&self, id: &str, icons: &[Target]) -> Option<Target> {
         if id == "components" {
             return Some(Target::Components);
@@ -163,11 +173,20 @@ impl Welcome {
             .collect();
         let mut text: Vec<Node<Msg>> = topic.text.iter().map(|l| Node::Text((*l).into())).collect();
         text.push(Node::Gap(8.0));
-        text.push(Node::Button(Button::new(
+        let mut buttons_row = vec![Node::Button(Button::new(
             topic.open,
             self.target(topic.target, icons).is_some(),
             Msg::Open,
-        )));
+        ))];
+        if topic.target == "my-server" {
+            buttons_row.push(Node::Gap(6.0));
+            buttons_row.push(Node::Button(Button::new(
+                "Open Compatibility",
+                self.target(topic.target, icons).is_some(),
+                Msg::OpenCompat,
+            )));
+        }
+        text.push(Node::Row(buttons_row));
         vec![
             Node::Header {
                 icon: "my-server",
@@ -202,6 +221,10 @@ impl Welcome {
             Msg::Topic(i) if i < TOPICS.len() => self.topic = i,
             Msg::Topic(_) => {}
             Msg::Open => self.open = self.target(TOPICS[self.topic].target, icons),
+            Msg::OpenCompat => {
+                self.open = self.target("my-server", icons);
+                self.compat = self.open.is_some();
+            }
             Msg::Close => self.done = true,
             Msg::Toggle => {
                 self.show = !self.show;
@@ -225,6 +248,7 @@ mod tests {
                     out += &texts(body);
                 }
                 Node::Button(b) => out += &b.label,
+                Node::Row(items) => out += &texts(items),
                 Node::Columns(cols) => cols.iter().for_each(|(_, c)| out += &texts(c)),
                 Node::Check { label, .. } => out += label,
                 Node::Buttons(b) => b.iter().for_each(|b| out += &b.label),
@@ -258,6 +282,21 @@ mod tests {
             .view(&icons())
             .iter()
             .any(|n| matches!(n, Node::Check { checked: true, .. })));
+    }
+
+    #[test]
+    fn the_my_server_topic_mentions_and_opens_the_compatibility_tab() {
+        let mut w = Welcome::new(None);
+        w.update(Msg::Topic(2), &icons());
+        let text = texts(&w.view(&icons()));
+        assert!(text.contains("Compatibility tab"));
+        assert!(text.contains("Open Compatibility"));
+        w.update(Msg::OpenCompat, &icons());
+        assert_eq!(w.take_open(), Some(Target::MyServer));
+        assert!(w.take_compat());
+        assert!(!w.take_compat(), "once");
+        w.update(Msg::Topic(0), &icons());
+        assert!(!texts(&w.view(&icons())).contains("Open Compatibility"));
     }
 
     #[test]

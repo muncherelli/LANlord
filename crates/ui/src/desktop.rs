@@ -82,6 +82,10 @@ pub struct Desktop {
     pinned: Option<lanlord_app::components::Selection>,
     /// a window a window asked for; it opens once all the windows are drawn.
     open_next: Option<Target>,
+    /// the window opened from `open_next` shows My Server's Compatibility tab.
+    compat_next: bool,
+    /// the taskbar alert for what the components need and the server lacks.
+    compat_alert: crate::compat_alert::Alert,
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
     clock: ClockPanel,
     feed: ClockFeed,
@@ -151,6 +155,8 @@ impl Desktop {
             #[cfg(test)]
             pinned: None,
             open_next: None,
+            compat_next: false,
+            compat_alert: Default::default(),
             clock: ClockPanel::default(),
             feed: ClockFeed::default(),
             close_requests: Vec::new(),
@@ -250,6 +256,28 @@ impl Desktop {
         self.start_open = false;
     }
 
+    /// put My Server on its Compatibility tab.
+    fn show_compat_tab(&mut self) {
+        let host = self.host().unwrap_or_default();
+        self.my_server.update(
+            my_server::Msg::Tab(my_server::COMPATIBILITY),
+            &self.services,
+            &host,
+        );
+    }
+
+    /// the failing or warning checks that what the server has switched on needs.
+    fn compat_problems(&self) -> Vec<lanlord_model::doctor::Check> {
+        let Some(host) = self.host() else {
+            return Vec::new();
+        };
+        let (Some(report), Some(enabled)) = (self.services.compat().report(&host), self.enabled())
+        else {
+            return Vec::new();
+        };
+        lanlord_app::compat::problems(&report, &enabled)
+    }
+
     /// open the windows named in `spec`, like `gateway,nt4-domain@1`: ids from the desktop
     /// icons, and for the nt4 window the number of the tab. it lets the real desktop be opened
     /// on a chosen view, for screenshots.
@@ -278,7 +306,11 @@ impl Desktop {
                 self.open(target);
                 if id == "my-server" {
                     // @1 is the Advanced tab, @2 also asks before a purge
-                    let page = usize::from(tab == "1" || tab == "2");
+                    let page = match tab {
+                        "1" | "2" => my_server::ADVANCED,
+                        "3" | "compat" => my_server::COMPATIBILITY,
+                        _ => my_server::GENERAL,
+                    };
                     let host = self.host().unwrap_or_default();
                     self.my_server
                         .update(my_server::Msg::Tab(page), &self.services, &host);
@@ -422,6 +454,7 @@ impl Desktop {
         }
         let account = signed_in.identity.user.clone();
         self.signed_in = Some(signed_in);
+        self.compat_alert.reset();
         if self.welcome.logon(&account) {
             self.open(Target::Welcome);
         }
@@ -530,6 +563,12 @@ impl Desktop {
             self.after_purge(&host);
         }
         self.confirmation(ctx);
+        let raised = !self.compat_problems().is_empty();
+        self.compat_alert.tick(raised, ctx.input(|i| i.time));
+        if self.compat_alert.balloon(ctx, TASKBAR) {
+            self.open(Target::MyServer);
+            self.show_compat_tab();
+        }
         #[cfg(feature = "native")]
         self.update_notice(ctx);
         if let Some(mut dialog) = self.add_host.take() {
@@ -789,7 +828,11 @@ impl Desktop {
                 // the tray: a shallow sunken panel holding the update shield and the clock, whose
                 // text is flat inside it
                 let shield = self.update_shield();
-                let width = 6.0 + CLOCK + if shield { TRAY_ICON } else { 0.0 };
+                let warn = !self.compat_problems().is_empty();
+                let width = 6.0
+                    + CLOCK
+                    + if shield { TRAY_ICON } else { 0.0 }
+                    + if warn { TRAY_ICON } else { 0.0 };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
                 let clock_at = Rect::from_min_size(
@@ -824,9 +867,22 @@ impl Desktop {
                         BLACK,
                     );
                 }
-                if shield {
-                    let icon_at = Rect::from_min_size(
+                if warn {
+                    let sign_at = Rect::from_min_size(
                         Pos2::new(clock_at.left() - TRAY_ICON, tray.top()),
+                        Vec2::splat(TRAY_ICON),
+                    );
+                    let tip =
+                        "This server is missing features some components need. Click for details.";
+                    if crate::compat_alert::tray_sign(ui, sign_at, tip) {
+                        self.open(Target::MyServer);
+                        self.show_compat_tab();
+                    }
+                }
+                if shield {
+                    let shift = if warn { TRAY_ICON } else { 0.0 };
+                    let icon_at = Rect::from_min_size(
+                        Pos2::new(clock_at.left() - TRAY_ICON - shift, tray.top()),
                         Vec2::splat(TRAY_ICON),
                     );
                     #[cfg(feature = "native")]
@@ -932,6 +988,9 @@ impl Desktop {
         self.windows = windows;
         if let Some(target) = self.open_next.take() {
             self.open(target);
+            if std::mem::take(&mut self.compat_next) {
+                self.show_compat_tab();
+            }
         }
         if close.contains(&Target::DateTime) {
             // what the window changed shows on the taskbar clock, and so does the server's own drift
@@ -976,6 +1035,9 @@ impl Desktop {
                 if let Some(msg) = view::show(ui, &self.welcome.view(&windows)) {
                     self.welcome.update(msg, &windows);
                 }
+                if self.welcome.take_compat() {
+                    self.compat_next = true;
+                }
                 if let Some(target) = self.welcome.take_open() {
                     self.open_next = Some(target);
                 }
@@ -988,6 +1050,10 @@ impl Desktop {
                 components_window::show(&mut self.components, ui, &self.services, host.as_deref());
                 if self.components.take_done() {
                     self.close_requests.push(Target::Components);
+                }
+                if self.components.take_compat() {
+                    self.open_next = Some(Target::MyServer);
+                    self.compat_next = true;
                 }
             }
         }

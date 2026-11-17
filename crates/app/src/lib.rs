@@ -7,6 +7,7 @@ pub mod admin_setup;
 pub mod ask;
 pub mod clock_window;
 pub mod command_panel;
+pub mod compat;
 pub mod components;
 pub mod console;
 pub mod demo_clock;

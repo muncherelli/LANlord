@@ -48,6 +48,9 @@ use crate::view::{self, Input, Painter, Part, Region, ViewState};
 /// what a window body says when its window has not moved to the layout tree yet.
 pub const NOT_YET: &str = "This window is not available in the text view yet. Open it in the LANlord window or the web UI.";
 
+/// the warning item in the taskbar (F8 opens it too).
+const COMPAT_ALERT: &str = "! Compatibility (F8)";
+
 /// one open window: where it is and whether it is tucked into the taskbar.
 struct Win {
     target: Target,
@@ -258,6 +261,8 @@ pub struct Shell {
     close_requests: Vec<Target>,
     /// windows a click asked to open, opened after the frame.
     open_next: Vec<Target>,
+    /// My Server opens on its Compatibility tab at the next chance.
+    compat_next: bool,
     mouse: Mouse,
     hits: Hits,
     /// the clock text; the local time unless a test sets it.
@@ -301,6 +306,7 @@ impl Shell {
             drag: None,
             close_requests: Vec::new(),
             open_next: Vec::new(),
+            compat_next: false,
             mouse: Mouse::new(),
             hits: Hits::default(),
             clock: None,
@@ -611,6 +617,15 @@ impl Shell {
         for target in std::mem::take(&mut self.open_next) {
             self.open(target);
         }
+        if std::mem::take(&mut self.compat_next) {
+            if let Some(host) = self.host() {
+                self.my_server.update(
+                    lanlord_app::my_server::Msg::Tab(lanlord_app::my_server::COMPATIBILITY),
+                    &self.services,
+                    &host,
+                );
+            }
+        }
         self.console.drain();
         self.settings.poll();
         if self.settings.take_saved() {
@@ -755,6 +770,9 @@ impl Shell {
                 if let Some(msg) = msg {
                     self.welcome.update(msg, &windows);
                 }
+                if self.welcome.take_compat() {
+                    self.compat_next = true;
+                }
                 if let Some(target) = self.welcome.take_open() {
                     self.open_next.push(target);
                 }
@@ -772,6 +790,10 @@ impl Shell {
                     }
                     if self.components.take_done() {
                         self.close_requests.push(Target::Components);
+                    }
+                    if self.components.take_compat() {
+                        self.open_next.push(Target::MyServer);
+                        self.compat_next = true;
                     }
                     answer
                 }
@@ -1228,6 +1250,25 @@ impl Shell {
         self.render_dropdown(buf);
     }
 
+    /// does a switched-on component need something this server lacks? the same test as the
+    /// gui's warning sign in the tray.
+    pub fn compat_alert(&self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let (Some(report), Some(enabled)) = (self.services.compat().report(&host), self.enabled())
+        else {
+            return false;
+        };
+        !lanlord_app::compat::problems(&report, &enabled).is_empty()
+    }
+
+    /// open My Server on its Compatibility tab.
+    fn open_compat(&mut self) {
+        self.open(Target::MyServer);
+        self.compat_next = true;
+    }
+
     fn render_taskbar(&mut self, area: Rect, buf: &mut Buffer) {
         let clock = self.clock.clone().unwrap_or_else(|| self.feed.text());
         let shown: Vec<(Target, bool)> = self
@@ -1250,6 +1291,7 @@ impl Shell {
             menu_open: self.menu.is_some(),
             buttons: &buttons,
             clock: &clock,
+            alert: self.compat_alert().then_some(COMPAT_ALERT),
             palette: self.palette,
         };
         self.hits.taskbar = Some(taskbar.layout(bar));
@@ -1576,6 +1618,10 @@ impl Shell {
                 self.menu = Some(0);
                 return;
             }
+            if bar.alert.is_some_and(|a| a.contains(at)) {
+                self.open_compat();
+                return;
+            }
             if bar.clock.contains(at) {
                 return;
             }
@@ -1831,6 +1877,10 @@ impl Shell {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('q') {
             self.quit = true;
+            return;
+        }
+        if key.code == KeyCode::F(8) && !self.before_desktop() && self.compat_alert() {
+            self.open_compat();
             return;
         }
         if key.code == KeyCode::F(10) && !self.before_desktop() {

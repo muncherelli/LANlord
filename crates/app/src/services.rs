@@ -8,6 +8,7 @@ use lanlord_model::power::{Outcome, Power};
 use lanlord_model::settings::Settings;
 
 use crate::ask::{cached, AskPassword};
+use crate::compat::Compat;
 use crate::log::{emit, Kind};
 
 use crate::gateway::Gateway;
@@ -18,6 +19,7 @@ pub struct Services {
     gateway: Arc<dyn Gateway>,
     tasks: Tasks,
     wake: Wake,
+    compat: Compat,
 }
 
 impl Services {
@@ -26,7 +28,13 @@ impl Services {
             gateway,
             tasks: Tasks::default(),
             wake,
+            compat: Compat::default(),
         }
+    }
+
+    /// what the server can do for the components, shared by the windows that show it.
+    pub fn compat(&self) -> &Compat {
+        &self.compat
     }
 
     /// the next password a task is waiting for, if any.

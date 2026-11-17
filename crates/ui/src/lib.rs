@@ -6,6 +6,7 @@ mod admin_setup;
 mod artwork;
 mod clock_panel;
 mod command_panel;
+mod compat_alert;
 mod components_window;
 mod console;
 mod controls;

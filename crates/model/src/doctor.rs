@@ -50,7 +50,7 @@ pub struct System {
 pub const PROXMOX_FEATURES_FIX: &str = "on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1` (replace <CTID> with this container's number) and restart the container with `pct reboot <CTID>`; lanlord cannot do this from inside the container";
 
 /// the proxmox fix for a missing /dev/net/tun in a container.
-pub const PROXMOX_TUN_FIX: &str = "on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun` (replace <CTID> with this container's number) and restart the container with `pct reboot <CTID>`";
+pub const PROXMOX_TUN_FIX: &str = "on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun` (proxmox ve 8.1 or newer; replace <CTID> with this container's number), or on proxmox ve 7 or newer add these two lines to /etc/pve/lxc/<CTID>.conf:\nlxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\nand then restart the container with `pct reboot <CTID>`";
 
 /// the modules that run in docker (or install it) and so need what docker needs.
 pub const DOCKER_MODULES: &[&str] = &["docker", "nt4-domain", "web-proxy", "dns"];
@@ -386,11 +386,7 @@ fn tun_check(env: &Environment, said: &str) -> Check {
         other => {
             let error = other.strip_prefix("err:").unwrap_or(other);
             let fix = if env.container() {
-                Some(format!(
-                    "{pass_through} (a privileged container may also need the lines \
-                     `lxc.cgroup2.devices.allow: c 10:200 rwm` and `lxc.mount.entry: /dev/net/tun \
-                     dev/net/tun none bind,create=file` in /etc/pve/lxc/<CTID>.conf)"
-                ))
+                Some(pass_through.to_string())
             } else {
                 None
             };
@@ -849,6 +845,9 @@ vde_plug=missing
         let tun = check(&report, "tun");
         assert_eq!(tun.fix.as_deref(), Some(PROXMOX_TUN_FIX));
         assert!(PROXMOX_TUN_FIX.contains("pct set <CTID> --dev0 /dev/net/tun"));
+        assert!(PROXMOX_TUN_FIX.contains("lxc.cgroup2.devices.allow: c 10:200 rwm"));
+        assert!(PROXMOX_TUN_FIX
+            .contains("lxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file"));
         assert_eq!(check(&report, "ip-forward").status, Status::Warn);
         assert_eq!(check(&report, "docker").status, Status::Unknown);
         for id in ["lxc-nesting", "lxc-keyctl"] {
