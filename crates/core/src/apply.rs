@@ -179,6 +179,7 @@ fn run_tags(
             "no settings to apply; running the baseline only",
         ),
     }
+    publish(&ApplyEvent::Started);
     // (events seen, the run's own end seen)
     let seen = std::cell::Cell::new((false, false));
     let mut sink = |line: &str| match apply::parse_line(line) {
@@ -191,16 +192,17 @@ fn run_tags(
         }
         None => on_line(line),
     };
-    let code = run_as_root_lines(
+    let ran = run_as_root_lines(
         session,
         admin,
         script(settings.as_deref(), tags)?,
         ask_password,
         &mut sink,
-    )?;
+    );
     if seen.get() == (true, false) {
-        // the run stopped without its own summary, so close the dialog
-        let failed = u32::from(code != 0);
+        // the run stopped without its own summary, so close the dialog; a run that never
+        // got an exit status (ssh failed, killed) counts as failed too
+        let failed = u32::from(!matches!(ran, Ok(0)));
         publish(&ApplyEvent::Finished {
             stats: apply::Stats {
                 failed,
@@ -208,7 +210,7 @@ fn run_tags(
             },
         });
     }
-    match code {
+    match ran? {
         0 => {
             emit(Kind::Info, "apply finished");
             Ok(())
@@ -586,6 +588,20 @@ esac"#
         let cut = finished_events(&rx);
         assert!(matches!(
             cut.as_slice(),
+            [ApplyEvent::Finished { stats }] if stats.failed == 1
+        ));
+        // no exit status at all (ssh status 255): closed with a failure as well
+        let rx = crate::log::subscribe();
+        assert!(apply_with(
+            &gateway_printing(&[total], 255),
+            "gw",
+            None,
+            &[],
+            &mut no_password,
+        )
+        .is_err());
+        assert!(matches!(
+            finished_events(&rx).as_slice(),
             [ApplyEvent::Finished { stats }] if stats.failed == 1
         ));
         // its own end: not closed a second time

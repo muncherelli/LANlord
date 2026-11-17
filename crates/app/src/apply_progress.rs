@@ -47,7 +47,8 @@ impl ApplyProgress {
     }
 
     pub fn event(&mut self, event: &ApplyEvent) {
-        if !self.active
+        if matches!(event, ApplyEvent::Started)
+            || !self.active
             || (self.progress.finished.is_some() && !matches!(event, ApplyEvent::Log { .. }))
         {
             // the first event of a new apply starts a clean dialog
@@ -177,6 +178,20 @@ mod tests {
         assert!(p.take_started());
         assert!(!p.take_started());
         assert!(p.running());
+    }
+
+    #[test]
+    fn a_new_apply_drops_what_a_cut_short_one_left() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 5 });
+        event(&mut p, ApplyEvent::TaskStart { name: "a".into() });
+        assert!(p.running());
+        // no finish ever came; the next apply still starts clean
+        event(&mut p, ApplyEvent::Started);
+        event(&mut p, ApplyEvent::Total { n: 2 });
+        assert!(p.running());
+        assert_eq!(p.progress.total, 2);
+        assert!(p.progress.current.is_none());
     }
 
     #[test]

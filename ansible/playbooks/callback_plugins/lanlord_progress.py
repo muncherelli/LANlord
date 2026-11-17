@@ -21,9 +21,25 @@ DOCUMENTATION = """
 MARKER = "LANLORD_EVENT "
 
 
+def in_rescue(task):
+    """is the task in the rescue section of a block, however deep? play.get_tasks() flattens
+    blocks, so this is read off the task's parents."""
+    child = task
+    parent = getattr(task, "_parent", None)
+    while parent is not None:
+        if any(t is child for t in (getattr(parent, "rescue", None) or [])):
+            return True
+        child = parent
+        parent = getattr(parent, "_parent", None)
+    return False
+
+
 def runs(task, only_tags, skip_tags):
-    """does this one task count: not meta, and not left out by --tags or --skip-tags?"""
+    """does this one task count: not meta, not in a rescue section (that runs only after a
+    failure), and not left out by --tags or --skip-tags?"""
     if getattr(task, "action", "") in ("meta", "ansible.builtin.meta"):
+        return False
+    if in_rescue(task):
         return False
     if not (only_tags or skip_tags):
         return True
@@ -34,9 +50,10 @@ def runs(task, only_tags, skip_tags):
 
 
 def count_block(block, only_tags, skip_tags):
-    """tasks in a block, its rescue and its always section."""
+    """tasks in a block and its always section; rescue tasks only run after a failure, so
+    they are left to the front end's total = max(total, done)."""
     n = 0
-    for part in ("block", "rescue", "always"):
+    for part in ("block", "always"):
         n += count_tasks(getattr(block, part, None), only_tags, skip_tags)
     return n
 
@@ -55,22 +72,45 @@ def count_tasks(blocks, only_tags=None, skip_tags=None):
     return n
 
 
-def count_file(path):
-    """tasks in an included file, read plainly; 1 when it cannot be read."""
+def entry_runs(entry, only_tags, skip_tags):
+    """does this plain entry of an included file count: not meta, not left out by tags?"""
+    for key in ("meta", "ansible.builtin.meta"):
+        if key in entry:
+            return False
+    if not (only_tags or skip_tags):
+        return True
+    tags = entry.get("tags") or []
+    if not isinstance(tags, list):
+        tags = [tags]
+    tags = [str(t) for t in tags]
+    if any(t in skip_tags for t in tags):
+        return False
+    if only_tags and "all" not in only_tags:
+        return any(t in only_tags for t in tags)
+    return True
+
+
+def walk_entries(entries, only_tags, skip_tags):
+    total = 0
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        if "block" in entry:
+            total += walk_entries(entry.get("block"), only_tags, skip_tags)
+            total += walk_entries(entry.get("always"), only_tags, skip_tags)
+        elif entry_runs(entry, only_tags, skip_tags):
+            total += 1
+    return total
+
+
+def count_file(path, only_tags=None, skip_tags=None):
+    """tasks in an included file, read plainly and filtered like the others; 1 when it cannot
+    be read."""
     try:
         from ansible.parsing.dataloader import DataLoader
 
-        def walk(entries):
-            total = 0
-            for entry in entries or []:
-                if isinstance(entry, dict) and "block" in entry:
-                    total += walk(entry.get("block")) + walk(entry.get("rescue"))
-                    total += walk(entry.get("always"))
-                else:
-                    total += 1
-            return total
-
-        return walk(DataLoader().load_from_file(path)) or 1
+        entries = DataLoader().load_from_file(path)
+        return walk_entries(entries, only_tags or [], skip_tags or []) or 1
     except Exception:
         return 1
 
@@ -110,9 +150,20 @@ class CallbackModule(CallbackBase):
         if only == ["all"]:
             only = []
         try:
-            return count_tasks(play.get_tasks(), only, skip)
+            total = count_tasks(play.get_tasks(), only, skip)
         except Exception:
             return 0
+        # the implicit fact gathering is a task too, but get_tasks() does not list it; it is
+        # tagged always, so only --skip-tags always leaves it out
+        if self._gathers(play) and "always" not in skip:
+            total += 1
+        return total
+
+    @staticmethod
+    def _gathers(play):
+        # gather_facts is on unless the play says no; "smart" and unset gather
+        value = getattr(play, "gather_facts", None)
+        return value is None or value not in (False, "no", "false", "False")
 
     def v2_playbook_on_start(self, playbook):
         # every play of the playbook is known now, so the total is too
@@ -152,7 +203,8 @@ class CallbackModule(CallbackBase):
             self._emit("total", n=1)
 
     def v2_playbook_on_include(self, included_file):
-        self._emit("total", n=count_file(getattr(included_file, "_filename", "")))
+        only, skip = self._tags()
+        self._emit("total", n=count_file(getattr(included_file, "_filename", ""), only, skip))
 
     def _done(self, result, status, ignore_errors=False):
         task = result._task

@@ -30,6 +30,8 @@ pub struct Stats {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum ApplyEvent {
+    /// an apply begins: a front end drops whatever an earlier one left.
+    Started,
     /// `n` more tasks are going to run: a play's tasks, an included file's, a notified handler.
     Total {
         n: u32,
@@ -167,7 +169,7 @@ impl Progress {
                 changed,
                 msg,
             } => self.finish_task(name, *status, *changed, msg),
-            ApplyEvent::Log { .. } => {}
+            ApplyEvent::Started | ApplyEvent::Log { .. } => {}
             ApplyEvent::Finished { stats } => {
                 self.finished = Some(*stats);
                 self.current = None;

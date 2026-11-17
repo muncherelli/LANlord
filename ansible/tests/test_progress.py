@@ -5,7 +5,10 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 import unittest.mock
@@ -54,7 +57,7 @@ def fake_ansible(cliargs):
 
 
 class Task:
-    def __init__(self, name="t", action="command", tags=(), keeps=True, broken=False):
+    def __init__(self, name="t", action="command", keeps=True, broken=False):
         self.name = name
         self.action = action
         self.keeps = keeps
@@ -79,8 +82,9 @@ class Block:
 
 
 class Play:
-    def __init__(self, tasks, broken=False):
+    def __init__(self, tasks, broken=False, gather_facts=False):
         self.tasks = tasks
+        self.gather_facts = gather_facts
         self.broken = broken
 
     def get_tasks(self):
@@ -149,8 +153,21 @@ class ProgressTests(unittest.TestCase):
                 Task(),
             ]
         ]
-        self.assertEqual(self.plugin.count_tasks(tasks), 5)
+        # rescue tasks only run after a failure, so they are not counted up front
+        self.assertEqual(self.plugin.count_tasks(tasks), 4)
         self.assertEqual(self.plugin.count_tasks(None), 0)
+
+    def test_flattened_rescue_tasks_are_found_through_their_parents(self):
+        inner, outer, plain = Task(), Task(), Task()
+        inner_block = Block(rescue=[inner])
+        outer_block = Block(block=[], rescue=[inner_block])
+        inner_block._parent = outer_block
+        inner._parent = inner_block
+        outer._parent = outer_block
+        plain._parent = Block(block=[plain])
+        self.assertTrue(self.plugin.in_rescue(inner))
+        self.assertFalse(self.plugin.in_rescue(plain))
+        self.assertEqual(self.plugin.count_tasks([[inner, plain]]), 1)
 
     def test_tasks_left_out_by_tags_are_not_counted(self):
         keep, drop = Task(keeps=True), Task(keeps=False)
@@ -170,9 +187,36 @@ class ProgressTests(unittest.TestCase):
         Loader.files["inc.yml"] = [
             {"name": "a"},
             {"block": [{"name": "b"}, {"name": "c"}], "rescue": [{"name": "d"}]},
-            {"always": [{"name": "ignored"}], "block": []},
+            {"always": [{"name": "e"}], "block": []},
+            {"meta": "flush_handlers"},
+            "not a task",
         ]
-        self.assertEqual(self.plugin.count_file("inc.yml"), 5)
+        self.assertEqual(self.plugin.count_file("inc.yml"), 4)
+
+    def test_an_included_file_follows_the_tag_options(self):
+        Loader.files["inc.yml"] = [
+            {"name": "a", "tags": ["web"]},
+            {"name": "b", "tags": "slow"},
+            {"name": "c"},
+            {"name": "d", "tags": ["web", "slow"]},
+        ]
+        count = self.plugin.count_file
+        self.assertEqual(count("inc.yml", ["web"], []), 2)
+        self.assertEqual(count("inc.yml", [], ["slow"]), 2)
+        self.assertEqual(count("inc.yml", ["all"], ["slow"]), 2)
+        self.assertEqual(count("inc.yml", [], []), 4)
+
+    def test_fact_gathering_counts_unless_the_play_or_the_tags_leave_it_out(self):
+        tasks = [[Task()]]
+        total = self.plugin.CallbackModule()._play_total
+        self.assertEqual(total(Play(tasks, gather_facts=True)), 2)
+        self.assertEqual(total(Play(tasks, gather_facts=None)), 2)
+        self.assertEqual(total(Play(tasks, gather_facts=False)), 1)
+        self.assertEqual(total(Play(tasks, gather_facts="no")), 1)
+        self.cliargs.update(tags=["web"])
+        self.assertEqual(total(Play(tasks, gather_facts=True)), 2)
+        self.cliargs.update(tags=[], skip_tags=["always"])
+        self.assertEqual(total(Play(tasks, gather_facts=True)), 1)
 
     def test_an_unreadable_or_empty_include_counts_as_one(self):
         self.assertEqual(self.plugin.count_file("missing.yml"), 1)
@@ -330,6 +374,108 @@ class ProgressTests(unittest.TestCase):
                 }
             ],
         )
+
+
+SMOKE_PLAY = """\
+- hosts: localhost
+  connection: local
+  gather_facts: true
+  tasks:
+    - name: first
+      debug: msg=hi
+    - name: slow one
+      debug: msg=slow
+      tags: slow
+    - block:
+        - name: in block
+          debug: msg=b
+      rescue:
+        - name: in rescue
+          debug: msg=r
+    - name: include it
+      include_tasks: inc.yml
+    - name: last
+      debug: msg=l
+"""
+
+SMOKE_INCLUDE = """\
+- name: inc one
+  debug: msg=one
+- name: inc two
+  debug: msg=two
+- name: inc slow
+  debug: msg=slow
+  tags: slow
+"""
+
+
+@unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is not installed")
+class AnsibleSmokeTests(unittest.TestCase):
+    """the plugin inside a real ansible-playbook run on this machine."""
+
+    def run_play(self, *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, text in (("play.yml", SMOKE_PLAY), ("inc.yml", SMOKE_INCLUDE)):
+                with open(os.path.join(tmp, name), "w") as handle:
+                    handle.write(text)
+            env = dict(
+                os.environ,
+                LC_ALL="C.UTF-8",
+                ANSIBLE_STDOUT_CALLBACK="lanlord_progress",
+                ANSIBLE_CALLBACK_PLUGINS=os.path.dirname(os.path.abspath(PLUGIN)),
+                ANSIBLE_LOCALHOST_WARNING="false",
+                PYTHONDONTWRITEBYTECODE="1",
+            )
+            done = subprocess.run(
+                ["ansible-playbook", "-i", "localhost,", *extra, "play.yml"],
+                cwd=tmp, env=env, capture_output=True, text=True, timeout=300,
+            )
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        lines = [line for line in done.stdout.splitlines() if line.strip()]
+        self.assertTrue(lines and all(line.startswith(MARKER) for line in lines), lines)
+        return [json.loads(line[len(MARKER):]) for line in lines]
+
+    def check(self, events, ran):
+        names = [e["name"] for e in events if e["event"] == "task_done"]
+        self.assertEqual(sorted(names), sorted(ran))
+        self.assertEqual(events[-1]["event"], "finished")
+        self.assertEqual(events[-1]["stats"]["failed"], 0)
+        # the front end's sums, as the reducer in lanlord-model keeps them: the total grows, the
+        # shown percentage is the best seen, and 100 is only shown once the run is over
+        total = done = shown = 0
+        for event in events:
+            if event["event"] == "total":
+                total += event["n"]
+            elif event["event"] == "task_done":
+                done += 1
+            total = max(total, done)
+            if event["event"] == "finished":
+                now = 100
+            else:
+                now = min(done * 100 // total, 99) if total else 0
+                self.assertLess(shown, 100)
+            shown = max(shown, now)
+        self.assertEqual(total, len(ran), "the totals match the tasks that ran")
+        self.assertEqual(shown, 100)
+
+    def test_a_clean_run_counts_what_runs_and_ends_at_100(self):
+        events = self.run_play("--skip-tags", "slow")
+        self.check(
+            events,
+            ["Gathering Facts", "first", "in block", "include it", "inc one", "inc two", "last"],
+        )
+
+    def test_without_a_filter_the_tagged_tasks_count_too(self):
+        events = self.run_play()
+        self.check(
+            events,
+            ["Gathering Facts", "first", "slow one", "in block", "include it",
+             "inc one", "inc two", "inc slow", "last"],
+        )
+
+    def test_with_tags_only_the_tagged_tasks_and_fact_gathering_count(self):
+        events = self.run_play("--tags", "slow")
+        self.check(events, ["Gathering Facts", "slow one"])
 
 
 if __name__ == "__main__":
