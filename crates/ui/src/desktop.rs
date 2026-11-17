@@ -258,6 +258,29 @@ impl Desktop {
         self.signed_in.as_ref().is_none_or(|s| s.identity.admin)
     }
 
+    /// drop everything one session left open: windows, dialogs and the state behind them, so the
+    /// next account starts clean and cannot answer a box the last one opened.
+    fn reset_session_ui(&mut self) {
+        self.windows.clear();
+        self.active = None;
+        self.selected = None;
+        self.start_open = false;
+        self.confirm = None;
+        self.password = None;
+        self.add_host = None;
+        self.open_next = None;
+        self.compat_next = false;
+        self.close_requests.clear();
+        self.settings = SettingsEditor::default();
+        self.nt4 = Nt4Window::default();
+        self.dns = DnsPanel::default();
+        self.commands = CommandPanel::default();
+        self.my_server = MyServer::default();
+        self.networks = Networks::default();
+        self.components = Components::default();
+        self.clock.reset();
+    }
+
     fn open(&mut self, target: Target) {
         if target.needs_admin() && !self.is_admin() {
             return;
@@ -268,6 +291,9 @@ impl Desktop {
                 if target == Target::DateTime {
                     // a fresh reading of the server every time the window opens
                     self.clock.reset();
+                }
+                if target == Target::MyServer {
+                    self.my_server.set_read_only(!self.is_admin());
                 }
                 if target == Target::Components {
                     self.components.open();
@@ -495,10 +521,7 @@ impl Desktop {
             }
         }
         self.services.session_restored();
-        self.windows.clear();
-        self.active = None;
-        self.selected = None;
-        self.start_open = false;
+        self.reset_session_ui();
         if signed_in.identity.is_root() {
             self.admin_setup = Some(AdminSetup::new());
         }
@@ -635,9 +658,7 @@ impl Desktop {
 
     fn show_web_login(&mut self, session: Rc<dyn WebSession>, note: Option<&str>) {
         let last = self.signed_in.take().map(|s| s.identity.user);
-        self.windows.clear();
-        self.active = None;
-        self.start_open = false;
+        self.reset_session_ui();
         let mut login = LoginBox::web(session, &self.ctx, last.as_deref());
         if let Some(note) = note {
             login.note(note);
@@ -654,9 +675,7 @@ impl Desktop {
             let closer = auth.clone();
             std::thread::spawn(move || closer.sign_out(&target));
         }
-        self.windows.clear();
-        self.active = None;
-        self.start_open = false;
+        self.reset_session_ui();
         let mut login = LoginBox::new(auth, &self.ctx, last.as_deref());
         if let Some(note) = note {
             login.note(&note);

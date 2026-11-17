@@ -510,6 +510,9 @@ impl MyServer {
                 }
             }
             Msg::Remove => {
+                if self.read_only {
+                    return;
+                }
                 if let Some(purge) = self.purge.as_mut() {
                     if purge.confirmed(services) {
                         purge.remove(services);
@@ -576,6 +579,19 @@ mod tests {
         window.set_read_only(false);
         window.update(Msg::AskPurge, &services, "me@gw");
         assert!(window.purge().is_some());
+    }
+
+    #[test]
+    fn an_account_that_is_not_an_admin_cannot_remove_lanlord() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = asked(&fake, &services);
+        window.update(Msg::Typed("me@gw".into()), &services, "me@gw");
+        // the box was up when the account lost its rights
+        window.set_read_only(true);
+        window.update(Msg::Remove, &services, "me@gw");
+        assert!(!services.busy("me@gw"));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("purge me@gw")));
     }
 
     #[test]

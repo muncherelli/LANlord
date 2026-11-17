@@ -633,4 +633,54 @@ mod web {
         frames(&mut desktop, &ctx, 2);
         assert!(logged_on(&desktop));
     }
+    fn sign_in_as(
+        desktop: &mut Desktop,
+        ctx: &egui::Context,
+        name: &str,
+        admin: bool,
+        web: &FakeWeb,
+    ) {
+        let mut user = id(name, 1000);
+        user.admin = admin;
+        web.logins.lock().unwrap().push_back(Ok(user));
+        sign_in(desktop, ctx, name, "s3cret");
+        until(desktop, ctx, logged_on);
+    }
+
+    #[test]
+    fn a_confirm_the_last_account_left_open_does_not_survive_the_next_logon() {
+        let (mut desktop, ctx, web, fake) = web_logon();
+        sign_in_as(&mut desktop, &ctx, "ann", true, &web);
+        desktop.do_action(&ctx, Action::Power(lanlord_model::power::Power::Reboot));
+        desktop.open(Target::MyServer);
+        assert!(desktop.confirm.is_some());
+        // the session ends, and a non-admin logs on in the same tab
+        fake.ended.store(true, Ordering::SeqCst);
+        frames(&mut desktop, &ctx, 2);
+        assert!(desktop.login.is_some() && desktop.confirm.is_none());
+        sign_in_as(&mut desktop, &ctx, "carol", false, &web);
+        frames(&mut desktop, &ctx, 3);
+        assert!(desktop.confirm.is_none());
+        assert!(desktop.windows.iter().all(|w| w.target != Target::MyServer));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("power")));
+    }
+
+    #[test]
+    fn a_non_admin_cannot_ask_for_or_accept_a_reboot() {
+        let (mut desktop, ctx, web, fake) = web_logon();
+        sign_in_as(&mut desktop, &ctx, "ann", true, &web);
+        desktop.do_action(&ctx, Action::Power(lanlord_model::power::Power::Reboot));
+        assert!(desktop.confirm.is_some());
+        // the account loses its rights while the box is up
+        if let Some(s) = desktop.signed_in.as_mut() {
+            s.identity.admin = false;
+        }
+        frames(&mut desktop, &ctx, 3);
+        press(&mut desktop, &ctx, "OK");
+        frames(&mut desktop, &ctx, 3);
+        assert!(!fake.calls().iter().any(|c| c.starts_with("power")));
+        desktop.confirm = None;
+        desktop.do_action(&ctx, Action::Power(lanlord_model::power::Power::PowerOff));
+        assert!(desktop.confirm.is_none());
+    }
 }

@@ -312,6 +312,9 @@ impl Desktop {
     }
 
     fn ask_power(&mut self, power: Power) {
+        if !self.is_admin() {
+            return;
+        }
         let Some(host) = self.host() else { return };
         let (title, verb) = match power {
             Power::Reboot => ("Reboot server", "Reboot"),
@@ -336,7 +339,9 @@ impl Desktop {
             Some(FormAnswer::Cancel) => {}
             Some(FormAnswer::Ok) => match kind {
                 Confirm::Power(power, host) => {
-                    if !self.services.power(&host, power) {
+                    if !self.is_admin() {
+                        emit(Kind::Err, "only an administrator can do that");
+                    } else if !self.services.power(&host, power) {
                         emit(Kind::Err, format!("{host} is busy; try again in a moment"));
                     }
                 }
