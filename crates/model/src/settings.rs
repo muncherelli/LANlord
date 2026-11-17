@@ -56,6 +56,13 @@ impl Settings {
         self.root.insert(Value::String(key.into()), value);
         self.raw = None;
     }
+
+    /// drop one top-level section; the other sections are untouched.
+    pub fn remove_section(&mut self, key: &str) {
+        if self.root.remove(key).is_some() {
+            self.raw = None;
+        }
+    }
 }
 
 /// the key names whose values are secrets: they live encrypted on the

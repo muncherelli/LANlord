@@ -109,6 +109,81 @@ enum MachinesCommand {
 }
 
 #[derive(Subcommand)]
+enum NetworksCommand {
+    /// list the lanlord networks in your settings
+    List,
+    /// add a lanlord network on an interface, with its own dnsmasq
+    Add {
+        name: String,
+        /// the interface it is on, like eth2
+        #[arg(long)]
+        interface: String,
+        /// the server's address there, like 192.168.50.1/24
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        mtu: Option<u32>,
+        /// give it a dhcp server, like 192.168.50.100-192.168.50.200
+        #[arg(long, value_name = "START-END")]
+        dhcp_range: Option<String>,
+        /// the lease time, like 12h or 7d (needs a dhcp range)
+        #[arg(long)]
+        lease: Option<String>,
+        /// the dns zone; default is the network's name
+        #[arg(long)]
+        zone: Option<String>,
+    },
+    /// change a network
+    Set {
+        name: String,
+        #[arg(long)]
+        interface: Option<String>,
+        #[arg(long)]
+        address: Option<String>,
+        #[arg(long)]
+        mtu: Option<u32>,
+        /// take the mtu setting away
+        #[arg(long)]
+        no_mtu: bool,
+        #[arg(long)]
+        zone: Option<String>,
+        #[arg(long, value_name = "START-END")]
+        dhcp_range: Option<String>,
+        #[arg(long)]
+        lease: Option<String>,
+        /// turn the dhcp server off
+        #[arg(long)]
+        no_dhcp: bool,
+    },
+    /// remove a network and its dnsmasq
+    Remove { name: String },
+    /// add or remove a static dhcp lease on a network
+    Lease {
+        name: String,
+        #[command(subcommand)]
+        action: LeaseCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LeaseCommand {
+    /// give a machine a fixed address
+    Add {
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        mac: String,
+        #[arg(long)]
+        address: String,
+    },
+    /// take a machine's fixed address away
+    Remove {
+        #[arg(long)]
+        host: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum LogonCommand {
     /// list the logon scripts in the netlogon share
     List,
@@ -186,6 +261,12 @@ enum Command {
         host: String,
         #[command(subcommand)]
         action: UsersCommand,
+    },
+    /// manage the lanlord networks: interfaces, addresses, dhcp and static leases
+    Networks {
+        host: String,
+        #[command(subcommand)]
+        action: NetworksCommand,
     },
     /// manage the machine accounts of the nt4-domain module
     Machines {
@@ -343,6 +424,82 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
     change_machine(&Session::new(host)?, host, &identity, &change, &mut ask)
 }
 
+fn networks(host: &str, action: NetworksCommand) -> Result<()> {
+    use lanlord_core::lan::{
+        add_edit, change, networks_on, render_list, set_edit, AddArgs, Edit, SetArgs,
+    };
+    use lanlord_core::settings::StaticLease;
+    use lanlord_core::ssh::Session;
+    let identity = crypto::load(&identity_path()?)?;
+    let session = Session::new(host)?;
+    let edit = match action {
+        NetworksCommand::List => {
+            for line in render_list(&networks_on(&session, host, &identity, &mut ask)?) {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        NetworksCommand::Add {
+            name,
+            interface,
+            address,
+            mtu,
+            dhcp_range,
+            lease,
+            zone,
+        } => add_edit(&AddArgs {
+            name,
+            interface,
+            address,
+            mtu,
+            dhcp_range,
+            lease,
+            zone,
+        })?,
+        NetworksCommand::Set {
+            name,
+            interface,
+            address,
+            mtu,
+            no_mtu,
+            zone,
+            dhcp_range,
+            lease,
+            no_dhcp,
+        } => set_edit(
+            &name,
+            &SetArgs {
+                interface,
+                address,
+                mtu,
+                no_mtu,
+                zone,
+                dhcp_range,
+                lease,
+                no_dhcp,
+            },
+        )?,
+        NetworksCommand::Remove { name } => Edit::Remove(name),
+        NetworksCommand::Lease { name, action } => match action {
+            LeaseCommand::Add { host, mac, address } => Edit::LeaseAdd {
+                network: name,
+                lease: StaticLease {
+                    name: host,
+                    mac,
+                    address,
+                },
+            },
+            LeaseCommand::Remove { host } => Edit::LeaseRemove {
+                network: name,
+                host,
+            },
+        },
+    };
+    change(&session, host, &identity, &edit, &mut ask)?;
+    println!("{}; applied the docker and dns modules", edit.describe());
+    Ok(())
+}
+
 fn logon(host: &str, action: LogonCommand) -> Result<()> {
     use lanlord_core::logon::{list, read, read_generated, write, GENERATED};
     let session = lanlord_core::ssh::Session::new(host)?;
@@ -408,10 +565,17 @@ fn clock(host: &str, action: ClockCommand) -> Result<()> {
     for line in said {
         println!("{line}");
     }
-    if stored == clock::Stored::NoKey {
-        eprintln!(
+    match stored {
+        clock::Stored::NoKey => eprintln!(
             "note: this change is not kept in your settings (no key yet), so an apply may undo it"
-        );
+        ),
+        clock::Stored::NotInstalled => eprintln!(
+            "note: LANlord is not installed on this server, so the change is not stored in its settings"
+        ),
+        clock::Stored::Failed(why) => eprintln!(
+            "warning: changed, but could not be remembered in LANlord's settings: {why}"
+        ),
+        clock::Stored::Yes | clock::Stored::Nothing => {}
     }
     Ok(())
 }
@@ -736,6 +900,7 @@ fn main() -> Result<()> {
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
+        Some(Command::Networks { host, action }) => networks(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
         Some(Command::Check { host }) => {
             let session = lanlord_core::ssh::Session::new(&host)?;
@@ -1038,6 +1203,102 @@ mod tests {
             !help.lines().any(|l| l.trim_start().starts_with("op ")),
             "{help}"
         );
+    }
+
+    fn networks_action(args: &[&str]) -> NetworksCommand {
+        let mut argv = vec!["lanlord", "networks", "gw"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv).unwrap().command {
+            Some(Command::Networks { host, action }) => {
+                assert_eq!(host, "gw");
+                action
+            }
+            _ => panic!("a networks command"),
+        }
+    }
+
+    #[test]
+    fn the_networks_commands_parse() {
+        assert!(matches!(networks_action(&["list"]), NetworksCommand::List));
+        let NetworksCommand::Add {
+            name,
+            interface,
+            mtu,
+            dhcp_range,
+            lease,
+            zone,
+            ..
+        } = networks_action(&[
+            "add",
+            "lab",
+            "--interface",
+            "eth2",
+            "--address",
+            "192.168.50.1/24",
+            "--mtu",
+            "1400",
+            "--dhcp-range",
+            "192.168.50.100-192.168.50.200",
+            "--lease",
+            "12h",
+            "--zone",
+            "lab",
+        ])
+        else {
+            panic!("an add")
+        };
+        assert_eq!(
+            (name.as_str(), interface.as_str(), mtu),
+            ("lab", "eth2", Some(1400))
+        );
+        assert_eq!(
+            (dhcp_range.as_deref(), lease.as_deref(), zone.as_deref()),
+            (
+                Some("192.168.50.100-192.168.50.200"),
+                Some("12h"),
+                Some("lab")
+            )
+        );
+        let NetworksCommand::Set {
+            no_mtu, no_dhcp, ..
+        } = networks_action(&["set", "lab", "--no-mtu", "--no-dhcp"])
+        else {
+            panic!("a set")
+        };
+        assert!(no_mtu && no_dhcp);
+        assert!(matches!(
+            networks_action(&["remove", "lab"]),
+            NetworksCommand::Remove { .. }
+        ));
+        let NetworksCommand::Lease {
+            name,
+            action: LeaseCommand::Add { host, mac, address },
+        } = networks_action(&[
+            "lease",
+            "lab",
+            "add",
+            "--host",
+            "pc",
+            "--mac",
+            "02:00:00:00:00:01",
+            "--address",
+            "192.168.50.20",
+        ])
+        else {
+            panic!("a lease add")
+        };
+        assert_eq!(
+            (name.as_str(), host.as_str(), mac.as_str(), address.as_str()),
+            ("lab", "pc", "02:00:00:00:00:01", "192.168.50.20")
+        );
+        assert!(matches!(
+            networks_action(&["lease", "lab", "remove", "--host", "pc"]),
+            NetworksCommand::Lease {
+                action: LeaseCommand::Remove { .. },
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["lanlord", "networks", "gw", "add", "x"]).is_err());
     }
 
     #[test]

@@ -8,7 +8,8 @@
 #   mode: domain                 # or workgroup
 #   name: RETRONET               # the domain or workgroup name; you choose
 #   netbios_name: LANLORD        # the server's name; default: this machine's hostname
-#   address: 172.16.120.1/22     # default: the address the internal interface already has
+#   network: retronet            # which lanlord network it is on; default: the first (see networks.yml)
+#   address: 172.16.120.1/22     # default: that network's address
 #   build_locally: false         # true builds the image on the gateway instead of pulling the published one
 #   image: ghcr.io/you/samba     # another image name (tag is still a hash of the files)
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
@@ -43,8 +44,10 @@
         nt4: "{{ lookup('ansible.builtin.vars', 'nt4-domain') }}"
       when: "lookup('ansible.builtin.varnames', '^nt4-domain$', wantlist=True) | length > 0"
 
-    - name: work out the internal network interface and its address
-      ansible.builtin.include_tasks: network.yml
+    - name: work out the network the domain controller is on, its interface and its address
+      ansible.builtin.include_tasks: networks.yml
+      vars:
+        net_primary_name: "{{ nt4.network | default('') }}"
       when: nt4 is defined
 
     - name: work out the defaults

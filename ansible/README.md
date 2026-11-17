@@ -33,11 +33,36 @@ To find a failed replacement's logs, read the "last log lines of the failed ..."
 
 Adding a file here means adding it to the list in `crates/core/src/payload.rs`. A test fails if a file is missing from it.
 
-## The DNS module
+## Networks and the DNS module
 
-`playbooks/dns.yml` runs dnsmasq in the `lanlord-dns` container on the host network, bound to the internal interface and never to the host one. It answers only for its zone (`retronet` by default) and never forwards a query, so nothing resolves outside the retronet. `lanlord.<zone>`, the gateway's hostname, the NT4 Domain's NetBIOS name and any Web Proxy host ending in `.<zone>` point at the internal address; `records` adds more.
+LANlord manages any number of lanlord networks, each on its own interface, next to the server's normal (external) network. They are the `networks:` list in the settings:
 
-With a `dhcp:` section it also hands out leases, with no router option, the gateway as DNS and WINS server, and the zone as the domain name. The configuration is `/opt/lanlord/dns/dnsmasq.conf` and the leases are in `/opt/lanlord/dns/dnsmasq.leases`. The Docker module's firewall also drops DNS and DHCP traffic on the host interface. The image is built on the gateway from `playbooks/dns/image/`, tagged with a hash of its files.
+```yaml
+networks:
+  - name: retronet             # a plain label; names the container lanlord-dns-<name>
+    interface: eth1            # the interface the network is on
+    address: 172.16.120.1/22   # the server's own address there, with its prefix
+    mtu: 1450                  # optional
+    zone: retronet             # the dns zone; default: the name
+    records:                   # extra names in the zone
+      - {name: ntsrv1, address: 172.16.120.10}
+    dhcp:                      # optional; no dhcp server without it
+      range: [172.16.123.1, 172.16.123.254]
+      lease: 7d                # 30m, 12h, 7d or infinite; default 7d
+      hosts:                   # static leases by mac
+        - {name: ntsrv1, mac: "aa:bb:cc:dd:ee:ff", address: 172.16.121.1}
+  - name: lab
+    interface: eth2
+    address: 192.168.50.1/24
+```
+
+`lanlord networks HOST list | add | set | remove | lease` edits the list, checks it and applies the docker and dns modules. The checks are the same in the program and in the playbooks: names, interfaces and zones are unique, an interface is not the external network's, addresses are real networks that do not overlap, and a dhcp range or a static lease is inside its network and is not the server's own address.
+
+`playbooks/dns.yml` runs one dnsmasq in Docker for every network: the container `lanlord-dns-<name>` on the host network, with its files in `/opt/lanlord/dns/<name>` (`dnsmasq.conf` and `dnsmasq.leases`). Each one listens only on its network's address and interface (`listen-address`, `bind-dynamic`, `interface=`), never on another lanlord network's or the host's, and serves dhcp only there (`no-dhcp-interface` for every other interface). It answers only for its zone and never forwards a query, so nothing resolves outside the zone. With a `dhcp:` section it hands out leases with no router option, the server as DNS and WINS server, and the zone as the domain name. `lanlord.<zone>`, the server's hostname, the nt4-domain netbios name (in the zone of the network the domain controller is on) and the web-proxy hosts ending in `.<zone>` all point at the network's address. A network taken out of the list has its container and folder removed on the next apply. The Docker module puts each network's address and mtu on its interface (a systemd-networkd drop-in or a NetworkManager connection), and its firewall accepts every lanlord interface first, so the rules that keep netbios, smb, dns and dhcp off the external network can never cut one off.
+
+`nt4-domain.network` names the network the domain controller is on (default: the first). The web-proxy status page is on the first network.
+
+Settings from before there was a list still work: a `dns:` section, `docker.internal_address` and the interface settings are read as one network called `retronet`, and the first `lanlord networks` change writes them back as a `networks:` list (and removes the old keys). On the first apply the single `lanlord-dns` container is replaced by `lanlord-dns-retronet`, and its leases move into `/opt/lanlord/dns/retronet`, so clients keep their leases. `lanlord networks list` shows a network read this way, and says so. The playbooks read both shapes through `playbooks/filter_plugins/lanlord.py` and `playbooks/networks.yml`.
 
 ## The Samba image
 
