@@ -78,6 +78,7 @@ The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-
 An image is only rebuilt when it changed (`.github/workflows/image.yml`, with the images listed in `.github/images.json`):
 
 - A pull request builds (for amd64 and arm64, without pushing) only the images whose files changed, and fails with a message when an image changed but its `VERSION` was not raised above the base branch's, so a change cannot ship without a new version.
+- Each architecture is built natively (amd64 and arm64 runners, no emulation) and merged into one multi-arch tag.
 - A push to trunk publishes an image only when its `X.Y.Z` tag does not exist in GHCR yet. Otherwise the image is skipped whole: no build, no push, rolling tags untouched. A published `X.Y.Z` is never overwritten.
 - The workflow can be run by hand with an `image` input; a version that is already published is still never overwritten.
 - LANlord release tags do not run it, so a LANlord release rebuilds no image.

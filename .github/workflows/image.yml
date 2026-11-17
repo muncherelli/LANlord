@@ -1,7 +1,7 @@
 name: image
 
 # publishes two images, one package each, versioned independently:
-#   ghcr.io/muncherelli/lanlord-nt4-server-components      samba built from source
+#   ghcr.io/muncherelli/lanlord-nt4-server-components  samba built from source
 #   ghcr.io/muncherelli/lanlord-dhcp-dns-components  dnsmasq on alpine
 # each image owns a directory (see .github/images.json) with its Dockerfile and a VERSION
 # file holding X.Y.Z. the images hold only upstream software; lanlord's scripts and config
@@ -19,7 +19,9 @@ name: image
 # - a push to trunk publishes an image only when its X.Y.Z tag does not exist in ghcr yet; when
 #   it does, the image is skipped whole: no build, no push, rolling tags untouched. a published
 #   X.Y.Z is never overwritten.
-# - when it is published, the same push also moves the rolling X.Y, X and latest tags to it.
+# - when it is published, the merge step also moves the rolling X.Y, X and latest tags to it.
+# each architecture is built natively (amd64 and arm64 runners, no qemu) and the two are merged
+# into one multi-arch tag.
 # release tags (release-plz) do not run this workflow, so a lanlord release rebuilds nothing.
 on:
   push:
@@ -49,13 +51,23 @@ permissions:
 jobs:
   versions:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     outputs:
       matrix: ${{ steps.read.outputs.matrix }}
+      images: ${{ steps.read.outputs.images }}
       any: ${{ steps.read.outputs.any }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - id: read
         env:
           EVENT: ${{ github.event_name }}
@@ -97,36 +109,50 @@ jobs:
                 echo "::error file=$dir/VERSION::$name changed, so $dir/VERSION must be raised above $old (it is $version)"; failed=1
               fi
             fi
+            if [ "$EVENT" != pull_request ]; then
+              # only a "not found" answer means the version is free; any other error fails the job.
+              # a published version is skipped whole: no build, no push, rolling tags untouched
+              ref="ghcr.io/muncherelli/$(jq -r .image <<<"$entry"):$version"
+              if out=$(docker buildx imagetools inspect "$ref" 2>&1); then
+                echo "$ref is already published; skipping $name"; continue
+              elif ! grep -qiE 'not found|manifest unknown|name unknown' <<<"$out"; then
+                echo "$out" >&2; exit 1
+              fi
+            fi
             include=$(jq -c --arg v "$version" --argjson e "$entry" '. + [$e + {version: $v}]' <<<"$include")
           done < <(jq -c '.[]' .github/images.json)
           [ "$failed" = 0 ] || exit 1
-          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+          # one job per image and architecture, each on a native runner
+          arch='[{"arch":"amd64","platform":"linux/amd64","runner":"ubuntu-latest"},{"arch":"arm64","platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]'
+          expanded=$(jq -c --argjson a "$arch" '[.[] as $e | $a[] | $e + .]' <<<"$include")
+          echo "matrix={\"include\":$expanded}" >> "$GITHUB_OUTPUT"
+          echo "images={\"include\":$include}" >> "$GITHUB_OUTPUT"
           echo "any=$(jq 'length > 0' <<<"$include")" >> "$GITHUB_OUTPUT"
           echo "images to handle: $(jq -c '[.[].name]' <<<"$include")"
 
   build:
     if: github.event_name == 'pull_request' && needs.versions.outputs.any == 'true'
     needs: versions
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      # only proves that the image builds for both architectures
+      # only proves that the image builds on this architecture
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.dir }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: false
           build-args: IMAGE_VERSION=${{ matrix.version }}
 
+  # one job per image and architecture; the images in the matrix are all unpublished versions
   publish:
     if: github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
     needs: versions
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -135,45 +161,65 @@ jobs:
       matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
     env:
       REPO: ghcr.io/muncherelli/${{ matrix.image }}
-      VERSION: ${{ matrix.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # only a "not found" answer means the version is free; any other error (auth, registry) fails the job
-      - name: see whether this version is already published
-        id: exists
-        run: |
-          if out=$(docker buildx imagetools inspect "$REPO:$VERSION" 2>&1); then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "$REPO:$VERSION is already published; skipping this image (no build, rolling tags untouched)"
-          elif grep -qiE 'not found|manifest unknown|name unknown' <<<"$out"; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$out" >&2
-            exit 1
-          fi
-      - name: work out the tags
-        id: tags
-        if: steps.exists.outputs.found == 'false'
-        run: |
-          minor=${VERSION%.*}; major=${VERSION%%.*}
-          {
-            echo 'list<<EOF'
-            printf '%s\n' "$REPO:$VERSION" "$REPO:$minor" "$REPO:$major" "$REPO:latest"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
-      # one push carries the immutable X.Y.Z and the rolling X.Y, X and latest, so they cannot drift apart
+      # pushed by digest only: no tag exists until the merge job has both architectures
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        if: steps.exists.outputs.found == 'false'
+        id: build
         with:
           context: ${{ matrix.dir }}
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
           build-args: IMAGE_VERSION=${{ matrix.version }}
-          tags: ${{ steps.tags.outputs.list }}
+          outputs: type=image,name=${{ env.REPO }},push-by-digest=true,name-canonical=true,push=true
+      - name: keep the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # one multi-arch tag per image: the immutable X.Y.Z and the rolling X.Y, X and latest, in a single create
+  merge:
+    if: github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
+    needs: [versions, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.versions.outputs.images) }}
+    env:
+      REPO: ghcr.io/muncherelli/${{ matrix.image }}
+      VERSION: ${{ matrix.version }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+      - name: tag the merged image
+        working-directory: /tmp/digests
+        run: |
+          minor=${VERSION%.*}; major=${VERSION%%.*}
+          docker buildx imagetools create \
+            -t "$REPO:$VERSION" -t "$REPO:$minor" -t "$REPO:$major" -t "$REPO:latest" \
+            $(printf "$REPO@sha256:%s " *)

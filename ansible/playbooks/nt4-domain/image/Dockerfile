@@ -13,6 +13,7 @@ RUN apk add --no-cache \
       bison \
       bsd-compat-headers \
       build-base \
+      cmocka-dev \
       curl \
       e2fsprogs-dev \
       flex \
@@ -20,6 +21,7 @@ RUN apk add --no-cache \
       gnupg \
       gnutls-dev \
       jansson-dev \
+      cmocka-dev \
       libarchive-dev \
       libcap-dev \
       libtirpc-dev \
@@ -56,7 +58,7 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
       --without-ad-dc --without-ads --without-ldap --without-pam --without-systemd \
       --without-json --without-winbind --without-regedit --without-libunwind \
       --disable-python --disable-cups --disable-avahi --disable-rpath-install \
-      --bundled-libraries=ALL --enable-fhs --with-shared-modules='!vfs_snapper' \
+      --bundled-libraries='ALL,!cmocka' --enable-fhs --with-shared-modules='!vfs_snapper' \
  && make -j"$(nproc)" \
  && make DESTDIR=/out install \
  && rm -rf /out/usr/share /out/usr/include /out/usr/lib/pkgconfig /out/usr/lib/python3* /out/etc \
