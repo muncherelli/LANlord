@@ -1,0 +1,17 @@
+# written by lanlord; changes here are overwritten
+# upstream time. this chronyd only serves it (-x): the host's own clock is never set
+{% for pool in time_pools %}
+pool {{ pool }} iburst maxsources 4
+{% endfor %}
+{% for server in time_servers %}
+server {{ server }} iburst
+{% endfor %}
+# with no upstream reachable (an isolated lab) the host's clock is served at a low rank
+local stratum 10
+# only the lanlord networks it serves: each address is bound and each subnet allowed
+{% for net in time_networks %}
+bindaddress {{ net.ip }}
+allow {{ net.subnet }}
+{% endfor %}
+# no command port: nothing manages this chronyd from outside
+cmdport 0

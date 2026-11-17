@@ -133,4 +133,5 @@
 - import_playbook: nt4-domain.yml
 - import_playbook: web-proxy.yml
 - import_playbook: dns.yml
+- import_playbook: time.yml
 - import_playbook: webui-login.yml

@@ -1,13 +1,14 @@
 name: image
 
-# publishes two images, one package each, versioned independently:
+# publishes three images, one package each, versioned independently:
 #   ghcr.io/muncherelli/lanlord-nt4-server-components  samba built from source
 #   ghcr.io/muncherelli/lanlord-dhcp-dns-components  dnsmasq on alpine
+#   ghcr.io/muncherelli/lanlord-time-server-components  chrony on alpine
 # each image owns a directory (see .github/images.json) with its Dockerfile and a VERSION
 # file holding X.Y.Z. the images hold only upstream software; lanlord's scripts and config
 # are mounted by the playbooks. the upstream versions (samba, dnsmasq) are not tags: they
-# are labels (org.opencontainers.image.version is the image's X.Y.Z, io.lanlord.samba.version
-# and io.lanlord.dnsmasq.version the upstream ones), set from the ARG in the Dockerfile.
+# are labels (org.opencontainers.image.version is the image's X.Y.Z, io.lanlord.samba.version,
+# io.lanlord.dnsmasq.version and io.lanlord.chrony.version the upstream ones), set from the ARG in the Dockerfile.
 #
 # an image is only touched when it changed:
 # - the `versions` job lists the images whose input files (images.json) changed, by a git diff
@@ -32,12 +33,14 @@ on:
     paths:
       - ansible/playbooks/nt4-domain/image/**
       - ansible/playbooks/dns/image/**
+      - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
       - .github/images.json
   pull_request:
     paths:
       - ansible/playbooks/nt4-domain/image/**
       - ansible/playbooks/dns/image/**
+      - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
       - .github/images.json
   workflow_dispatch:
@@ -45,7 +48,7 @@ on:
       image:
         description: image to publish (a version that is already published is still never overwritten)
         type: choice
-        options: [all, nt4-server-components, dhcp-dns-components]
+        options: [all, nt4-server-components, dhcp-dns-components, time-server-components]
         default: all
 
 permissions:

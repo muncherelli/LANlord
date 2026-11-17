@@ -92,6 +92,14 @@ pub const MODULES: &[Module] = &[
         "dns:\n  zone: retronet\n  records:\n    - {name: ntsrv1, address: 172.16.120.10}\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d",
         Status::Available,
     ),
+    Module::new(
+        "time-server",
+        "Time Server (NTP)",
+        ["┌─────┐", "│ NTP │", "└─────┘"],
+        "chrony in Docker: serves the time to the networks you pick, taking it from public pools. It never sets the server's own clock, and dnsmasq hands its address out as DHCP option 42.",
+        "time-server:\n  pools: [pool.ntp.org]\n  servers: [192.0.2.123]",
+        Status::Available,
+    ),
 ];
 
 /// look a module up by its id.
@@ -143,6 +151,7 @@ mod tests {
         assert_eq!(find("nt4-domain").unwrap().status, Status::Available);
         assert_eq!(find("web-proxy").unwrap().status, Status::Available);
         assert_eq!(find("dns").unwrap().status, Status::Available);
+        assert_eq!(find("time-server").unwrap().status, Status::Available);
         assert_eq!(find("remote-commands").unwrap().status, Status::Available);
     }
 }
