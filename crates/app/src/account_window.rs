@@ -280,4 +280,88 @@ mod tests {
         assert!(form.error.as_deref().unwrap().contains("different"));
         assert!(!window.outcome.busy());
     }
+
+    fn setup() -> (
+        AccountWindow,
+        Services,
+        std::sync::Arc<crate::gateway::Fake>,
+    ) {
+        let fake = std::sync::Arc::new(crate::gateway::Fake::new());
+        let services = Services::new(fake.clone(), crate::wake::Wake::none());
+        (AccountWindow::default(), services, fake)
+    }
+
+    fn settle(window: &mut AccountWindow, services: &Services) {
+        let start = std::time::Instant::now();
+        loop {
+            window.poll();
+            if window.idle(services, "gw") {
+                return;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5), "stuck");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn without_a_server_the_window_says_so() {
+        let (mut window, services, _) = setup();
+        let nodes = window.view(&services, None);
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn the_account_loads_once_and_fills_the_profile() {
+        let (mut window, services, fake) = setup();
+        let _ = window.view(&services, Some("gw"));
+        settle(&mut window, &services);
+        assert!(window.remote.data.is_some());
+        let nodes = window.view(&services, Some("gw"));
+        assert!(nodes.len() > 4);
+        assert_eq!(fake.calls(), ["account gw"], "it does not reload by itself");
+        window.update(Msg::Reload, &services, "gw");
+        settle(&mut window, &services);
+        assert_eq!(fake.calls().len(), 2);
+    }
+
+    #[test]
+    fn a_changed_profile_can_be_saved() {
+        let (mut window, services, fake) = setup();
+        let _ = window.view(&services, Some("gw"));
+        settle(&mut window, &services);
+        assert!(!window.profile_changed());
+        window.update(Msg::FullName("Dana Example".into()), &services, "gw");
+        window.update(Msg::Description("front desk".into()), &services, "gw");
+        assert!(window.profile_changed());
+        window.update(Msg::SaveProfile, &services, "gw");
+        settle(&mut window, &services);
+        assert!(fake.calls().contains(&"profile gw".to_string()));
+    }
+
+    #[test]
+    fn a_good_password_box_changes_the_password_and_the_outcome_is_shown() {
+        let (mut window, services, fake) = setup();
+        window.update(Msg::ChangePassword, &services, "gw");
+        assert!(window.dialog().is_some());
+        let mut form = window.form.take().unwrap();
+        form.set(0, "old");
+        form.set(1, "new");
+        form.set(2, "new");
+        window.form = Some(form);
+        window.update_dialog(FormMsg::Ok, &services, "gw");
+        assert!(window.form.is_none());
+        settle(&mut window, &services);
+        assert!(fake.calls().contains(&"password gw".to_string()));
+        let nodes = window.view(&services, Some("gw"));
+        assert!(nodes.len() > 8, "the outcome is listed");
+    }
+
+    #[test]
+    fn cancelling_the_password_box_changes_nothing() {
+        let (mut window, services, fake) = setup();
+        window.update(Msg::ChangePassword, &services, "gw");
+        window.update_dialog(FormMsg::Cancel, &services, "gw");
+        assert!(window.form.is_none() && window.dialog().is_none());
+        assert!(fake.calls().is_empty());
+    }
 }

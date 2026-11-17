@@ -358,4 +358,104 @@ mod tests {
         w.remove_role();
         assert!(w.draft.roles.is_empty() && w.draft.members["dana"].is_empty());
     }
+
+    fn setup() -> (
+        PermissionsWindow,
+        Services,
+        std::sync::Arc<crate::gateway::Fake>,
+    ) {
+        let fake = std::sync::Arc::new(crate::gateway::Fake::new());
+        let services = Services::new(fake.clone(), crate::wake::Wake::none());
+        (PermissionsWindow::default(), services, fake)
+    }
+
+    fn settle(window: &mut PermissionsWindow, services: &Services) {
+        let start = std::time::Instant::now();
+        loop {
+            window.poll();
+            if !services.busy("gw") && !window.remote.busy() {
+                return;
+            }
+            assert!(start.elapsed() < std::time::Duration::from_secs(5), "stuck");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn without_a_server_the_window_says_so() {
+        let (mut window, services, _) = setup();
+        assert_eq!(window.view(&services, None, true).len(), 1);
+    }
+
+    #[test]
+    fn it_loads_once_and_lists_users_and_roles() {
+        let (mut window, services, fake) = setup();
+        let _ = window.view(&services, Some("gw"), true);
+        settle(&mut window, &services);
+        window
+            .draft
+            .members
+            .insert("dana".into(), vec![USERS.into()]);
+        window.remote.data = Some(window.draft.clone());
+        window.update(Msg::PickUser(0), &services, "gw", true);
+        window.update(Msg::PickRole(1), &services, "gw", true);
+        let nodes = window.view(&services, Some("gw"), true);
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(window.user_rows(), [["dana", USERS]]);
+        assert_eq!(fake.calls(), ["load-access gw"]);
+        window.update(Msg::Reload, &services, "gw", true);
+        settle(&mut window, &services);
+        assert_eq!(fake.calls().len(), 2);
+    }
+
+    #[test]
+    fn edits_are_saved_and_then_read_back() {
+        let (mut window, services, fake) = setup();
+        let _ = window.view(&services, Some("gw"), true);
+        settle(&mut window, &services);
+        window.update(Msg::AddUser, &services, "gw", true);
+        assert!(window.dialog().is_some());
+        let mut form = window.form.take().unwrap().1;
+        form.set(0, "dana");
+        window.form = Some((Add::User, form));
+        window.update_dialog(FormMsg::Ok);
+        assert!(window.form.is_none() && window.dirty());
+        window.update(Msg::Save, &services, "gw", true);
+        settle(&mut window, &services);
+        assert!(fake.calls().contains(&"save-access gw".to_string()));
+    }
+
+    #[test]
+    fn nothing_changes_without_manage() {
+        let (mut window, services, fake) = setup();
+        window
+            .draft
+            .members
+            .insert("dana".into(), vec![USERS.into()]);
+        window.user = Some(0);
+        for msg in [
+            Msg::ToggleRole(0),
+            Msg::AddUser,
+            Msg::NewRole,
+            Msg::RemoveRole,
+        ] {
+            window.update(msg, &services, "gw", false);
+        }
+        window.update(Msg::Grant(encode(0, 1)), &services, "gw", false);
+        assert_eq!(window.draft.members["dana"], [USERS]);
+        assert!(window.form.is_none());
+        window.remote.data = Some(Access::default());
+        window.update(Msg::Save, &services, "gw", false);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn a_name_box_needs_a_name_and_a_new_role_needs_a_new_name() {
+        let (mut window, services, _) = setup();
+        window.update(Msg::NewRole, &services, "gw", true);
+        window.update_dialog(FormMsg::Ok);
+        assert!(window.form.as_ref().unwrap().1.error.is_some());
+        window.update_dialog(FormMsg::Cancel);
+        assert!(window.form.is_none());
+    }
 }

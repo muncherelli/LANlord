@@ -140,3 +140,207 @@ pub(crate) fn save_access(
     save(session, host, settings, access, ask)?;
     Ok(Reply::Done)
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::testgw::{no_password, Gateway};
+    use lanlord_model::access::Role;
+    use lanlord_model::identity::LinkState;
+
+    fn dana() -> Caller {
+        Caller {
+            user: "dana".into(),
+            admin: false,
+        }
+    }
+
+    /// a server that says whether the helper accepts the old password and reports the old hash.
+    fn passwd_server(helper_says: &str, log: &std::path::Path) -> Session {
+        Session::fake(&format!(
+            r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit 0 ;;
+  "sh -c "*) exit 0 ;;
+  *)
+input=$(cat)
+case "$input" in
+  *lanlord-auth-helper*) echo {helper_says} ;;
+  *chpasswd*) echo 'OLD:hash'; echo set >> '{log}' ;;
+esac ;;
+esac"#,
+            log = log.display()
+        ))
+    }
+
+    fn secret(text: &str) -> Secret {
+        Secret::new(text)
+    }
+
+    fn the_links(reply: Reply) -> (bool, Vec<LinkState>) {
+        match reply {
+            Reply::Password(report) => (
+                report.ok,
+                report.links.into_iter().map(|l| l.state).collect(),
+            ),
+            other => panic!("not a password report: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_right_old_password_changes_the_linux_account() {
+        let log = std::env::temp_dir().join(format!("lanlord-pw-ok-{}", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let server = passwd_server("ok", &log);
+        let reply = change_password(
+            &server,
+            &dana(),
+            &secret("old"),
+            &secret("new"),
+            &mut no_password,
+        )
+        .unwrap();
+        assert_eq!(the_links(reply), (true, vec![LinkState::Changed]));
+        assert!(std::fs::read_to_string(&log).unwrap().contains("set"));
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_wrong_old_password_changes_nothing() {
+        let log = std::env::temp_dir().join(format!("lanlord-pw-bad-{}", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let server = passwd_server("no", &log);
+        let err = change_password(
+            &server,
+            &dana(),
+            &secret("old"),
+            &secret("new"),
+            &mut no_password,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not correct"), "{err:#}");
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn a_bad_new_password_is_refused_before_anything_is_asked() {
+        let server = passwd_server("ok", std::path::Path::new("/nonexistent/log"));
+        for (old, new) in [("old", ""), ("same", "same"), ("old", "two\nlines")] {
+            let result = change_password(
+                &server,
+                &dana(),
+                &secret(old),
+                &secret(new),
+                &mut no_password,
+            );
+            assert!(result.is_err(), "{new:?}");
+        }
+    }
+
+    #[test]
+    fn an_administrator_resets_someone_else_and_the_domain_link_is_skipped_until_it_exists() {
+        let gw = Gateway::new("self-reset");
+        let log = std::env::temp_dir().join(format!("lanlord-pw-reset-{}", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let server = passwd_server("ok", &log);
+        let reply = reset_password(&server, "dana", &secret("new"), &mut no_password).unwrap();
+        assert_eq!(the_links(reply), (true, vec![LinkState::Changed]));
+        // with the domain component installed there is a second link that does nothing yet
+        std::fs::write(gw.dir.join("yml"), "nt4-domain:\n  realm: EXAMPLE\n").unwrap();
+        let reply = reset_password(&gw.session, "dana", &secret("new"), &mut no_password).unwrap();
+        let (ok, states) = the_links(reply);
+        assert!(ok);
+        assert_eq!(states.len(), 2);
+        assert!(matches!(states[1], LinkState::Skipped(_)));
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[test]
+    fn a_user_name_that_is_not_one_fails_the_link_and_the_report() {
+        let gw = Gateway::new("self-reset-bad");
+        let reply = reset_password(&gw.session, "a b;c", &secret("new"), &mut no_password).unwrap();
+        let (ok, states) = the_links(reply);
+        assert!(!ok);
+        assert!(matches!(states[0], LinkState::Failed(_)));
+    }
+
+    #[test]
+    fn a_profile_is_stored_for_its_owner_and_shows_in_their_account() {
+        let gw = Gateway::new("self-profile");
+        let profile = Profile {
+            full_name: "Dana Example".into(),
+            description: "front desk".into(),
+        };
+        let done = update_profile(&gw.session, "gw", &dana(), &profile, &mut no_password).unwrap();
+        assert_eq!(done, Reply::Done);
+        let Reply::Account(info) = account_info(&gw.session, &dana(), &mut no_password).unwrap()
+        else {
+            panic!("not an account");
+        };
+        assert_eq!(info.user, "dana");
+        assert_eq!(info.profile, profile);
+        assert_eq!(info.roles, [lanlord_model::access::USERS]);
+        assert_eq!(info.links.len(), 1);
+        // nobody else's account got the profile
+        let Reply::Account(other) = account_info(
+            &gw.session,
+            &Caller {
+                user: "ann".into(),
+                admin: false,
+            },
+            &mut no_password,
+        )
+        .unwrap() else {
+            panic!("not an account");
+        };
+        assert_eq!(other.profile, Profile::default());
+    }
+
+    #[test]
+    fn profile_fields_that_are_too_long_or_have_control_characters_are_refused() {
+        let gw = Gateway::new("self-profile-bad");
+        for profile in [
+            Profile {
+                full_name: "x".repeat(MAX_FIELD + 1),
+                description: String::new(),
+            },
+            Profile {
+                full_name: String::new(),
+                description: "line\nbreak".into(),
+            },
+        ] {
+            let result = update_profile(&gw.session, "gw", &dana(), &profile, &mut no_password);
+            assert!(result.is_err());
+        }
+        assert!(gw.plain().is_none(), "nothing was stored");
+    }
+
+    #[test]
+    fn the_assignments_round_trip_and_a_bad_set_is_refused() {
+        let gw = Gateway::new("self-access");
+        // never stored: the migration answers, and it is valid
+        let Reply::Access(fresh) = load_access(&gw.session, &mut no_password).unwrap() else {
+            panic!("not access");
+        };
+        assert_eq!(fresh.problem(), None);
+        let mut access = fresh;
+        access
+            .members
+            .insert("dana".into(), vec![lanlord_model::access::OPERATORS.into()]);
+        assert_eq!(
+            save_access(&gw.session, "gw", &access, &mut no_password).unwrap(),
+            Reply::Done
+        );
+        let Reply::Access(back) = load_access(&gw.session, &mut no_password).unwrap() else {
+            panic!("not access");
+        };
+        assert_eq!(back.members["dana"], [lanlord_model::access::OPERATORS]);
+        let mut bad = back;
+        bad.roles.push(Role {
+            name: lanlord_model::access::USERS.into(),
+            grants: Default::default(),
+        });
+        assert!(save_access(&gw.session, "gw", &bad, &mut no_password).is_err());
+    }
+}

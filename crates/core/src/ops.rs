@@ -461,6 +461,121 @@ esac"#,
         assert!(!kept.contains("dana"), "{kept}");
     }
 
+    fn is_denied(result: &Result<Reply>) -> bool {
+        result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.downcast_ref::<access::Denied>().is_some())
+    }
+
+    #[test]
+    fn each_built_in_role_is_allowed_exactly_what_its_grants_say() {
+        let gw = Gateway::new("ops-roles");
+        std::fs::write(
+            gw.dir.join("yml"),
+            "access:\n  members:\n    olly: [Operators]\n    dana: [Users]\n",
+        )
+        .unwrap();
+        let ops = [
+            Op::Leases,
+            Op::ServerFacts,
+            Op::LoadAccess,
+            Op::ResetMachine {
+                name: "pc01".into(),
+            },
+            Op::Power {
+                power: Power::Reboot,
+            },
+            Op::LogonScripts,
+            Op::AccountInfo,
+        ];
+        let callers = [
+            (admin(), true),
+            (
+                Caller {
+                    user: "olly".into(),
+                    admin: false,
+                },
+                false,
+            ),
+            (
+                Caller {
+                    user: "dana".into(),
+                    admin: false,
+                },
+                false,
+            ),
+        ];
+        let stored = access::Access::from_settings(
+            &lanlord_model::settings::Settings::parse(
+                &std::fs::read_to_string(gw.dir.join("yml")).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        for (caller, is_admin) in callers {
+            let grants = stored.grants(&caller.user, is_admin);
+            for op in &ops {
+                let got = execute_with(&gw.session, "gw", &caller, op, &mut no_password, key);
+                let allowed = grants.allows(op.requires());
+                assert_eq!(
+                    is_denied(&got),
+                    !allowed,
+                    "{} on {op:?}: {got:?}",
+                    caller.user
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_user_reaches_their_own_account_and_nobody_elses_or_the_permissions() {
+        let gw = Gateway::new("ops-self");
+        let dana = Caller {
+            user: "dana".into(),
+            admin: false,
+        };
+        let go = |caller: &Caller, op: Op| {
+            execute_with(&gw.session, "gw", caller, &op, &mut no_password, key)
+        };
+        let Ok(Reply::Account(info)) = go(&dana, Op::AccountInfo) else {
+            panic!("a user may read their own account");
+        };
+        assert_eq!(info.user, "dana");
+        let profile = access::Profile {
+            full_name: "Dana Example".into(),
+            description: String::new(),
+        };
+        assert_eq!(
+            go(&dana, Op::UpdateProfile { profile }).unwrap(),
+            Reply::Done
+        );
+        let reset = Op::ResetPassword {
+            user: "ann".into(),
+            new: lanlord_model::secret::Secret::new("pw"),
+        };
+        assert!(is_denied(&go(&dana, reset.clone())));
+        assert!(is_denied(&go(&dana, Op::LoadAccess)));
+        assert!(is_denied(&go(
+            &dana,
+            Op::SaveAccess {
+                access: access::Access::default()
+            }
+        )));
+        // an administrator may do all three
+        assert!(matches!(go(&admin(), reset), Ok(Reply::Password(_))));
+        assert!(matches!(go(&admin(), Op::LoadAccess), Ok(Reply::Access(_))));
+        let mut open = access::Access::default();
+        open.members
+            .insert("dana".into(), vec![access::OPERATORS.into()]);
+        assert_eq!(
+            go(&admin(), Op::SaveAccess { access: open }).unwrap(),
+            Reply::Done
+        );
+        // and the new role takes effect for dana's next request
+        assert!(go(&dana, Op::Leases).is_ok());
+    }
+
     #[test]
     fn bootstrap_and_run_go_through_execute_only() {
         let server = quiet_server();
