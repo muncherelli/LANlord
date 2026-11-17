@@ -101,6 +101,58 @@ class NetworksTest(unittest.TestCase):
                 # `is match` in a playbook assert is this test plugin
                 self.assertEqual(match(value, label_re), expected)
 
+    def test_playbook_templates_and_asserts_escape_the_anchor(self):
+        # `{{ }}` templates escape backslashes (so \Z there), `that:` conditionals do not (so \\Z)
+        try:
+            from ansible.template import Templar, trust_as_template
+            from ansible.parsing.dataloader import DataLoader
+        except ImportError:
+            self.skipTest('ansible is not installed')
+        import yaml
+        here = os.path.join(os.path.dirname(__file__), '..', 'playbooks')
+
+        def find(node, key):
+            if isinstance(node, dict):
+                if key in node:
+                    return [node[key]]
+                node = list(node.values())
+            return [hit for child in node if isinstance(child, (dict, list)) for hit in find(child, key)] \
+                if isinstance(node, list) else []
+
+        def render(expr, variables):
+            return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expr))
+
+        with open(os.path.join(here, 'dns-render.yml')) as handle:
+            expr, = find(yaml.safe_load(handle), 'dns_names')
+        for bad in ('', '\n', '\r\n'):
+            with self.subTest(play='dns-render', tail=bad):
+                variables = {'net': {'zone': 'lab'}, 'dns_host': 'gw', 'dns_nt4_name': '', 'dns_nt4_network': '',
+                             'dns_proxy_hosts': ['www.lab', 'www.lab' + bad]}
+                names = render(expr, variables)
+                self.assertIn('www.lab', names)
+                self.assertEqual('www.lab' + bad in names, bool(bad == ''))
+
+        with open(os.path.join(here, 'web-proxy.yml')) as handle:
+            found = find(yaml.safe_load(handle), 'webui_names')
+        self.assertEqual(len(found), 1)
+        for bad in ('', '\n', '\r\n'):
+            with self.subTest(play='web-proxy', tail=bad):
+                variables = {'webui_host': 'gw.lab', 'webui_tls': 'internal', 'host_address': '192.0.2.1',
+                             'ansible_facts': {'hostname': 'gw' + bad, 'fqdn': 'gw.lab'}}
+                names = render(found[0], variables)
+                self.assertIn('192.0.2.1', names)
+                self.assertIn('gw.lab', names)
+                self.assertEqual('gw' + bad in names, bad == '')
+
+        # the assert path: conditionals take the backslash as written
+        with open(os.path.join(here, 'webui-login.yml')) as handle:
+            text = handle.read()
+        cond = [line.split('- ', 1)[1].strip() for line in text.splitlines() if 'caller is match' in line][0]
+        for value, ok in (('lanlord', True), ('lanlord\n', False), ('lanlord\r\n', False)):
+            with self.subTest(cond=value):
+                templar = Templar(loader=DataLoader(), variables={'caller': value})
+                self.assertEqual(templar.evaluate_conditional(trust_as_template(cond)), ok)
+
     def test_netmask(self):
         self.assertEqual(lanlord.lanlord_netmask('22'), '255.255.252.0')
 
