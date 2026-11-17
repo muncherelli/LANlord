@@ -971,7 +971,9 @@ impl Desktop {
                 target.title(),
                 cascade(n, area, size),
                 size,
+                area.height() - 8.0,
                 self.active == Some(target),
+                target.is_dialog(),
                 |ui| self.contents(ui, target),
             );
             if let Some((actions, clicked)) = shown {

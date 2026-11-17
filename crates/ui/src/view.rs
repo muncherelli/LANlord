@@ -102,6 +102,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.label(RichText::new(text.as_str()).strong());
             None
         }
+        Node::Button(button) if button.selected => {
+            theme::sized_button(ui, &button.label, true, button.width);
+            None
+        }
+        Node::Button(button) if button.width.is_some() => {
+            theme::sized_button(ui, &button.label, false, button.width)
+                .clicked()
+                .then(|| button.press.clone())
+        }
         Node::Button(button) => theme::action(ui, &button.label, button.enabled)
             .clicked()
             .then(|| button.press.clone()),

@@ -51,6 +51,11 @@ impl Target {
         }
     }
 
+    /// a dialog has only a close button, cannot be resized and is as tall as its contents.
+    pub fn is_dialog(self) -> bool {
+        matches!(self, Self::Welcome | Self::DateTime | Self::Components)
+    }
+
     /// how big the window opens, in layout units, before it is cut down to fit the desktop.
     pub fn size(self) -> (f32, f32) {
         match self {
@@ -65,10 +70,10 @@ impl Target {
             Self::Console => (600.0, 300.0),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
-            Self::DateTime => (430.0, 420.0),
-            Self::Components => (500.0, 470.0),
-            // as tall as the longest topic needs, so no grey is left below the buttons
-            Self::Welcome => (580.0, 324.0),
+            // the dialogs give a width only: they are as tall as their contents
+            Self::DateTime => (430.0, 0.0),
+            Self::Components => (500.0, 0.0),
+            Self::Welcome => (530.0, 0.0),
         }
     }
 }

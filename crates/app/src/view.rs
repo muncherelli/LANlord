@@ -222,6 +222,11 @@ pub struct Button<M> {
     pub label: String,
     pub enabled: bool,
     pub press: M,
+    /// the one of a set that is chosen: drawn pressed, and does nothing when clicked. a front
+    /// end without a pressed look shows it as disabled.
+    pub selected: bool,
+    /// a fixed width in points, so a stack of buttons lines up.
+    pub width: Option<f32>,
 }
 
 impl<M> Button<M> {
@@ -230,7 +235,19 @@ impl<M> Button<M> {
             label: label.into(),
             enabled,
             press,
+            selected: false,
+            width: None,
         }
+    }
+
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
     }
 }
 

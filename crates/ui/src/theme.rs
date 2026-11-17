@@ -47,8 +47,16 @@ pub fn bevel(painter: &Painter, rect: Rect, raised: bool) {
 
 /// a push button; `pressed` keeps it looking down, like the active window's taskbar button.
 pub fn button(ui: &mut Ui, text: &str, pressed: bool) -> Response {
+    sized_button(ui, text, pressed, None)
+}
+
+/// a push button of a given width, so a stack of them lines up.
+pub fn sized_button(ui: &mut Ui, text: &str, pressed: bool, width: Option<f32>) -> Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), font(), BLACK);
-    let size = Vec2::new((galley.size().x + 22.0).max(75.0), 23.0);
+    let size = Vec2::new(
+        width.unwrap_or_else(|| (galley.size().x + 22.0).max(75.0)),
+        23.0,
+    );
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     #[cfg(test)]
     probe::record(ui, text, rect, true);

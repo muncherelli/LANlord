@@ -25,6 +25,36 @@ pub enum Msg {
     Toggle,
 }
 
+/// the width of the topic buttons: the longest label and some padding.
+const TOPIC_BUTTON: f32 = 100.0;
+/// the width of the text panel.
+pub const PANEL: f32 = 400.0;
+/// how many characters a line of the panel holds.
+const LINE: usize = 60;
+
+/// the paragraphs of a topic broken into lines of at most `LINE` characters, with a blank line
+/// between paragraphs.
+fn lines(text: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (n, paragraph) in text.iter().enumerate() {
+        if n > 0 {
+            out.push(String::new());
+        }
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if !line.is_empty() && line.len() + 1 + word.len() > LINE {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        out.push(line);
+    }
+    out
+}
+
 struct Topic {
     button: &'static str,
     title: &'static str,
@@ -166,12 +196,31 @@ impl Welcome {
     /// that exists.
     pub fn view(&self, icons: &[Target]) -> Vec<Node<Msg>> {
         let topic = &TOPICS[self.topic];
+        // the chosen topic is drawn pressed (a front end without that look greys it)
         let buttons = TOPICS
             .iter()
             .enumerate()
-            .map(|(i, t)| Node::Button(Button::new(t.button, i != self.topic, Msg::Topic(i))))
+            .map(|(i, t)| {
+                let chosen = i == self.topic;
+                Node::Button(
+                    Button::new(t.button, !chosen, Msg::Topic(i))
+                        .selected(chosen)
+                        .width(TOPIC_BUTTON),
+                )
+            })
             .collect();
-        let mut text: Vec<Node<Msg>> = topic.text.iter().map(|l| Node::Text((*l).into())).collect();
+        // every topic takes the same number of lines, so the window does not change size
+        let rows = TOPICS
+            .iter()
+            .map(|t| lines(t.text).len())
+            .max()
+            .unwrap_or(0);
+        let mut text: Vec<Node<Msg>> = lines(topic.text)
+            .into_iter()
+            .chain(std::iter::repeat(String::new()))
+            .take(rows)
+            .map(Node::Text)
+            .collect();
         text.push(Node::Gap(8.0));
         let mut buttons_row = vec![Node::Button(Button::new(
             topic.open,
@@ -196,13 +245,13 @@ impl Welcome {
             Node::Gap(8.0),
             Node::Columns(vec![
                 (
-                    Some(400.0),
+                    Some(PANEL),
                     vec![Node::Group {
                         title: topic.title.into(),
                         body: text,
                     }],
                 ),
-                (Some(120.0), buttons),
+                (Some(TOPIC_BUTTON), buttons),
             ]),
             Node::Gap(8.0),
             Node::Check {
@@ -237,6 +286,26 @@ impl Welcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_topic_takes_the_same_number_of_lines() {
+        let rows = |w: &mut Welcome| match &w.view(&[])[2] {
+            Node::Columns(c) => match &c[0].1[0] {
+                Node::Group { body, .. } => body.len(),
+                _ => panic!("no group"),
+            },
+            _ => panic!("no columns"),
+        };
+        let mut welcome = Welcome::new(None);
+        let first = rows(&mut welcome);
+        for topic in 1..TOPICS.len() {
+            welcome.update(Msg::Topic(topic), &[]);
+            assert_eq!(rows(&mut welcome), first);
+        }
+        assert!(TOPICS
+            .iter()
+            .all(|t| lines(t.text).iter().all(|l| l.len() <= LINE)));
+    }
 
     fn texts(nodes: &[Node<Msg>]) -> String {
         let mut out = String::new();
