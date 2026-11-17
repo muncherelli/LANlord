@@ -461,6 +461,7 @@ impl Desktop {
     }
 
     /// keep the Welcome screen's tick box in the preferences file at `path`.
+    #[cfg(feature = "native")]
     pub fn set_prefs(&mut self, path: Option<std::path::PathBuf>) {
         self.welcome = Welcome::new(path);
     }
