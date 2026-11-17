@@ -20,6 +20,7 @@ const FILES: &[(&str, &str)] = &[
     playbook!("networks.yml"),
     playbook!("network-address.yml"),
     playbook!("docker.yml"),
+    playbook!("doctor-probe.sh"),
     playbook!("nt4-domain.yml"),
     playbook!("web-proxy.yml"),
     playbook!("dns.yml"),

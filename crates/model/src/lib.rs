@@ -4,6 +4,7 @@
 
 pub mod clock;
 pub mod components;
+pub mod doctor;
 pub mod lan_networks;
 pub mod leases;
 pub mod log;
