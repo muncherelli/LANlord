@@ -70,7 +70,7 @@ pub fn change_all(
     change_with(&Session::new(host)?, host, identity, changes, ask_password)
 }
 
-fn change_with(
+pub(crate) fn change_with(
     session: &Session,
     host: &str,
     identity: &age::x25519::Identity,

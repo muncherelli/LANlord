@@ -2,7 +2,7 @@
 //! draws them with egui.
 
 use eframe::egui::{self, Ui};
-pub use lanlord_app::my_server::MyServer;
+pub use lanlord_app::my_server::{Msg, MyServer};
 use lanlord_app::services::Services;
 
 use crate::view;
@@ -26,9 +26,8 @@ pub fn dialog(window: &mut MyServer, ctx: &egui::Context, services: &Services) {
         return;
     };
     let host = window
-        .purge
-        .as_ref()
-        .map(|p| p.host.clone())
+        .purge()
+        .map(|p| p.host().to_string())
         .unwrap_or_default();
     if let Some(msg) = view::dialog(ctx, &dialog) {
         window.update(msg, services, &host);

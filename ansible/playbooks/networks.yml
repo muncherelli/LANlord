@@ -1,0 +1,74 @@
+# shared by the modules (included, not a play of its own): the lanlord networks and the interfaces
+# they are on. nothing here changes the machine. it sets
+#
+#   host_interface, host_address      the normal network (see network.yml)
+#   lanlord_networks                  every lanlord network, checked, with its interface, address, ip,
+#                                     prefix, netmask, mtu, zone, records and dhcp
+#   internal_interface, internal_ip, internal_prefix, internal_netmask, internal_address
+#                                     one network for the modules that serve a single network: the one
+#                                     named by net_primary_name when the includer sets it, else the first
+#
+# the networks come from the settings:
+#
+# networks:                      # any number of lanlord networks; retronet is just the first
+#   - name: retronet             # a plain label; names the dnsmasq container lanlord-dns-<name>
+#     interface: eth1            # the interface the network is on
+#     address: 172.16.120.1/22   # the server's own address there, with its prefix
+#     mtu: 1450                  # optional
+#     zone: retronet             # the dns zone; default: the name
+#     records:                   # extra names in the zone
+#       - {name: ntsrv1, address: 172.16.120.10}
+#     dhcp:                      # optional; no dhcp server without it
+#       range: [172.16.123.1, 172.16.123.254]
+#       lease: 7d                # 30m, 12h, 7d or infinite; default 7d
+#       hosts:                   # static leases by mac
+#         - {name: ntsrv1, mac: "aa:bb:cc:dd:ee:ff", address: 172.16.120.10}
+#
+# settings without a `networks:` list still work: the `dns:` section, docker.internal_address and
+# the interface settings are read as one network called retronet.
+- name: work out the host network (and, for older settings, the internal one)
+  ansible.builtin.include_tasks: network.yml
+
+- name: work out the lanlord networks
+  ansible.builtin.set_fact:
+    lanlord_networks: >-
+      {{ {'networks': networks | default(none), 'networks_defined': networks is defined,
+          'dns': dns | default(none), 'dns_defined': dns is defined,
+          'docker': docker | default({}), 'network': network | default({})}
+         | lanlord_networks({'interface': internal_interface | default(''), 'address': internal_address | default('')}) }}
+
+- name: check that no lanlord network is on the host network's interface
+  ansible.builtin.assert:
+    that: host_interface not in (lanlord_networks | map(attribute='interface') | list)
+    fail_msg: "the interface {{ host_interface }} is the host network, so a lanlord network cannot use it"
+
+- name: check that the network the module serves exists
+  ansible.builtin.assert:
+    that: (net_primary_name | default('')) == '' or (net_primary_name | lower) in (lanlord_networks | map(attribute='name') | list)
+    fail_msg: "there is no network called {{ net_primary_name | default('') }}; the networks are {{ lanlord_networks | map(attribute='name') | list }}"
+
+- name: pick the network for modules that serve one
+  ansible.builtin.set_fact:
+    net_primary: >-
+      {{ (lanlord_networks | selectattr('name', 'equalto', net_primary_name | default('') | lower) | list | first)
+         if (net_primary_name | default('')) != '' else (lanlord_networks | first) }}
+  when: lanlord_networks | length > 0
+
+# with a networks list, the settings are what says where a network is; the older settings leave
+# those facts as network.yml found them
+- name: use that network's values for the modules that serve one
+  ansible.builtin.set_fact:
+    internal_interface: "{{ net_primary.interface }}"
+    internal_ip: "{{ net_primary.ip }}"
+    internal_prefix: "{{ net_primary.prefix }}"
+    internal_netmask: "{{ net_primary.netmask }}"
+    internal_address: "{{ net_primary.address }}"
+  when: networks is defined and lanlord_networks | length > 0
+
+- name: say there is no internal network
+  ansible.builtin.set_fact:
+    internal_interface: ''
+    internal_ip: ''
+    internal_prefix: ''
+    internal_netmask: ''
+  when: networks is defined and lanlord_networks | length == 0

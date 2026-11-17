@@ -246,7 +246,10 @@ impl Desktop {
                 self.open(target);
                 if id == "my-server" {
                     // @1 is the Advanced tab, @2 also asks before a purge
-                    self.my_server.tab = usize::from(tab == "1" || tab == "2");
+                    let page = usize::from(tab == "1" || tab == "2");
+                    let host = self.host().unwrap_or_default();
+                    self.my_server
+                        .update(my_server::Msg::Tab(page), &self.services, &host);
                     if let (true, Some(host)) = (tab == "2", self.host()) {
                         self.my_server.ask_to_purge(&self.services, &host);
                     }
@@ -451,7 +454,7 @@ impl Desktop {
     /// the modal boxes: a task's password prompt and the add-host box.
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.password.is_none() {
-            self.password = self.services.tasks.next_request().map(|request| {
+            self.password = self.services.next_request().map(|request| {
                 let dialog = TextDialog::new("password", "Password", &request.prompt, true);
                 (request, dialog)
             });

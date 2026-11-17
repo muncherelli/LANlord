@@ -15,9 +15,9 @@ use crate::tasks::{Job, Tasks};
 use crate::wake::Wake;
 
 pub struct Services {
-    pub gateway: Arc<dyn Gateway>,
-    pub tasks: Tasks,
-    pub wake: Wake,
+    gateway: Arc<dyn Gateway>,
+    tasks: Tasks,
+    wake: Wake,
 }
 
 impl Services {
@@ -27,6 +27,11 @@ impl Services {
             tasks: Tasks::default(),
             wake,
         }
+    }
+
+    /// the next password a task is waiting for, if any.
+    pub fn next_request(&self) -> Option<crate::tasks::PasswordRequest> {
+        self.tasks.next_request()
     }
 
     /// is a task running against `host`?

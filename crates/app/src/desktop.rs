@@ -128,8 +128,7 @@ mod tests {
                 .collect(),
         };
         let icons = icons(Some(&all));
-        let mut ids: Vec<_> = icons.iter().map(|t| t.id()).collect();
-        ids.dedup();
+        let ids: std::collections::HashSet<_> = icons.iter().map(|t| t.id()).collect();
         assert_eq!(ids.len(), icons.len());
         assert!(!icons.contains(&Target::DateTime));
         assert!(!icons.contains(&Target::Components));

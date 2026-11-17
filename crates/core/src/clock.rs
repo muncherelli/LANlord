@@ -212,7 +212,9 @@ pub fn update_now(session: &Session, ask_password: AskPassword) -> Result<Vec<St
 }
 
 /// make `change` on the server and keep its zone and ntp parts in the settings, so a later apply
-/// does not undo them. the settings are only touched when the server accepted the change.
+/// does not undo them. the change itself comes first and is reported as done; keeping it is
+/// second, only when lanlord is installed, and a failure there is a warning (`Stored::Failed`),
+/// never an error that hides the change.
 pub fn apply_stored(
     session: &Session,
     host: &str,
@@ -225,15 +227,34 @@ pub fn apply_stored(
     if change.timezone.is_none() && change.ntp.is_none() {
         return Ok((said, Stored::Nothing));
     }
+    match config::is_installed(session) {
+        Ok(true) => {}
+        Ok(false) => return Ok((said, Stored::NotInstalled)),
+        Err(err) => return Ok((said, Stored::Failed(err.to_string()))),
+    }
     let Some(identity) = identity else {
         return Ok((said, Stored::NoKey));
     };
-    let stored = settings::load_document_with(session, identity, &mut ask)?;
+    match keep(session, host, identity, change, &mut ask) {
+        Ok(()) => {
+            emit(Kind::Info, format!("kept the clock settings for {host}"));
+            Ok((said, Stored::Yes))
+        }
+        Err(err) => Ok((said, Stored::Failed(err.to_string()))),
+    }
+}
+
+fn keep(
+    session: &Session,
+    host: &str,
+    identity: &Identity,
+    change: &Change,
+    ask: AskPassword,
+) -> Result<()> {
+    let stored = settings::load_document_with(session, identity, ask)?;
     let mut parsed = Settings::parse(&stored.plain)?;
     keep_change(change, &mut parsed);
-    settings::save_document_with(session, host, identity, &parsed.text(), &[], &mut ask)?;
-    emit(Kind::Info, format!("kept the clock settings for {host}"));
-    Ok((said, Stored::Yes))
+    settings::save_document_with(session, host, identity, &parsed.text(), &[], ask)
 }
 
 #[cfg(test)]
@@ -658,6 +679,70 @@ esac"#,
             let none = serving("pool", &record);
             assert!(update_now(&none, &mut no_password).is_ok());
             let _ = std::fs::remove_file(record);
+        }
+
+        /// a server where the zone script works but writing the settings fails like a missing sudo.
+        fn broken_settings() -> Session {
+            Session::fake(
+                r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo root ;;
+  "sudo -n true") exit 0 ;;
+  "sh -c "*"getent passwd lanlord"*) echo yes ;;
+  "sh -c "*) exit 0 ;;
+  *)
+    input=$(cat)
+    case "$input" in
+      *"tee /opt/lanlord/config/settings.yml"*) echo "sudo: command not found" >&2; exit 127 ;;
+      *"timedatectl set-timezone"*) echo "zone changed" ;;
+    esac ;;
+esac"#,
+            )
+        }
+
+        fn zone(name: &str) -> Change {
+            Change {
+                timezone: Some(name.into()),
+                ..Change::default()
+            }
+        }
+
+        #[test]
+        fn the_zone_is_changed_even_when_keeping_it_fails_with_status_127() {
+            let id = identity("clock-127");
+            let (said, stored) = apply_stored(
+                &broken_settings(),
+                "gw",
+                Some(&id),
+                &zone("Europe/Berlin"),
+                &mut no_password,
+            )
+            .expect("the change itself must not be an error");
+            assert!(said.iter().any(|l| l.contains("zone changed")), "{said:?}");
+            match stored {
+                Stored::Failed(why) => assert!(why.contains("status 127"), "{why}"),
+                other => panic!("expected a warning, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_server_without_lanlord_gets_the_change_and_a_plain_note() {
+            let (gw, id) = (Gateway::not_installed("clock-bare"), identity("clock-bare"));
+            let (_, stored) =
+                apply_stored(&gw.session, "gw", Some(&id), &zone("UTC"), &mut no_password).unwrap();
+            assert_eq!(stored, Stored::NotInstalled);
+            assert!(
+                gw.plain().is_none(),
+                "nothing may be written without lanlord"
+            );
+            // a time alone has nothing to keep, installed or not
+            let time = Change {
+                time: Some("2026-11-15 17:30:00".into()),
+                ..Change::default()
+            };
+            let (_, stored) =
+                apply_stored(&gw.session, "gw", Some(&id), &time, &mut no_password).unwrap();
+            assert_eq!(stored, Stored::Nothing);
         }
 
         #[test]

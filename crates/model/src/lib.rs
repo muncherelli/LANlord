@@ -4,6 +4,7 @@
 
 pub mod clock;
 pub mod components;
+pub mod lan_networks;
 pub mod leases;
 pub mod log;
 pub mod logon;
@@ -11,7 +12,9 @@ pub mod modules;
 pub mod network;
 pub mod networks;
 pub mod nt4;
+pub mod ops;
 pub mod power;
+pub mod secret;
 pub mod server;
 pub mod settings;
 pub mod signin;
