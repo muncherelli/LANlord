@@ -91,7 +91,7 @@ jobs:
           case "$EVENT" in
             pull_request) mode=pr; base="$BASE" ;;
             # an all-zero "before" (a new branch) has no base: every image counts as changed
-            push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; esac ;;
+            push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; *) base="" ;; esac ;;
             workflow_dispatch)
               if [ -n "$TAG" ]; then
                 grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$TAG" || { echo "::error::tag must be vX.Y.Z, found '$TAG'"; exit 1; }
