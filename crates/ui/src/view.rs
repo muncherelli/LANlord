@@ -114,11 +114,12 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             None
         }
         Node::Button(button) if button.selected => {
-            theme::sized_button(ui, &button.label, true, button.width);
+            // the chosen one is pressed in, not greyed
+            theme::sized_button(ui, &button.label, true, true, button.width);
             None
         }
         Node::Button(button) if button.width.is_some() => {
-            theme::sized_button(ui, &button.label, false, button.width)
+            theme::sized_button(ui, &button.label, false, button.enabled, button.width)
                 .clicked()
                 .then(|| button.press.clone())
         }
@@ -656,4 +657,42 @@ fn calendar(
         );
     }
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testkit;
+    use lanlord_app::view::Button;
+
+    #[test]
+    fn a_disabled_fixed_width_button_is_grey_and_reports_no_click() {
+        let ctx = egui::Context::default();
+        let nodes = vec![
+            Node::Button(Button::new("Open", false, 7).width(100.0)),
+            Node::Button(Button::new("Go", true, 8).width(100.0)),
+        ];
+        let mut sent = Vec::new();
+        testkit::run(&ctx, vec![], |ui| {
+            sent.extend(show(ui, &nodes));
+        });
+        let (_, off) = crate::theme::probe::find(&ctx, "Open").expect("drawn");
+        assert!(!off, "reported as disabled");
+        let at = crate::theme::probe::find(&ctx, "Open").unwrap().0.center();
+        for _ in 0..2 {
+            sent.clear();
+            testkit::run(&ctx, testkit::click(at), |ui| {
+                sent.extend(show(ui, &nodes));
+            });
+            assert!(sent.is_empty(), "{sent:?}");
+        }
+        let go = crate::theme::probe::find(&ctx, "Go").unwrap().0.center();
+        testkit::run(&ctx, testkit::click(go), |ui| {
+            sent.extend(show(ui, &nodes));
+        });
+        testkit::run(&ctx, vec![], |ui| {
+            sent.extend(show(ui, &nodes));
+        });
+        assert_eq!(sent, [8]);
+    }
 }

@@ -25,32 +25,21 @@ pub enum Msg {
     Toggle,
 }
 
-/// the width of the topic buttons: the longest label and some padding.
+/// the width of the topic buttons, wide enough for the longest label (the window front end
+/// tests that it is, with its own font).
 const TOPIC_BUTTON: f32 = 100.0;
-/// the width of the text panel.
+/// the width of the text panel: the paragraphs wrap to it.
 pub const PANEL: f32 = 400.0;
-/// how many characters a line of the panel holds.
-const LINE: usize = 60;
 
-/// the paragraphs of a topic broken into lines of at most `LINE` characters, with a blank line
-/// between paragraphs.
-fn lines(text: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// the paragraphs of a topic, each its own wrapping text with a blank line between them; the
+/// front end wraps them to the panel's width.
+fn paragraphs(text: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
     for (n, paragraph) in text.iter().enumerate() {
         if n > 0 {
             out.push(String::new());
         }
-        let mut line = String::new();
-        for word in paragraph.split_whitespace() {
-            if !line.is_empty() && line.len() + 1 + word.len() > LINE {
-                out.push(std::mem::take(&mut line));
-            }
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-        out.push(line);
+        out.push(paragraph.split_whitespace().collect::<Vec<_>>().join(" "));
     }
     out
 }
@@ -233,7 +222,7 @@ impl Welcome {
                 )
             })
             .collect();
-        let mut text: Vec<Node<Msg>> = lines(topic.text).into_iter().map(Node::Text).collect();
+        let mut text: Vec<Node<Msg>> = paragraphs(topic.text).into_iter().map(Node::Text).collect();
         // the room the window front end adds so the box is as tall for every topic
         text.push(Node::Gap(8.0 + slack));
         let mut buttons_row = vec![Node::Button(Button::new(
@@ -305,10 +294,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_text_is_broken_into_lines_the_panel_holds() {
-        assert!(TOPICS
-            .iter()
-            .all(|t| lines(t.text).iter().all(|l| l.len() <= LINE)));
+    fn each_paragraph_is_one_text_the_front_end_wraps_with_a_blank_line_between() {
+        for topic in TOPICS {
+            let paragraphs = paragraphs(topic.text);
+            assert_eq!(paragraphs.len(), 2 * topic.text.len() - 1);
+            assert!(paragraphs
+                .iter()
+                .all(|p| !p.contains('\n') && !p.contains("  ")));
+        }
     }
 
     fn texts(nodes: &[Node<Msg>]) -> String {

@@ -47,6 +47,10 @@ use lanlord_app::{hosts_window, module_window};
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
+/// the desktop icons' margin and the gap after their column: windows open to the right of it.
+const ICON_MARGIN: f32 = 12.0;
+const ICON_GAP: f32 = 14.0;
+const ICON_COLUMN: f32 = ICON_MARGIN + CELL.x + ICON_GAP;
 /// the width of the LANlord button.
 const MENU_BUTTON: f32 = 92.0;
 /// the clock's width in the tray, and the width of one tray icon.
@@ -107,6 +111,9 @@ pub struct Desktop {
     signed_in: Option<SignedIn>,
     /// each window as drawn last frame: its rectangle and the height its contents asked for.
     measured: Vec<(Target, Rect, f32)>,
+    /// the Welcome topics' heights for the width and scale they were measured at, so they are
+    /// not laid out again every frame.
+    welcome_heights: Option<(f32, f32, Vec<f32>)>,
     /// windows a `?open=` link asked for, opened once someone is logged on.
     open_after_logon: Option<String>,
     /// the browser's logout, waiting for the server to say the session is gone.
@@ -180,6 +187,7 @@ impl Desktop {
             open_after_logon: None,
             signed_in: None,
             measured: Vec::new(),
+            welcome_heights: None,
             admin_setup: None,
             #[cfg(feature = "native")]
             updates: Updates::quiet(),
@@ -878,8 +886,8 @@ impl Desktop {
         for (i, target) in self.icons.clone().into_iter().enumerate() {
             let pos = area.min
                 + Vec2::new(
-                    12.0 + (i / per_column) as f32 * CELL.x,
-                    12.0 + (i % per_column) as f32 * CELL.y,
+                    ICON_MARGIN + (i / per_column) as f32 * CELL.x,
+                    ICON_MARGIN + (i % per_column) as f32 * CELL.y,
                 );
             let rect = Rect::from_min_size(pos, CELL);
             let response = ui.interact(rect, Id::unique(("icon", i)), Sense::click());
@@ -1089,19 +1097,32 @@ fn desktop_area(ctx: &egui::Context) -> Rect {
 
 /// how wide a window opens, before it is cut down to fit the desktop. its height is never chosen:
 /// it is what the contents need.
-fn window_width(target: Target) -> f32 {
-    target.size().0
-}
-
-fn window_height(target: Target) -> f32 {
-    target.size().1
+/// how big a growable window opens: the console as 80 by 24 cells of its own font, the rest at
+/// the size the target gives.
+fn window_size(ctx: &egui::Context, target: Target) -> Vec2 {
+    let (width, height) = target.size();
+    if target != Target::Console {
+        return Vec2::new(width, height);
+    }
+    let font = egui::TextStyle::Monospace.resolve(&ctx.global_style());
+    let cell = ctx.fonts_mut(|fonts| {
+        let one = fonts.layout_no_wrap("M".into(), font.clone(), egui::Color32::BLACK);
+        Vec2::new(one.size().x, fonts.row_height(&font))
+    });
+    // the window's frame and margins, the black box's own border and its scroll bar
+    let bar = ctx.global_style().spacing.scroll.allocated_width();
+    let round = windows::chrome() + Vec2::new(2.0 * theme::SUNKEN + bar, 2.0 * theme::SUNKEN);
+    Vec2::new(
+        lanlord_app::desktop::CONSOLE_COLS * cell.x,
+        lanlord_app::desktop::CONSOLE_ROWS * cell.y,
+    ) + round
 }
 
 /// where the `n`th window opens: stepped down and right of the last one, and never so far
 /// that it hangs off the desktop or covers the icons.
 fn cascade(n: usize, area: Rect, size: Vec2) -> Pos2 {
     let step = (n % 8) as f32;
-    let x = (area.left() + 110.0 + step * 28.0).min(area.right() - size.x);
+    let x = (area.left() + ICON_COLUMN + step * 28.0).min(area.right() - size.x);
     let y = (area.top() + 10.0 + step * 26.0).min(area.bottom() - size.y);
     Pos2::new(x.max(area.left()), y.max(area.top()))
 }
@@ -1110,7 +1131,7 @@ fn cascade(n: usize, area: Rect, size: Vec2) -> Pos2 {
 impl Desktop {
     fn show_windows(&mut self, ctx: &egui::Context) {
         let mut windows = std::mem::take(&mut self.windows);
-        self.measured.clear();
+        let before = std::mem::take(&mut self.measured);
         let mut close = Vec::new();
         let area = desktop_area(ctx);
         for (n, window) in windows.iter_mut().enumerate() {
@@ -1119,12 +1140,18 @@ impl Desktop {
             }
             let target = window.target;
             // only the width is chosen; the height is whatever the contents need
-            let width = window_width(target).min(area.width() - 116.0);
-            let height = target.growable().then(|| window_height(target));
+            let size = window_size(ctx, target);
+            let width = size.x.min(area.width() - ICON_COLUMN - ICON_MARGIN);
+            let height = target.growable().then_some(size.y);
             let start = if target.is_dialog() {
                 area.center()
             } else {
-                cascade(n, area, Vec2::new(width, height.unwrap_or(200.0)))
+                // where it sits depends on how tall it is: what it was last frame, or the least
+                // a window can be
+                let tall = height
+                    .or_else(|| before.iter().find(|m| m.0 == target).map(|m| m.1.height()))
+                    .unwrap_or(windows::least_size(ctx).y);
+                cascade(n, area, Vec2::new(width, tall))
             };
             let place = windows::Placement {
                 start,
@@ -1205,19 +1232,28 @@ impl Desktop {
             }
             Target::Welcome => {
                 let windows = lanlord_app::desktop::windows(&self.icons);
-                // measure every topic, so the box is as tall as the tallest one's
-                let heights: Vec<f32> = (0..Welcome::topics())
-                    .map(|t| {
-                        let mut probe = ui.new_child(
-                            egui::UiBuilder::new()
-                                .id_salt(("welcome-probe", t))
-                                .max_rect(ui.available_rect_before_wrap())
-                                .invisible(),
-                        );
-                        view::show(&mut probe, &self.welcome.view_of(t, &windows, 0.0));
-                        probe.min_rect().height()
-                    })
-                    .collect();
+                // measure every topic, so the box is as tall as the tallest one's. the heights
+                // change only with the width or the scale, so they are kept
+                let key = (ui.available_width(), ui.ctx().pixels_per_point());
+                let heights = match &self.welcome_heights {
+                    Some((w, p, heights)) if (*w, *p) == key => heights.clone(),
+                    _ => {
+                        let heights: Vec<f32> = (0..Welcome::topics())
+                            .map(|t| {
+                                let mut probe = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .id_salt(("welcome-probe", t))
+                                        .max_rect(ui.available_rect_before_wrap())
+                                        .invisible(),
+                                );
+                                view::show(&mut probe, &self.welcome.view_of(t, &windows, 0.0));
+                                probe.min_rect().height()
+                            })
+                            .collect();
+                        self.welcome_heights = Some((key.0, key.1, heights.clone()));
+                        heights
+                    }
+                };
                 let tallest = heights.iter().copied().fold(0.0, f32::max);
                 let slack = tallest - heights[self.welcome.topic()];
                 if let Some(msg) = view::show(
@@ -1431,7 +1467,7 @@ mod tests {
                 let name = target.title();
                 // a 20 pixel title bar and a 3 pixel border all round, around the contents
                 let wanted = if target.growable() {
-                    window_height(target).min(area.height())
+                    window_size(&ctx, target).y.min(area.height())
                 } else {
                     content + 26.0
                 };
@@ -1482,7 +1518,7 @@ mod tests {
         let area = desktop_area(&ctx);
         for target in desktop.icons.clone() {
             assert!(
-                window_width(target) + 116.0 <= area.width(),
+                window_size(&ctx, target).x + ICON_COLUMN + ICON_MARGIN <= area.width(),
                 "{}",
                 target.title()
             );

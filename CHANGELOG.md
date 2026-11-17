@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The administrators group is renamed `admins`, one group for the gateway and the domain (#49)
-- Every window opens fitted to its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small; the console, hosts and changelog open at a working size and stay resizable. The Changelog window shows plain text without the template's intro (#105)
+- Every window opens fitted to its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small; the console (80 by 24 cells), hosts, changelog, networks, My Server and the windows with a list or log open at a working size and stay resizable, while plain forms keep a fixed size. The Changelog window shows plain text without the template's intro (#105)
 - The Welcome window shows the version and has a Changelog topic that opens the changelog (#105)
 
 ### Fixed

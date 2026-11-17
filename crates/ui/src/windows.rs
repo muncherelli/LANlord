@@ -56,7 +56,8 @@ enum Glyph {
 }
 
 fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -> TitleActions {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), TITLE_BAR), Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.0, if active { NAVY } else { SHADOW });
     icons::draw_small(ui.painter(), rect.left_top() + Vec2::new(3.0, 2.0), icon);
@@ -67,7 +68,7 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -
         theme::font(),
         if active { WHITE } else { GRAY },
     );
-    let size = Vec2::new(16.0, 14.0);
+    let size = Vec2::new(TITLE_BUTTON, 14.0);
     let top = rect.top() + 3.0;
     let close = Rect::from_min_size(Pos2::new(rect.right() - 2.0 - size.x, top), size);
     let base = ui.scope_id().with(title);
@@ -114,7 +115,29 @@ pub struct Shown {
 }
 
 /// the height a window spends on its own border, title bar, margins and the spacing between them.
-const CHROME: f32 = 26.0;
+const CHROME: f32 = TITLE_BAR + 2.0 * FRAME;
+/// the title bar's height, and the width of one of its buttons.
+const TITLE_BAR: f32 = 20.0;
+const TITLE_BUTTON: f32 = 16.0;
+/// the border round a window, and the margin between it and the contents.
+const FRAME: f32 = 3.0;
+const MARGIN: f32 = 8.0;
+
+/// what a window adds to its contents: the frame and margins either side, and the title bar.
+pub fn chrome() -> Vec2 {
+    Vec2::new(2.0 * (FRAME + MARGIN), CHROME + 2.0 * MARGIN)
+}
+
+/// the least a resizable window can be: the title bar with its icon and three buttons, and one
+/// row of controls under it, each side in the margins.
+pub fn least_size(ctx: &egui::Context) -> Vec2 {
+    let row = ctx.global_style().spacing.interact_size.y;
+    let icon = 23.0;
+    Vec2::new(
+        2.0 * FRAME + icon + 3.0 * TITLE_BUTTON + 2.0 * MARGIN,
+        CHROME + 2.0 * MARGIN + row,
+    )
+}
 
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
@@ -135,12 +158,20 @@ pub fn show(
     let mut content_height = 0.0;
     let width = place.width;
     let max_height = place.area.height();
+    let growable = place.height.is_some() && !dialog;
+    let least = least_size(ctx);
+    // only a window with a list, a log or a text can be resized: the rest are forms, as big as
+    // their controls
     let mut window = egui::Window::new(title)
         .id(Id::unique(id))
         .title_bar(false)
         .collapsible(false)
-        .resizable(!dialog)
-        .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)));
+        .resizable(growable)
+        .frame(
+            egui::Frame::new()
+                .fill(GRAY)
+                .inner_margin(Margin::same(FRAME as i8)),
+        );
     window = if dialog {
         // `start` is where the middle of the window goes, so it stays centred once its size
         // is known
@@ -150,16 +181,15 @@ pub fn show(
         match place.height {
             Some(h) => window
                 .default_size(Vec2::new(width, h.min(max_height)))
-                .min_size(Vec2::new(200.0, 100.0)),
-            None => window.default_width(width).min_size(Vec2::new(200.0, 60.0)),
+                .min_size(least),
+            None => window.default_width(width),
         }
     };
-    let growable = place.height.is_some() && !dialog;
     let shown = window.show(ctx, |ui| {
         // the title bar spans the window inside its 3 pixel border; the contents sit in
         // an 8 pixel margin on every side
         if dialog {
-            ui.set_width(width - 6.0);
+            ui.set_width(width - 2.0 * FRAME);
         }
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -185,10 +215,11 @@ pub fn show(
         egui::ScrollArea::vertical()
             .id_salt(("window-scroll", id))
             .max_height(room)
+            .min_scrolled_height(least.y - CHROME - 2.0 * MARGIN)
             .auto_shrink([false, !growable])
             .show(&mut inner, |ui| {
                 let framed = egui::Frame::new()
-                    .inner_margin(Margin::same(8))
+                    .inner_margin(Margin::same(MARGIN as i8))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = spacing;
                         content(ui)
@@ -298,6 +329,12 @@ mod tests {
         let huge = run(3000.0);
         assert!(huge.height() <= area.height() + 1.0, "{huge:?}");
         assert!(area.expand(1.0).contains_rect(huge), "{huge:?}");
+        // and back down: it shrinks to the contents again
+        let again = run(50.0);
+        assert!(
+            (again.height() - small.height()).abs() < 1.5,
+            "{small:?} {again:?}"
+        );
     }
 
     #[test]

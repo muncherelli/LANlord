@@ -33,6 +33,16 @@ pub fn frame(desktop: &mut Desktop, ctx: &egui::Context, events: Vec<egui::Event
     testkit::run(ctx, events, |ui| desktop.show(ui));
 }
 
+/// draw one frame on a screen of `size` with `events`.
+pub fn frame_on(
+    desktop: &mut Desktop,
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) {
+    testkit::run_on(ctx, size, events, |ui| desktop.show(ui));
+}
+
 /// draw `n` frames on a screen of `size`.
 pub fn frames_on(desktop: &mut Desktop, ctx: &egui::Context, size: egui::Vec2, n: usize) {
     for _ in 0..n {
