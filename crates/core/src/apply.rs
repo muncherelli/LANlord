@@ -27,6 +27,11 @@ chmod 0600 /run/lanlord/settings.yml
         ),
         None => (String::new(), ""),
     };
+    // after the settings, so they cannot override it: the playbooks pin the images to this version
+    let vars = format!(
+        "{vars} -e lanlord_image_version={}",
+        env!("LANLORD_IMAGE_VERSION")
+    );
     let tags = if tags.is_empty() {
         String::new()
     } else {
@@ -211,7 +216,10 @@ esac"#,
             s.contains("PYTHONDONTWRITEBYTECODE=1"),
             "the venv is root-owned"
         );
-        assert!(s.contains("ansible-playbook -i localhost, /opt/lanlord/playbooks/site.yml"));
+        assert!(s.contains(&format!(
+            "ansible-playbook -i localhost, -e lanlord_image_version={} /opt/lanlord/playbooks/site.yml",
+            env!("LANLORD_IMAGE_VERSION")
+        )));
         assert_eq!(s.matches("LANLORD_PAYLOAD").count(), 2);
         assert!(!s.contains("settings.yml"), "no settings, no extra vars");
     }
@@ -227,6 +235,21 @@ esac"#,
             !s.contains("motd: hi"),
             "settings are base64, not inline text"
         );
+    }
+
+    #[test]
+    fn the_image_version_is_x_y_z() {
+        let parts: Vec<_> = env!("LANLORD_IMAGE_VERSION").split('.').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|p| p.parse::<u32>().is_ok()));
+    }
+
+    #[test]
+    fn script_passes_the_version_after_the_settings() {
+        let s = script(Some(b"a: 1\n"), &[]).unwrap();
+        let settings = s.find("-e @/run/lanlord/settings.yml").unwrap();
+        let version = s.find("-e lanlord_image_version=").unwrap();
+        assert!(settings < version, "settings must not override the version");
     }
 
     #[test]
@@ -343,9 +366,9 @@ esac"#,
     #[test]
     fn modules_become_tags() {
         let s = script(None, &["gateway", "docker"]).unwrap();
-        assert!(s.contains("-i localhost, --tags gateway,docker /opt/lanlord/playbooks/site.yml"));
+        assert!(s.contains(" --tags gateway,docker /opt/lanlord/playbooks/site.yml"));
         let with_settings = script(Some(b"a: 1\n"), &["gateway"]).unwrap();
-        assert!(with_settings.contains("-e @/run/lanlord/settings.yml --tags gateway"));
+        assert!(with_settings.contains(" --tags gateway /opt/lanlord/playbooks/site.yml"));
     }
 
     #[test]

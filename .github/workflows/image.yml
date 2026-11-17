@@ -1,31 +1,32 @@
 name: image
 
-# publishes two images, one package each, versioned independently:
+# publishes two images, one package each, tagged with a lanlord version (X.Y.Z):
 #   ghcr.io/muncherelli/lanlord-nt4-server-components  samba built from source
-#   ghcr.io/muncherelli/lanlord-dhcp-dns-components  dnsmasq on alpine
-# each image owns a directory (see .github/images.json) with its Dockerfile and a VERSION
-# file holding X.Y.Z. the images hold only upstream software; lanlord's scripts and config
-# are mounted by the playbooks. the upstream versions (samba, dnsmasq) are not tags: they
-# are labels (org.opencontainers.image.version is the image's X.Y.Z, io.lanlord.samba.version
-# and io.lanlord.dnsmasq.version the upstream ones), set from the ARG in the Dockerfile.
+#   ghcr.io/muncherelli/lanlord-network-server-components  dnsmasq on alpine
+# each image owns a directory (see .github/images.json) with its Dockerfile. the images hold only
+# upstream software; lanlord's scripts and config are mounted by the playbooks. the upstream
+# versions (samba, dnsmasq) are not tags: they are labels (org.opencontainers.image.version is the
+# lanlord version, io.lanlord.samba.version and io.lanlord.dnsmasq.version the upstream ones), set
+# from the ARG in the Dockerfile.
 #
-# an image is only touched when it changed:
-# - the `versions` job lists the images whose input files (images.json) changed, by a git diff
-#   against the base branch (pull requests). a push to trunk considers every image, because
-#   runs are queued one at a time and an earlier push may have been cancelled; the packages
-#   check skips whatever is published already. a manual run takes an `image` input instead.
-# - a pull request builds those images for amd64 and arm64 without pushing, and fails when an
-#   image changed but its VERSION was not raised above the base branch's, so a change cannot
-#   ship without a new version.
-# - a push to trunk publishes an image only when its X.Y.Z tag does not exist in ghcr yet; when
-#   it does, the image is skipped whole: no build, no push, rolling tags untouched. a published
-#   X.Y.Z is never overwritten.
-# - publishing only happens on trunk (also for a manual run), one run per ref at a time. the merge
-#   step checks again that X.Y.Z is still free, and moves the rolling X.Y, X and latest tags to
-#   it only when it is the newest version in their range. forks never publish.
+# the version is the one in development, from tools/image-version.sh: the next patch after the
+# latest v* release tag (or the workspace version when that is ahead). lanlord builds work out the
+# same version (crates/core/build.rs) and the playbooks pin it, so a build uses the images of its
+# own version.
+# - a push to trunk that changes image files (or a manual run without a `tag`) builds and publishes
+#   the images of the development version, overwriting that X.Y.Z while v<X.Y.Z> is not released.
+#   once v<X.Y.Z> exists its images are frozen: never rebuilt or overwritten, and the next publish
+#   goes to the next version.
+# - release-plz dispatches this workflow with the release tag (tags pushed with the default token
+#   start no workflows), as does a manual run with a `tag` input (like v0.1.0). this makes sure the
+#   released X.Y.Z exists for both images, and never overwrites one: when it is missing, the newest
+#   older version's manifest is retagged (no rebuild, the image files did not change in the cycle),
+#   or the image is built from the sources at the tag when there is no older version.
+# - a pull request that touches image files builds those images for amd64 and arm64 without pushing.
+# - the rolling X.Y, X and latest tags move to a version only when it is the newest in their range.
+#   publishing only happens from trunk's copy of this workflow; forks never publish.
 # each architecture is built natively (amd64 and arm64 runners, no qemu) and the two are merged
 # into one multi-arch tag.
-# release tags (release-plz) do not run this workflow, so a lanlord release rebuilds nothing.
 on:
   push:
     branches: [trunk]
@@ -42,10 +43,14 @@ on:
       - .github/images.json
   workflow_dispatch:
     inputs:
+      tag:
+        description: release tag to make sure is published (like v0.2.0); empty publishes the development version
+        required: false
+        default: ""
       image:
-        description: image to publish (a version that is already published is still never overwritten)
+        description: image to handle
         type: choice
-        options: [all, nt4-server-components, dhcp-dns-components]
+        options: [all, nt4-server-components, network-server-components]
         default: all
 
 permissions:
@@ -53,7 +58,7 @@ permissions:
 
 # one run per ref at a time, never cancelled half way through a publish
 concurrency:
-  group: image-${{ github.ref }}
+  group: image-${{ github.ref }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -65,6 +70,7 @@ jobs:
     outputs:
       matrix: ${{ steps.read.outputs.matrix }}
       images: ${{ steps.read.outputs.images }}
+      builds: ${{ steps.read.outputs.builds }}
       any: ${{ steps.read.outputs.any }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -76,71 +82,85 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
           PICK: ${{ inputs.image }}
+          TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           base=""
+          mode=dev
           case "$EVENT" in
-            pull_request) base="$BASE" ;;
+            pull_request) mode=pr; base="$BASE" ;;
             # an all-zero "before" (a new branch) has no base: every image counts as changed
-            push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; *) base="" ;; esac ;;
-            workflow_dispatch) ;;
+            push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; esac ;;
+            workflow_dispatch)
+              if [ -n "$TAG" ]; then
+                grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$TAG" || { echo "::error::tag must be vX.Y.Z, found '$TAG'"; exit 1; }
+                mode=release
+              fi ;;
             *) echo "unknown event $EVENT" >&2; exit 1 ;;
           esac
+          if [ "$mode" = release ]; then version=${TAG#v}; else version=$(tools/image-version.sh); fi
+          echo "mode $mode, version $version"
+          # a development version whose release exists is frozen: nothing is rebuilt or overwritten
+          if [ "$mode" = dev ] && [ -n "$(git tag --list "v$version")" ]; then
+            echo "::notice::v$version is released, so its images are frozen; nothing to publish"
+            version=""
+          fi
           if [ -n "$base" ] && ! git cat-file -e "$base^{commit}" 2>/dev/null; then base=""; fi
           changed=""
           [ -n "$base" ] && changed=$(git diff --name-only "$base" HEAD)
+          # the tags of a package; a 404 means the package does not exist yet. any other error
+          # (auth, registry) fails the job
+          tags_of() {
+            if out=$(gh api --paginate "/users/muncherelli/packages/container/$1/versions" -q '.[].metadata.container.tags[]' 2>&1); then
+              printf '%s\n' "$out"
+            elif ! grep -q 'HTTP 404' <<<"$out"; then
+              echo "$out" >&2; return 1
+            fi
+          }
           include='[]'
-          failed=0
-          while read -r entry; do
-            name=$(jq -r .name <<<"$entry"); dir=$(jq -r .dir <<<"$entry")
-            hit=0
-            if [ "$EVENT" = workflow_dispatch ]; then
-              if [ "$PICK" = all ] || [ "$PICK" = "$name" ]; then hit=1; fi
-            elif [ -z "$base" ] || [ "$EVENT" = push ]; then
-              # a push counts every image as changed: the concurrency group keeps one pending run, so
-              # an earlier push may have been cancelled, and the packages check below skips what is published
-              hit=1
-            else
-              for f in $(jq -r '.inputs[]' <<<"$entry"); do
-                if grep -qxF "$dir/$f" <<<"$changed"; then hit=1; fi
-              done
-            fi
-            [ "$hit" = 1 ] || continue
-            version=$(tr -d '[:space:]' < "$dir/VERSION")
-            if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$version"; then
-              echo "::error file=$dir/VERSION::$name: VERSION must be X.Y.Z, found '$version'"; failed=1; continue
-            fi
-            if [ "$EVENT" = pull_request ]; then
-              old=$(git show "$base:$dir/VERSION" 2>/dev/null | tr -d '[:space:]' || true)
-              if [ -n "$old" ] && [ "$(printf '%s\n%s\n' "$old" "$version" | sort -V | tail -n1)" != "$version" -o "$old" = "$version" ]; then
-                echo "::error file=$dir/VERSION::$name changed, so $dir/VERSION must be raised above $old (it is $version)"; failed=1
+          if [ -n "$version" ]; then
+            while read -r entry; do
+              name=$(jq -r .name <<<"$entry"); dir=$(jq -r .dir <<<"$entry"); image=$(jq -r .image <<<"$entry")
+              action=build; from=""
+              if [ "$mode" = release ] || [ "$EVENT" = workflow_dispatch ]; then
+                [ "$PICK" = all ] || [ "$PICK" = "$name" ] || continue
+              else
+                hit=0
+                if [ -z "$base" ]; then
+                  hit=1
+                else
+                  for f in $(jq -r '.inputs[]' <<<"$entry"); do
+                    if grep -qxF "$dir/$f" <<<"$changed"; then hit=1; fi
+                  done
+                fi
+                # a push also catches up an image whose version was never published (an earlier run may
+                # have been cancelled)
+                if [ "$hit" = 0 ] && [ "$mode" = dev ] && ! grep -qxF "$version" <<<"$(tags_of "$image")"; then hit=1; fi
+                [ "$hit" = 1 ] || continue
               fi
-            fi
-            if [ "$EVENT" != pull_request ]; then
-              # the tags of the package; a 404 means the package does not exist yet, so the version is free.
-              # any other error (auth, registry) fails the job. a published version is skipped whole:
-              # no build, no push, rolling tags untouched
-              image=$(jq -r .image <<<"$entry")
-              if out=$(gh api --paginate "/users/muncherelli/packages/container/$image/versions" -q '.[].metadata.container.tags[]' 2>&1); then
-                if grep -qxF "$version" <<<"$out"; then echo "$image:$version is already published; skipping $name"; continue; fi
-              elif ! grep -q 'HTTP 404' <<<"$out"; then
-                echo "$out" >&2; exit 1
+              if [ "$mode" = release ]; then
+                tags=$(tags_of "$image")
+                if grep -qxF "$version" <<<"$tags"; then echo "$image:$version is already published; skipping $name"; continue; fi
+                # nothing changed in the image since the newest older version: retag it, no rebuild
+                from=$(printf '%s\n' "$version" $(grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" || true) | sort -uV | sed "/^$version\$/,\$d" | tail -n1)
+                [ -z "$from" ] || action=retag
               fi
-            fi
-            include=$(jq -c --arg v "$version" --argjson e "$entry" '. + [$e + {version: $v}]' <<<"$include")
-          done < <(jq -c '.[]' .github/images.json)
-          [ "$failed" = 0 ] || exit 1
-          # one job per image and architecture, each on a native runner
+              include=$(jq -c --arg v "$version" --arg m "$mode" --arg a "$action" --arg f "$from" --argjson e "$entry" '. + [$e + {version: $v, mode: $m, action: $a, from: $f}]' <<<"$include")
+            done < <(jq -c '.[]' .github/images.json)
+          fi
+          # one job per image and architecture, each on a native runner; only builds need them
           arch='[{"arch":"amd64","platform":"linux/amd64","runner":"ubuntu-latest"},{"arch":"arm64","platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]'
-          expanded=$(jq -c --argjson a "$arch" '[.[] as $e | $a[] | $e + .]' <<<"$include")
+          builds=$(jq -c '[.[] | select(.action == "build")]' <<<"$include")
+          expanded=$(jq -c --argjson a "$arch" '[.[] as $e | $a[] | $e + .]' <<<"$builds")
           echo "matrix={\"include\":$expanded}" >> "$GITHUB_OUTPUT"
           echo "images={\"include\":$include}" >> "$GITHUB_OUTPUT"
+          echo "builds=$(jq 'length > 0' <<<"$builds")" >> "$GITHUB_OUTPUT"
           echo "any=$(jq 'length > 0' <<<"$include")" >> "$GITHUB_OUTPUT"
-          echo "images to handle: $(jq -c '[.[].name]' <<<"$include")"
+          echo "images to handle: $(jq -c '[.[] | {name, action, from}]' <<<"$include")"
 
   build:
-    if: github.event_name == 'pull_request' && needs.versions.outputs.any == 'true'
+    if: github.event_name == 'pull_request' && needs.versions.outputs.builds == 'true'
     needs: versions
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -157,9 +177,9 @@ jobs:
           push: false
           build-args: IMAGE_VERSION=${{ matrix.version }}
 
-  # one job per image and architecture; the images in the matrix are all unpublished versions
+  # one job per image and architecture that needs a build
   publish:
-    if: github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
+    if: github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.builds == 'true'
     needs: versions
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -171,14 +191,17 @@ jobs:
     env:
       REPO: ghcr.io/muncherelli/${{ matrix.image }}
     steps:
+      # a release is built from the sources at its tag, a development version from trunk
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # pushed by digest only: no tag exists until the merge job has both architectures
+      # pushed by digest only: no tag moves until the merge job has both architectures
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         id: build
         with:
@@ -199,9 +222,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # one multi-arch tag per image. it runs for an image even when another image failed, but fails
-  # clearly (and tags nothing) when one of this image's architectures is missing. the rolling tags
-  # are created first and the immutable X.Y.Z last, so a published X.Y.Z always means a finished run.
+  # one multi-arch tag per image, from the built digests or (a release with nothing to rebuild) by
+  # retagging an older version. it runs for an image even when another image failed, but fails clearly
+  # (and tags nothing) when one of this image's architectures is missing. the rolling tags are
+  # created first and X.Y.Z last, so a release's X.Y.Z always means a finished run.
   merge:
     if: ${{ !cancelled() && github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true' }}
     needs: [versions, publish]
@@ -215,6 +239,9 @@ jobs:
     env:
       REPO: ghcr.io/muncherelli/${{ matrix.image }}
       VERSION: ${{ matrix.version }}
+      MODE: ${{ matrix.mode }}
+      ACTION: ${{ matrix.action }}
+      FROM: ${{ matrix.from }}
       IMAGE: ${{ matrix.image }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -225,6 +252,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: matrix.action == 'build'
         continue-on-error: true
         with:
           path: /tmp/digests
@@ -233,9 +261,11 @@ jobs:
       - name: tag the merged image
         run: |
           set -eu
-          # both architectures must have been built
-          [ -d /tmp/digests ] && [ "$(ls /tmp/digests | wc -l)" = 2 ] || { echo "$IMAGE is missing a built architecture; nothing was tagged" >&2; exit 1; }
-          # look at the tags again right before tagging: an immutable X.Y.Z is never overwritten
+          if [ "$ACTION" = build ]; then
+            # both architectures must have been built
+            [ -d /tmp/digests ] && [ "$(ls /tmp/digests | wc -l)" = 2 ] || { echo "$IMAGE is missing a built architecture; nothing was tagged" >&2; exit 1; }
+          fi
+          # look at the tags again right before tagging
           if out=$(gh api --paginate "/users/muncherelli/packages/container/$IMAGE/versions" -q '.[].metadata.container.tags[]' 2>&1); then
             tags="$out"
           elif grep -q 'HTTP 404' <<<"$out"; then
@@ -243,7 +273,13 @@ jobs:
           else
             echo "$out" >&2; exit 1
           fi
-          if grep -qxF "$VERSION" <<<"$tags"; then echo "$REPO:$VERSION appeared meanwhile; leaving it alone"; exit 0; fi
+          if [ "$MODE" = release ]; then
+            # a released X.Y.Z is never overwritten
+            if grep -qxF "$VERSION" <<<"$tags"; then echo "$REPO:$VERSION appeared meanwhile; leaving it alone"; exit 0; fi
+          elif gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" >/dev/null 2>&1; then
+            # a development version may be overwritten until its release exists
+            echo "v$VERSION was released meanwhile; leaving $REPO:$VERSION alone"; exit 0
+          fi
           minor=${VERSION%.*}; major=${VERSION%%.*}
           # a rolling tag only moves to this version when nothing newer exists in its range
           newest() { local pattern=$1; printf '%s\n' "$VERSION" $(grep -E "$pattern" <<<"$tags" || true) | sort -V | tail -n1; }
@@ -251,11 +287,15 @@ jobs:
           [ "$(newest '^[0-9]+\.[0-9]+\.[0-9]+$')" = "$VERSION" ] && args="$args -t $REPO:latest"
           [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
           [ "$(newest "^$major\\.${minor#*.}\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$minor"
-          cd /tmp/digests
-          digests=$(printf "$REPO@sha256:%s " *)
-          # the rolling tags first, then X.Y.Z on its own: a run that fails half way never leaves X.Y.Z
-          # published, so a retry is not skipped
+          if [ "$ACTION" = build ]; then
+            cd /tmp/digests
+            source=$(printf "$REPO@sha256:%s " *)
+          else
+            # the retag copies the whole multi-arch manifest, nothing is rebuilt
+            source="$REPO:$FROM"
+          fi
+          # the rolling tags first, then X.Y.Z on its own
           # shellcheck disable=SC2086
-          [ -z "$args" ] || docker buildx imagetools create $args $digests
+          [ -z "$args" ] || docker buildx imagetools create $args $source
           # shellcheck disable=SC2086
-          docker buildx imagetools create -t "$REPO:$VERSION" $digests
+          docker buildx imagetools create -t "$REPO:$VERSION" $source

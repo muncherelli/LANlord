@@ -32,8 +32,8 @@
   vars:
     # the image holds only samba; the scripts and config are mounted from here when it runs
     image_dir: /opt/lanlord/playbooks/nt4-domain/image
-    # the image is pinned to the X.Y.Z in its VERSION file, which ships with this playbook
-    image_version: "{{ lookup('ansible.builtin.file', image_dir ~ '/VERSION') | trim }}"
+    # the image is pinned to the lanlord release that runs this playbook (lanlord passes the image version as an extra var)
+    image_version: "{{ lanlord_image_version }}"
     image: "ghcr.io/muncherelli/lanlord-nt4-server-components:{{ image_version }}"
     container: lanlord-nt4
     state_dir: /opt/lanlord/nt4
