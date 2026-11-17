@@ -32,13 +32,45 @@ install -d -o lanlord -g "$group" -m 0750 /opt/lanlord/config
     )
 }
 
+/// what a script says, with this exit status, when lanlord is not on the server.
+pub(crate) const NOT_INSTALLED_STATUS: i32 = 66;
+pub(crate) const NOT_INSTALLED_MESSAGE: &str = "LANlord is not installed on this server yet";
+
+/// a script that stops early and plainly, before it needs the lanlord account or /opt/lanlord.
+pub(crate) const INSTALLED_GUARD: &str = r#"if [ ! -d /opt/lanlord ] || ! getent passwd lanlord >/dev/null 2>&1; then
+  echo "LANlord is not installed on this server yet" >&2
+  exit 66
+fi
+"#;
+
+/// whether lanlord has been installed on the server (the service account and its folder exist).
+/// it needs no privileges.
+pub fn is_installed(session: &Session) -> Result<bool> {
+    let script =
+        "[ -d /opt/lanlord ] && getent passwd lanlord >/dev/null 2>&1 && echo yes || echo no";
+    let out = session.capture(&["sh".into(), "-c".into(), script.into()])?;
+    Ok(out.trim() == "yes")
+}
+
+/// the error for a script that stopped with `code`: a plain sentence when lanlord is not installed.
+pub(crate) fn failed(what: &str, code: i32) -> anyhow::Error {
+    if code == NOT_INSTALLED_STATUS {
+        anyhow::anyhow!(NOT_INSTALLED_MESSAGE)
+    } else {
+        anyhow::anyhow!("{what} failed with status {code}")
+    }
+}
+
+// the scripts below always run as root (directly, or through the one sudo that starts them), so
+// they never call sudo themselves: they write as root and hand the file to the lanlord account
 fn push_script(ciphertext: &[u8]) -> String {
     let config_dir = config_dir();
     format!(
         r#"set -eu
-{config_dir}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.age >/dev/null
+{INSTALLED_GUARD}{config_dir}base64 -d <<'LANLORD_PAYLOAD' | tee /opt/lanlord/config/settings.age >/dev/null
 {}
 LANLORD_PAYLOAD
+chown lanlord:lanlord /opt/lanlord/config/settings.age
 chmod 0640 /opt/lanlord/config/settings.age
 "#,
         wrap(ciphertext)
@@ -49,10 +81,10 @@ fn push_plain_script(plaintext: &[u8]) -> String {
     let config_dir = config_dir();
     format!(
         r#"set -eu
-{config_dir}base64 -d <<'LANLORD_PAYLOAD' | sudo -n -u lanlord tee /opt/lanlord/config/settings.yml >/dev/null
+{INSTALLED_GUARD}{config_dir}base64 -d <<'LANLORD_PAYLOAD' | tee /opt/lanlord/config/settings.yml >/dev/null
 {}
 LANLORD_PAYLOAD
-chgrp "$group" /opt/lanlord/config/settings.yml
+chown lanlord:"$group" /opt/lanlord/config/settings.yml
 chmod 0640 /opt/lanlord/config/settings.yml
 "#,
         wrap(plaintext)
@@ -121,7 +153,7 @@ pub(crate) fn push_with(
             emit(Kind::Info, "settings stored");
             Ok(())
         }
-        code => bail!("storing the settings failed with status {code}"),
+        code => Err(failed("storing the settings", code)),
     }
 }
 
@@ -166,7 +198,7 @@ pub(crate) fn push_plain_with(
     let admin = admin(session)?;
     match run_as_root(session, &admin, push_plain_script(plaintext), ask_password)? {
         0 => Ok(()),
-        code => bail!("storing the plain settings failed with status {code}"),
+        code => Err(failed("storing the plain settings", code)),
     }
 }
 
@@ -372,5 +404,61 @@ esac"#,
         std::fs::write(dir.join("settings.yml"), "a: 1\n").unwrap();
         assert_eq!(run().stdout, b"present\na: 1\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_scripts_never_call_sudo_and_hand_the_files_to_lanlord() {
+        for script in [push_script(b"x"), push_plain_script(b"x")] {
+            assert!(!script.contains("sudo"), "{script}");
+            assert!(
+                script.contains("exit 66"),
+                "the guard comes first: {script}"
+            );
+            assert!(script.contains("chown lanlord:"), "{script}");
+        }
+        assert!(push_plain_script(b"x")
+            .contains(r#"chown lanlord:"$group" /opt/lanlord/config/settings.yml"#));
+        assert!(
+            push_script(b"x").contains("chown lanlord:lanlord /opt/lanlord/config/settings.age")
+        );
+    }
+
+    #[test]
+    fn the_guard_stops_plainly_where_lanlord_is_not_installed() {
+        if std::path::Path::new("/opt/lanlord").exists() {
+            return; // a machine that really has lanlord
+        }
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(INSTALLED_GUARD)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(NOT_INSTALLED_STATUS));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(NOT_INSTALLED_MESSAGE));
+    }
+
+    #[test]
+    fn a_script_that_stops_with_the_guard_status_says_so_plainly() {
+        assert_eq!(failed("storing x", 66).to_string(), NOT_INSTALLED_MESSAGE);
+        assert_eq!(
+            failed("storing x", 127).to_string(),
+            "storing x failed with status 127"
+        );
+        let record =
+            std::env::temp_dir().join(format!("lanlord-config-bare-{}", std::process::id()));
+        let session = Session::fake_gateway(true, &record, 66);
+        let err = push_plain_with(&session, "gw", b"a: 1\n", &mut no_password).unwrap_err();
+        assert_eq!(err.to_string(), NOT_INSTALLED_MESSAGE);
+        let id = identity("bare");
+        let err = push_with(&session, "gw", &id, b"a: 1\n", &mut no_password).unwrap_err();
+        assert_eq!(err.to_string(), NOT_INSTALLED_MESSAGE);
+        let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn is_installed_reads_the_servers_answer() {
+        assert!(is_installed(&Session::fake("echo yes")).unwrap());
+        assert!(!is_installed(&Session::fake("echo no")).unwrap());
+        assert!(!is_installed(&Session::fake("exit 0")).unwrap());
     }
 }

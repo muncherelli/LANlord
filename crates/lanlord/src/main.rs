@@ -408,10 +408,17 @@ fn clock(host: &str, action: ClockCommand) -> Result<()> {
     for line in said {
         println!("{line}");
     }
-    if stored == clock::Stored::NoKey {
-        eprintln!(
+    match stored {
+        clock::Stored::NoKey => eprintln!(
             "note: this change is not kept in your settings (no key yet), so an apply may undo it"
-        );
+        ),
+        clock::Stored::NotInstalled => eprintln!(
+            "note: LANlord is not installed on this server, so the change is not stored in its settings"
+        ),
+        clock::Stored::Failed(why) => eprintln!(
+            "warning: changed, but could not be remembered in LANlord's settings: {why}"
+        ),
+        clock::Stored::Yes | clock::Stored::Nothing => {}
     }
     Ok(())
 }
