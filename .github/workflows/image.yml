@@ -19,7 +19,9 @@ name: image
 # - a push to trunk publishes an image only when its X.Y.Z tag does not exist in ghcr yet; when
 #   it does, the image is skipped whole: no build, no push, rolling tags untouched. a published
 #   X.Y.Z is never overwritten.
-# - when it is published, the merge step also moves the rolling X.Y, X and latest tags to it.
+# - publishing only happens on trunk (also for a manual run), one run per ref at a time. the merge
+#   step checks again that X.Y.Z is still free, and moves the rolling X.Y, X and latest tags to
+#   it only when it is the newest version in their range.
 # each architecture is built natively (amd64 and arm64 runners, no qemu) and the two are merged
 # into one multi-arch tag.
 # release tags (release-plz) do not run this workflow, so a lanlord release rebuilds nothing.
@@ -48,6 +50,11 @@ on:
 permissions:
   contents: read
 
+# one run per ref at a time, never cancelled half way through a publish
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   versions:
     runs-on: ubuntu-latest
@@ -62,18 +69,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        if: github.event_name != 'pull_request'
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - id: read
         env:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
           PICK: ${{ inputs.image }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           base=""
@@ -113,12 +115,13 @@ jobs:
               fi
             fi
             if [ "$EVENT" != pull_request ]; then
-              # only a "not found" answer means the version is free; any other error fails the job.
-              # a published version is skipped whole: no build, no push, rolling tags untouched
-              ref="ghcr.io/muncherelli/$(jq -r .image <<<"$entry"):$version"
-              if out=$(docker buildx imagetools inspect "$ref" 2>&1); then
-                echo "$ref is already published; skipping $name"; continue
-              elif ! grep -qiE 'not found|manifest unknown|name unknown' <<<"$out"; then
+              # the tags of the package; a 404 means the package does not exist yet, so the version is free.
+              # any other error (auth, registry) fails the job. a published version is skipped whole:
+              # no build, no push, rolling tags untouched
+              image=$(jq -r .image <<<"$entry")
+              if out=$(gh api --paginate "/users/muncherelli/packages/container/$image/versions" -q '.[].metadata.container.tags[]' 2>&1); then
+                if grep -qxF "$version" <<<"$out"; then echo "$image:$version is already published; skipping $name"; continue; fi
+              elif ! grep -q 'HTTP 404' <<<"$out"; then
                 echo "$out" >&2; exit 1
               fi
             fi
@@ -153,7 +156,7 @@ jobs:
 
   # one job per image and architecture; the images in the matrix are all unpublished versions
   publish:
-    if: github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
+    if: github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
     needs: versions
     runs-on: ${{ matrix.runner }}
     permissions:
@@ -193,9 +196,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # one multi-arch tag per image: the immutable X.Y.Z and the rolling X.Y, X and latest, in a single create
+  # one multi-arch tag per image. it runs for an image even when another image failed, but fails
+  # clearly (and tags nothing) when one of this image's architectures is missing. the rolling tags
+  # are created first and the immutable X.Y.Z last, so a published X.Y.Z always means a finished run.
   merge:
-    if: github.event_name != 'pull_request' && needs.versions.outputs.any == 'true'
+    if: ${{ !cancelled() && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.any == 'true' }}
     needs: [versions, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -207,6 +212,8 @@ jobs:
     env:
       REPO: ghcr.io/muncherelli/${{ matrix.image }}
       VERSION: ${{ matrix.version }}
+      IMAGE: ${{ matrix.image }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -215,14 +222,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
         with:
           path: /tmp/digests
           pattern: digests-${{ matrix.image }}-*
           merge-multiple: true
       - name: tag the merged image
-        working-directory: /tmp/digests
         run: |
+          set -eu
+          # both architectures must have been built
+          [ -d /tmp/digests ] && [ "$(ls /tmp/digests | wc -l)" = 2 ] || { echo "$IMAGE is missing a built architecture; nothing was tagged" >&2; exit 1; }
+          # look at the tags again right before tagging: an immutable X.Y.Z is never overwritten
+          if out=$(gh api --paginate "/users/muncherelli/packages/container/$IMAGE/versions" -q '.[].metadata.container.tags[]' 2>&1); then
+            tags="$out"
+          elif grep -q 'HTTP 404' <<<"$out"; then
+            tags=""
+          else
+            echo "$out" >&2; exit 1
+          fi
+          if grep -qxF "$VERSION" <<<"$tags"; then echo "$REPO:$VERSION appeared meanwhile; leaving it alone"; exit 0; fi
           minor=${VERSION%.*}; major=${VERSION%%.*}
-          docker buildx imagetools create \
-            -t "$REPO:$VERSION" -t "$REPO:$minor" -t "$REPO:$major" -t "$REPO:latest" \
-            $(printf "$REPO@sha256:%s " *)
+          # a rolling tag only moves to this version when nothing newer exists in its range
+          newest() { printf '%s\n' "$VERSION" $(grep -E "$1" <<<"$tags" || true) | sort -V | tail -n1; }
+          args=""
+          [ "$(newest '^[0-9]+\.[0-9]+\.[0-9]+$')" = "$VERSION" ] && args="$args -t $REPO:latest"
+          [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
+          [ "$(newest "^$major\\.${minor#*.}\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$minor"
+          cd /tmp/digests
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $args -t "$REPO:$VERSION" $(printf "$REPO@sha256:%s " *)
