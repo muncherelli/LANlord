@@ -411,6 +411,8 @@ impl Components {
         for component in catalogue
             .iter()
             .filter(|c| selection.is_enabled(c.id()))
+            // only what is newly switched on: what the server already runs stays
+            .filter(|c| !self.current.as_ref().is_some_and(|s| s.is_enabled(c.id())))
             .filter(|c| !self.blockers(c).is_empty())
         {
             let why: Vec<&str> = self
@@ -1163,5 +1165,37 @@ mod tests {
         let (error, text) = window.saving.note.clone().unwrap();
         assert!(error && text.contains("nesting"), "{text}");
         assert!(!window.saving.busy(), "nothing was saved");
+    }
+
+    #[test]
+    fn finish_still_saves_a_blocked_component_that_is_already_on() {
+        let fake = Arc::new(Fake::default());
+        *fake.probe.lock().unwrap() = UNPRIVILEGED.into();
+        *fake.stored.lock().unwrap() = SETTINGS.into();
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = Components::default();
+        window.take_settings(&Settings::parse(SETTINGS).unwrap(), "gw");
+        window.open();
+        let start = std::time::Instant::now();
+        while window.report.is_none() {
+            window.refresh(&services, "gw");
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(window.draft().is_enabled("dns"), "already on");
+        assert!(!window
+            .blockers(&lanlord_model::components::find("dns").unwrap())
+            .is_empty());
+        window.update(Msg::Toggle(row("remote-commands")), &services, "gw");
+        window.update(Msg::Finish, &services, "gw");
+        for _ in 0..200 {
+            window.refresh(&services, "gw");
+            if window.take_done() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(fake.stored.lock().unwrap().contains("components:"));
+        assert!(window.current().unwrap().is_enabled("remote-commands"));
     }
 }

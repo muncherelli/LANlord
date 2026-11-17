@@ -1133,9 +1133,9 @@ impl<'a> Painter<'a> {
                                 if !rest.is_empty() {
                                     text(
                                         buf,
-                                        x + 2,
+                                        x + 3,
                                         y,
-                                        room.saturating_sub(2),
+                                        room.saturating_sub(3),
                                         rest,
                                         self.st(fg, bg),
                                     );
