@@ -40,6 +40,7 @@ use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::services::Services;
 use lanlord_app::tasks::PasswordRequest;
+use lanlord_app::welcome::Welcome;
 use lanlord_app::{hosts_window, module_window};
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
@@ -75,6 +76,7 @@ pub struct Desktop {
     networks: Networks,
     /// the components wizard, and which components the server has switched on.
     components: Components,
+    welcome: Welcome,
     /// tests pin the switched-on components here instead of reading them from the server.
     #[cfg(test)]
     pinned: Option<lanlord_app::components::Selection>,
@@ -145,6 +147,7 @@ impl Desktop {
             my_server: MyServer::default(),
             networks: Networks::default(),
             components: Components::default(),
+            welcome: Welcome::new(None),
             #[cfg(test)]
             pinned: None,
             open_next: None,
@@ -234,6 +237,9 @@ impl Desktop {
                 if target == Target::Components {
                     self.components.open();
                 }
+                if target == Target::Welcome {
+                    self.welcome.reopen();
+                }
                 self.windows.push(Window {
                     target,
                     minimized: false,
@@ -260,6 +266,8 @@ impl Desktop {
                 self.dev_open = true;
             } else if id == "components" {
                 self.open(Target::Components);
+            } else if id == "welcome" {
+                self.open(Target::Welcome);
             } else if let Some(target) = self
                 .icons
                 .iter()
@@ -412,7 +420,16 @@ impl Desktop {
         if signed_in.identity.is_root() {
             self.admin_setup = Some(AdminSetup::new());
         }
+        let account = signed_in.identity.user.clone();
         self.signed_in = Some(signed_in);
+        if self.welcome.logon(&account) {
+            self.open(Target::Welcome);
+        }
+    }
+
+    /// keep the Welcome screen's tick box in the preferences file at `path`.
+    pub fn set_prefs(&mut self, path: Option<std::path::PathBuf>) {
+        self.welcome = Welcome::new(path);
     }
 
     /// the create-an-administrator screen, on the bare desktop colour.
@@ -952,6 +969,19 @@ impl Desktop {
                 let host = self.host();
                 if self.clock.show(ui, &self.services, host.as_deref()) {
                     self.close_requests.push(Target::DateTime);
+                }
+            }
+            Target::Welcome => {
+                let mut windows: Vec<Target> = self.icons.clone();
+                windows.push(Target::Components);
+                if let Some(msg) = view::show(ui, &self.welcome.view(&windows)) {
+                    self.welcome.update(msg, &windows);
+                }
+                if let Some(target) = self.welcome.take_open() {
+                    self.open_next = Some(target);
+                }
+                if self.welcome.take_done() {
+                    self.close_requests.push(Target::Welcome);
                 }
             }
             Target::Components => {

@@ -17,6 +17,8 @@ pub enum Target {
     DateTime,
     /// the components setup wizard, opened from the menu; it has no desktop icon.
     Components,
+    /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
+    Welcome,
 }
 
 impl Target {
@@ -31,6 +33,7 @@ impl Target {
             Self::Settings => "settings",
             Self::DateTime => "datetime",
             Self::Components => "components",
+            Self::Welcome => "welcome",
         }
     }
 
@@ -44,6 +47,7 @@ impl Target {
             Self::Settings => "Settings",
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
+            Self::Welcome => "Welcome",
         }
     }
 
@@ -63,6 +67,7 @@ impl Target {
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
+            Self::Welcome => (560.0, 360.0),
         }
     }
 }
@@ -132,6 +137,7 @@ mod tests {
         assert_eq!(ids.len(), icons.len());
         assert!(!icons.contains(&Target::DateTime));
         assert!(!icons.contains(&Target::Components));
+        assert!(!icons.contains(&Target::Welcome));
     }
 
     #[test]

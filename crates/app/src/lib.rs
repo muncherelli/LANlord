@@ -34,3 +34,4 @@ pub mod users_panel;
 pub mod view;
 pub mod view_wizard;
 pub mod wake;
+pub mod welcome;

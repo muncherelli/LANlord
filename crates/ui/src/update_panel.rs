@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Area, Color32, Frame, Id, Margin, Order, Sense, Ui, Vec2};
-use lanlord_core::prefs::{self, Prefs};
+use lanlord_core::prefs;
 use lanlord_core::update::{self, Runner, Update};
 use lanlord_core::updater::{
     self, Clock, GitBackend, Pause, RealClock, State, Unsupported, Updater,
@@ -237,7 +237,9 @@ impl Updates {
             }
         }
         if let Some(path) = &self.prefs_path {
-            let _ = prefs::save(path, &Prefs { check_updates: on });
+            let mut prefs = prefs::load(path);
+            prefs.check_updates = on;
+            let _ = prefs::save(path, &prefs);
         }
     }
 

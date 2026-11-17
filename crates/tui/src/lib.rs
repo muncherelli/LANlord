@@ -64,6 +64,7 @@ pub fn run() -> Result<()> {
     if std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1") {
         shell.use_demo_server();
     }
+    shell.set_prefs(lanlord_core::prefs::path());
     let mut terminal = ratatui::init();
     // mouse reporting stays on for the length of the loop and goes off when the guard drops
     let capture = paint::mouse::Capture::start()?;
