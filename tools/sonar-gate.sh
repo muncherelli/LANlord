@@ -18,7 +18,8 @@ issues = data["issues"]
 for issue in issues:
     where = issue["component"].split(":", 1)[-1]
     line = issue.get("line", "-")
-    print(f"::error file={where},line={line}::{issue[\"rule\"]} {issue[\"message\"]}")
+    rule, message = issue["rule"], issue["message"]
+    print(f"::error file={where},line={line}::{rule} {message}")
 print(f"{len(issues)} open sonarcloud issue(s) in this pull request")
 sys.exit(1 if issues else 0)
 '
