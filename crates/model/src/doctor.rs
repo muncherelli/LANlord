@@ -472,7 +472,7 @@ fn docker_check<'a>(get: &dyn Fn(&str) -> &'a str) -> Check {
     let policy = get("forward_policy");
     let (status, detail, fix) = match (get("docker_installed"), get("docker_running")) {
         ("yes", "yes") if policy == "DROP" => (
-            Status::Fail,
+            Status::Warn,
             "docker set the iptables FORWARD policy to DROP, which silently drops forwarded \
              traffic that lanlord's own rules accept"
                 .to_string(),
@@ -887,7 +887,7 @@ vde_plug=missing
         assert!(keyctl.detail.contains("not needed"));
         assert_eq!(check(&report, "lxc-nesting").status, Status::Ok);
         let docker = check(&report, "docker");
-        assert_eq!(docker.status, Status::Fail);
+        assert_eq!(docker.status, Status::Warn);
         assert!(docker
             .fix
             .as_deref()

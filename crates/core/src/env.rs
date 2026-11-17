@@ -64,7 +64,7 @@ pub fn blocking(report: &Report, modules: &[&str]) -> Option<String> {
 
 /// the modules an apply will run, as far as docker is concerned. modules named on the command
 /// line are checked as named. a plain apply (none named) runs the modules the settings configure:
-/// the ones whose top-level key is in `settings`, and none at all without settings, so a gateway
+/// the ones whose top-level key is in `settings` (`networks` counts as `dns`), and none at all without settings, so a gateway
 /// that only has the baseline is never held up by docker.
 pub(crate) fn modules_to_check<'a>(modules: &[&'a str], settings: Option<&[u8]>) -> Vec<&'a str> {
     if !modules.is_empty() {
@@ -79,7 +79,11 @@ pub(crate) fn modules_to_check<'a>(modules: &[&'a str], settings: Option<&[u8]>)
     DOCKER_MODULES
         .iter()
         .copied()
-        .filter(|m| map.contains_key(serde_yaml_ng::Value::String((*m).to_string())))
+        .filter(|m| {
+            let has = |key: &str| map.contains_key(serde_yaml_ng::Value::String(key.to_string()));
+            // the dns module also runs, as docker dnsmasq, when only `networks` is set
+            has(m) || (*m == "dns" && has("networks"))
+        })
         .collect()
 }
 
@@ -284,6 +288,12 @@ mod tests {
         assert!(modules_to_check(&[], Some(b"")).is_empty());
         assert!(modules_to_check(&[], Some(b"- not\n- a mapping\n")).is_empty());
         assert!(modules_to_check(&[], Some(b"\t: bad yaml [")).is_empty());
+        // the lanlord networks run docker dnsmasq through the dns module
+        assert_eq!(modules_to_check(&[], Some(b"networks: []\n")), ["dns"]);
+        assert_eq!(
+            modules_to_check(&[], Some(b"dns: {}\nnetworks: []\n")),
+            ["dns"]
+        );
         // a key that only contains a module's name is not that module
         assert!(modules_to_check(&[], Some(b"docker-extra:\n  x: 1\n")).is_empty());
     }
