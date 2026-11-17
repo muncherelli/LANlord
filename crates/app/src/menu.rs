@@ -70,6 +70,10 @@ pub struct State<'a> {
     pub host: Option<&'a str>,
     /// someone signed in through the logon box (so they can switch server or log off).
     pub signed_in: Option<&'a str>,
+    /// a different server can be chosen at the logon box (not in the browser, which has one).
+    pub switch_server: bool,
+    /// the signed-in account is an administrator; the power items are off for anyone else.
+    pub admin: bool,
     /// the server is there and nothing is running against it.
     pub ready: bool,
     /// automatic updates are on; `None` where lanlord is not updated from the menu (the browser).
@@ -92,10 +96,12 @@ pub fn rows(state: &State) -> Vec<Row> {
         ..Item::new(&server_line(state.host), Action::ServerLine)
     })];
     if let Some(who) = state.signed_in {
-        rows.push(Row::Item(Item::new(
-            "Switch server...",
-            Action::SwitchServer,
-        )));
+        if state.switch_server {
+            rows.push(Row::Item(Item::new(
+                "Switch server...",
+                Action::SwitchServer,
+            )));
+        }
         rows.push(Row::Item(Item::new(
             &format!("Log off {who}..."),
             Action::LogOff,
@@ -106,6 +112,7 @@ pub fn rows(state: &State) -> Vec<Row> {
         let m = &MODULES[i];
         Row::Item(Item {
             art: Some(m.id),
+            enabled: state.admin,
             ..Item::new(m.name, Action::Open(Target::Module(i)))
         })
     }));
@@ -117,11 +124,12 @@ pub fn rows(state: &State) -> Vec<Row> {
     ] {
         rows.push(Row::Item(Item {
             art: Some(target.id()),
+            enabled: state.admin || !target.needs_admin(),
             ..Item::new(target.title(), Action::Open(target))
         }));
     }
     rows.push(Row::Item(Item {
-        enabled: state.host.is_some(),
+        enabled: state.host.is_some() && state.admin,
         ..Item::new("Add/Remove Components...", Action::Open(Target::Components))
     }));
     rows.push(Row::Separator);
@@ -130,7 +138,7 @@ pub fn rows(state: &State) -> Vec<Row> {
         ("Shut down server...", Power::PowerOff),
     ] {
         rows.push(Row::Item(Item {
-            enabled: state.ready,
+            enabled: state.ready && state.admin,
             ..Item::new(label, Action::Power(power))
         }));
     }
@@ -176,6 +184,8 @@ mod tests {
         let state = State {
             host: Some("local"),
             signed_in: None,
+            switch_server: true,
+            admin: true,
             ready: true,
             updates,
             developer: false,
@@ -188,6 +198,58 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn the_browser_logs_off_but_has_no_other_server_to_switch_to() {
+        let state = |switch_server| State {
+            host: Some("local"),
+            signed_in: Some("ann"),
+            switch_server,
+            admin: true,
+            ready: true,
+            updates: None,
+            developer: false,
+            modules: Vec::new(),
+        };
+        let has = |state: &State, label: &str| {
+            rows(state)
+                .iter()
+                .any(|r| matches!(r, Row::Item(i) if i.label() == label))
+        };
+        assert!(has(&state(true), "Switch server..."));
+        assert!(!has(&state(false), "Switch server..."));
+        assert!(has(&state(false), "Log off ann..."));
+    }
+
+    #[test]
+    fn only_an_admin_gets_the_power_items() {
+        let power = |admin| {
+            let state = State {
+                host: Some("local"),
+                signed_in: Some("ann"),
+                switch_server: false,
+                admin,
+                ready: true,
+                updates: None,
+                developer: false,
+                modules: Vec::new(),
+            };
+            rows(&state)
+                .into_iter()
+                .filter_map(|r| match r {
+                    Row::Item(i) if matches!(i.action, Action::Power(_)) => Some(i.enabled),
+                    Row::Item(i) if matches!(i.action, Action::Open(t) if t.needs_admin()) => {
+                        Some(i.enabled)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // power, Networks, Settings, Console and Components follow the account
+        assert!(power(true).iter().all(|&on| on));
+        assert!(power(false).iter().all(|&on| !on));
+        assert!(power(true).len() >= 5);
     }
 
     #[test]
