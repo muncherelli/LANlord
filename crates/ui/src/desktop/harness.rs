@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Pos2};
 
 use super::*;
-use crate::gateway::Fake;
 use crate::testkit;
 pub use crate::testkit::{click, key, SCREEN};
+use lanlord_app::gateway::Fake;
 
 pub fn desktop() -> (Desktop, egui::Context, Arc<Fake>) {
     let ctx = egui::Context::default();
     let fake = Arc::new(Fake::new());
-    let desktop = Desktop::new(Services::new(fake.clone(), &ctx), None);
+    let desktop = Desktop::new(fake.clone(), &ctx, None);
     (desktop, ctx, fake)
 }
 

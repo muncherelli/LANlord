@@ -1,9 +1,7 @@
 //! small drawing helpers shared by the management windows.
 
-use eframe::egui::{Align2, Pos2, Rect, RichText, ScrollArea, Sense, Ui, Vec2};
-use lanlord_core::settings::ValidationError;
+use eframe::egui::{Align2, Pos2, Rect, ScrollArea, Sense, Ui, Vec2};
 
-use crate::controls;
 use crate::remote::RED;
 use crate::theme::{self, BLACK, NAVY, WHITE};
 
@@ -113,72 +111,4 @@ fn data_row(
         x += width;
     }
     response
-}
-
-/// the messages of the errors at `path` (or below it, like `a.b[2]` for `a.b[2].c`).
-pub fn messages(errors: &[ValidationError], path: &str) -> Vec<String> {
-    errors
-        .iter()
-        .filter(|e| matches_path(&e.path, path))
-        .map(|e| e.message.clone())
-        .collect()
-}
-
-fn matches_path(error: &str, path: &str) -> bool {
-    error == path
-        || error
-            .strip_prefix(path)
-            .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
-}
-
-/// the problem with the field at `path`, drawn small and red under it.
-pub fn field_error(ui: &mut Ui, errors: &[ValidationError], path: &str) {
-    for message in messages(errors, path) {
-        ui.label(RichText::new(message).color(RED).small());
-    }
-}
-
-/// for each of `count` rows, does any error sit under `{prefix}[i]`?
-pub fn bad_rows(errors: &[ValidationError], prefix: &str, count: usize) -> Vec<bool> {
-    (0..count)
-        .map(|i| !messages(errors, &format!("{prefix}[{i}]")).is_empty())
-        .collect()
-}
-
-/// a label in the form's label column and a line edit beside it.
-pub fn labelled_edit(ui: &mut Ui, label: &str, text: &mut String, width: f32) {
-    controls::row(ui, label, |ui| {
-        controls::edit(ui, text, width);
-    });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn error(path: &str) -> ValidationError {
-        ValidationError {
-            path: path.into(),
-            message: format!("bad {path}"),
-        }
-    }
-
-    #[test]
-    fn messages_match_a_path_and_what_is_below_it() {
-        let errors = [
-            error("dns.records[1].name"),
-            error("dns.records[10].name"),
-            error("dns.zone"),
-            error("dns.dhcp.range[0]"),
-        ];
-        assert_eq!(messages(&errors, "dns.zone"), ["bad dns.zone"]);
-        assert_eq!(messages(&errors, "dns.records[1]").len(), 1);
-        assert_eq!(messages(&errors, "dns.dhcp.range").len(), 1);
-        assert!(messages(&errors, "dns.zon").is_empty());
-        assert_eq!(
-            bad_rows(&errors, "dns.records", 3),
-            [false, true, false],
-            "[1] must not match [10]"
-        );
-    }
 }

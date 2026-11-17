@@ -8,13 +8,10 @@ mod clock_panel;
 mod command_panel;
 mod console;
 mod controls;
-mod demo_clock;
 mod desktop;
 mod dialogs;
 mod dns_panel;
 mod form;
-mod gateway;
-mod hostlist;
 mod icon_data;
 mod icons;
 mod login;
@@ -24,14 +21,13 @@ mod networks_window;
 mod nt4_panel;
 mod nt4_window;
 mod remote;
-mod services;
 mod settings_editor;
-mod tasks;
 #[cfg(test)]
 mod testkit;
 mod theme;
 mod update_panel;
 mod users_panel;
+mod view;
 mod widgets;
 mod windows;
 
@@ -40,6 +36,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use eframe::egui;
 use lanlord_core::{hosts, prefs, update};
+
+/// a wake handle that asks egui for a new frame.
+pub(crate) fn wake(ctx: &egui::Context) -> lanlord_app::wake::Wake {
+    let ctx = ctx.clone();
+    lanlord_app::wake::Wake::new(move || ctx.request_repaint())
+}
 
 /// open the window and block until it is closed.
 pub fn run() -> Result<()> {
@@ -59,8 +61,8 @@ pub fn run() -> Result<()> {
         "LANlord",
         options,
         Box::new(|cc| {
-            let services = services::Services::new(Arc::new(gateway::Ssh), &cc.egui_ctx);
-            let mut desktop = desktop::Desktop::new(services, hosts::config_path());
+            let gateway = Arc::new(lanlord_app::gateway::Ssh);
+            let mut desktop = desktop::Desktop::new(gateway, &cc.egui_ctx, hosts::config_path());
             // the logon box comes first; LANLORD_SCREEN=desktop skips it, to look at the windows
             if std::env::var("LANLORD_SCREEN").as_deref() != Ok("desktop") {
                 desktop.require_login(Arc::new(login::SystemAuth::new()));

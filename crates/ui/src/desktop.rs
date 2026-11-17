@@ -5,11 +5,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{
-    self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Ui, Vec2,
-};
+use eframe::egui::{self, Align, Align2, Frame, Id, Layout, Margin, Pos2, Rect, Sense, Ui, Vec2};
 use lanlord_core::log::{emit, Kind};
-use lanlord_core::modules::{Module, Status, MODULES};
+use lanlord_core::modules::{Module, MODULES};
 use lanlord_core::update;
 
 mod menu;
@@ -19,23 +17,27 @@ use menu::Confirm;
 use crate::admin_setup::{self, AdminSetup};
 use crate::clock_panel::{ClockFeed, ClockPanel};
 use crate::command_panel::CommandPanel;
-use crate::console::{self, Console};
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
 use crate::form::Form;
-use crate::hostlist::HostList;
 use crate::icons;
 use crate::login::{Auth, LoginBox, Outcome, SignedIn};
-use crate::my_server::MyServer;
+use crate::my_server::{self, MyServer};
 use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
-use crate::services::Services;
 use crate::settings_editor::SettingsEditor;
-use crate::tasks::PasswordRequest;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
 use crate::update_panel::{Choice, Updates};
+use crate::view;
 use crate::windows;
+use lanlord_app::console::Console;
+use lanlord_app::desktop::Target;
+use lanlord_app::gateway::Gateway;
+use lanlord_app::hostlist::HostList;
+use lanlord_app::services::Services;
+use lanlord_app::tasks::PasswordRequest;
+use lanlord_app::{hosts_window, module_window};
 
 const CELL: Vec2 = Vec2::new(84.0, 84.0);
 const TASKBAR: f32 = 30.0;
@@ -46,44 +48,6 @@ const CLOCK: f32 = 72.0;
 const TRAY_ICON: f32 = 22.0;
 
 /// what an icon or a window shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Target {
-    Module(usize),
-    MyServer,
-    Networks,
-    Console,
-    Hosts,
-    Settings,
-    /// opened by double-clicking the clock; it has no desktop icon.
-    DateTime,
-}
-
-impl Target {
-    fn id(self) -> &'static str {
-        match self {
-            Self::Module(i) => MODULES[i].id,
-            Self::MyServer => "my-server",
-            Self::Networks => "networks",
-            Self::Console => "console",
-            Self::Hosts => "hosts",
-            Self::Settings => "settings",
-            Self::DateTime => "datetime",
-        }
-    }
-
-    fn title(self) -> &'static str {
-        match self {
-            Self::Module(i) => MODULES[i].name,
-            Self::MyServer => "My Server",
-            Self::Networks => "Networks",
-            Self::Console => "Console",
-            Self::Hosts => "Hosts",
-            Self::Settings => "Settings",
-            Self::DateTime => "Date/Time Properties",
-        }
-    }
-}
-
 struct Window {
     target: Target,
     minimized: bool,
@@ -98,6 +62,8 @@ pub struct Desktop {
     hosts: HostList,
     console: Console,
     services: Services,
+    /// the egui context background work wakes, and windows that need one (logon box, console).
+    ctx: egui::Context,
     settings: SettingsEditor,
     nt4: Nt4Window,
     dns: DnsPanel,
@@ -139,11 +105,15 @@ pub struct Desktop {
 }
 
 impl Desktop {
-    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `services`.
-    pub fn new(services: Services, hosts_path: Option<PathBuf>) -> Self {
-        let mut icons = vec![Target::MyServer, Target::Networks];
-        icons.extend((0..MODULES.len()).map(Target::Module));
-        icons.extend([Target::Settings, Target::Console, Target::Hosts]);
+    /// a desktop that keeps its hosts in `hosts_path` and talks to gateways through `gateway`;
+    /// background work wakes `ctx` when it finishes.
+    pub fn new(
+        gateway: Arc<dyn Gateway>,
+        ctx: &egui::Context,
+        hosts_path: Option<PathBuf>,
+    ) -> Self {
+        let services = Services::new(gateway, crate::wake(ctx));
+        let icons = lanlord_app::desktop::icons();
         Self {
             icons,
             selected: None,
@@ -151,7 +121,8 @@ impl Desktop {
             active: None,
             start_open: false,
             hosts: HostList::new(hosts_path),
-            console: Console::new(&services.ctx),
+            console: Console::new(crate::wake(ctx)),
+            ctx: ctx.clone(),
             services,
             settings: SettingsEditor::default(),
             nt4: Nt4Window::default(),
@@ -202,7 +173,7 @@ impl Desktop {
         let Some(auth) = self.auth.clone() else {
             return;
         };
-        let mut login = LoginBox::new(auth, &self.services.ctx, Some(host));
+        let mut login = LoginBox::new(auth, &self.ctx, Some(host));
         login.submit();
         self.login = Some(login);
     }
@@ -213,11 +184,7 @@ impl Desktop {
             return;
         }
         let last = self.hosts.selected().map(String::from);
-        self.login = Some(LoginBox::new(
-            auth.clone(),
-            &self.services.ctx,
-            last.as_deref(),
-        ));
+        self.login = Some(LoginBox::new(auth.clone(), &self.ctx, last.as_deref()));
         self.auth = Some(auth);
     }
 }
@@ -259,7 +226,10 @@ impl Desktop {
                 self.open(target);
                 if id == "my-server" {
                     // @1 is the Advanced tab, @2 also asks before a purge
-                    self.my_server.tab = usize::from(tab == "1" || tab == "2");
+                    let page = usize::from(tab == "1" || tab == "2");
+                    let host = self.host().unwrap_or_default();
+                    self.my_server
+                        .update(my_server::Msg::Tab(page), &self.services, &host);
                     if let (true, Some(host)) = (tab == "2", self.host()) {
                         self.my_server.ask_to_purge(&self.services, &host);
                     }
@@ -275,24 +245,11 @@ impl Desktop {
         }
     }
 
-    /// "LANlord Client v0.1.0" on a mac or pc, "LANlord Server v0.1.0" when lanlord runs on the
-    /// gateway itself (server mode, which is also what the web ui is).
-    fn app_title(&self) -> String {
-        let side = if self.services.is_local() {
-            "Server"
-        } else {
-            "Client"
-        };
-        format!("LANlord {side} v{}", env!("CARGO_PKG_VERSION"))
-    }
-
     /// the window is titled with the app and its version, plus the signed-in server once someone
     /// is signed in.
     fn sync_window_title(&mut self, ctx: &egui::Context) {
-        let title = match (self.signed_in.as_ref(), self.host()) {
-            (Some(_), Some(host)) => format!("{} - {host}", self.app_title()),
-            _ => self.app_title(),
-        };
+        let host = self.signed_in.as_ref().and(self.host());
+        let title = lanlord_app::desktop::window_title(self.services.is_local(), host.as_deref());
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
@@ -466,7 +423,7 @@ impl Desktop {
         self.windows.clear();
         self.active = None;
         self.start_open = false;
-        let mut login = LoginBox::new(auth, &self.services.ctx, last.as_deref());
+        let mut login = LoginBox::new(auth, &self.ctx, last.as_deref());
         if let Some(note) = note {
             login.note(&note);
         }
@@ -476,7 +433,7 @@ impl Desktop {
     /// the modal boxes: a task's password prompt and the add-host box.
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.password.is_none() {
-            self.password = self.services.tasks.next_request().map(|request| {
+            self.password = self.services.next_request().map(|request| {
                 let dialog = TextDialog::new("password", "Password", &request.prompt, true);
                 (request, dialog)
             });
@@ -497,7 +454,7 @@ impl Desktop {
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.networks.dialog(ctx);
-        self.my_server.dialog(ctx, &self.services);
+        my_server::dialog(&mut self.my_server, ctx, &self.services);
         if let Some(host) = self.my_server.take_purged() {
             self.after_purge(&host);
         }
@@ -548,7 +505,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
         let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.services.ctx.clone();
+        let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = update::verify_built(&exe)
                 .and_then(|()| update::relaunch(&exe, host.as_deref(), grace));
@@ -605,7 +562,7 @@ impl Desktop {
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
         let grace = self.relaunch_grace;
         let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.services.ctx.clone();
+        let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = update::install_build(&repo, &exe, host.as_deref(), pull, grace);
             let _ = tx.send(result.map_err(|e| format!("{e:#}")));
@@ -808,20 +765,8 @@ fn desktop_area(ctx: &egui::Context) -> Rect {
 
 /// how big a window opens, before it is cut down to fit the desktop.
 fn window_size(target: Target) -> Vec2 {
-    match target {
-        Target::Module(i) => match MODULES[i].id {
-            "nt4-domain" => Vec2::new(600.0, 600.0),
-            "dns" => Vec2::new(620.0, 580.0),
-            "remote-commands" => Vec2::new(580.0, 580.0),
-            _ => Vec2::new(480.0, 320.0),
-        },
-        Target::MyServer => Vec2::new(440.0, 480.0),
-        Target::Networks => Vec2::new(560.0, 440.0),
-        Target::Console => Vec2::new(600.0, 300.0),
-        Target::Hosts => Vec2::new(380.0, 280.0),
-        Target::Settings => Vec2::new(600.0, 520.0),
-        Target::DateTime => Vec2::new(430.0, 420.0),
-    }
+    let (w, h) = target.size();
+    Vec2::new(w, h)
 }
 
 /// where the `n`th window opens: stepped down and right of the last one, and never so far
@@ -881,7 +826,7 @@ impl Desktop {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
             Target::MyServer => {
                 let host = self.host();
-                self.my_server.show(ui, &self.services, host.as_deref());
+                my_server::show(&mut self.my_server, ui, &self.services, host.as_deref());
             }
             Target::Networks => {
                 let host = self.host();
@@ -909,23 +854,7 @@ impl Desktop {
     }
 
     fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
-        ui.horizontal(|ui| {
-            icons::draw(ui.painter(), ui.cursor().min, icons::art(module.id), 1.0);
-            ui.add_space(40.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(module.name).size(16.0).strong());
-                let status = match module.status {
-                    Status::Available => "available",
-                    Status::Planned => "planned - not built yet",
-                };
-                ui.label(format!("Status: {status}"));
-            });
-        });
-        ui.add_space(2.0);
-        ui.label(module.summary);
-        ui.add_space(4.0);
-        controls::separator(ui);
-        ui.add_space(4.0);
+        view::show::<()>(ui, &module_window::header(module));
         let host = self.host();
         match module.id {
             "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
@@ -935,104 +864,33 @@ impl Desktop {
                 self.commands
                     .show(ui, &self.services, host.as_deref(), machines);
             }
-            _ => self.plain_module(ui, module, host),
-        }
-    }
-
-    /// a module with nothing to edit yet: its example settings and an Apply button.
-    fn plain_module(&mut self, ui: &mut Ui, module: &'static Module, host: Option<String>) {
-        controls::group(ui, "Settings (in your settings file)", |ui| {
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(module.example).monospace());
-            });
-        });
-        ui.add_space(6.0);
-        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-        let ready = module.status == Status::Available && !busy;
-        controls::buttons(ui, |ui| {
-            let apply = theme::action(ui, "Apply", ready && host.is_some());
-            if let (true, Some(host)) = (apply.clicked(), &host) {
-                self.services.apply(host, vec![module.id.to_string()]);
+            _ => {
+                let nodes = module_window::plain(module, &self.services, host.as_deref());
+                if let Some(msg) = view::show(ui, &nodes) {
+                    module_window::update(msg, module, &self.services, host.as_deref());
+                }
             }
-        });
-        let status = match (&host, busy) {
-            (None, _) => "No host selected".to_string(),
-            (Some(host), true) => format!("Host: {host} - working..."),
-            (Some(host), false) => format!("Host: {host}"),
-        };
-        controls::status_bar(ui, &status, false);
+        }
     }
 
     fn console_window(&mut self, ui: &mut Ui) {
-        let height = controls::fill_height(ui);
-        theme::sunken(ui, BLACK, |ui| {
-            ui.set_width(ui.available_width());
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .max_height(height)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.set_min_height(height);
-                    for line in self.console.lines() {
-                        let text = RichText::new(&line.text)
-                            .monospace()
-                            .color(console::colour(line.kind));
-                        ui.label(text);
-                    }
-                });
-        });
+        view::show::<()>(ui, &self.console.view());
     }
 
     fn hosts_window(&mut self, ui: &mut Ui) {
-        if self.services.is_local() {
-            ui.label("This computer is the server; there are no other hosts to pick.");
+        let nodes = hosts_window::view(&self.hosts, &self.services, self.services.is_local());
+        let Some(msg) = view::show(ui, &nodes) else {
             return;
+        };
+        let ask = hosts_window::update(msg, &mut self.hosts, &self.services);
+        if ask == Some(hosts_window::Ask::AddHost) && self.add_host.is_none() {
+            self.add_host = Some(TextDialog::new(
+                "add-host",
+                "Add a host",
+                "Gateway as user@host:",
+                false,
+            ));
         }
-        let mut picked = None;
-        controls::group(ui, "Gateways lanlord manages", |ui| {
-            theme::sunken(ui, WHITE, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(100.0);
-                if self.hosts.hosts().is_empty() {
-                    ui.label("No gateways yet. Click Add... and type user@gateway.");
-                }
-                for (i, host) in self.hosts.hosts().iter().enumerate() {
-                    if theme::list_row(ui, host, self.hosts.selected_index() == i).clicked() {
-                        picked = Some(i);
-                    }
-                }
-            });
-        });
-        if let Some(i) = picked {
-            self.hosts.select(i);
-        }
-        ui.add_space(6.0);
-        let host = self.host();
-        let busy = host.as_deref().is_some_and(|h| self.services.busy(h));
-        let ready = host.is_some() && !busy;
-        ui.horizontal(|ui| {
-            if theme::action(ui, "Add...", true).clicked() && self.add_host.is_none() {
-                self.add_host = Some(TextDialog::new(
-                    "add-host",
-                    "Add a host",
-                    "Gateway as user@host:",
-                    false,
-                ));
-            }
-            if theme::action(ui, "Remove", ready).clicked() {
-                if let Err(error) = self.hosts.remove_selected() {
-                    emit(Kind::Err, error);
-                }
-            }
-            if theme::action(ui, "Bootstrap", ready).clicked() {
-                if let Some(host) = &host {
-                    self.services.bootstrap(host);
-                }
-            }
-        });
-        ui.add_space(6.0);
-        controls::status_bar(ui, if busy { "working..." } else { "ready" }, false);
     }
 }
 

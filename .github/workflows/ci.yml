@@ -67,6 +67,9 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo check -p lanlord-model --target wasm32-unknown-unknown --locked
+      # the app layer without the desktop backends: the browser demo (fake) and the web ui (http)
+      - run: cargo check -p lanlord-app --target wasm32-unknown-unknown --no-default-features --features fake --locked
+      - run: cargo clippy -p lanlord-app --target wasm32-unknown-unknown --no-default-features --features fake --locked -- -D warnings
 
   web:
     name: web ui builds for the browser

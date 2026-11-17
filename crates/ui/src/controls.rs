@@ -3,7 +3,7 @@
 //! `theme`.
 
 use eframe::egui::{
-    self, Align2, ComboBox, Frame, Margin, Pos2, Rect, Response, Sense, Stroke, TextEdit, Ui, Vec2,
+    self, Align2, ComboBox, Frame, Margin, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2,
 };
 
 use crate::theme::{self, BLACK, GRAY, SHADOW, WHITE};
@@ -39,10 +39,11 @@ pub fn field<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// a one-line edit box `width` points wide (the text area; the frame adds a few more).
+#[cfg(test)]
 pub fn edit(ui: &mut Ui, text: &mut String, width: f32) -> Response {
     field(ui, |ui| {
         ui.add(
-            TextEdit::singleline(text)
+            eframe::egui::TextEdit::singleline(text)
                 .desired_width(width)
                 .frame(Frame::new())
                 .margin(Margin::ZERO),

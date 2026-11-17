@@ -111,7 +111,7 @@ fn root_screen() -> (
     Desktop,
     egui::Context,
     Arc<FakeAuth>,
-    Arc<crate::gateway::Fake>,
+    Arc<lanlord_app::gateway::Fake>,
 ) {
     let (mut desktop, ctx, fake) = desktop();
     let auth = Arc::new(FakeAuth::default());
