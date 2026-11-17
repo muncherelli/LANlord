@@ -67,7 +67,8 @@ impl Target {
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
-            Self::Welcome => (580.0, 380.0),
+            // as tall as the longest topic needs, so no grey is left below the buttons
+            Self::Welcome => (580.0, 324.0),
         }
     }
 }
