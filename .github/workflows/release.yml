@@ -81,7 +81,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           MATRIX_NAME: ${{ matrix.name }}
         run: |
-          out="lanlord-$TAG-${{ matrix.name }}"
+          out="lanlord-$TAG-$MATRIX_NAME"
           mkdir "$out"
           if [ "$RUNNER_OS" = Windows ]; then
             cp target/release/lanlord.exe "$out/"
