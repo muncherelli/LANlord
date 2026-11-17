@@ -396,7 +396,7 @@ tar -C /opt/lanlord/web-stage/web -xf "*) ;;
       "rm -rf /opt/lanlord/web-stage"*|"rm -rf '/opt/lanlord/web-stage'"*) echo web-clean >> "$D/log" ;;
       *"staged files are incomplete"*) echo web-install >> "$D/log" ;;
       *"--tags web-proxy,webui-login"*) echo web-apply >> "$D/log" ;;
-      *"hostname -I"*) echo web-verify >> "$D/log"; [ -f "$D/no-web" ] && { echo "nothing answered" >&2; exit 1; }; exit 0 ;;
+      *"the web ui answers on https"*) echo web-verify >> "$D/log"; [ -f "$D/no-web" ] && { echo "nothing answered" >&2; exit 1; }; exit 0 ;;
       *"DRY=0"*) echo purge >> "$D/log"; rm -f "$D/marker"; echo "remove /opt/lanlord" ;;
       *"base64 -d <<'LANLORD_PAYLOAD'"*) echo apply >> "$D/log"; @APPLY@ ;;
       *) echo bootstrap >> "$D/log"; echo "setting up" ;;

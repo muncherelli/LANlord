@@ -30,7 +30,7 @@ http://{{ status_host }}, http://{{ internal_ip }} {
 {% if webui_on %}
 
 # the lanlord web ui, on the normal network only and always https
-https://{{ webui_host }}:{{ webui_port }} {
+{% for name in webui_names %}https://{{ name }}:{{ webui_port }}{{ ', ' if not loop.last else '' }}{% endfor %} {
 	bind {{ host_address }}
 {% if webui_tls == 'internal' %}
 	# development only: browsers do not trust caddy's own certificate authority

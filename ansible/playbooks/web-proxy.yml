@@ -78,6 +78,17 @@
         webui_proxy_user: "{{ webui_cfg.proxy_user | default('root') }}"
       when: wp is defined
 
+    # caddy's own certificate authority can sign every name the gateway goes by, so the web ui
+    # answers to its address, short name and full name alike; a real certificate covers only host
+    - name: list the names the web ui answers to
+      ansible.builtin.set_fact:
+        webui_names: >-
+          {{ ([webui_host] + (([host_address, ansible_facts['hostname'], ansible_facts['fqdn']]
+              if webui_tls == 'internal' else [])
+              | select('match', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$')
+              | reject('equalto', 'localhost') | list)) | unique | list }}
+      when: wp is defined
+
     - name: decide whether the web ui is served
       ansible.builtin.set_fact:
         webui_on: "{{ wp.webui is defined }}"
@@ -114,7 +125,7 @@
           - webui_host not in (proxy_sites | map(attribute='host') | list)
           - webui_port | string is match('^[0-9]{1,5}$') and (webui_port | int) >= 1 and (webui_port | int) <= 65535
           - (webui_port | int) not in [80, 443]
-          - webui_upstream is match('^unix///run/lanlord-web/[A-Za-z0-9._-]+\.sock$') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$')
+          - webui_upstream is match('^unix//run/lanlord-web/[A-Za-z0-9._-]+\.sock$') or webui_upstream is match('^(https?://)?[A-Za-z0-9.-]+:[0-9]{1,5}$')
           - (host_address | default('')) is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
           - webui_proxy_user is match('^[a-z_][a-z0-9_-]{0,31}$')
         fail_msg: >-

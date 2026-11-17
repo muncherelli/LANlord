@@ -131,6 +131,28 @@ mod tests {
     }
 
     #[test]
+    fn the_default_web_ui_socket_passes_its_own_check() {
+        // the default upstream and the assert that checks it once disagreed on the slashes, so
+        // every install with the web ui failed
+        let (_, proxy) = FILES
+            .iter()
+            .find(|(n, _)| n.ends_with("web-proxy.yml"))
+            .unwrap();
+        let default = "unix//run/lanlord-web/web.sock";
+        assert!(proxy.contains(&format!("default('{default}')")));
+        let pattern = proxy
+            .split("webui_upstream is match('^")
+            .skip(1)
+            .filter_map(|rest| rest.split('[').next())
+            .find(|p| p.contains("lanlord-web/"))
+            .unwrap();
+        assert!(
+            default.starts_with(pattern),
+            "{pattern} does not match {default}"
+        );
+    }
+
+    #[test]
     fn every_embedded_yaml_file_parses() {
         // a task name ending in a colon, for example, would break every apply on the gateway
         for (name, contents) in FILES.iter().filter(|(n, _)| n.ends_with(".yml")) {
