@@ -102,9 +102,39 @@ pub(crate) fn apply_lines(
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let settings = settings::merged_with(session, identity, ask_password)?;
+    run_tags(session, admin, &tags, settings, ask_password, on_line)
+}
+
+/// apply `tags` with exactly `settings` instead of the ones stored on the gateway, for the
+/// installer's own modules. the tags are the caller's constants, not user input.
+pub(crate) fn apply_with_settings(
+    session: &Session,
+    host: &str,
+    tags: &[&str],
+    settings: &str,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    emit(
+        Kind::Info,
+        format!("applying {} to {host}", tags.join(", ")),
+    );
+    let admin = session.capture(&["id".into(), "-un".into()])?;
+    let settings = Some(settings.as_bytes().to_vec());
+    run_tags(session, admin.trim(), tags, settings, ask_password, on_line)
+}
+
+fn run_tags(
+    session: &Session,
+    admin: &str,
+    tags: &[&str],
+    settings: Option<Vec<u8>>,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
     // refuse early on a machine that definitely cannot run docker, with the fix; the settings
     // say which modules a plain apply runs
-    crate::env::gate(session, admin, &tags, settings.as_deref(), ask_password)?;
+    crate::env::gate(session, admin, tags, settings.as_deref(), ask_password)?;
     match &settings {
         Some(plain) => emit(
             Kind::Info,
@@ -118,7 +148,7 @@ pub(crate) fn apply_lines(
     match run_as_root_lines(
         session,
         admin,
-        script(settings.as_deref(), &tags)?,
+        script(settings.as_deref(), tags)?,
         ask_password,
         on_line,
     )? {

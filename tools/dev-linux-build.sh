@@ -52,9 +52,12 @@ fi
 # the server needs no window: leaving the gui feature out also leaves out its graphics libraries
 # shellcheck disable=SC2086
 cargo zigbuild -q $profile -p lanlord --no-default-features --features webui --target "$triple.$glibc"
+# the web ui login helper that `lanlord install --auth-helper` puts on the server
+cargo zigbuild -q $profile -p lanlord-auth-helper --target "$triple.$glibc"
 
 target=${CARGO_TARGET_DIR:-$root/target}
 bin="$target/$triple/$dir/lanlord"
 [ -f "$bin" ] || { echo "the build finished but $bin is missing" >&2; exit 1; }
 echo "built $bin"
 echo "  $(wc -c < "$bin" | tr -d ' ') bytes, sha256 $(shasum -a 256 "$bin" | cut -d' ' -f1)"
+echo "built $target/$triple/$dir/lanlord-auth-helper"

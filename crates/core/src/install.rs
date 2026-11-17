@@ -1,7 +1,8 @@
 //! install lanlord on a server, and reinstall it after a purge.
 //!
-//! an install is four steps: check what the server can do, bootstrap it, apply the baseline
-//! (docker and the firewall; networks and components are added later by the admin) and finish.
+//! an install is five steps: check what the server can do, bootstrap it, apply the baseline
+//! (docker and the firewall; networks and components are added later by the admin), set up the
+//! web ui (see [`crate::webinstall`]) and finish.
 //! after the bootstrap and the baseline a marker on the server records how far it got, so an
 //! interrupted install resumes where it stopped. the purge removes the marker with the rest of
 //! `/opt/lanlord`.
@@ -15,6 +16,7 @@ use crate::bootstrap::{
 use crate::log::{emit, Kind};
 use crate::purge::{self, PurgeOptions};
 use crate::ssh::Session;
+use crate::webinstall::{self, WebSource};
 use crate::{apply, doctor, env};
 
 /// where the progress marker lives; it holds one word, the last step that finished.
@@ -28,17 +30,25 @@ pub enum Step {
     Check,
     Bootstrap,
     Base,
+    Web,
     Finish,
 }
 
 impl Step {
-    pub const ALL: [Step; 4] = [Step::Check, Step::Bootstrap, Step::Base, Step::Finish];
+    pub const ALL: [Step; 5] = [
+        Step::Check,
+        Step::Bootstrap,
+        Step::Base,
+        Step::Web,
+        Step::Finish,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Step::Check => "Checking the server",
             Step::Bootstrap => "Setting up the gateway",
             Step::Base => "Installing Docker and the firewall",
+            Step::Web => "Installing the web UI",
             Step::Finish => "Finishing",
         }
     }
@@ -65,6 +75,7 @@ fn marker_word(step: Step) -> &'static str {
         Step::Check => "check",
         Step::Bootstrap => "bootstrap",
         Step::Base => "base",
+        Step::Web => "web",
         Step::Finish => "installed",
     }
 }
@@ -73,6 +84,7 @@ fn parse_marker(text: &str) -> Status {
     match text.trim() {
         "bootstrap" => Status::Partial(Step::Bootstrap),
         "base" => Status::Partial(Step::Base),
+        "web" => Status::Partial(Step::Web),
         "installed" => Status::Installed,
         _ => Status::NotInstalled,
     }
@@ -125,10 +137,16 @@ fn options_for(host: &str) -> Options {
 
 /// install lanlord on `host`, resuming a half-finished install. an installed server is left
 /// alone; use [`reinstall`] to wipe it first.
-pub fn run(host: &str, ask_password: AskPassword, events: &mut dyn FnMut(Event)) -> Result<()> {
+pub fn run(
+    host: &str,
+    web: &WebSource,
+    ask_password: AskPassword,
+    events: &mut dyn FnMut(Event),
+) -> Result<()> {
     run_with(
         &Session::new(host)?,
         &options_for(host),
+        web,
         ask_password,
         events,
     )
@@ -137,6 +155,7 @@ pub fn run(host: &str, ask_password: AskPassword, events: &mut dyn FnMut(Event))
 pub(crate) fn run_with(
     session: &Session,
     options: &Options,
+    web: &WebSource,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
@@ -157,7 +176,15 @@ pub(crate) fn run_with(
             events(Event::StepDone(step));
             continue;
         }
-        match do_step(session, options, step, done, &mut *ask_password, events) {
+        match do_step(
+            session,
+            options,
+            web,
+            step,
+            done,
+            &mut *ask_password,
+            events,
+        ) {
             Ok(()) => events(Event::StepDone(step)),
             Err(err) => {
                 let message = format!("{err:#}");
@@ -179,6 +206,7 @@ pub(crate) fn run_with(
 fn do_step(
     session: &Session,
     options: &Options,
+    web: &WebSource,
     step: Step,
     done: Option<Step>,
     ask_password: AskPassword,
@@ -220,6 +248,10 @@ fn do_step(
             verify_docker(session, &mut *ask_password)?;
             record(session, Step::Base, ask_password)
         }
+        Step::Web => {
+            webinstall::run_step(session, &options.host, web, &mut *ask_password, &mut line)?;
+            record(session, Step::Web, ask_password)
+        }
         Step::Finish => record(session, Step::Finish, ask_password),
     }
 }
@@ -236,6 +268,7 @@ fn check_confirm(host: &str, confirm: &str) -> Result<()> {
 pub fn reinstall(
     host: &str,
     confirm: &str,
+    web: &WebSource,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
@@ -243,6 +276,7 @@ pub fn reinstall(
     reinstall_with(
         &Session::new(host)?,
         &options_for(host),
+        web,
         ask_password,
         events,
     )
@@ -251,6 +285,7 @@ pub fn reinstall(
 pub(crate) fn reinstall_with(
     session: &Session,
     options: &Options,
+    web: &WebSource,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
@@ -268,7 +303,7 @@ pub(crate) fn reinstall_with(
     for line in lines {
         events(Event::Line(line));
     }
-    run_with(session, options, ask_password, events)
+    run_with(session, options, web, ask_password, events)
 }
 
 #[cfg(all(test, unix))]
@@ -284,6 +319,24 @@ mod tests {
     struct Server {
         dir: std::path::PathBuf,
         session: Session,
+        web: WebSource,
+    }
+
+    /// what the web ui step does on a fresh install: stage, three uploads, put in place, apply, check.
+    const WEB_LOG: [&str; 7] = [
+        "web-prepare",
+        "upload",
+        "upload",
+        "upload",
+        "web-install",
+        "web-apply",
+        "web-verify",
+    ];
+
+    fn with_web(mut log: Vec<&'static str>, tail: &[&'static str]) -> Vec<&'static str> {
+        log.extend(WEB_LOG);
+        log.extend(tail);
+        log
     }
 
     impl Server {
@@ -296,7 +349,16 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("lanlord-install-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(dir.join("local/dist")).unwrap();
+            std::fs::write(dir.join("local/lanlord"), "server").unwrap();
+            std::fs::write(dir.join("local/helper"), "helper").unwrap();
+            std::fs::write(dir.join("local/dist/index.html"), "<html>").unwrap();
+            let web = WebSource::choose(
+                Some(dir.join("local/lanlord")),
+                Some(dir.join("local/dist")),
+                Some(dir.join("local/helper")),
+            )
+            .unwrap();
             if let Some(word) = marker {
                 std::fs::write(dir.join("marker"), format!("{word}\n")).unwrap();
             }
@@ -306,6 +368,10 @@ case "$last" in
   "id -un") echo tester ;;
   "sh -c 'id -un; id -u'") printf 'tester\n1000\n' ;;
   "sudo -n true") exit 0 ;;
+  "uname -m") echo x86_64 ;;
+  *"cat > /opt/lanlord/web-stage/lanlord'") echo upload >> "$D/log"; cat > "$D/up-server" ;;
+  *"cat > /opt/lanlord/web-stage/lanlord-auth-helper'") echo upload >> "$D/log"; cat > "$D/up-helper" ;;
+  *"tar -C /opt/lanlord/web-stage/web -xf -'") echo upload >> "$D/log"; cat > "$D/up-web" ;;
   "sh -c "*) exit 0 ;;
   *)
     input=$(cat)
@@ -317,6 +383,16 @@ case "$last" in
         word=$(printf '%s' "$input" | head -n 1 | cut -d' ' -f3)
         printf '%s\n' "$word" > "$D/marker"
         echo "$word" >> "$D/log" ;;
+      *'mkdir -p "$S/web"'*) echo web-prepare >> "$D/log" ;;
+      "sha256sum "*)
+        for f in up-server up-helper; do
+          printf '%s  x\n' "$(shasum -a 256 "$D/$f" | cut -d' ' -f1)"
+        done
+        if [ -f "$D/bad-upload" ]; then echo "0000  x"; fi ;;
+      "rm -rf /opt/lanlord/web-stage"*|"rm -rf '/opt/lanlord/web-stage'"*) echo web-clean >> "$D/log" ;;
+      *"staged files are incomplete"*) echo web-install >> "$D/log" ;;
+      *"--tags web-proxy,webui-login"*) echo web-apply >> "$D/log" ;;
+      *"hostname -I"*) echo web-verify >> "$D/log"; [ -f "$D/no-web" ] && { echo "nothing answered" >&2; exit 1; }; exit 0 ;;
       *"DRY=0"*) echo purge >> "$D/log"; rm -f "$D/marker"; echo "remove /opt/lanlord" ;;
       *"base64 -d <<'LANLORD_PAYLOAD'"*) echo apply >> "$D/log"; @APPLY@ ;;
       *) echo bootstrap >> "$D/log"; echo "setting up" ;;
@@ -329,6 +405,7 @@ esac"#
             Server {
                 session: Session::fake(&script),
                 dir,
+                web,
             }
         }
 
@@ -364,9 +441,13 @@ esac"#
 
     fn install(server: &Server) -> (Result<()>, Vec<Event>) {
         let mut seen = Vec::new();
-        let result = run_with(&server.session, &options(), &mut no_password, &mut |e| {
-            seen.push(e)
-        });
+        let result = run_with(
+            &server.session,
+            &options(),
+            &server.web,
+            &mut no_password,
+            &mut |e| seen.push(e),
+        );
         (result, seen)
     }
 
@@ -386,7 +467,7 @@ esac"#
     fn the_marker_reads_back_as_a_status() {
         assert_eq!(parse_marker(""), Status::NotInstalled);
         assert_eq!(parse_marker("garbage"), Status::NotInstalled);
-        for step in [Step::Bootstrap, Step::Base] {
+        for step in [Step::Bootstrap, Step::Base, Step::Web] {
             assert_eq!(parse_marker(marker_word(step)), Status::Partial(step));
         }
         assert_eq!(parse_marker("installed\n"), Status::Installed);
@@ -398,6 +479,7 @@ esac"#
         for (marker, want) in [
             (None, Status::NotInstalled),
             (Some("base"), Status::Partial(Step::Base)),
+            (Some("web"), Status::Partial(Step::Web)),
             (Some("installed"), Status::Installed),
         ] {
             let server = Server::new("status", marker, FINE);
@@ -430,7 +512,10 @@ esac"#
         // progress is recorded after each step
         assert_eq!(
             server.log(),
-            ["bootstrap", "bootstrap", "apply", "base", "installed"]
+            with_web(
+                vec!["bootstrap", "bootstrap", "apply", "base"],
+                &["web", "installed"]
+            )
         );
         assert_eq!(server.marker(), "installed");
     }
@@ -446,7 +531,7 @@ esac"#
             .filter(|l| l.text == "play: baseline" || l.text == "setting up")
             .collect();
         assert!(!shown.is_empty());
-        assert!(shown.iter().all(|l| l.kind == Kind::Debug));
+        assert!(shown.iter().all(|l| l.kind == Kind::Debug), "{shown:?}");
     }
 
     #[test]
@@ -456,17 +541,34 @@ esac"#
         result.unwrap();
         // the bootstrap runs again (it is idempotent and repairs an old account), then the
         // baseline and the finish
-        assert_eq!(server.log(), ["bootstrap", "apply", "base", "installed"]);
+        assert_eq!(
+            server.log(),
+            with_web(vec!["bootstrap", "apply", "base"], &["web", "installed"])
+        );
         assert!(!events.contains(&Event::Line("already done, skipping".into())));
-        assert_eq!(steps(&events).len(), 8);
+        assert_eq!(steps(&events).len(), 10);
         assert_eq!(server.marker(), "installed");
 
         let server = Server::new("resume-base", Some("base"), FINE);
         let (result, events) = install(&server);
         result.unwrap();
         // a finished baseline is skipped, but the bootstrap still runs without moving the marker
-        assert_eq!(server.log(), ["bootstrap", "installed"]);
+        assert_eq!(
+            server.log(),
+            with_web(vec!["bootstrap"], &["web", "installed"])
+        );
         assert!(events.contains(&Event::Line("already done, skipping".into())));
+
+        // a finished web ui step is skipped too
+        let server = Server::new("resume-web", Some("web"), FINE);
+        let (result, events) = install(&server);
+        result.unwrap();
+        assert_eq!(server.log(), ["bootstrap", "installed"]);
+        let skipped = events
+            .iter()
+            .filter(|e| **e == Event::Line("already done, skipping".into()))
+            .count();
+        assert_eq!(skipped, 2);
     }
 
     #[test]
@@ -523,12 +625,43 @@ esac"#
     }
 
     #[test]
+    fn a_web_ui_that_does_not_answer_fails_the_step_and_keeps_the_baseline() {
+        let server = Server::new("noweb", None, FINE);
+        std::fs::write(server.dir.join("no-web"), "").unwrap();
+        let (result, events) = install(&server);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not answer on https port 8443"), "{err}");
+        assert_eq!(steps(&events).last(), Some(&(Step::Web, "failed")));
+        // the next run resumes at the web ui step
+        assert_eq!(server.marker(), "base");
+    }
+
+    #[test]
+    fn files_that_arrive_damaged_are_not_installed() {
+        let server = Server::new("badupload", None, FINE);
+        std::fs::write(server.dir.join("bad-upload"), "").unwrap();
+        let (result, _) = install(&server);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("do not match"), "{err}");
+        let log = server.log();
+        assert!(log.contains(&"web-clean".to_string()));
+        assert!(!log.contains(&"web-install".to_string()));
+        assert_eq!(server.marker(), "base");
+    }
+
+    #[test]
     fn reinstall_refuses_without_the_exact_host_name() {
         for wrong in ["", "GW", "gw ", "other", "gw.example"] {
             let mut seen = Vec::new();
-            let err = reinstall("gw", wrong, &mut no_password, &mut |e| seen.push(e))
-                .unwrap_err()
-                .to_string();
+            let err = reinstall(
+                "gw",
+                wrong,
+                &WebSource::release(),
+                &mut no_password,
+                &mut |e| seen.push(e),
+            )
+            .unwrap_err()
+            .to_string();
             assert!(err.contains("does not match"), "{wrong:?}: {err}");
             assert!(seen.is_empty());
         }
@@ -539,22 +672,22 @@ esac"#
     fn reinstall_purges_and_then_installs_from_scratch() {
         let server = Server::new("reinstall", Some("installed"), FINE);
         let mut seen = Vec::new();
-        reinstall_with(&server.session, &options(), &mut no_password, &mut |e| {
-            seen.push(e)
-        })
+        reinstall_with(
+            &server.session,
+            &options(),
+            &server.web,
+            &mut no_password,
+            &mut |e| seen.push(e),
+        )
         .unwrap();
         assert_eq!(
             server.log(),
-            [
-                "purge",
-                "bootstrap",
-                "bootstrap",
-                "apply",
-                "base",
-                "installed"
-            ]
+            with_web(
+                vec!["purge", "bootstrap", "bootstrap", "apply", "base"],
+                &["web", "installed"]
+            )
         );
-        // what the purge said comes first, then the four steps
+        // what the purge said comes first, then the five steps
         assert_eq!(seen[0], Event::Line("remove /opt/lanlord".into()));
         assert_eq!(seen[1], Event::StepStarted(Step::Check));
         assert_eq!(server.marker(), "installed");
@@ -564,9 +697,13 @@ esac"#
     fn reinstall_of_a_server_that_fails_the_check_removes_nothing() {
         let server = Server::new("reinstall-blocked", Some("installed"), NO_NESTING);
         let mut seen = Vec::new();
-        let err = reinstall_with(&server.session, &options(), &mut no_password, &mut |e| {
-            seen.push(e)
-        })
+        let err = reinstall_with(
+            &server.session,
+            &options(),
+            &server.web,
+            &mut no_password,
+            &mut |e| seen.push(e),
+        )
         .unwrap_err()
         .to_string();
         assert!(

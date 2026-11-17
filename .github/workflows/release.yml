@@ -28,9 +28,9 @@ jobs:
           - { name: macos-arm64, os: macos-latest, flags: "" }
           - { name: macos-x86_64, os: macos-15-intel, flags: "" }
           - { name: linux-x86_64, os: ubuntu-latest, flags: "" }
-          - { name: linux-x86_64-headless, os: ubuntu-latest, flags: "--no-default-features" }
+          - { name: linux-x86_64-headless, os: ubuntu-latest, flags: "--no-default-features --features webui" }
           - { name: linux-arm64, os: ubuntu-24.04-arm, flags: "" }
-          - { name: linux-arm64-headless, os: ubuntu-24.04-arm, flags: "--no-default-features" }
+          - { name: linux-arm64-headless, os: ubuntu-24.04-arm, flags: "--no-default-features --features webui" }
           - { name: windows-x86_64, os: windows-latest, flags: "" }
           - { name: windows-arm64, os: windows-11-arm, flags: "" }
     steps:
@@ -47,6 +47,10 @@ jobs:
           libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
           libgl1-mesa-dev
       - run: cargo build --release --locked -p lanlord ${{ matrix.flags }}
+      # the headless build is the server: it also carries the web ui login helper
+      - name: build the login helper
+        if: endsWith(matrix.name, '-headless')
+        run: cargo build --release --locked -p lanlord-auth-helper
 
       # signing hook (not enabled yet): sign and notarize the macos binary
       # here with the developer id certificate once the secrets exist.
@@ -64,6 +68,9 @@ jobs:
             asset="$out.zip"
           else
             cp target/release/lanlord "$out/"
+            case "${{ matrix.name }}" in
+              *-headless) cp target/release/lanlord-auth-helper "$out/" ;;
+            esac
             tar czf "$out.tar.gz" "$out"
             asset="$out.tar.gz"
           fi
@@ -75,6 +82,43 @@ jobs:
           subject-path: ${{ env.ASSET }}
       - name: upload to the release
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+
+  # the browser build the server's web ui serves; `lanlord install` downloads it by this name
+  web:
+    name: web-dist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: trunk@0.22.1
+      - run: tools/build-web.sh
+      - name: package
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          asset="lanlord-$TAG-web.tar.gz"
+          tar czf "$asset" -C target/web-dist .
+          sha256sum "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: ${{ env.ASSET }}
+      - name: upload to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
