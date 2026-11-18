@@ -113,4 +113,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+Shell code is linted by `tools/lint-shell.sh` (shellcheck, actionlint, and a check that every `case` has a `*)` branch); to run it before every push, use `git config core.hooksPath .githooks`.
+
 Linux builds of the desktop window need the usual GUI libraries (for example `libxkbcommon-dev`, `libwayland-dev` and `libgl1-mesa-dev` on Debian). Build with `--no-default-features` for a binary without the window. The gateway's web server (`lanlord webui`) is behind the `webui` feature: `cargo build -p lanlord --no-default-features --features webui`. The Ansible files live in [`ansible/`](ansible/README.md).
