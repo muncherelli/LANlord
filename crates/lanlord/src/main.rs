@@ -12,7 +12,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
-use lanlord_core::ops::{execute, Op, Reply, Request, Response};
+use lanlord_core::operations::{execute, Operation, Reply, Request, Response};
 use lanlord_core::paths;
 use lanlord_core::users::Change;
 
@@ -423,8 +423,8 @@ enum Command {
         json: bool,
     },
     /// read one operation as json on stdin, run it and print the reply as json
-    #[command(hide = true)]
-    Op { host: String },
+    #[command(name = "op", hide = true)]
+    Operation { host: String },
     /// run typed operations on this gateway for a controller; json frames, one per line, on
     /// stdin and stdout (what lanlord starts over ssh; sudo for the ones that change things)
     #[command(hide = true)]
@@ -528,7 +528,7 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
 
 fn machines(host: &str, action: MachinesCommand) -> Result<()> {
     use lanlord_core::nt4::{edit_machines, valid_machine, MachineChange, Nt4Settings};
-    use lanlord_core::ops::{execute, Op, Reply};
+    use lanlord_core::operations::{execute, Operation, Reply};
     let change = match action {
         MachinesCommand::List => {
             let document = lanlord_core::remote::document(host, &mut ask)?;
@@ -544,7 +544,7 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
             if !valid_machine(&name) {
                 bail!("{name} is not a valid machine name (up to 15 letters, digits or -)");
             }
-            return match execute(host, &Op::ResetMachine { name }, &mut ask)? {
+            return match execute(host, &Operation::ResetMachine { name }, &mut ask)? {
                 Reply::Done => Ok(()),
                 _ => bail!("unexpected answer"),
             };
@@ -708,11 +708,11 @@ fn clock(host: &str, action: ClockCommand) -> Result<()> {
             ..Change::default()
         },
     };
-    let change = lanlord_core::ops::Op::ClockApply { change };
-    let lanlord_core::ops::Reply::ClockApplied {
+    let change = lanlord_core::operations::Operation::ClockApply { change };
+    let lanlord_core::operations::Reply::ClockApplied {
         lines: said,
         stored,
-    } = lanlord_core::ops::execute(host, &change, &mut ask)?
+    } = lanlord_core::operations::execute(host, &change, &mut ask)?
     else {
         bail!("unexpected answer");
     };
@@ -826,7 +826,7 @@ fn confirmed(question: &str, confirm: Option<String>) -> Result<String> {
 }
 
 fn leases(host: &str) -> Result<()> {
-    let Reply::Leases(leases) = execute(host, &Op::Leases, &mut ask)? else {
+    let Reply::Leases(leases) = execute(host, &Operation::Leases, &mut ask)? else {
         bail!("the server answered something other than leases");
     };
     if leases.is_empty() {
@@ -864,7 +864,7 @@ fn lease_lines(leases: &[lanlord_core::leases::Lease]) -> Vec<String> {
 }
 
 fn network_status(host: &str, json: bool) -> Result<()> {
-    let Reply::Interfaces(all) = execute(host, &Op::NetworkStatus, &mut ask)? else {
+    let Reply::Interfaces(all) = execute(host, &Operation::NetworkStatus, &mut ask)? else {
         bail!("the server answered something other than its network status");
     };
     if json {
@@ -914,7 +914,7 @@ fn power(host: &str, action: PowerChoice, confirm: Option<String>) -> Result<()>
     if typed != host {
         bail!("the host name does not match; nothing was done");
     }
-    let reply = execute(host, &Op::Power { power }, &mut ask)?;
+    let reply = execute(host, &Operation::Power { power }, &mut ask)?;
     println!("{}", power_said(host, power, &reply)?);
     Ok(())
 }
@@ -933,7 +933,7 @@ fn power_said(host: &str, power: lanlord_core::power::Power, reply: &Reply) -> R
 }
 
 fn facts(host: &str) -> Result<()> {
-    let Reply::Facts(facts) = execute(host, &Op::ServerFacts, &mut ask)? else {
+    let Reply::Facts(facts) = execute(host, &Operation::ServerFacts, &mut ask)? else {
         bail!("the server answered something other than its facts");
     };
     for line in fact_lines(&facts) {
@@ -943,7 +943,7 @@ fn facts(host: &str) -> Result<()> {
 }
 
 fn doctor(host: &str, json: bool) -> Result<()> {
-    let Reply::Doctor(report) = execute(host, &Op::Doctor, &mut ask)? else {
+    let Reply::Doctor(report) = execute(host, &Operation::Doctor, &mut ask)? else {
         bail!("the server answered something other than a doctor report");
     };
     if json {
@@ -1058,16 +1058,16 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
     lines
 }
 
-/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the op
-/// without asking for confirmation (the front end that sent it already did) and never prompts on
-/// the terminal: a sudo password comes in the request, or the reply asks for one.
-fn op(host: &str) -> Result<()> {
-    // the op may carry passwords
+/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the
+/// operation without asking for confirmation (the front end that sent it already did) and never
+/// prompts on the terminal: a sudo password comes in the request, or the reply asks for one.
+fn operation(host: &str) -> Result<()> {
+    // the operation may carry passwords
     let mut input = zeroize::Zeroizing::new(String::new());
     std::io::stdin().read_to_string(&mut input)?;
     let answered = answer(
         &input,
-        |op, ask| execute(host, op, ask),
+        |operation, ask| execute(host, operation, ask),
         &mut std::io::stdout(),
         &mut std::io::stderr(),
     )?;
@@ -1077,11 +1077,12 @@ fn op(host: &str) -> Result<()> {
     Ok(())
 }
 
-/// answer `input` with exactly one json line on `out`. whatever the server printed while the op
-/// ran goes to `err`, so `out` stays readable by a program. false when the answer is an error.
+/// answer `input` with exactly one json line on `out`. whatever the server printed while the
+/// operation ran goes to `err`, so `out` stays readable by a program. false when the answer is an
+/// error.
 fn answer(
     input: &str,
-    run: impl FnOnce(&Op, AskPassword) -> Result<Reply>,
+    run: impl FnOnce(&Operation, AskPassword) -> Result<Reply>,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<bool> {
@@ -1100,9 +1101,9 @@ fn answer(
     ))
 }
 
-/// read `input` as a request (or a bare op) and answer it with `run`. sudo prompts are answered
-/// with the request's password; without one the reply asks for it instead.
-fn respond(input: &str, run: impl FnOnce(&Op, AskPassword) -> Result<Reply>) -> Response {
+/// read `input` as a request (or a bare operation) and answer it with `run`. sudo prompts are
+/// answered with the request's password; without one the reply asks for it instead.
+fn respond(input: &str, run: impl FnOnce(&Operation, AskPassword) -> Result<Reply>) -> Response {
     let request = match read_request(input) {
         Ok(request) => request,
         Err(e) => return Response::Error(format!("not an operation: {e}")),
@@ -1116,7 +1117,7 @@ fn respond(input: &str, run: impl FnOnce(&Op, AskPassword) -> Result<Reply>) -> 
                 bail!("the sudo password is needed")
             }
         };
-        run(&request.op, &mut ask)
+        run(&request.operation, &mut ask)
     };
     match asked {
         Some(prompt) => Response::Ok(Reply::NeedsPassword { prompt }),
@@ -1128,16 +1129,20 @@ fn respond(input: &str, run: impl FnOnce(&Op, AskPassword) -> Result<Reply>) -> 
     }
 }
 
-/// whether the error is the caller's roles (or the arguments) not allowing the op.
+/// whether the error is the caller's roles (or the arguments) not allowing the operation.
 fn is_refusal(error: &anyhow::Error) -> bool {
     use lanlord_core::access::{Denied, Refused};
     error.downcast_ref::<Denied>().is_some() || error.downcast_ref::<Refused>().is_some()
 }
 
-/// a request, or a bare op as older callers send it.
+/// a request, or a bare operation as older callers send it.
 fn read_request(input: &str) -> serde_json::Result<Request> {
-    serde_json::from_str::<Request>(input)
-        .or_else(|_| serde_json::from_str::<Op>(input).map(|op| Request { op, password: None }))
+    serde_json::from_str::<Request>(input).or_else(|_| {
+        serde_json::from_str::<Operation>(input).map(|operation| Request {
+            operation,
+            password: None,
+        })
+    })
 }
 
 /// the gateway side of `Session::bridge`: only protocol goes to stdout, logs go to stderr.
@@ -1223,8 +1228,8 @@ fn operate() -> Result<()> {
 /// what an operation's outcome is told as: a refusal is `Denied`, any other failure is an
 /// `Error` with its first line only, never the chain of causes.
 #[cfg(unix)]
-fn response_of(ran: Result<lanlord_core::ops::Reply>) -> lanlord_core::ops::Response {
-    use lanlord_core::ops::Response;
+fn response_of(ran: Result<lanlord_core::operations::Reply>) -> lanlord_core::operations::Response {
+    use lanlord_core::operations::Response;
     match ran {
         Ok(reply) => Response::Ok(reply),
         Err(error) => {
@@ -1250,18 +1255,21 @@ fn response_of(ran: Result<lanlord_core::ops::Reply>) -> lanlord_core::ops::Resp
 }
 
 /// the response to one request line: refused without an account, an error for a line that is
-/// not an operation, else whatever `run` makes of the op for that account.
+/// not an operation, else whatever `run` makes of the operation for that account.
 #[cfg(unix)]
 fn answer_request(
     line: &str,
     account: Option<String>,
-    run: impl FnOnce(&str, &lanlord_core::ops::Op) -> Result<lanlord_core::ops::Reply>,
-) -> lanlord_core::ops::Response {
-    use lanlord_core::ops::Response;
+    run: impl FnOnce(
+        &str,
+        &lanlord_core::operations::Operation,
+    ) -> Result<lanlord_core::operations::Reply>,
+) -> lanlord_core::operations::Response {
+    use lanlord_core::operations::Response;
     match (account, lanlord_core::operate::read_request(line)) {
         (None, _) => Response::Denied("run this through sudo from your own account".into()),
         (_, Err(_)) => Response::Error("not an operation".into()),
-        (Some(account), Ok(op)) => response_of(run(&account, &op)),
+        (Some(account), Ok(operation)) => response_of(run(&account, &operation)),
     }
 }
 
@@ -1272,7 +1280,7 @@ fn answer_request(
 #[cfg(unix)]
 fn operate() -> Result<()> {
     use lanlord_core::access::Caller;
-    use lanlord_core::ops::execute_in;
+    use lanlord_core::operations::execute_in;
     use lanlord_core::ssh::Session;
     use std::os::unix::fs::MetadataExt;
 
@@ -1287,11 +1295,11 @@ fn operate() -> Result<()> {
         std::env::var("SUDO_UID").ok().as_deref(),
         uid_of_account,
     );
-    let response = answer_request(&line, account, |account, op| {
+    let response = answer_request(&line, account, |account, operation| {
         lanlord_core::crypto::use_gateway_key(lanlord_core::crypto::GATEWAY_KEY.into())?;
         let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: this is root") };
         Caller::of_account(&session, account)
-            .and_then(|caller| execute_in(&session, "localhost", &caller, op, &mut ask))
+            .and_then(|caller| execute_in(&session, "localhost", &caller, operation, &mut ask))
     });
     println!(
         "{}",
@@ -1303,23 +1311,25 @@ fn operate() -> Result<()> {
 /// hand the old client key to the gateway once, so the settings are sealed to the gateway's own
 /// key, and then remove the key here: clients hold no keys, and no copy is kept.
 fn move_secrets(host: &str) -> Result<()> {
-    use lanlord_core::ops::execute;
+    use lanlord_core::operations::execute;
     let Some(path) = paths::identity_path().filter(|path| path.exists()) else {
         bail!("there is no old key on this machine; nothing to move");
     };
-    move_key(&path, &mut |op| execute(host, op, &mut ask))
+    move_key(&path, &mut |operation| execute(host, operation, &mut ask))
 }
 
 /// send the key at `path` to the gateway through `run`, and erase it once the gateway confirms.
 fn move_key(
     path: &std::path::Path,
-    run: &mut dyn FnMut(&lanlord_core::ops::Op) -> Result<lanlord_core::ops::Reply>,
+    run: &mut dyn FnMut(
+        &lanlord_core::operations::Operation,
+    ) -> Result<lanlord_core::operations::Reply>,
 ) -> Result<()> {
-    use lanlord_core::ops::{Op, Reply};
+    use lanlord_core::operations::{Operation, Reply};
     let key = std::fs::read_to_string(path)?;
-    run(&Op::MoveSecrets { key: key.into() })?;
+    run(&Operation::MoveSecrets { key: key.into() })?;
     // the gateway says it re-sealed; only a read that decrypts with its own key is believed
-    match run(&Op::LoadDocument)? {
+    match run(&Operation::LoadDocument)? {
         Reply::Document(document) if !document.needs_move => {}
         _ => bail!(
             "the gateway did not confirm the move; the old key is kept at {}",
@@ -1420,8 +1430,8 @@ fn main() -> Result<()> {
             &mut ask,
         ),
         Some(Command::Apply { host, modules }) => {
-            let apply = lanlord_core::ops::Op::Apply { modules };
-            lanlord_core::ops::execute(&host, &apply, &mut ask).map(|_| ())
+            let apply = lanlord_core::operations::Operation::Apply { modules };
+            lanlord_core::operations::execute(&host, &apply, &mut ask).map(|_| ())
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
@@ -1457,7 +1467,7 @@ fn main() -> Result<()> {
         }) => power(&host, action, confirm),
         Some(Command::Facts { host }) => facts(&host),
         Some(Command::Doctor { host, json }) => doctor(&host, json),
-        Some(Command::Op { host }) => op(&host),
+        Some(Command::Operation { host }) => operation(&host),
         Some(Command::Bridge { mode }) => bridge(mode),
         Some(Command::Software { host, state }) => {
             let on = matches!(state, Switch::On);
@@ -1510,7 +1520,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_outcome_is_told_as_ok_denied_or_an_error_of_one_line() {
-        use lanlord_core::ops::{Reply, Response};
+        use lanlord_core::operations::{Reply, Response};
         let refused: anyhow::Error = lanlord_core::access::Refused("no".into()).into();
         assert!(
             matches!(super::response_of(Err(refused)), Response::Denied(w) if w.contains("no"))
@@ -1533,9 +1543,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_request_is_refused_without_an_account_and_garbled_ones_are_errors() {
-        use lanlord_core::ops::{Reply, Response};
+        use lanlord_core::operations::{Reply, Response};
         let line = "{\"op\":{\"op\":\"load_document\"}}";
-        let run = |_: &str, _: &lanlord_core::ops::Op| Ok(Reply::Done);
+        let run = |_: &str, _: &lanlord_core::operations::Operation| Ok(Reply::Done);
         assert!(matches!(
             super::answer_request(line, None, run),
             Response::Denied(_)
@@ -1544,7 +1554,7 @@ mod tests {
             super::answer_request("nonsense", Some("ann".into()), run),
             Response::Error(_)
         ));
-        let seen = |account: &str, _: &lanlord_core::ops::Op| {
+        let seen = |account: &str, _: &lanlord_core::operations::Operation| {
             assert_eq!(account, "ann");
             Ok(Reply::Done)
         };
@@ -1556,15 +1566,15 @@ mod tests {
 
     #[test]
     fn a_key_is_erased_only_after_the_gateway_confirms_the_move() {
-        use lanlord_core::ops::{Op, Reply};
+        use lanlord_core::operations::{Operation, Reply};
         let dir = std::env::temp_dir().join(format!("lanlord-move-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("identity");
         std::fs::write(&file, "AGE-SECRET-KEY-1TEST").unwrap();
         // the gateway still says the settings need a move: the key stays
-        let mut unconfirmed = |op: &Op| {
-            Ok(match op {
-                Op::LoadDocument => Reply::Document(lanlord_core::settings::Document {
+        let mut unconfirmed = |operation: &Operation| {
+            Ok(match operation {
+                Operation::LoadDocument => Reply::Document(lanlord_core::settings::Document {
                     needs_move: true,
                     ..Default::default()
                 }),
@@ -1574,10 +1584,10 @@ mod tests {
         assert!(super::move_key(&file, &mut unconfirmed).is_err());
         assert!(file.exists());
         let mut sent = Vec::new();
-        let mut confirmed = |op: &Op| {
-            sent.push(matches!(op, Op::MoveSecrets { .. }));
-            Ok(match op {
-                Op::LoadDocument => Reply::Document(Default::default()),
+        let mut confirmed = |operation: &Operation| {
+            sent.push(matches!(operation, Operation::MoveSecrets { .. }));
+            Ok(match operation {
+                Operation::LoadDocument => Reply::Document(Default::default()),
                 _ => Reply::Done,
             })
         };
@@ -1790,9 +1800,9 @@ mod tests {
     }
 
     #[test]
-    fn op_answers_json_with_a_reply_or_an_error() {
-        let ok = respond(r#"{"op":"leases"}"#, |op, _| {
-            assert_eq!(op, &Op::Leases);
+    fn operation_answers_json_with_a_reply_or_an_error() {
+        let ok = respond(r#"{"op":"leases"}"#, |operation, _| {
+            assert_eq!(operation, &Operation::Leases);
             Ok(Reply::Leases(vec![]))
         });
         assert_eq!(ok, Response::Ok(Reply::Leases(vec![])));
@@ -1815,8 +1825,8 @@ mod tests {
     #[test]
     fn a_request_answers_sudo_with_its_password() {
         let input = r#"{"op":{"op":"leases"},"password":"s3cret"}"#;
-        let response = respond(input, |op, ask| {
-            assert_eq!(op, &Op::Leases);
+        let response = respond(input, |operation, ask| {
+            assert_eq!(operation, &Operation::Leases);
             assert_eq!(ask("[sudo] password for admin:")?, "s3cret");
             assert_eq!(ask("[sudo] password for admin:")?, "s3cret", "asked again");
             Ok(Reply::Leases(vec![]))
@@ -1832,7 +1842,7 @@ mod tests {
             r#"{"op":"leases"}"#,
         ] {
             let response = respond(input, |_, ask| {
-                // the op fails once its prompt is refused, whatever it says
+                // the operation fails once its prompt is refused, whatever it says
                 ask("[sudo] password for admin:")?;
                 unreachable!("there is no password to give")
             });
@@ -1844,7 +1854,7 @@ mod tests {
                 "{input}"
             );
         }
-        // an op that never asks runs as before
+        // an operation that never asks runs as before
         let response = respond(r#"{"op":{"op":"probe"}}"#, |_, _| Ok(Reply::Done));
         assert_eq!(response, Response::Ok(Reply::Done));
     }
@@ -1865,14 +1875,14 @@ mod tests {
     }
 
     #[test]
-    fn op_writes_exactly_one_json_line_whatever_the_server_prints() {
+    fn operation_writes_exactly_one_json_line_whatever_the_server_prints() {
         use lanlord_core::log::{emit, Kind};
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let answered = answer(
             r#"{"op":"run","command":["uptime"]}"#,
             |_, _| {
-                emit(Kind::Out, "op-test: up 3 days");
-                emit(Kind::Err, "op-test: a warning");
+                emit(Kind::Out, "operation-test: up 3 days");
+                emit(Kind::Err, "operation-test: a warning");
                 Ok(Reply::ExitCode(0))
             },
             &mut out,
@@ -1885,7 +1895,9 @@ mod tests {
         let reply: Response = serde_json::from_str(out.trim_end()).unwrap();
         assert_eq!(reply, Response::Ok(Reply::ExitCode(0)));
         let err = String::from_utf8(err).unwrap();
-        assert!(err.contains("op-test: up 3 days") && err.contains("op-test: a warning"));
+        assert!(
+            err.contains("operation-test: up 3 days") && err.contains("operation-test: a warning")
+        );
 
         let mut out = Vec::new();
         let answered = answer("{}", |_, _| unreachable!(), &mut out, &mut Vec::new()).unwrap();
@@ -1899,8 +1911,8 @@ mod tests {
     }
 
     #[test]
-    fn op_is_hidden_from_help() {
-        assert!(matches!(parse(&["op", "gw"]), Command::Op { host } if host == "gw"));
+    fn operation_is_hidden_from_help() {
+        assert!(matches!(parse(&["op", "gw"]), Command::Operation { host } if host == "gw"));
         assert!(matches!(parse(&["bridge"]), Command::Bridge { mode: None }));
         assert!(matches!(
             parse(&["bridge", "serve"]),

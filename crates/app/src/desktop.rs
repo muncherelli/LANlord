@@ -129,7 +129,8 @@ impl Target {
             Self::Settings | Self::Components => Some(Area::Services),
             Self::DateTime => Some(Area::Clock),
             Self::Permissions => Some(Area::Users),
-            // the progress of an apply opens by itself for whoever ran it; the apply op is what is checked
+            // the progress of an apply opens by itself for whoever ran it; the apply operation is
+            // what is checked
             Self::Hosts | Self::Welcome | Self::Changelog | Self::MyAccount | Self::Progress => {
                 None
             }

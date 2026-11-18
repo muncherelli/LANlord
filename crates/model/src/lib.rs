@@ -20,7 +20,7 @@ pub mod netstatus;
 pub mod network;
 pub mod networks;
 pub mod nt4;
-pub mod ops;
+pub mod operations;
 pub mod passwords;
 pub mod power;
 pub mod routes;

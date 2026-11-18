@@ -1,10 +1,10 @@
 //! everything the windows do to a gateway, behind one trait so tests can
 //! swap in a fake that never touches the network.
 //!
-//! every action is an [`Op`] answered by a [`Reply`]: a backend implements [`Gateway::call`],
-//! and the typed methods the windows use are a thin layer over it. on the desktop the op runs
-//! over ssh (client mode) or on the gateway itself (server mode); in the browser it goes to
-//! the web ui's `/api/operations`.
+//! every action is an [`Operation`] answered by a [`Reply`]: a backend implements
+//! [`Gateway::call`], and the typed methods the windows use are a thin layer over it. on the
+//! desktop the operation runs over ssh (client mode) or on the gateway itself (server mode); in the
+//! browser it goes to the web ui's `/api/operations`.
 
 use anyhow::{anyhow, Result};
 use lanlord_model::access::{Access, Profile};
@@ -14,7 +14,7 @@ use lanlord_model::identity::{AccountInfo, PasswordReport};
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
-use lanlord_model::ops::{Op, Reply, SecretUpdate, UserChange};
+use lanlord_model::operations::{Operation, Reply, SecretUpdate, UserChange};
 use lanlord_model::power::{Outcome, Power};
 use lanlord_model::secret::Secret;
 use lanlord_model::server::ServerFacts;
@@ -31,21 +31,22 @@ pub struct NewAdmin {
     pub passwordless_sudo: bool,
 }
 
-/// a reply that does not fit the op it answers.
-fn unexpected(op: &str, reply: Reply) -> anyhow::Error {
-    anyhow!("unexpected answer to {op}: {reply:?}")
+/// a reply that does not fit the operation it answers.
+fn unexpected(operation: &str, reply: Reply) -> anyhow::Error {
+    anyhow!("unexpected answer to {operation}: {reply:?}")
 }
 
 pub trait Gateway: Send + Sync {
-    /// run `op` on `host`, asking for the sudo password through `ask` when the server needs it.
-    fn call(&self, host: &str, op: Op, ask: AskPassword) -> Result<Reply>;
+    /// run `operation` on `host`, asking for the sudo password through `ask` when the server needs
+    /// it.
+    fn call(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<Reply>;
 
     /// true when lanlord runs on the gateway itself: there is one server and no host list.
     fn is_local(&self) -> bool {
         false
     }
 
-    /// the browser's backend, when this is it: its ops cannot be waited for, so tasks on it
+    /// the browser's backend, when this is it: its operations cannot be waited for, so tasks on it
     /// are run in passes (see `replay`).
     #[cfg(target_arch = "wasm32")]
     fn http(&self) -> Option<&http::Http> {
@@ -62,20 +63,20 @@ pub trait Gateway: Send + Sync {
 
     /// set the gateway up for lanlord.
     fn bootstrap(&self, host: &str, ask: AskPassword) -> Result<()> {
-        done(self.call(host, Op::Bootstrap, ask)?, "bootstrap")
+        done(self.call(host, Operation::Bootstrap, ask)?, "bootstrap")
     }
 
     /// apply `modules` (all of them when empty) with the stored settings.
     fn apply(&self, host: &str, modules: &[String], ask: AskPassword) -> Result<()> {
-        let op = Op::Apply {
+        let operation = Operation::Apply {
             modules: modules.to_vec(),
         };
-        done(self.call(host, op, ask)?, "apply")
+        done(self.call(host, operation, ask)?, "apply")
     }
 
     /// the plain settings text and which secrets are set; empty when nothing is stored yet.
     fn load_document(&self, host: &str, ask: AskPassword) -> Result<Document> {
-        match self.call(host, Op::LoadDocument, ask)? {
+        match self.call(host, Operation::LoadDocument, ask)? {
             Reply::Document(document) => Ok(document),
             other => Err(unexpected("load_document", other)),
         }
@@ -90,7 +91,7 @@ pub trait Gateway: Send + Sync {
         updates: &[(String, String)],
         ask: AskPassword,
     ) -> Result<()> {
-        let op = Op::SaveDocument {
+        let operation = Operation::SaveDocument {
             plain: plain.to_string(),
             updates: updates
                 .iter()
@@ -100,12 +101,12 @@ pub trait Gateway: Send + Sync {
                 })
                 .collect(),
         };
-        done(self.call(host, op, ask)?, "save_document")
+        done(self.call(host, operation, ask)?, "save_document")
     }
 
     /// the internal interface and address, read without sudo.
     fn probe(&self, host: &str) -> Result<Internal> {
-        match self.call(host, Op::Probe, &mut never)? {
+        match self.call(host, Operation::Probe, &mut never)? {
             Reply::Internal(internal) => Ok(internal),
             other => Err(unexpected("probe", other)),
         }
@@ -114,34 +115,34 @@ pub trait Gateway: Send + Sync {
     /// change logins (names and flags in the plain settings, passwords in the
     /// secrets) and apply the nt4-domain module.
     fn change_users(&self, host: &str, changes: &[Change], ask: AskPassword) -> Result<()> {
-        let op = Op::ChangeUsers {
+        let operation = Operation::ChangeUsers {
             changes: changes.iter().map(UserChange::from).collect(),
         };
-        done(self.call(host, op, ask)?, "change_users")
+        done(self.call(host, operation, ask)?, "change_users")
     }
 
     /// set the account of machine `name` back to its first password, so it can join again.
     fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
-        let op = Op::ResetMachine {
+        let operation = Operation::ResetMachine {
             name: name.to_string(),
         };
-        done(self.call(host, op, ask)?, "reset_machine")
+        done(self.call(host, operation, ask)?, "reset_machine")
     }
 
     /// create an administrator login, in admins and sudo, with an optional ssh key.
     fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {
-        let op = Op::CreateAdmin {
+        let operation = Operation::CreateAdmin {
             name: new.name.clone(),
             password: Secret::new(new.password.as_str()),
             ssh_key: new.ssh_key.clone(),
             passwordless_sudo: new.passwordless_sudo,
         };
-        done(self.call(host, op, ask)?, "create_admin")
+        done(self.call(host, operation, ask)?, "create_admin")
     }
 
     /// the dhcp leases the gateway has handed out.
     fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
-        match self.call(host, Op::Leases, ask)? {
+        match self.call(host, Operation::Leases, ask)? {
             Reply::Leases(leases) => Ok(leases),
             other => Err(unexpected("leases", other)),
         }
@@ -149,7 +150,7 @@ pub trait Gateway: Send + Sync {
 
     /// the signed-in person's own account.
     fn account_info(&self, host: &str, ask: AskPassword) -> Result<AccountInfo> {
-        match self.call(host, Op::AccountInfo, ask)? {
+        match self.call(host, Operation::AccountInfo, ask)? {
             Reply::Account(info) => Ok(info),
             other => Err(unexpected("account_info", other)),
         }
@@ -163,11 +164,11 @@ pub trait Gateway: Send + Sync {
         new: &str,
         ask: AskPassword,
     ) -> Result<PasswordReport> {
-        let op = Op::ChangePassword {
+        let operation = Operation::ChangePassword {
             old: Secret::new(old),
             new: Secret::new(new),
         };
-        match self.call(host, op, ask)? {
+        match self.call(host, operation, ask)? {
             Reply::Password(report) => Ok(report),
             other => Err(unexpected("change_password", other)),
         }
@@ -175,15 +176,15 @@ pub trait Gateway: Send + Sync {
 
     /// change the signed-in person's own profile.
     fn update_profile(&self, host: &str, profile: &Profile, ask: AskPassword) -> Result<()> {
-        let op = Op::UpdateProfile {
+        let operation = Operation::UpdateProfile {
             profile: profile.clone(),
         };
-        done(self.call(host, op, ask)?, "update_profile")
+        done(self.call(host, operation, ask)?, "update_profile")
     }
 
     /// the roles and who has them.
     fn load_access(&self, host: &str, ask: AskPassword) -> Result<Access> {
-        match self.call(host, Op::LoadAccess, ask)? {
+        match self.call(host, Operation::LoadAccess, ask)? {
             Reply::Access(access) => Ok(access),
             other => Err(unexpected("load_access", other)),
         }
@@ -191,10 +192,10 @@ pub trait Gateway: Send + Sync {
 
     /// store the roles and who has them.
     fn save_access(&self, host: &str, access: &Access, ask: AskPassword) -> Result<()> {
-        let op = Op::SaveAccess {
+        let operation = Operation::SaveAccess {
             access: access.clone(),
         };
-        done(self.call(host, op, ask)?, "save_access")
+        done(self.call(host, operation, ask)?, "save_access")
     }
 
     /// set someone's password on every linked account.
@@ -205,11 +206,11 @@ pub trait Gateway: Send + Sync {
         new: &str,
         ask: AskPassword,
     ) -> Result<PasswordReport> {
-        let op = Op::ResetPassword {
+        let operation = Operation::ResetPassword {
             user: user.into(),
             new: Secret::new(new),
         };
-        match self.call(host, op, ask)? {
+        match self.call(host, operation, ask)? {
             Reply::Password(report) => Ok(report),
             other => Err(unexpected("reset_password", other)),
         }
@@ -217,40 +218,43 @@ pub trait Gateway: Send + Sync {
 
     /// the names of the logon scripts in the netlogon share.
     fn logon_scripts(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
-        names(self.call(host, Op::LogonScripts, ask)?, "logon_scripts")
+        names(
+            self.call(host, Operation::LogonScripts, ask)?,
+            "logon_scripts",
+        )
     }
 
     /// one logon script with unix line endings; `None` when it does not exist yet.
     fn read_logon(&self, host: &str, name: &str, ask: AskPassword) -> Result<Option<String>> {
-        let op = Op::ReadLogon {
+        let operation = Operation::ReadLogon {
             name: name.to_string(),
         };
-        text(self.call(host, op, ask)?, "read_logon")
+        text(self.call(host, operation, ask)?, "read_logon")
     }
 
     /// the generated `lanlord.bat`, for reference.
     fn read_generated_logon(&self, host: &str, ask: AskPassword) -> Result<Option<String>> {
         text(
-            self.call(host, Op::ReadGeneratedLogon, ask)?,
+            self.call(host, Operation::ReadGeneratedLogon, ask)?,
             "read_generated_logon",
         )
     }
 
     /// store a logon script (saved with dos line endings).
     fn write_logon(&self, host: &str, name: &str, text: &str, ask: AskPassword) -> Result<()> {
-        let op = Op::WriteLogon {
+        let operation = Operation::WriteLogon {
             name: name.to_string(),
             text: text.to_string(),
         };
-        done(self.call(host, op, ask)?, "write_logon")
+        done(self.call(host, operation, ask)?, "write_logon")
     }
 
     /// run a command on the gateway, its output going to the console; returns the exit code.
     fn run(&self, host: &str, command: &[String]) -> Result<i32> {
-        let op = Op::Run {
+        let operation = Operation::Run {
             command: command.to_vec(),
         };
-        match self.call(host, op, &mut never)? {
+        match self.call(host, operation, &mut never)? {
             Reply::ExitCode(code) => Ok(code),
             other => Err(unexpected("run", other)),
         }
@@ -258,7 +262,7 @@ pub trait Gateway: Send + Sync {
 
     /// reboot or power off the gateway.
     fn power(&self, host: &str, power: Power, ask: AskPassword) -> Result<Outcome> {
-        match self.call(host, Op::Power { power }, ask)? {
+        match self.call(host, Operation::Power { power }, ask)? {
             Reply::Outcome(outcome) => Ok(outcome),
             other => Err(unexpected("power", other)),
         }
@@ -266,7 +270,7 @@ pub trait Gateway: Send + Sync {
 
     /// what the server is: its system, uptime and interfaces (read-only, no sudo).
     fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts> {
-        match self.call(host, Op::ServerFacts, ask)? {
+        match self.call(host, Operation::ServerFacts, ask)? {
             Reply::Facts(facts) => Ok(facts),
             other => Err(unexpected("server_facts", other)),
         }
@@ -275,7 +279,7 @@ pub trait Gateway: Send + Sync {
     /// what the server can and cannot do for lanlord's components (the doctor's report); the
     /// probe may need sudo.
     fn doctor(&self, host: &str, ask: AskPassword) -> Result<Report> {
-        match self.call(host, Op::Doctor, ask)? {
+        match self.call(host, Operation::Doctor, ask)? {
             Reply::Doctor(report) => Ok(report),
             other => Err(unexpected("doctor", other)),
         }
@@ -283,7 +287,7 @@ pub trait Gateway: Send + Sync {
 
     /// the status of each network connection (read-only, no sudo).
     fn network_status(&self, host: &str) -> Result<Vec<InterfaceStatus>> {
-        match self.call(host, Op::NetworkStatus, &mut never)? {
+        match self.call(host, Operation::NetworkStatus, &mut never)? {
             Reply::Interfaces(all) => Ok(all),
             other => Err(unexpected("network_status", other)),
         }
@@ -296,18 +300,21 @@ pub trait Gateway: Send + Sync {
         remove_admins: bool,
         ask: AskPassword,
     ) -> Result<Vec<String>> {
-        let op = Op::PurgePreview { remove_admins };
-        lines(self.call(host, op, ask)?, "purge_preview")
+        let operation = Operation::PurgePreview { remove_admins };
+        lines(self.call(host, operation, ask)?, "purge_preview")
     }
 
     /// remove lanlord from the server; the lines say what was removed.
     fn purge(&self, host: &str, remove_admins: bool, ask: AskPassword) -> Result<Vec<String>> {
-        lines(self.call(host, Op::Purge { remove_admins }, ask)?, "purge")
+        lines(
+            self.call(host, Operation::Purge { remove_admins }, ask)?,
+            "purge",
+        )
     }
 
     /// the server's time, time zone and internet time; asks for nothing.
     fn clock_state(&self, host: &str) -> Result<ClockState> {
-        match self.call(host, Op::ClockState, &mut never)? {
+        match self.call(host, Operation::ClockState, &mut never)? {
             Reply::Clock(state) => Ok(state),
             other => Err(unexpected("clock_state", other)),
         }
@@ -315,15 +322,18 @@ pub trait Gateway: Send + Sync {
 
     /// the time zones the server knows.
     fn clock_zones(&self, host: &str) -> Result<Vec<String>> {
-        names(self.call(host, Op::ClockZones, &mut never)?, "clock_zones")
+        names(
+            self.call(host, Operation::ClockZones, &mut never)?,
+            "clock_zones",
+        )
     }
 
     /// what a time zone looks like on the server right now.
     fn clock_zone_now(&self, host: &str, zone: &str) -> Result<ZoneNow> {
-        let op = Op::ClockZoneNow {
+        let operation = Operation::ClockZoneNow {
             zone: zone.to_string(),
         };
-        match self.call(host, op, &mut never)? {
+        match self.call(host, operation, &mut never)? {
             Reply::ZoneNow(now) => Ok(now),
             other => Err(unexpected("clock_zone_now", other)),
         }
@@ -337,10 +347,10 @@ pub trait Gateway: Send + Sync {
         change: &ClockChange,
         ask: AskPassword,
     ) -> Result<(Vec<String>, Stored)> {
-        let op = Op::ClockApply {
+        let operation = Operation::ClockApply {
             change: change.clone(),
         };
-        match self.call(host, op, ask)? {
+        match self.call(host, operation, ask)? {
             Reply::ClockApplied { lines, stored } => Ok((lines, stored)),
             other => Err(unexpected("clock_apply", other)),
         }
@@ -349,7 +359,7 @@ pub trait Gateway: Send + Sync {
     /// ask the time service to synchronize now; what it said.
     fn clock_update_now(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
         lines(
-            self.call(host, Op::ClockUpdateNow, ask)?,
+            self.call(host, Operation::ClockUpdateNow, ask)?,
             "clock_update_now",
         )
     }
@@ -366,31 +376,31 @@ pub trait Gateway: Send + Sync {
     }
 }
 
-fn done(reply: Reply, op: &str) -> Result<()> {
+fn done(reply: Reply, operation: &str) -> Result<()> {
     match reply {
         Reply::Done => Ok(()),
-        other => Err(unexpected(op, other)),
+        other => Err(unexpected(operation, other)),
     }
 }
 
-fn names(reply: Reply, op: &str) -> Result<Vec<String>> {
+fn names(reply: Reply, operation: &str) -> Result<Vec<String>> {
     match reply {
         Reply::Names(names) => Ok(names),
-        other => Err(unexpected(op, other)),
+        other => Err(unexpected(operation, other)),
     }
 }
 
-fn lines(reply: Reply, op: &str) -> Result<Vec<String>> {
+fn lines(reply: Reply, operation: &str) -> Result<Vec<String>> {
     match reply {
         Reply::Lines(lines) => Ok(lines),
-        other => Err(unexpected(op, other)),
+        other => Err(unexpected(operation, other)),
     }
 }
 
-fn text(reply: Reply, op: &str) -> Result<Option<String>> {
+fn text(reply: Reply, operation: &str) -> Result<Option<String>> {
     match reply {
         Reply::Text(text) => Ok(text),
-        other => Err(unexpected(op, other)),
+        other => Err(unexpected(operation, other)),
     }
 }
 
@@ -400,9 +410,9 @@ pub use native::{Ssh, NO_KEY};
 #[cfg(feature = "native")]
 mod native {
     use anyhow::{anyhow, Result};
-    use lanlord_core::ops::execute;
+    use lanlord_core::operations::execute;
     use lanlord_model::doctor::Report;
-    use lanlord_model::ops::{Op, Reply};
+    use lanlord_model::operations::{Operation, Reply};
     use lanlord_model::settings::Document;
     use lanlord_model::{leases, server};
 
@@ -410,29 +420,29 @@ mod native {
     use crate::ask::AskPassword;
     use crate::demo_clock;
 
-    pub use lanlord_core::ops::NO_KEY;
+    pub use lanlord_core::operations::NO_KEY;
 
     /// the gateway reached over ssh: lanlord on a mac or pc (client mode).
     pub struct Ssh;
 
     impl Gateway for Ssh {
-        fn call(&self, host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
-            if let Some(reply) = demo_reply(&op) {
+        fn call(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<Reply> {
+            if let Some(reply) = demo_reply(&operation) {
                 return reply;
             }
-            execute(host, &op, ask)
+            execute(host, &operation, ask)
         }
     }
 
     /// lanlord running on the gateway itself (server mode): one server, the local one. nothing
-    /// uses it yet: core runs every op through an ssh session, and server mode needs a local
+    /// uses it yet: core runs every operation through an ssh session, and server mode needs a local
     /// path and a privilege model (a root helper, or a socket daemon only the admins group may
     /// use) first.
     #[allow(dead_code)] // server mode is not built yet
     pub(super) struct Local;
 
     impl Gateway for Local {
-        fn call(&self, _host: &str, _op: Op, _ask: AskPassword) -> Result<Reply> {
+        fn call(&self, _host: &str, _operation: Operation, _ask: AskPassword) -> Result<Reply> {
             Err(anyhow!("server mode backend not built yet"))
         }
 
@@ -444,52 +454,56 @@ mod native {
     /// `LANLORD_FAKE_SERVER=1` answers the server windows with made-up facts, so they can be
     /// tried without a server; a purge never runs in it. `LANLORD_FAKE_CLOCK` does the same for
     /// the clock.
-    fn demo_reply(op: &Op) -> Option<Result<Reply>> {
-        if let Some(reply) = demo_clock::mode().and_then(|container| clock_demo(op, container)) {
+    fn demo_reply(operation: &Operation) -> Option<Result<Reply>> {
+        if let Some(reply) =
+            demo_clock::mode().and_then(|container| clock_demo(operation, container))
+        {
             return Some(reply);
         }
         if std::env::var("LANLORD_FAKE_SERVER").as_deref() != Ok("1") {
             return None;
         }
-        server_demo(op)
+        server_demo(operation)
     }
 
-    /// the made-up answer of the demo clock, for the clock ops.
-    fn clock_demo(op: &Op, container: bool) -> Option<Result<Reply>> {
-        Some(Ok(match op {
-            Op::ClockState => Reply::Clock(demo_clock::state(container)),
-            Op::ClockZones => Reply::Names(demo_clock::zones()),
-            Op::ClockZoneNow { zone } => Reply::ZoneNow(demo_clock::zone_now(zone)),
-            Op::ClockApply { change } => {
+    /// the made-up answer of the demo clock, for the clock operations.
+    fn clock_demo(operation: &Operation, container: bool) -> Option<Result<Reply>> {
+        Some(Ok(match operation {
+            Operation::ClockState => Reply::Clock(demo_clock::state(container)),
+            Operation::ClockZones => Reply::Names(demo_clock::zones()),
+            Operation::ClockZoneNow { zone } => Reply::ZoneNow(demo_clock::zone_now(zone)),
+            Operation::ClockApply { change } => {
                 let (lines, stored) = demo_clock::apply(change, container);
                 Reply::ClockApplied { lines, stored }
             }
-            Op::ClockUpdateNow => Reply::Lines(vec!["Server: 162.159.200.1 (pool.ntp.org)".into()]),
+            Operation::ClockUpdateNow => {
+                Reply::Lines(vec!["Server: 162.159.200.1 (pool.ntp.org)".into()])
+            }
             _ => return None,
         }))
     }
 
-    /// the made-up answer of the demo server, for the ops that have one.
-    fn server_demo(op: &Op) -> Option<Result<Reply>> {
-        Some(match op {
-            Op::LoadDocument => {
+    /// the made-up answer of the demo server, for the operations that have one.
+    fn server_demo(operation: &Operation) -> Option<Result<Reply>> {
+        Some(match operation {
+            Operation::LoadDocument => {
                 let saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 Ok(Reply::Document(Document {
                     plain: saved.unwrap_or_else(|| DEMO_SETTINGS.to_string()),
                     ..Document::default()
                 }))
             }
-            Op::SaveDocument { plain, .. } => {
+            Operation::SaveDocument { plain, .. } => {
                 // the made-up server keeps what was saved until the app quits
                 *DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plain.clone());
                 Ok(Reply::Done)
             }
-            Op::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
-            Op::ServerFacts => Ok(Reply::Facts(server::demo())),
-            Op::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
-            Op::NetworkStatus => Ok(Reply::Interfaces(lanlord_model::netstatus::demo())),
-            Op::PurgePreview { .. } => Ok(Reply::Lines(demo_purge())),
-            Op::Purge { .. } => Err(anyhow!("demo mode: nothing is removed")),
+            Operation::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
+            Operation::ServerFacts => Ok(Reply::Facts(server::demo())),
+            Operation::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
+            Operation::NetworkStatus => Ok(Reply::Interfaces(lanlord_model::netstatus::demo())),
+            Operation::PurgePreview { .. } => Ok(Reply::Lines(demo_purge())),
+            Operation::Purge { .. } => Err(anyhow!("demo mode: nothing is removed")),
             _ => return None,
         })
     }
@@ -531,27 +545,30 @@ mod native {
 
         #[test]
         fn demo_mode_never_purges() {
-            let purge = server_demo(&Op::Purge {
+            let purge = server_demo(&Operation::Purge {
                 remove_admins: false,
             });
-            let preview = server_demo(&Op::PurgePreview {
+            let preview = server_demo(&Operation::PurgePreview {
                 remove_admins: false,
             });
-            let apply = server_demo(&Op::Apply { modules: vec![] });
+            let apply = server_demo(&Operation::Apply { modules: vec![] });
             assert!(purge.unwrap().is_err());
             assert!(matches!(preview, Some(Ok(Reply::Lines(_)))));
-            assert!(apply.is_none(), "ops without demo data go to the server");
+            assert!(
+                apply.is_none(),
+                "operations without demo data go to the server"
+            );
         }
 
         #[test]
         fn the_demo_server_answers_its_windows() {
-            let load = server_demo(&Op::LoadDocument).unwrap().unwrap();
+            let load = server_demo(&Operation::LoadDocument).unwrap().unwrap();
             assert!(matches!(load, Reply::Document(d) if d.plain.contains("retronet")));
-            let leases = server_demo(&Op::Leases).unwrap().unwrap();
+            let leases = server_demo(&Operation::Leases).unwrap().unwrap();
             assert!(matches!(leases, Reply::Leases(l) if l.len() == 3));
-            let facts = server_demo(&Op::ServerFacts).unwrap().unwrap();
+            let facts = server_demo(&Operation::ServerFacts).unwrap().unwrap();
             assert!(matches!(facts, Reply::Facts(_)));
-            let doctor = server_demo(&Op::Doctor).unwrap().unwrap();
+            let doctor = server_demo(&Operation::Doctor).unwrap().unwrap();
             let Reply::Doctor(report) = doctor else {
                 panic!("not a report");
             };
@@ -562,21 +579,25 @@ mod native {
         }
 
         #[test]
-        fn the_demo_clock_answers_every_clock_op() {
+        fn the_demo_clock_answers_every_clock_operation() {
             use lanlord_model::clock::Change;
             for container in [false, true] {
-                let state = clock_demo(&Op::ClockState, container).unwrap().unwrap();
+                let state = clock_demo(&Operation::ClockState, container)
+                    .unwrap()
+                    .unwrap();
                 assert!(matches!(state, Reply::Clock(_)));
-                let zones = clock_demo(&Op::ClockZones, container).unwrap().unwrap();
+                let zones = clock_demo(&Operation::ClockZones, container)
+                    .unwrap()
+                    .unwrap();
                 assert!(matches!(zones, Reply::Names(z) if !z.is_empty()));
-                let now = Op::ClockZoneNow {
+                let now = Operation::ClockZoneNow {
                     zone: "Europe/Berlin".into(),
                 };
                 assert!(matches!(
                     clock_demo(&now, container),
                     Some(Ok(Reply::ZoneNow(_)))
                 ));
-                let apply = Op::ClockApply {
+                let apply = Operation::ClockApply {
                     change: Change::default(),
                 };
                 assert!(matches!(
@@ -584,10 +605,10 @@ mod native {
                     Some(Ok(Reply::ClockApplied { .. }))
                 ));
                 assert!(matches!(
-                    clock_demo(&Op::ClockUpdateNow, container),
+                    clock_demo(&Operation::ClockUpdateNow, container),
                     Some(Ok(Reply::Lines(_)))
                 ));
-                assert!(clock_demo(&Op::Leases, container).is_none());
+                assert!(clock_demo(&Operation::Leases, container).is_none());
             }
         }
 
@@ -596,7 +617,7 @@ mod native {
             assert!(Local.is_local());
             assert!(!Ssh.is_local());
             let err = Local
-                .call("ignored", Op::Leases, &mut crate::ask::never)
+                .call("ignored", Operation::Leases, &mut crate::ask::never)
                 .unwrap_err();
             assert_eq!(err.to_string(), "server mode backend not built yet");
         }
@@ -619,8 +640,8 @@ mod fake {
 
     use super::{
         anyhow, Access, AccountInfo, AskPassword, Change, ClockChange, ClockState, Document,
-        Gateway, InterfaceStatus, Internal, Lease, NewAdmin, Op, Outcome, PasswordReport, Power,
-        Reply, Report, Result, ServerFacts, Settings, Stored, ZoneNow,
+        Gateway, InterfaceStatus, Internal, Lease, NewAdmin, Operation, Outcome, PasswordReport,
+        Power, Reply, Report, Result, ServerFacts, Settings, Stored, ZoneNow,
     };
     use lanlord_model::access::{ADMINISTRATORS, USERS};
     use lanlord_model::identity::{LinkInfo, LinkReport, LinkState};
@@ -764,20 +785,20 @@ mod fake {
     }
 
     impl Gateway for Fake {
-        fn call(&self, host: &str, op: Op, ask: AskPassword) -> Result<Reply> {
-            Ok(match op {
-                Op::Doctor => Reply::Doctor(self.doctor(host, ask)?),
-                Op::Bootstrap => {
+        fn call(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<Reply> {
+            Ok(match operation {
+                Operation::Doctor => Reply::Doctor(self.doctor(host, ask)?),
+                Operation::Bootstrap => {
                     self.bootstrap(host, ask)?;
                     Reply::Done
                 }
-                Op::Apply { modules } => {
+                Operation::Apply { modules } => {
                     self.apply(host, &modules, ask)?;
                     Reply::Done
                 }
-                Op::LoadDocument => Reply::Document(self.load_document(host, ask)?),
-                Op::MoveSecrets { .. } => Reply::Done,
-                Op::SaveDocument { plain, updates } => {
+                Operation::LoadDocument => Reply::Document(self.load_document(host, ask)?),
+                Operation::MoveSecrets { .. } => Reply::Done,
+                Operation::SaveDocument { plain, updates } => {
                     let updates: Vec<(String, String)> = updates
                         .iter()
                         .map(|u| (u.path.clone(), u.value.expose().to_string()))
@@ -785,17 +806,17 @@ mod fake {
                     self.save_document(host, &plain, &updates, ask)?;
                     Reply::Done
                 }
-                Op::Probe => Reply::Internal(self.probe(host)?),
-                Op::ChangeUsers { changes } => {
+                Operation::Probe => Reply::Internal(self.probe(host)?),
+                Operation::ChangeUsers { changes } => {
                     let changes: Vec<Change> = changes.iter().map(Change::from).collect();
                     self.change_users(host, &changes, ask)?;
                     Reply::Done
                 }
-                Op::ResetMachine { name } => {
+                Operation::ResetMachine { name } => {
                     self.reset_machine(host, &name, ask)?;
                     Reply::Done
                 }
-                Op::CreateAdmin {
+                Operation::CreateAdmin {
                     name,
                     password,
                     ssh_key,
@@ -810,33 +831,35 @@ mod fake {
                     self.create_admin(host, &new, ask)?;
                     Reply::Done
                 }
-                Op::Leases => Reply::Leases(self.leases(host, ask)?),
-                Op::LogonScripts => Reply::Names(self.logon_scripts(host, ask)?),
-                Op::ReadLogon { name } => Reply::Text(self.read_logon(host, &name, ask)?),
-                Op::ReadGeneratedLogon => Reply::Text(self.read_generated_logon(host, ask)?),
-                Op::WriteLogon { name, text } => {
+                Operation::Leases => Reply::Leases(self.leases(host, ask)?),
+                Operation::LogonScripts => Reply::Names(self.logon_scripts(host, ask)?),
+                Operation::ReadLogon { name } => Reply::Text(self.read_logon(host, &name, ask)?),
+                Operation::ReadGeneratedLogon => Reply::Text(self.read_generated_logon(host, ask)?),
+                Operation::WriteLogon { name, text } => {
                     self.write_logon(host, &name, &text, ask)?;
                     Reply::Done
                 }
-                Op::Run { command } => Reply::ExitCode(self.run(host, &command)?),
-                Op::Power { power } => Reply::Outcome(self.power(host, power, ask)?),
-                Op::ServerFacts => Reply::Facts(self.server_facts(host, ask)?),
-                Op::NetworkStatus => Reply::Interfaces(self.network_status(host)?),
-                Op::PurgePreview { remove_admins } => {
+                Operation::Run { command } => Reply::ExitCode(self.run(host, &command)?),
+                Operation::Power { power } => Reply::Outcome(self.power(host, power, ask)?),
+                Operation::ServerFacts => Reply::Facts(self.server_facts(host, ask)?),
+                Operation::NetworkStatus => Reply::Interfaces(self.network_status(host)?),
+                Operation::PurgePreview { remove_admins } => {
                     Reply::Lines(self.purge_preview(host, remove_admins, ask)?)
                 }
-                Op::Purge { remove_admins } => {
+                Operation::Purge { remove_admins } => {
                     Reply::Lines(self.purge(host, remove_admins, ask)?)
                 }
-                Op::ClockState => Reply::Clock(self.clock_state(host)?),
-                Op::ClockZones => Reply::Names(self.clock_zones(host)?),
-                Op::ClockZoneNow { zone } => Reply::ZoneNow(self.clock_zone_now(host, &zone)?),
-                Op::ClockApply { change } => {
+                Operation::ClockState => Reply::Clock(self.clock_state(host)?),
+                Operation::ClockZones => Reply::Names(self.clock_zones(host)?),
+                Operation::ClockZoneNow { zone } => {
+                    Reply::ZoneNow(self.clock_zone_now(host, &zone)?)
+                }
+                Operation::ClockApply { change } => {
                     let (lines, stored) = self.clock_apply(host, &change, ask)?;
                     Reply::ClockApplied { lines, stored }
                 }
-                Op::ClockUpdateNow => Reply::Lines(self.clock_update_now(host, ask)?),
-                Op::AccountInfo => {
+                Operation::ClockUpdateNow => Reply::Lines(self.clock_update_now(host, ask)?),
+                Operation::AccountInfo => {
                     self.enter(format!("account {host}"), ask)?;
                     Reply::Account(AccountInfo {
                         user: "alice".into(),
@@ -857,25 +880,25 @@ mod fake {
                         ],
                     })
                 }
-                Op::ChangePassword { .. } | Op::ResetPassword { .. } => {
+                Operation::ChangePassword { .. } | Operation::ResetPassword { .. } => {
                     self.enter(format!("password {host}"), ask)?;
                     Reply::Password(self.password_report.lock().unwrap().clone())
                 }
-                Op::UpdateProfile { profile } => {
+                Operation::UpdateProfile { profile } => {
                     self.enter(format!("profile {host}"), ask)?;
                     *self.profile.lock().unwrap() = profile;
                     Reply::Done
                 }
-                Op::LoadAccess => {
+                Operation::LoadAccess => {
                     self.enter(format!("load-access {host}"), ask)?;
                     Reply::Access(self.access.lock().unwrap().clone())
                 }
-                Op::SaveAccess { access } => {
+                Operation::SaveAccess { access } => {
                     self.enter(format!("save-access {host}"), ask)?;
                     *self.access.lock().unwrap() = access;
                     Reply::Done
                 }
-                Op::Subscribe { .. } => {
+                Operation::Subscribe { .. } => {
                     anyhow::bail!("live streams are served by the web ui, not run as an operation")
                 }
             })
@@ -894,7 +917,7 @@ mod fake {
         }
     }
 
-    // what the fake does for each op; the gateway's typed methods reach these through `call`
+    // what the fake does for each operation; the gateway's typed methods reach these through `call`
     impl Fake {
         pub fn bootstrap(&self, host: &str, ask: AskPassword) -> Result<()> {
             self.enter(format!("bootstrap {host}"), ask)
@@ -1182,7 +1205,7 @@ mod fake {
     }
 
     #[test]
-    fn every_typed_method_reaches_the_fake_through_an_op() {
+    fn every_typed_method_reaches_the_fake_through_an_operation() {
         let fake = Fake::new();
         *fake.internal.lock().unwrap() = Some(Internal {
             interface: "eth1".into(),
@@ -1246,22 +1269,22 @@ mod fake {
         assert_eq!(fake.calls().len(), 18, "{:?}", fake.calls());
     }
 
-    /// a backend that answers every op with the wrong kind of reply.
+    /// a backend that answers every operation with the wrong kind of reply.
     #[cfg(test)]
     struct Confused;
 
     #[cfg(test)]
     impl Gateway for Confused {
-        fn call(&self, _host: &str, op: Op, _ask: AskPassword) -> Result<Reply> {
-            Ok(match op {
-                Op::Bootstrap => Reply::ExitCode(1),
+        fn call(&self, _host: &str, operation: Operation, _ask: AskPassword) -> Result<Reply> {
+            Ok(match operation {
+                Operation::Bootstrap => Reply::ExitCode(1),
                 _ => Reply::Done,
             })
         }
     }
 
     #[test]
-    fn a_reply_that_does_not_fit_the_op_is_an_error() {
+    fn a_reply_that_does_not_fit_the_operation_is_an_error() {
         let gateway: &dyn Gateway = &Confused;
         let mut ask = |_: &str| Ok(String::new());
         let h = "a@b";
@@ -1297,7 +1320,7 @@ mod fake {
         // a read never prompts, so with a network it succeeds without an answer
         assert!(gateway.probe("a@b").is_ok());
         assert!(fake.answer.lock().unwrap().is_none());
-        // an op that reaches the prompt fails when nobody can answer
+        // an operation that reaches the prompt fails when nobody can answer
         let mut refuse = |_: &str| Err(anyhow!("no password here"));
         let failed = gateway.reset_machine("a@b", "ws1", &mut refuse);
         assert!(failed.is_err_and(|e| e.to_string().contains("no password here")));
@@ -1307,7 +1330,7 @@ mod fake {
     }
 
     #[test]
-    fn typed_calls_travel_as_ops() {
+    fn typed_calls_travel_as_operations() {
         let fake = Fake::new();
         let gateway: &dyn Gateway = &fake;
         let mut ask = |_: &str| Ok(String::new());

@@ -223,7 +223,7 @@ impl Monitor {
     #[cfg(target_arch = "wasm32")]
     fn follow(&mut self, procs: bool, wake: &Wake) {
         use crate::gateway::stream::{Stream, Update};
-        use lanlord_model::ops::topic;
+        use lanlord_model::operations::topic;
         if self.stream.as_ref().is_some_and(|(p, _)| *p == procs) {
             return;
         }

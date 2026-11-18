@@ -1,9 +1,10 @@
 //! who may see and change what: areas, levels, roles and the role assignments kept in the
 //! `access` section of the gateway's plain settings.
 //!
-//! every [`Op`](crate::ops::Op) declares what it needs with `Op::requires`, and the same table
-//! drives the server (core's op dispatch) and the front ends (which windows and menu items to
-//! show, which controls to make read-only). the front end is never the only check.
+//! every [`Operation`](crate::operations::Operation) declares what it needs with
+//! `Operation::requires`, and the same table drives the server (core's operation dispatch) and the
+//! front ends (which windows and menu items to show, which controls to make read-only). the front
+//! end is never the only check.
 
 use std::collections::BTreeMap;
 
@@ -117,7 +118,7 @@ impl Level {
     }
 }
 
-/// what an op needs from whoever sends it.
+/// what an operation needs from whoever sends it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Need {
     /// at least this level of this area.
