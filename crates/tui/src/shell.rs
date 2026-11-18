@@ -1589,6 +1589,9 @@ impl Shell {
         self.render_dialog(desktop, buf);
         self.render_debug_menu(buf);
         self.render_dropdown(buf);
+        // a job that landed while drawing changes what a window shows: refit on the next frame
+        // rather than after a further tick
+        self.refit_due |= self.services.finished() != self.fitted_tasks;
     }
 
     /// does a switched-on component need something this server lacks? the same test as the
