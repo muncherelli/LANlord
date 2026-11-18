@@ -804,7 +804,7 @@ impl Shell {
             }
         }
         self.poll_maintenance();
-        self.console.drain();
+        self.refit_due |= self.console.drain();
         self.console.apply.tick(self.epoch.elapsed().as_secs_f64());
         if self.console.apply.take_started() {
             self.open(Target::Progress);
@@ -1107,7 +1107,7 @@ impl Shell {
             )
         };
         self.monitor.use_backend(backend);
-        self.monitor.poll();
+        self.refit_due |= self.monitor.poll();
         if self.windows.iter().any(|w| w.target == Target::TaskManager) {
             let now = self.started.elapsed().as_secs_f64();
             self.monitor.tick(now, monitor::FAST, true, &Wake::none());

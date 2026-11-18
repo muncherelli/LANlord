@@ -46,8 +46,6 @@ fn draw(shell: &mut Shell, size: (u16, u16)) -> Buffer {
     let started = Instant::now();
     let (mut last, mut steady) = (String::new(), 0);
     loop {
-        // scenes change a window's state directly, with no event to say so
-        shell.refit_due = true;
         shell.poll();
         let mut buf = Buffer::empty(area);
         shell.render(area, &mut buf);
@@ -319,6 +317,8 @@ fn window_boxes() -> Vec<Scene> {
             shell
                 .networks
                 .update(Networks::Tab(1), &shell.services, HOST, 0.0);
+            // the tab changed with no event or finished task to say so
+            shell.refit_due = true;
             shell
         }),
         scene("networks-properties", |size| {

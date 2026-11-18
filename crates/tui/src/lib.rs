@@ -33,9 +33,10 @@ fn run_loop<B: Backend>(
     shell: &mut Shell,
     mut next_event: impl FnMut() -> Option<Event>,
     mut title: impl FnMut(&str),
+    stopped: impl Fn() -> bool,
 ) -> Result<()> {
     let mut shown = String::new();
-    while !shell.quit {
+    while !shell.quit && !stopped() {
         shell.poll();
         terminal
             .draw(|frame| {
@@ -78,12 +79,12 @@ pub fn run() -> Result<()> {
             shell.resume(&host);
         }
     }
+    // a stop from outside (SIGTERM, SIGHUP) ends the loop like a quit, so the terminal is given
+    // back by the same path; listen before the terminal is taken, so a failure leaves it alone
+    let stop = signals::Stop::listen()?;
     let mut terminal = ratatui::init();
     // mouse reporting stays on for the length of the loop and goes off when the guard drops
     let capture = paint::mouse::Capture::start()?;
-    // a stop from outside (SIGTERM, SIGHUP) gives the terminal back before the process exits
-    #[cfg(unix)]
-    signals::restore_on_signal()?;
     let result = run_loop(
         &mut terminal,
         &mut shell,
@@ -98,9 +99,12 @@ pub fn run() -> Result<()> {
             let _ = execute!(out, SetTitle(title));
             let _ = out.flush();
         },
+        || stop.requested().is_some(),
     );
     drop(capture);
     ratatui::restore();
+    // the terminal is back, so the signal can end the process as it would have
+    stop.finish();
     result?;
     // a rebuild ended this build so that the new one can take over this terminal
     match shell.take_restart() {
@@ -134,6 +138,18 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
+    fn the_loop_ends_at_once_when_a_stop_was_asked_for() {
+        let mut shell = Shell::new(
+            Arc::new(Fake::new()),
+            HostList::new(None),
+            paint::palette::Palette::default(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        run_loop(&mut terminal, &mut shell, || None, |_| {}, || true).unwrap();
+        assert!(!shell.quit, "it stopped without anyone quitting");
+    }
+
+    #[test]
     fn the_loop_draws_names_the_app_and_quits_on_ctrl_q() {
         let mut shell = Shell::new(
             Arc::new(Fake::new()),
@@ -152,6 +168,7 @@ mod tests {
             &mut shell,
             || events.next(),
             |t| titles.push(t.to_string()),
+            || false,
         )
         .unwrap();
         assert!(shell.quit);

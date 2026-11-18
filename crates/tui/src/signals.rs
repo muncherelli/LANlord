@@ -1,70 +1,80 @@
-//! leaving the terminal tidy when the process is told to stop (SIGTERM, SIGHUP).
+//! noticing that the process was told to stop (SIGTERM, SIGHUP), so the loop can end and give
+//! the terminal back the way a quit does.
 
-use std::io::{self, Write};
+use std::io;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
-use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
-
-use crate::paint::mouse;
-
-/// write what gives the terminal back to the shell: mouse reporting off, the alternate screen
-/// left and the cursor shown.
-fn leave_screen(out: &mut impl Write) -> io::Result<()> {
-    mouse::disable(out)?;
-    execute!(out, LeaveAlternateScreen, Show)
+/// the stop signals that have arrived, kept in flags the signal handlers set.
+#[derive(Debug, Default)]
+pub(crate) struct Stop {
+    flags: Vec<(i32, Arc<AtomicBool>)>,
 }
 
-/// give the terminal back: leave the alternate screen, show the cursor, stop mouse reporting
-/// and turn raw mode off. every step runs even if an earlier one fails.
-pub(crate) fn restore_terminal(out: &mut impl Write) -> io::Result<()> {
-    let screen = leave_screen(out);
-    let raw = disable_raw_mode();
-    screen.and(raw)
-}
-
-/// on SIGTERM or SIGHUP, restore the terminal and exit with the usual 128 plus the signal.
-#[cfg(unix)]
-pub(crate) fn restore_on_signal() -> io::Result<()> {
-    use signal_hook::consts::{SIGHUP, SIGTERM};
-    use signal_hook::iterator::Signals;
-
-    let mut signals = Signals::new([SIGTERM, SIGHUP])?;
-    std::thread::spawn(move || {
-        if let Some(signal) = signals.forever().next() {
-            let _ = restore_terminal(&mut io::stdout());
-            std::process::exit(128 + signal);
+impl Stop {
+    /// start listening for SIGTERM and SIGHUP; nothing is listened for off unix.
+    pub(crate) fn listen() -> io::Result<Stop> {
+        #[cfg(unix)]
+        {
+            use signal_hook::consts::{SIGHUP, SIGTERM};
+            let mut flags = Vec::new();
+            for signal in [SIGTERM, SIGHUP] {
+                let flag = Arc::new(AtomicBool::new(false));
+                signal_hook::flag::register(signal, flag.clone())?;
+                flags.push((signal, flag));
+            }
+            Ok(Stop { flags })
         }
-    });
-    Ok(())
+        #[cfg(not(unix))]
+        Ok(Stop::default())
+    }
+
+    /// the signal that asked for a stop, if one did.
+    pub(crate) fn requested(&self) -> Option<i32> {
+        use std::sync::atomic::Ordering;
+        self.flags
+            .iter()
+            .find(|(_, flag)| flag.load(Ordering::Relaxed))
+            .map(|(signal, _)| *signal)
+    }
+
+    /// let the signal that stopped us take its usual course, now the terminal is back.
+    pub(crate) fn finish(&self) {
+        #[cfg(unix)]
+        if let Some(signal) = self.requested() {
+            let _ = signal_hook::low_level::emulate_default_handler(signal);
+        }
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use signal_hook::consts::{SIGHUP, SIGTERM};
 
     #[test]
-    fn leaving_the_screen_turns_everything_back_on_for_the_shell() {
-        let mut out = Vec::new();
-        leave_screen(&mut out).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        // mouse reporting off, the alternate screen left, the cursor shown
-        assert!(text.contains("\x1b[?1000l"), "{text:?}");
-        assert!(text.contains("\x1b[?1049l"), "{text:?}");
-        assert!(text.ends_with("\x1b[?25h"), "{text:?}");
+    fn nothing_is_requested_until_a_stop_signal_arrives() {
+        let stop = Stop::listen().unwrap();
+        assert_eq!(stop.requested(), None);
     }
 
     #[test]
-    fn restoring_writes_the_same_even_where_raw_mode_cannot_change() {
-        let mut out = Vec::new();
-        // raw mode may fail without a terminal; the screen sequences are written regardless
-        let _ = restore_terminal(&mut out);
-        assert!(String::from_utf8(out).unwrap().contains("\x1b[?1049l"));
+    fn a_stop_signal_sets_its_flag() {
+        let stop = Stop::listen().unwrap();
+        signal_hook::low_level::raise(SIGHUP).unwrap();
+        // the handler runs on the raising thread before raise returns
+        assert_eq!(stop.requested(), Some(SIGHUP));
+        assert_ne!(stop.requested(), Some(SIGTERM));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn the_signals_can_be_watched() {
-        restore_on_signal().unwrap();
+    fn a_flag_set_by_hand_is_found() {
+        let stop = Stop::default();
+        assert_eq!(stop.requested(), None);
+        let flag = Arc::new(AtomicBool::new(true));
+        let stop = Stop {
+            flags: vec![(SIGTERM, flag)],
+        };
+        assert_eq!(stop.requested(), Some(SIGTERM));
     }
 }

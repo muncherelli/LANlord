@@ -149,11 +149,15 @@ impl Shell {
 
     /// once a frame: the update check, the updater and the rebuild.
     pub(super) fn poll_maintenance(&mut self) {
+        let before = (self.updates.checking(), self.updates.found().is_some());
         self.updates.tick(&Wake::none());
+        self.refit_due |= before != (self.updates.checking(), self.updates.found().is_some());
         if self.updates.dialog && self.updates.found().is_none() {
             self.updates.dialog = false;
         }
-        match self.rebuild.poll() {
+        let rebuilt = self.rebuild.poll();
+        self.refit_due |= rebuilt.is_some();
+        match rebuilt {
             Some(Ok(())) => self.hand_over(),
             Some(Err(error)) => self.rebuild_failed(&error),
             None => {}

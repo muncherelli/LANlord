@@ -117,9 +117,11 @@ impl Console {
         let _ = (on, wake);
     }
 
-    /// move what arrived since the last frame into the list.
-    pub fn drain(&mut self) {
+    /// move what arrived since the last frame into the list; true when there was anything.
+    pub fn drain(&mut self) -> bool {
+        let mut any = false;
         for line in self.incoming.try_iter() {
+            any = true;
             self.apply.line(&line);
             // events are for the progress dialog, not for reading
             if line.kind != Kind::Event {
@@ -129,6 +131,7 @@ impl Console {
         if self.lines.len() > KEEP {
             self.lines.drain(..self.lines.len() - KEEP);
         }
+        any
     }
 
     pub fn lines(&self) -> &[Line] {

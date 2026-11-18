@@ -543,9 +543,9 @@ impl<'a> Painter<'a> {
     }
 
     /// the height of each of `nodes` stacked in `room` rows: every node takes what it needs,
-    /// except that the ones that fill (a console, a list) share what the rest leave. each gets
-    /// 4 rows or more while that fits; when it does not, they split what is left, so the total
-    /// never passes the room. with no `room` they take what they need.
+    /// except that the ones that fill (a console, a list) share what the rest leave, the last
+    /// one taking the odd rows. they split what is left, so the total does not pass the room;
+    /// with no `room` they take what they need.
     fn stack_heights<M>(
         &self,
         nodes: &[Node<M>],
@@ -567,13 +567,17 @@ impl<'a> Painter<'a> {
             .map(|(_, h)| *h)
             .sum();
         let count = nodes.iter().filter(|n| fills(n)).count() as u16;
-        // filling nodes split the rows left; that is 4 or more each unless there are too many of
-        // them for that, and the total never passes the rows left
-        let share = room.and_then(|room| room.saturating_sub(fixed).checked_div(count));
+        // filling nodes split the rows left, the last one taking the rows that do not divide
+        let left = room.map(|room| room.saturating_sub(fixed));
+        let share = left.and_then(|left| left.checked_div(count));
+        let odd = left.map_or(0, |left| left.checked_rem(count).unwrap_or(0));
+        let last = nodes.iter().rposition(|n| fills(n));
         nodes
             .iter()
             .zip(natural)
-            .map(|(n, height)| match (fills(n), share) {
+            .enumerate()
+            .map(|(i, (n, height))| match (fills(n), share) {
+                (true, Some(rows)) if Some(i) == last => rows + odd,
                 (true, Some(rows)) => rows,
                 _ => height,
             })
