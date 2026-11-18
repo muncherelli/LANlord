@@ -689,14 +689,31 @@ fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least(
     let (mut desktop, ctx, _) = desktop();
     with_host(&mut desktop, &ctx);
     desktop.open(Target::Networks);
-    frames_on(&mut desktop, &ctx, size, 6);
     let rect = |d: &Desktop| {
         d.measured
             .iter()
             .find(|m| m.0 == Target::Networks)
-            .unwrap()
-            .1
+            .map(|m| m.1)
+            .unwrap_or(egui::Rect::ZERO)
     };
+    // the contents arrive when they arrive, which depends on the machine: wait until the window
+    // has kept its size for a while
+    let (mut last, mut steady) = (egui::Rect::ZERO, 0);
+    for _ in 0..400 {
+        frames_on(&mut desktop, &ctx, size, 1);
+        let now = rect(&desktop);
+        steady = if now == last && now != egui::Rect::ZERO {
+            steady + 1
+        } else {
+            0
+        };
+        last = now;
+        if steady >= 10 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(steady >= 10, "never settled: {last:?}");
     let opened = rect(&desktop);
     // taller, then kept over many frames
     drag_corner(
