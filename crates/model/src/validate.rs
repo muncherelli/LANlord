@@ -579,11 +579,14 @@ const SECTIONS: &[(&str, Kind)] = &[
     ),
 ];
 
-/// the sections that hold named entries whose own keys are checked as components.
 /// the only fields that may hold more than one line; every other text is one line, so a value
 /// that reaches a template cannot add lines to a config file.
 const MULTILINE: &[&str] = &["gateway.motd"];
 
+/// sections no playbook reads: they are kept in the settings file but never handed to ansible.
+const NOT_FOR_PLAYBOOKS: &[&str] = &["access", "firewall", "remote-commands"];
+
+/// the sections that hold named entries whose own keys are checked as components.
 const COMPONENT_SECTION: &str = "components";
 
 fn describe(kind: &Kind) -> &'static str {
@@ -682,7 +685,7 @@ fn check_words(path: &str, value: &Value) -> Result<(), Invalid> {
     match value {
         Value::String(text) if bool_word(text).is_some() => Err(Invalid::new(
             path,
-            "is the text yes, no, on, off, true or false: quote it as text or write true or false for a boolean",
+            "is the word yes, no, on, off, true or false, which yaml may read as a boolean: write true or false, or use another text",
         )),
         Value::Sequence(items) => items
             .iter()
@@ -731,7 +734,7 @@ fn check_kind(path: &str, value: &Value, kind: &Kind) -> Result<(), Invalid> {
         Kind::OneOrList(each) if value.is_sequence() => check_list(path, value, each),
         Kind::OneOrList(each) => check_kind(path, value, each),
         Kind::Map(fields) => check_map(path, value, fields),
-        Kind::Free => check_words(path, value),
+        Kind::Free => Ok(()),
         Kind::Flag => Err(Invalid::new(path, describe(kind))),
     }
 }
@@ -837,7 +840,7 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
             if !value.is_null() {
                 check_kind(name, value, kind)?;
             }
-        } else {
+        } else if !NOT_FOR_PLAYBOOKS.contains(&name) {
             check_words(name, value)?;
         }
     }
@@ -855,11 +858,20 @@ fn parse_document(text: &str) -> Result<Value, Invalid> {
     if text.len() > 128 * 1024 {
         return Err(Invalid::new("settings", "is too large"));
     }
-    if has_anchor_or_alias(text) {
-        return Err(Invalid::new(
-            "settings",
-            "must not use yaml anchors or aliases (& or *)",
-        ));
+    match has_anchor_or_alias(text) {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(Invalid::new(
+                "settings",
+                "must not use yaml anchors or aliases (& or *)",
+            ))
+        }
+        Err(error) => {
+            return Err(Invalid::new(
+                "settings",
+                format!("is not valid yaml: {error}"),
+            ))
+        }
     }
     let document: Value = serde_yaml_ng::from_str(text)
         .map_err(|error| Invalid::new("settings", format!("is not valid yaml: {error}")))?;
@@ -867,93 +879,25 @@ fn parse_document(text: &str) -> Result<Value, Invalid> {
     Ok(document)
 }
 
-/// where a quoted scalar or a block scalar is, while `has_anchor_or_alias` reads the text.
-#[derive(Clone, Copy)]
-enum Scalar {
-    Plain,
-    Quoted(char),
-    /// a `|` or `>` block that holds every following line indented deeper than this column.
-    Block(usize),
-}
-
-/// does the yaml text hold an anchor (`&name`) or an alias (`*name`)? read token by token, so
-/// an `&` or `*` inside a quoted string, a comment or a block scalar does not count; a false
-/// alarm elsewhere is acceptable, a miss is not.
-fn has_anchor_or_alias(text: &str) -> bool {
-    let mut state = Scalar::Plain;
-    for line in text.lines() {
-        let indent = line.len() - line.trim_start_matches(' ').len();
-        if let Scalar::Block(parent) = state {
-            if line.trim().is_empty() || indent > parent {
-                continue;
-            }
-            state = Scalar::Plain;
-        }
-        if scan_line(line, &mut state) {
-            return true;
+/// does the yaml text hold an anchor or an alias? read as parser events, which is what the yaml
+/// library itself will see, and stopped at the first one: a few lines of aliases expand into
+/// gigabytes, so this runs before the document is parsed into values. text that only holds an
+/// `&` or a `*` is not an anchor and passes.
+fn has_anchor_or_alias(text: &str) -> Result<bool, String> {
+    for event in saphyr_parser::Parser::new_from_str(text) {
+        match event {
+            Ok((saphyr_parser::Event::Alias(_), _)) => return Ok(true),
+            Ok((
+                saphyr_parser::Event::Scalar(_, _, anchor, _)
+                | saphyr_parser::Event::SequenceStart(anchor, _)
+                | saphyr_parser::Event::MappingStart(anchor, _),
+                _,
+            )) if anchor != 0 => return Ok(true),
+            Ok(_) => {}
+            Err(error) => return Err(error.to_string()),
         }
     }
-    false
-}
-
-/// the column where the key or value of a line starts, after any `- ` markers.
-fn content_column(line: &str) -> usize {
-    let mut column = 0;
-    let mut rest = line;
-    loop {
-        let trimmed = rest.trim_start_matches(' ');
-        column += rest.len() - trimmed.len();
-        match trimmed.strip_prefix("- ") {
-            Some(after) => {
-                column += 2;
-                rest = after;
-            }
-            None => return column,
-        }
-    }
-}
-
-fn scan_line(line: &str, state: &mut Scalar) -> bool {
-    let chars: Vec<char> = line.chars().collect();
-    let mut previous: Option<char> = None;
-    let mut position = 0;
-    while position < chars.len() {
-        let c = chars[position];
-        let starts_token =
-            previous.is_none_or(|p| p.is_whitespace() || matches!(p, '[' | '{' | ','));
-        let following = chars.get(position + 1).copied();
-        match *state {
-            Scalar::Quoted(quote) => {
-                if c == '\\' && quote == '"' {
-                    position += 1;
-                } else if c == quote {
-                    *state = Scalar::Plain;
-                }
-            }
-            _ if c == '#' && previous.is_none_or(char::is_whitespace) => return false,
-            _ if starts_token && matches!(c, '"' | '\'') => *state = Scalar::Quoted(c),
-            _ if starts_token
-                && matches!(c, '&' | '*')
-                && following.is_some_and(|f| !f.is_whitespace()) =>
-            {
-                return true;
-            }
-            _ if starts_token
-                && matches!(c, '|' | '>')
-                && chars[position + 1..]
-                    .iter()
-                    .take_while(|k| **k != '#')
-                    .all(|k| k.is_ascii_digit() || matches!(k, '+' | '-' | ' ')) =>
-            {
-                *state = Scalar::Block(content_column(line));
-                return false;
-            }
-            _ => {}
-        }
-        previous = Some(c);
-        position += 1;
-    }
-    false
+    Ok(false)
 }
 
 /// every string in `value` marked `!unsafe`, so that ansible keeps it as text and never runs it
@@ -982,6 +926,9 @@ pub fn for_ansible(text: &str) -> Result<String, Invalid> {
         other => other,
     };
     if let Value::Mapping(map) = &mut document {
+        for name in NOT_FOR_PLAYBOOKS {
+            map.remove(*name);
+        }
         for (name, kind) in SECTIONS {
             if let Some(section) = map.get_mut(*name) {
                 normalise_flags(section, kind);
@@ -1681,8 +1628,16 @@ web-proxy:
         // a bare word in a field with no type is refused, with the way out in the message
         let message = refused("web-proxy:\n  extra: no\n");
         assert!(message.starts_with("web-proxy.extra"), "{message}");
-        assert!(message.contains("quote"), "{message}");
-        assert!(refused("access:\n  open: off\n").starts_with("access.open"));
+        assert!(message.contains("true or false"), "{message}");
+        // sections no playbook reads are not checked for words, and are not handed to ansible
+        let kept = for_ansible(
+            "access:\n  profiles:\n    dana: {full_name: yes}\ngateway:\n  ntp_enabled: true\n",
+        )
+        .unwrap();
+        assert!(
+            !kept.contains("access") && kept.contains("ntp_enabled"),
+            "{kept}"
+        );
         // typed text keeps its word: a user may be called "on"
         assert!(settings_document("nt4-domain:\n  machines: [\"on\"]\n").is_ok());
     }
@@ -1725,7 +1680,11 @@ web-proxy:
             "gateway:\n  ntp:\n    - &x a.example.com\n",
             "gateway:\n  ntp: [pool.example.com, {k: *a}]\n",
         ] {
-            assert!(refused(text).contains("anchors"), "{text}");
+            let message = refused(text);
+            assert!(
+                message.contains("anchors") || message.contains("not valid yaml"),
+                "{text}: {message}"
+            );
         }
         // the same marks inside quotes, comments and block text are only text
         for text in [
@@ -1742,7 +1701,50 @@ web-proxy:
             );
         }
         // a block scalar ends where the indentation does: the sibling after it is read again
-        assert!(refused("gateway:\n  motd: |\n    text\n  timezone: *z\n").contains("anchors"));
+        assert!(refused("gateway:\n  motd: |\n    text\n  timezone: &z UTC\n").contains("anchors"));
+        // inputs a hand-written scan once missed: each one expands under a real parser
+        for text in [
+            "k: a \"b\nx: &a [x,x]\ny: [*a,*a]\nz: c\"",
+            "{\"a\":&x [x,x],\"b\":*x}",
+            "k: [a |\n    , &a [x,x], *a, *a]",
+            "k: &a x\nj: *a\n",
+        ] {
+            let message = refused(text);
+            assert!(
+                message.contains("anchors") || message.contains("not valid yaml"),
+                "{text:?}: {message}"
+            );
+            assert!(settings_document(text).is_err());
+        }
+        // plain text with & or * in it is not an anchor
+        for text in [
+            "gateway:\n  motd: cats & dogs\n",
+            "gateway:\n  motd: a *b\n",
+            "nt4-domain:\n  admin_password: \"p&ss *word\"\n",
+            "nt4-domain:\n  users:\n    - {name: dana, password: a&b*c}\n",
+        ] {
+            assert!(
+                settings_document(text).is_ok(),
+                "{text}: {:?}",
+                settings_document(text)
+            );
+            assert!(for_ansible(text).is_ok(), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_self_service_profile_never_blocks_a_save_or_an_apply() {
+        for word in ["yes", "no", "on", "Off"] {
+            let text = format!(
+                "access:\n  profiles:\n    dana: {{full_name: {word}, email: {word}}}\ngateway:\n  ntp_enabled: true\n"
+            );
+            assert!(settings_document(&text).is_ok(), "{word}");
+            let written = for_ansible(&text).unwrap();
+            assert!(
+                !written.contains("access") && !written.contains(word),
+                "{written}"
+            );
+        }
     }
 
     #[test]
