@@ -170,6 +170,10 @@ pub struct TaskbarLayout {
     pub clock: Rect,
     /// the warning item beside the clock, when there is one.
     pub alert: Option<Rect>,
+    /// the update item beside the clock, when an update is waiting or going on.
+    pub shield: Option<Rect>,
+    /// the red debug button, in a development build.
+    pub bug: Option<Rect>,
 }
 
 /// the taskbar: one gray row with the LANlord menu button, a button per open window and the
@@ -182,8 +186,21 @@ pub struct Taskbar<'a> {
     pub clock: &'a str,
     /// a warning item left of the clock, such as `! Compatibility`.
     pub alert: Option<&'a str>,
+    /// the state of the update, left of the warning, such as `Update available`.
+    pub shield: Option<&'a str>,
+    /// the red debug button of a development build, at the left of the tray.
+    pub bug: bool,
     pub palette: Palette,
 }
+
+/// what the red debug button says: a bug, and the word for it.
+pub const BUG_LABEL: &str = "Ж Debug";
+
+/// the width of the debug button: its label and an edge and a space each side.
+pub const BUG_WIDTH: u16 = 11;
+
+/// the red of the bug.
+pub const BUG_RED: (u8, u8, u8) = (200, 0, 0);
 
 /// the widest a window button gets, like the gui's.
 const TASK_BUTTON: u16 = 30;
@@ -204,16 +221,26 @@ impl Taskbar<'_> {
             clock_width.min(area.width),
             1,
         );
-        let alert = self.alert.map(|label| {
-            let width = label.chars().count() as u16 + 2;
-            Rect::new(
-                clock.x.saturating_sub(width + 1).max(area.x),
+        // the tray grows leftwards from the clock: the warning, then the update, then the bug
+        let mut edge = clock.x;
+        let mut tray = |width: u16| {
+            let rect = Rect::new(
+                edge.saturating_sub(width + 1).max(area.x),
                 area.y,
-                width.min(clock.x.saturating_sub(area.x)),
+                width.min(edge.saturating_sub(area.x)),
                 1,
-            )
-        });
-        let limit = alert.map_or(clock.x, |a| a.x);
+            );
+            edge = rect.x;
+            rect
+        };
+        let alert = self
+            .alert
+            .map(|label| tray(label.chars().count() as u16 + 2));
+        let shield = self
+            .shield
+            .map(|label| tray(label.chars().count() as u16 + 2));
+        let bug = self.bug.then(|| tray(BUG_WIDTH));
+        let limit = edge;
         let mut x = menu.right() + 1;
         let buttons = self
             .buttons
@@ -231,6 +258,8 @@ impl Taskbar<'_> {
             buttons,
             clock,
             alert,
+            shield,
+            bug,
         }
     }
 }
@@ -275,6 +304,32 @@ pub fn row_button(
     );
 }
 
+/// the red debug button `[Ж Debug]`, on the taskbar and in the corner of the logon screen.
+pub fn bug_button(buf: &mut Buffer, rect: Rect, palette: Palette) {
+    if rect.width == 0 {
+        return;
+    }
+    fill(buf, rect, palette, GRAY);
+    if rect.width < 2 {
+        return;
+    }
+    put(buf, (rect.x, rect.y), "[", style(palette, BLACK, GRAY));
+    put(
+        buf,
+        (rect.right() - 1, rect.y),
+        "]",
+        style(palette, BLACK, GRAY),
+    );
+    text(
+        buf,
+        rect.x + 2,
+        rect.y,
+        rect.width.saturating_sub(4),
+        BUG_LABEL,
+        bold(style(palette, BUG_RED, GRAY)),
+    );
+}
+
 impl Widget for Taskbar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
@@ -309,6 +364,21 @@ impl Widget for Taskbar<'_> {
                 label,
                 bold(style(palette, BLACK, (255, 255, 0))),
             );
+        }
+        if let (Some(label), Some(rect)) = (self.shield, layout.shield) {
+            // white on navy, so it reads apart from the yellow warning
+            fill(buf, rect, palette, NAVY);
+            text(
+                buf,
+                rect.x + 1,
+                rect.y,
+                rect.width.saturating_sub(1),
+                label,
+                bold(style(palette, WHITE, NAVY)),
+            );
+        }
+        if let Some(rect) = layout.bug {
+            bug_button(buf, rect, palette);
         }
         let clock = layout.clock;
         if clock.width > 2 {
@@ -485,6 +555,8 @@ mod tests {
             }],
             clock: "10:55 AM",
             alert: None,
+            shield: None,
+            bug: false,
             palette: palette(),
         }
         .render(Rect::new(4, 3, 60, 1), &mut buf);
@@ -569,6 +641,8 @@ mod tests {
             buttons: &buttons,
             clock: "10:55 AM",
             alert: None,
+            shield: None,
+            bug: false,
             palette: palette(),
         };
         let layout = bar.layout(buf.area);

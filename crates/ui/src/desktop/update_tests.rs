@@ -101,7 +101,7 @@ fn dev(name: &str, build_ok: bool) -> (Desktop, egui::Context, std::path::PathBu
     // the new build stays up for a moment, as a real one would
     script(&exe, "sleep 1");
     let (mut desktop, ctx, _) = desktop();
-    desktop.relaunch_grace = lanlord_core::update::Grace {
+    desktop.rebuild.grace = lanlord_core::update::Grace {
         total: std::time::Duration::from_millis(150),
         poll: std::time::Duration::from_millis(10),
     };

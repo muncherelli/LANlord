@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use lanlord_app::gateway::Fake;
 use lanlord_app::login::fake::FakeAuth;
+use lanlord_app::menu::{Action, Row};
 use lanlord_app::networks_window::{self, NetworksWindow};
+use lanlord_core::update::{Source, Update};
 
 use super::{
     AdminSetup, Arc, Buffer, Form, HostList, Modal, Palette, Power, Rect, Shell, Target, MODULES,
@@ -83,10 +85,48 @@ struct Scene {
 }
 
 fn scene(name: impl Into<String>, build: impl Fn((u16, u16)) -> Shell + 'static) -> Scene {
+    // the red bug of a development build is left out, so these pictures are the same with and
+    // without the developer tools
+    scene_with_bug(name, move |size| {
+        let mut shell = build(size);
+        shell.hide_bug();
+        shell
+    })
+}
+
+/// like `scene`, with the red bug showing in a development build.
+fn scene_with_bug(name: impl Into<String>, build: impl Fn((u16, u16)) -> Shell + 'static) -> Scene {
     Scene {
         name: name.into(),
         build: Box::new(build),
     }
+}
+
+/// a checkout and a build to rebuild from; neither exists, which is what the failing rebuild
+/// scene needs.
+pub(super) fn develop(shell: &mut Shell) {
+    shell.rebuild.watch(
+        Some(PathBuf::from("/srv/lanlord")),
+        Some(PathBuf::from("/srv/lanlord/target/debug/lanlord")),
+    );
+}
+
+/// what a check for updates found.
+pub(super) fn news() -> Update {
+    Update {
+        source: Source::Git,
+        headline: "LANlord 0.2.0".into(),
+        lines: vec!["Adds the debug menu to the terminal.".into()],
+    }
+}
+
+/// the row of the LANlord menu that opens the Developer submenu.
+pub(super) fn developer_row(shell: &Shell) -> usize {
+    shell
+        .menu_state()
+        .iter()
+        .position(|row| matches!(row, Row::Item(item) if item.action == Action::Developer))
+        .expect("a development build has a Developer row")
 }
 
 /// the logon box, the first-administrator screen, the desktop, its menu and boxes, then every
@@ -158,6 +198,7 @@ fn scenes() -> Vec<Scene> {
             shell
         }),
     ];
+    all.extend(maintenance_scenes());
     for target in [
         Target::MyServer,
         Target::Networks,
@@ -189,6 +230,78 @@ fn scenes() -> Vec<Scene> {
         }));
     }
     all
+}
+
+/// the update notice, the Developer submenu, rebuilding and the developer tools.
+fn maintenance_scenes() -> Vec<Scene> {
+    #[allow(unused_mut)]
+    let mut all = vec![
+        scene("developer-menu", |size| {
+            let mut shell = desktop(size);
+            develop(&mut shell);
+            shell.menu = Some(developer_row(&shell));
+            shell.submenu = Some(0);
+            shell
+        }),
+        scene("rebuild", |size| {
+            let mut shell = desktop(size);
+            develop(&mut shell);
+            shell.do_action(Action::Rebuild);
+            shell
+        }),
+        scene("rebuild-failed", |size| {
+            let mut shell = desktop(size);
+            shell.show_failure("the checkout is gone");
+            shell
+        }),
+        scene("update-available", |size| {
+            let mut shell = desktop(size);
+            shell.updates.arrived(Some(news()));
+            shell
+        }),
+        scene("update-box", |size| {
+            let mut shell = desktop(size);
+            shell.updates.arrived(Some(news()));
+            shell.updates.open_dialog();
+            shell
+        }),
+    ];
+    #[cfg(feature = "devtools")]
+    all.extend(devtools_scenes());
+    all
+}
+
+/// the red bug, its menu, the outlines and the demo desktop.
+#[cfg(feature = "devtools")]
+fn devtools_scenes() -> Vec<Scene> {
+    vec![
+        scene_with_bug("debug-button", desktop),
+        scene_with_bug("debug-menu", |size| {
+            let mut shell = desktop(size);
+            shell.devtools.menu = Some(0);
+            shell
+        }),
+        scene_with_bug("debug-window-outlines", |size| {
+            let mut shell = window(size, Target::MyServer);
+            shell.pick_debug(1);
+            shell
+        }),
+        scene_with_bug("debug-logon", |_| {
+            let mut shell = Shell::new(
+                Arc::new(Fake::new()),
+                HostList::new(None),
+                Palette::default(),
+            );
+            shell.require_login(Arc::new(FakeAuth::default()));
+            shell
+        }),
+        scene_with_bug("debug-demo-desktop", |size| {
+            let mut shell = desktop(size);
+            shell.pick_debug(0);
+            shell.devtools.menu = Some(0);
+            shell
+        }),
+    ]
 }
 
 /// the boxes that open from the Networks, My Account and Permissions windows.

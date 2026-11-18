@@ -29,7 +29,7 @@ fn server(fake: &Arc<Fake>) -> Shell {
 }
 
 /// draw frames until `needle` is on screen, and give the screen back.
-fn until(shell: &mut Shell, needle: &str) -> String {
+pub(super) fn until(shell: &mut Shell, needle: &str) -> String {
     let started = Instant::now();
     loop {
         let text = frame(shell);
@@ -42,7 +42,7 @@ fn until(shell: &mut Shell, needle: &str) -> String {
 }
 
 /// where `needle` is on screen: its row, and the column of its middle.
-fn find(text: &str, needle: &str) -> Position {
+pub(super) fn find(text: &str, needle: &str) -> Position {
     let (y, line) = text
         .lines()
         .enumerate()
@@ -54,7 +54,7 @@ fn find(text: &str, needle: &str) -> Position {
 }
 
 /// click what says `needle` on screen.
-fn press(shell: &mut Shell, needle: &str) -> String {
+pub(super) fn press(shell: &mut Shell, needle: &str) -> String {
     let text = frame(shell);
     click(shell, find(&text, needle));
     frame(shell)
@@ -85,6 +85,16 @@ fn count(fake: &Fake, call: &str) -> usize {
         .unwrap()
         .iter()
         .filter(|c| *c == call)
+        .count()
+}
+
+/// how many calls the fake got that start with `prefix`, whatever host they name.
+fn calls_starting(fake: &Fake, prefix: &str) -> usize {
+    fake.calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c.starts_with(prefix))
         .count()
 }
 
@@ -537,7 +547,7 @@ fn a_read_only_account_sees_permissions_but_changes_nothing() {
         assert!(shell.permissions.dialog().is_none(), "{button}");
     }
     press(&mut shell, "Save");
-    assert_eq!(count(&fake, "save-access gateway.example"), 0);
+    assert_eq!(calls_starting(&fake, "save-access"), 0);
     let text = frame(&mut shell);
     let ben = text.lines().find(|l| l.contains("ben")).unwrap();
     assert!(ben.contains("Users") && !ben.contains("Operators"), "{ben}");

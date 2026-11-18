@@ -14,7 +14,11 @@ use anyhow::{anyhow, Result};
 use lanlord_app::gateway::{Gateway, Ssh};
 use lanlord_app::hostlist::HostList;
 use lanlord_app::login::SystemAuth;
+use lanlord_app::updates::Notice;
 use lanlord_core::hosts;
+use lanlord_core::prefs;
+use lanlord_core::update;
+use lanlord_core::updater::RealClock;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::{execute, terminal::SetTitle};
@@ -66,6 +70,13 @@ pub fn run() -> Result<()> {
         shell.use_demo_server();
     }
     shell.set_prefs(lanlord_core::prefs::path());
+    watch_updates(&mut shell);
+    // a rebuilt build comes back to the server it was on and tries the agent again
+    if let Ok(host) = std::env::var("LANLORD_LAST_HOST") {
+        if std::env::var("LANLORD_RELAUNCHED").as_deref() == Ok("1") {
+            shell.resume(&host);
+        }
+    }
     let mut terminal = ratatui::init();
     // mouse reporting stays on for the length of the loop and goes off when the guard drops
     let capture = paint::mouse::Capture::start()?;
@@ -86,7 +97,26 @@ pub fn run() -> Result<()> {
     );
     drop(capture);
     ratatui::restore();
-    result
+    result?;
+    // a rebuild ended this build so that the new one can take over this terminal
+    match shell.take_restart() {
+        Some((exe, host)) => update::restart_in_terminal(&exe, host.as_deref()),
+        None => Ok(()),
+    }
+}
+
+/// check for updates in the background as the gui does, and rebuild from the checkout when this
+/// is a development build.
+fn watch_updates(shell: &mut Shell) {
+    let prefs = prefs::path().map(|p| prefs::load(&p)).unwrap_or_default();
+    let notice = Notice::new(
+        Arc::new(update::System),
+        prefs::path(),
+        prefs.check_updates,
+        Arc::new(RealClock::new()),
+        Arc::new(|| {}),
+    );
+    shell.watch_updates(notice, update::dev_repo(), std::env::current_exe().ok());
 }
 
 #[cfg(test)]

@@ -41,8 +41,9 @@ jobs:
           echo "$HOME/ansible-venv/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p lanlord-tui --all-targets --features devtools --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - run: cargo test -p lanlord-ui --features devtools --locked
+      - run: cargo test -p lanlord-ui -p lanlord-tui --features lanlord-ui/devtools,lanlord-tui/devtools --locked
       # a bash script: it needs the unix tools, so not on a windows runner
       - if: runner.os != 'Windows'
         run: tools/test-ghcr-own-versions.sh
@@ -154,7 +155,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: run tests with coverage
-        run: cargo llvm-cov --workspace --features lanlord/webui,lanlord-ui/devtools --locked --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --features lanlord/webui,lanlord-ui/devtools,lanlord-tui/devtools --locked --lcov --output-path lcov.info
       - name: coverage summary
         run: cargo llvm-cov report --summary-only
       - name: python tests
