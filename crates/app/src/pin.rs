@@ -11,18 +11,19 @@ thread_local! {
 /// the crate version, or the pinned one.
 pub fn version() -> &'static str {
     PINNED
-        .with(|p| p.get())
+        .with(Cell::get)
         .map_or(env!("CARGO_PKG_VERSION"), |(v, _)| v)
 }
 
 /// the changelog text, or the pinned one.
 pub fn changelog() -> &'static str {
     PINNED
-        .with(|p| p.get())
+        .with(Cell::get)
         .map_or(crate::changelog::TEXT, |(_, c)| c)
 }
 
 /// ends the pin when dropped.
+#[must_use = "the pin ends when the guard is dropped"]
 pub struct Pin(());
 
 impl Drop for Pin {
