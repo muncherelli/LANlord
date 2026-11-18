@@ -20,6 +20,15 @@ impl Stop {
             let mut flags = Vec::new();
             for signal in [SIGTERM, SIGHUP] {
                 let flag = Arc::new(AtomicBool::new(false));
+                // order matters: the conditional shutdown is registered first, so the first
+                // signal still sees the flag unset and only sets it (graceful stop), while a
+                // second signal finds it set and exits at once with 128 + signal, which ends
+                // a wedged shutdown loop.
+                signal_hook::flag::register_conditional_shutdown(
+                    signal,
+                    128 + signal,
+                    flag.clone(),
+                )?;
                 signal_hook::flag::register(signal, flag.clone())?;
                 flags.push((signal, flag));
             }
@@ -52,15 +61,13 @@ mod tests {
     use super::*;
     use signal_hook::consts::{SIGHUP, SIGTERM};
 
-    #[test]
-    fn nothing_is_requested_until_a_stop_signal_arrives() {
-        let stop = Stop::listen().unwrap();
-        assert_eq!(stop.requested(), None);
-    }
-
+    // one test on purpose: handlers and their flags are process-wide, so raising SIGHUP in a
+    // second test could flip the first. only one raise per process, as a second signal now
+    // exits the process through the conditional shutdown (and SIGTERM is never raised here).
     #[test]
     fn a_stop_signal_sets_its_flag() {
         let stop = Stop::listen().unwrap();
+        assert_eq!(stop.requested(), None);
         signal_hook::low_level::raise(SIGHUP).unwrap();
         // the handler runs on the raising thread before raise returns
         assert_eq!(stop.requested(), Some(SIGHUP));
