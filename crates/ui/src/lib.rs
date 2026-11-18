@@ -107,7 +107,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 /// start the desktop on the page's canvas. the browser build is lanlord on the gateway itself
-/// (server mode: one server, logging on with the gateway's accounts) and talks to it through `/api/op`; a build with the
+/// (server mode: one server, logging on with the gateway's accounts) and talks to it through `/api/operations`; a build with the
 /// `demo` feature shows the made-up demo server instead, and says so.
 #[cfg(target_arch = "wasm32")]
 pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bindgen::JsValue> {

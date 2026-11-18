@@ -71,12 +71,22 @@ pub fn answer(status: u16, body: &str) -> Result<Reply> {
         return Err(SessionEnded.into());
     }
     if !(200..300).contains(&status) {
-        return Err(anyhow!("the server answered {status}: {}", body.trim()));
+        return Err(match server_message(body) {
+            Some(message) => anyhow!(message),
+            None => anyhow!("the server answered {status}: {}", body.trim()),
+        });
     }
     match serde_json::from_str::<Response>(body)? {
         Response::Ok(reply) => Ok(reply),
         Response::Error(message) => Err(anyhow!(message)),
     }
+}
+
+/// the `error` text of a json error body, so the person reads it instead of raw json.
+fn server_message(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let message = value.get("error")?.as_str()?.trim();
+    (!message.is_empty()).then(|| message.to_string())
 }
 
 fn is_session_error(body: &str) -> bool {
@@ -116,11 +126,23 @@ mod tests {
         let err = answer(401, r#"{"error":"session"}"#).unwrap_err();
         assert!(err.is::<SessionEnded>());
         let other = answer(401, r#"{"error":"password"}"#).unwrap_err();
-        assert!(!other.is::<SessionEnded>() && other.to_string().contains("401"));
+        assert!(!other.is::<SessionEnded>() && other.to_string() == "password");
         // the same words under another status are just an error
         assert!(!answer(500, r#"{"error":"session"}"#)
             .unwrap_err()
             .is::<SessionEnded>());
+    }
+
+    #[test]
+    fn a_refusal_shows_the_servers_message() {
+        let denied = r#"{"error":"permission denied: this needs Manage on Users"}"#;
+        assert_eq!(
+            answer(403, denied).unwrap_err().to_string(),
+            "permission denied: this needs Manage on Users"
+        );
+        // a body that is not an error message still shows what came back
+        let other = answer(502, "bad gateway").unwrap_err().to_string();
+        assert!(other.contains("502") && other.contains("bad gateway"));
     }
 
     #[test]

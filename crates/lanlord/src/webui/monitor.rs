@@ -2,7 +2,7 @@
 //! itself) and the page asks for a fresh sample about once a second. there is no other live
 //! channel in the web ui to push on, and a plain request per sample keeps the session, origin and
 //! timeout rules of every other route. anyone logged in may look; ending a process is for admins,
-//! the same rule as `/api/op`.
+//! the same rule as `/api/operations`.
 
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use axum::http::{header, HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use lanlord_core::monitor::{end_process, Sampler};
 
-use super::auth::{require, require_peek, same_origin_json, Auth};
+use super::auth::{require_current, require_peek, same_origin_json, Auth};
 
 fn reply(status: StatusCode, body: String) -> Response {
     (
@@ -72,7 +72,7 @@ pub async fn end(
     if let Err(refused) = same_origin_json(&headers) {
         return refused;
     }
-    let admin = match require(&auth, &headers) {
+    let admin = match require_current(&auth, &headers).await {
         Ok((_, admin)) => admin,
         Err(unauthorized) => return unauthorized,
     };

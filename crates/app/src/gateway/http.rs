@@ -1,4 +1,4 @@
-//! the browser's backend: every op goes to the web ui's `/api/op` as json.
+//! the browser's backend: every op goes to the web ui's `/api/operations` as json.
 //!
 //! a browser cannot wait for an answer, so ops are awaited with [`Http::exchange`]; tasks run
 //! on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says so.
@@ -22,7 +22,7 @@ use crate::login::{login_status, LocalFuture, WebSession};
 /// the gateway this page was served from.
 #[derive(Clone)]
 pub struct Http {
-    /// where ops are posted, `/api/op` on the page's own server.
+    /// where ops are posted, `/api/operations` on the page's own server.
     pub endpoint: String,
     /// set once the server answered that the session is gone; shared by every clone.
     ended: Arc<AtomicBool>,
@@ -31,7 +31,7 @@ pub struct Http {
 impl Default for Http {
     fn default() -> Self {
         Self {
-            endpoint: "/api/op".into(),
+            endpoint: "/api/operations".into(),
             ended: Arc::default(),
         }
     }

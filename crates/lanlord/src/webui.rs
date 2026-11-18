@@ -12,13 +12,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRef, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use base64::Engine as _;
+use lanlord_core::access::{Caller, Denied};
 use lanlord_core::log::{self, Kind};
+use lanlord_core::ops::{
+    execute_as, Op, Reply, Request as OpRequest, Response as OpResponse, UserChange,
+};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -66,11 +70,12 @@ pub fn static_dir(given: Option<PathBuf>) -> Option<PathBuf> {
 /// endpoint. the build is looked for on every request, so installing or replacing it needs no
 /// restart. every response carries the security headers.
 pub fn router(static_dir: Option<&Path>) -> Router {
-    router_with(static_dir, auth::Auth::system())
+    router_with(static_dir, auth::Auth::system(), system_runner())
 }
 
-/// the same, with the logins checked and the sessions kept by `auth`.
-fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
+/// the same, with the logins checked and the sessions kept by `auth` and the operations run by
+/// `run`.
+fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>, run: Runner) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -82,8 +87,11 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
         .route("/api/session", get(auth::session))
         .route("/api/monitor", get(monitor::sample))
         .route("/api/monitor/end", post(monitor::end))
-        .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
-        .with_state(auth)
+        .route(
+            "/api/operations",
+            post(operations).layer(DefaultBodyLimit::max(OP_LIMIT)),
+        )
+        .with_state(App { auth, run })
         .fallback(move |request: Request| web(dir.clone(), request))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -226,28 +234,169 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
-/// the operations endpoint. it needs a page-origin json request and a login, and until the
-/// operations are handed to core's `execute_as` (which checks `Op::requires` for the session's
-/// account, and ends that user's sessions with `Auth::revoke_user` when a password or permission
-/// changes) it refuses every operation, so nothing here can run unchecked. the body is read
-/// already so the size limit applies.
-async fn op(
-    State(auth): State<Arc<auth::Auth>>,
+/// the gateway the operations run against: the machine this server runs on.
+const GATEWAY: &str = "localhost";
+
+/// runs one operation for a caller, asking for the sudo password through the callback.
+type Runner = Arc<
+    dyn Fn(&Caller, &Op, &mut dyn FnMut(&str) -> Result<String>) -> Result<Reply> + Send + Sync,
+>;
+
+/// the real runner: core's `execute_as`, which refuses what the caller's roles do not cover.
+fn system_runner() -> Runner {
+    Arc::new(|caller, op, ask| execute_as(GATEWAY, caller, op, ask))
+}
+
+/// what the handlers share: the logins and the way operations are run.
+#[derive(Clone)]
+struct App {
+    auth: Arc<auth::Auth>,
+    run: Runner,
+}
+
+impl FromRef<App> for Arc<auth::Auth> {
+    fn from_ref(app: &App) -> Self {
+        app.auth.clone()
+    }
+}
+
+/// how an operation ended.
+enum Outcome {
+    Reply(Reply),
+    /// the server needs the sudo password to go on, with the prompt to show.
+    NeedsPassword(String),
+    /// the caller's roles do not cover it.
+    Denied(String),
+    Failed(String),
+}
+
+/// an error answer: `{"error": message}`.
+fn refusal(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        serde_json::json!({ "error": message }).to_string(),
+    )
+        .into_response()
+}
+
+/// run the request for `caller`. sudo prompts are answered with the request's password; without
+/// one the outcome asks for it instead, as `lanlord op` does.
+fn run_request(run: &Runner, caller: &Caller, request: &OpRequest) -> Outcome {
+    let mut asked = None;
+    let result = {
+        let mut ask = |prompt: &str| match &request.password {
+            Some(password) => Ok(password.expose().to_string()),
+            None => {
+                asked.get_or_insert_with(|| prompt.to_string());
+                bail!("the sudo password is needed")
+            }
+        };
+        run(caller, &request.op, &mut ask)
+    };
+    match (asked, result) {
+        (Some(prompt), _) => Outcome::NeedsPassword(prompt),
+        (None, Ok(reply)) => Outcome::Reply(reply),
+        (None, Err(e)) if e.downcast_ref::<Denied>().is_some() => Outcome::Denied(format!("{e:#}")),
+        (None, Err(e)) => Outcome::Failed(format!("{e:#}")),
+    }
+}
+
+/// the accounts whose sessions an op leaves out of date, and whether the caller's own session
+/// may stay: a password change keeps the window it was made in, a permission change does not.
+fn affected(op: &Op, caller: &str) -> Vec<(String, bool)> {
+    let own = |name: &str| name == caller;
+    match op {
+        Op::ChangePassword { .. } => vec![(caller.to_string(), true)],
+        Op::ResetPassword { user, .. } => vec![(user.clone(), own(user))],
+        Op::ChangeUsers { changes } => changes
+            .iter()
+            .map(|change| match change {
+                UserChange::SetPassword { name, .. } => (name.clone(), own(name)),
+                UserChange::SetAdmin { name, .. }
+                | UserChange::SetSoftwareAdmin { name, .. }
+                | UserChange::Remove { name } => (name.clone(), false),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// the operations endpoint. it needs a page-origin json request and a login, and takes the same
+/// `Request` body the browser sends. the admin state is read from the account on every request,
+/// and `execute_as` checks `Op::requires` against the account: a refusal is a 403, a body that is
+/// not an operation a 400, and anything else the `Response` json of `lanlord op`. after an op
+/// that changes a password or a user's permissions the affected user's sessions end (see
+/// `Auth::revoke_user`). live streams are not served yet. the body is read already so the size
+/// limit applies.
+async fn operations(
+    State(app): State<App>,
     headers: HeaderMap,
-    _operation: axum::body::Bytes,
+    body: axum::body::Bytes,
 ) -> Response {
     if let Err(refused) = auth::same_origin_json(&headers) {
         return refused;
     }
-    if let Err(unauthorized) = auth::require(&auth, &headers) {
-        return unauthorized;
+    let (user, admin) = match auth::require_current(&app.auth, &headers).await {
+        Ok(who) => who,
+        Err(unauthorized) => return unauthorized,
+    };
+    let Ok(request) = serde_json::from_slice::<OpRequest>(&body) else {
+        return refusal(StatusCode::BAD_REQUEST, "not an operation");
+    };
+    drop(body);
+    if matches!(request.op, Op::Subscribe { .. }) {
+        return refusal(
+            StatusCode::NOT_IMPLEMENTED,
+            "live streams are not available yet",
+        );
     }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        [(header::CONTENT_TYPE, "application/json")],
-        r#"{"error":"operations over the web are not available yet; every operation is refused until it is checked against the account's permissions"}"#,
-    )
-        .into_response()
+    let caller = Caller {
+        user: user.clone(),
+        admin,
+    };
+    let run = app.run.clone();
+    let ran = tokio::task::spawn_blocking(move || {
+        let outcome = run_request(&run, &caller, &request);
+        (outcome, affected(&request.op, &caller.user))
+    })
+    .await;
+    let Ok((outcome, changed)) = ran else {
+        return refusal(StatusCode::INTERNAL_SERVER_ERROR, "the operation stopped");
+    };
+    let response = match outcome {
+        Outcome::Reply(reply) => {
+            for (name, keep_own) in changed {
+                if keep_own {
+                    app.auth.revoke_others(&name, &headers);
+                } else {
+                    app.auth.revoke_user(&name);
+                }
+            }
+            OpResponse::Ok(reply)
+        }
+        Outcome::NeedsPassword(prompt) => OpResponse::Ok(Reply::NeedsPassword { prompt }),
+        Outcome::Denied(message) => return refusal(StatusCode::FORBIDDEN, &message),
+        Outcome::Failed(message) => OpResponse::Error(message),
+    };
+    match serde_json::to_string(&response) {
+        Ok(text) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            text,
+        )
+            .into_response(),
+        Err(_) => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not encode the answer",
+        ),
+    }
 }
 
 /// shown until the browser build is installed.
@@ -462,7 +611,7 @@ mod tests {
     #[test]
     fn operations_are_refused_without_the_pages_origin() {
         // (with a session they still answer 501; see the session tests in auth.rs)
-        let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/op"));
+        let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/operations"));
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(kind, "application/json");
     }
@@ -824,7 +973,7 @@ mod tests {
         for (app, method, uri) in [
             (router(None), "GET", "/"),
             (router(None), "GET", "/healthz"),
-            (router(None), "POST", "/api/op"),
+            (router(None), "POST", "/api/operations"),
             (router(None), "GET", "/missing.js"),
             (router(Some(&dir)), "GET", "/"),
             (router(Some(&dir)), "GET", "/lanlord.js"),
@@ -940,7 +1089,7 @@ mod tests {
         let (status, h) = rt.block_on(headers(
             router(None),
             "POST",
-            "/api/op",
+            "/api/operations",
             Body::from(vec![b'x'; OP_LIMIT + 1]),
         ));
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
@@ -948,7 +1097,7 @@ mod tests {
         let (status, _) = rt.block_on(headers(
             router(None),
             "POST",
-            "/api/op",
+            "/api/operations",
             Body::from(vec![b'x'; 100]),
         ));
         assert_eq!(status, StatusCode::FORBIDDEN);

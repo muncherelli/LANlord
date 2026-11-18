@@ -45,9 +45,17 @@ pub enum Check {
 
 type Checking = Pin<Box<dyn Future<Output = Check> + Send>>;
 
+/// whether an account is in the admins group right now; none when it cannot be told (the
+/// account is gone, or the lookup failed).
+type Standing = Pin<Box<dyn Future<Output = Option<bool>> + Send>>;
+
 /// asks something to check a login.
 pub trait Verifier: Send + Sync {
     fn check(&self, user: &str, password: &[u8], ip: Option<IpAddr>) -> Checking;
+
+    /// the account's current admin state, asked again on every operation so that a change of
+    /// group takes effect at once and not at the next login.
+    fn admin(&self, user: &str) -> Standing;
 }
 
 /// the real check, through the helper's socket.
@@ -73,6 +81,33 @@ impl Verifier for Helper {
             }
         })
     }
+
+    fn admin(&self, user: &str) -> Standing {
+        let user = user.to_string();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || in_admins(&user))
+                .await
+                .ok()
+                .flatten()
+        })
+    }
+}
+
+/// whether `user` is in the admins group, from the system's group list; none for an unknown
+/// account or when `id` cannot run.
+fn in_admins(user: &str) -> Option<bool> {
+    if !valid_login(user) {
+        return None;
+    }
+    let out = std::process::Command::new("id")
+        .args(["-nG", "--", user])
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .any(|g| g == "admins")
+    })
 }
 
 #[cfg(unix)]
@@ -318,12 +353,37 @@ impl Auth {
 
     /// end every session of `user`: after their password or their permissions changed, what a
     /// session was opened with is no longer true. gives how many there were.
-    #[cfg(test)] // the operations executor calls it once operations are wired up
     pub fn revoke_user(&self, user: &str) -> usize {
         let mut book = self.book();
         let before = book.sessions.len();
         book.sessions.retain(|_, s| s.user != user);
         before - book.sessions.len()
+    }
+
+    /// as `revoke_user`, but the session the request belongs to stays: a person who changed
+    /// their own password keeps the window they did it in.
+    pub fn revoke_others(&self, user: &str, headers: &HeaderMap) -> usize {
+        let keep = cookie_token(headers).map(|t| digest(&t));
+        let mut book = self.book();
+        let before = book.sessions.len();
+        book.sessions
+            .retain(|key, s| s.user != user || Some(*key) == keep);
+        before - book.sessions.len()
+    }
+
+    /// the user of the request's session and their admin state as the account is now, not as
+    /// it was at login. an account that can no longer be found loses its sessions.
+    pub async fn current(&self, headers: &HeaderMap) -> Option<(String, bool)> {
+        let (user, _) = self.session(headers)?;
+        let Some(admin) = self.verifier.admin(&user).await else {
+            self.revoke_user(&user);
+            return None;
+        };
+        let mut book = self.book();
+        for session in book.sessions.values_mut().filter(|s| s.user == user) {
+            session.admin = admin;
+        }
+        Some((user, admin))
     }
 
     /// the user of the session a request's cookie names.
@@ -418,11 +478,21 @@ pub fn same_origin_json(headers: &HeaderMap) -> Result<(), Response> {
     Ok(())
 }
 
-/// a request that needs a login: the user and whether it is an admin, or the 401 to send.
+/// a request that needs a login: the user and whether it is an admin (as of login), or the 401
+/// to send.
 #[allow(clippy::result_large_err)]
 pub fn require(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
     auth.session(headers)
         .ok_or_else(|| json(StatusCode::UNAUTHORIZED, r#"{"error":"login required"}"#))
+}
+
+/// as `require`, with the admin state read from the account now. the 401 says `session`, which
+/// is what the page takes to mean "sign in again".
+#[allow(clippy::result_large_err)]
+pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
+    auth.current(headers)
+        .await
+        .ok_or_else(|| json(StatusCode::UNAUTHORIZED, r#"{"error":"session"}"#))
 }
 
 /// as `require`, for a request the page makes on its own (a live meter): the session must be
@@ -591,11 +661,37 @@ mod tests {
 
     type Calls = Arc<Mutex<Vec<(String, Option<IpAddr>)>>>;
 
+    /// whether each account is in the admins group right now; a test changes it to demote.
+    type Roles = Arc<Mutex<HashMap<String, bool>>>;
+
+    fn roles() -> Roles {
+        Arc::new(Mutex::new(HashMap::from([
+            ("admin".to_string(), true),
+            ("carol".to_string(), false),
+        ])))
+    }
+
+    /// every operation the fake runner was given: who asked and what.
+    type Ran = Arc<Mutex<Vec<(String, lanlord_core::ops::Op)>>>;
+
+    /// runs operations the way core's `execute_as` guards them: the caller's grants must cover
+    /// `Op::requires`. what is allowed answers with the name of the user, and is recorded.
+    fn runner(ran: Ran) -> super::super::Runner {
+        use lanlord_core::access::{authorize, Grants};
+        Arc::new(move |caller, op, _ask| {
+            let grants = Grants::fallback(caller.admin);
+            authorize(&grants, op)?;
+            ran.lock().unwrap().push((caller.user.clone(), op.clone()));
+            Ok(lanlord_core::ops::Reply::Names(vec![caller.user.clone()]))
+        })
+    }
+
     /// accepts the password `right` for `admin` (an admin) and `carol` (an ordinary user),
     /// denies everything else, and remembers who it was asked about.
     struct Fake {
         calls: Calls,
         down: bool,
+        roles: Roles,
     }
 
     impl Verifier for Fake {
@@ -609,6 +705,11 @@ mod tests {
             };
             Box::pin(async move { answer })
         }
+
+        fn admin(&self, user: &str) -> Standing {
+            let now = self.roles.lock().unwrap().get(user).copied();
+            Box::pin(async move { now })
+        }
     }
 
     struct Rig {
@@ -616,6 +717,8 @@ mod tests {
         auth: Arc<Auth>,
         calls: Calls,
         offset: Arc<AtomicU64>,
+        roles: Roles,
+        ran: Ran,
     }
 
     fn rig_with(down: bool) -> Rig {
@@ -623,10 +726,12 @@ mod tests {
         let offset = Arc::new(AtomicU64::new(0));
         let base = Instant::now();
         let seen = offset.clone();
+        let (roles, ran) = (roles(), Ran::default());
         let auth = Auth::with_clock(
             Box::new(Fake {
                 calls: calls.clone(),
                 down,
+                roles: roles.clone(),
             }),
             Limits {
                 fail_delay: Duration::ZERO,
@@ -635,10 +740,12 @@ mod tests {
             Box::new(move || base + Duration::from_secs(seen.load(Ordering::SeqCst))),
         );
         Rig {
-            app: super::super::router_with(None, auth.clone()),
+            app: super::super::router_with(None, auth.clone(), runner(ran.clone())),
             auth,
             calls,
             offset,
+            roles,
+            ran,
         }
     }
 
@@ -703,12 +810,25 @@ mod tests {
     }
 
     async fn post_op(rig: &Rig, cookie: Option<&str>) -> StatusCode {
-        let mut builder = page("POST", "/api/op", "{}");
+        let mut builder = page("POST", "/api/operations", "{}");
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
         }
         send(rig, builder.body(Body::from("{}")).unwrap()).await.0
     }
+
+    /// post `body` to the operations endpoint as the page would.
+    async fn post_body(rig: &Rig, cookie: &str, body: &str) -> (StatusCode, String) {
+        let request = page("POST", "/api/operations", body)
+            .header(header::COOKIE, cookie)
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let (status, _, text) = send(rig, request).await;
+        (status, text)
+    }
+
+    const FACTS: &str = r#"{"op":{"op":"server_facts"}}"#;
+    const RESET: &str = r#"{"op":{"op":"reset_password","user":"dave","new":"x"}}"#;
 
     async fn get_monitor(rig: &Rig, cookie: Option<&str>) -> StatusCode {
         let mut builder = Request::builder().uri("/api/monitor");
@@ -826,18 +946,25 @@ mod tests {
     fn a_failed_login_takes_at_least_the_fail_delay() {
         runtime().block_on(async {
             let calls = Arc::new(Mutex::new(Vec::new()));
+            let roles = roles();
             let auth = Auth::new(
-                Box::new(Fake { calls, down: false }),
+                Box::new(Fake {
+                    calls,
+                    down: false,
+                    roles: roles.clone(),
+                }),
                 Limits {
                     fail_delay: Duration::from_millis(300),
                     ..Limits::default()
                 },
             );
             let rig = Rig {
-                app: super::super::router_with(None, auth.clone()),
+                app: super::super::router_with(None, auth.clone(), runner(Ran::default())),
                 auth,
                 calls: Arc::default(),
                 offset: Arc::default(),
+                roles,
+                ran: Ran::default(),
             };
             let started = Instant::now();
             let (status, _, _) = login_as(&rig, "admin", "wrong").await;
@@ -877,7 +1004,7 @@ mod tests {
         runtime().block_on(async {
             let rig = rig();
             let body = r#"{"user":"admin","password":"right"}"#;
-            for uri in ["/api/login", "/api/logout", "/api/op"] {
+            for uri in ["/api/login", "/api/logout", "/api/operations"] {
                 // axum builders append headers, so build each spoiled request from scratch
                 let plain = |extra: &[(&str, &str)], skip: &[&str]| {
                     let mut b = Request::builder().method("POST").uri(uri);
@@ -947,10 +1074,130 @@ mod tests {
                 post_op(&rig, Some(&unprefixed)).await,
                 StatusCode::UNAUTHORIZED
             );
-            // with a session it still answers 501 until the operations are wired up
+            // with a session, a body that is not an operation is a 400
+            assert_eq!(post_op(&rig, Some(&cookie)).await, StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    fn an_allowed_operation_runs_and_answers_its_reply() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "carol").await;
+            let (status, text) = post_body(&rig, &cookie, FACTS).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
             assert_eq!(
-                post_op(&rig, Some(&cookie)).await,
-                StatusCode::NOT_IMPLEMENTED
+                serde_json::from_str::<lanlord_core::ops::Response>(&text).unwrap(),
+                lanlord_core::ops::Response::Ok(lanlord_core::ops::Reply::Names(vec![
+                    "carol".into()
+                ]))
+            );
+            assert_eq!(rig.ran.lock().unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn a_forbidden_operation_is_a_403_with_a_message_and_does_not_run() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "carol").await;
+            let (status, text) = post_body(&rig, &cookie, RESET).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            let error = serde_json::from_str::<serde_json::Value>(&text).unwrap()["error"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(error.contains("permission denied"), "{error}");
+            assert!(rig.ran.lock().unwrap().is_empty());
+            // the same operation is fine for an administrator
+            let admin = session_for(&rig, "admin").await;
+            assert_eq!(post_body(&rig, &admin, RESET).await.0, StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn a_bad_body_is_a_400_and_a_stream_is_refused_with_a_reason() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "admin").await;
+            for body in ["", "nope", r#"{"op":{"op":"no_such_op"}}"#, r#"{"x":1}"#] {
+                let (status, text) = post_body(&rig, &cookie, body).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+                assert!(text.contains("error"));
+            }
+            let (status, text) =
+                post_body(&rig, &cookie, r#"{"op":{"op":"subscribe","topic":"cpu"}}"#).await;
+            assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+            assert!(text.contains("live streams"), "{text}");
+            assert!(rig.ran.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn a_demoted_user_loses_access_on_the_next_operation() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "admin").await;
+            assert_eq!(post_body(&rig, &cookie, RESET).await.0, StatusCode::OK);
+            // an administrator takes them out of the admins group; their session is still there
+            rig.roles.lock().unwrap().insert("admin".into(), false);
+            assert_eq!(
+                post_body(&rig, &cookie, RESET).await.0,
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(
+                get_session(&rig, &cookie).await.1,
+                r#"{"admin":false,"user":"admin"}"#
+            );
+            // and an account that is gone loses the session altogether
+            rig.roles.lock().unwrap().remove("admin");
+            assert_eq!(
+                post_body(&rig, &cookie, FACTS).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        });
+    }
+
+    #[test]
+    fn a_permission_change_by_an_admin_ends_that_users_sessions() {
+        runtime().block_on(async {
+            let rig = rig();
+            let admin = session_for(&rig, "admin").await;
+            let carol = session_for(&rig, "carol").await;
+            assert_eq!(post_body(&rig, &carol, FACTS).await.0, StatusCode::OK);
+            let demote = r#"{"op":{"op":"change_users","changes":[{"change":"set_admin","name":"carol","admin":false}]}}"#;
+            assert_eq!(post_body(&rig, &admin, demote).await.0, StatusCode::OK);
+            assert_eq!(
+                post_body(&rig, &carol, FACTS).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+            // the administrator's own session is untouched
+            assert_eq!(post_body(&rig, &admin, FACTS).await.0, StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn a_password_change_ends_the_other_sessions_and_keeps_this_one() {
+        runtime().block_on(async {
+            let rig = rig();
+            let here = session_for(&rig, "carol").await;
+            let elsewhere = session_for(&rig, "carol").await;
+            let admin = session_for(&rig, "admin").await;
+            let change = r#"{"op":{"op":"change_password","old":"right","new":"newer"}}"#;
+            assert_eq!(post_body(&rig, &here, change).await.0, StatusCode::OK);
+            assert_eq!(
+                post_body(&rig, &elsewhere, FACTS).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(post_body(&rig, &here, FACTS).await.0, StatusCode::OK);
+            assert_eq!(post_body(&rig, &admin, FACTS).await.0, StatusCode::OK);
+            // an administrator resetting someone else's password ends all of that user's sessions
+            assert_eq!(post_body(&rig, &admin, RESET).await.0, StatusCode::OK);
+            let dave = r#"{"op":{"op":"reset_password","user":"carol","new":"x"}}"#;
+            assert_eq!(post_body(&rig, &admin, dave).await.0, StatusCode::OK);
+            assert_eq!(
+                post_body(&rig, &here, FACTS).await.0,
+                StatusCode::UNAUTHORIZED
             );
         });
     }
@@ -964,10 +1211,7 @@ mod tests {
             assert_eq!(rig.auth.revoke_user("admin"), 1);
             assert_eq!(rig.auth.revoke_user("admin"), 0);
             assert_eq!(post_op(&rig, Some(&admin)).await, StatusCode::UNAUTHORIZED);
-            assert_eq!(
-                post_op(&rig, Some(&other)).await,
-                StatusCode::NOT_IMPLEMENTED
-            );
+            assert_eq!(post_op(&rig, Some(&other)).await, StatusCode::BAD_REQUEST);
         });
     }
 
