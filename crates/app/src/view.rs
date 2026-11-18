@@ -108,6 +108,8 @@ pub enum Node<M> {
     Code(String),
     /// a thin etched line across the window.
     Separator,
+    /// a progress bar filled to `fraction` (0 to 1) with `text` on it.
+    Bar { fraction: f32, text: String },
     /// nodes side by side, left to right; a `Gap` is horizontal space here.
     Row(Vec<Node<M>>),
     /// a box of editable fixed-width text, `height` tall; each change sends `edit(new text)`.

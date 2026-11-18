@@ -223,6 +223,8 @@ pub struct Shell {
     services: Services,
     hosts: HostList,
     console: Console,
+    /// when the shell started; the progress dialog times an apply on it.
+    epoch: std::time::Instant,
     my_server: MyServer,
     settings: SettingsWindow,
     components: Components,
@@ -283,6 +285,7 @@ impl Shell {
             services: Services::new(gateway, Wake::none()),
             hosts,
             console: Console::new(Wake::none()),
+            epoch: std::time::Instant::now(),
             my_server: MyServer::default(),
             settings: SettingsWindow::default(),
             components: Components::default(),
@@ -637,6 +640,10 @@ impl Shell {
             }
         }
         self.console.drain();
+        self.console.apply.tick(self.epoch.elapsed().as_secs_f64());
+        if self.console.apply.take_started() {
+            self.open(Target::Progress);
+        }
         self.settings.poll();
         if self.settings.take_saved() {
             self.components.invalidate();
@@ -826,6 +833,17 @@ impl Shell {
                 }
             },
             Target::Networks => drive::<()>(&not_yet(), &mut pass, &state, palette).0,
+            Target::Progress => {
+                let nodes = self.console.apply.view();
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let Some(msg) = msg {
+                    self.console.apply.update(msg);
+                }
+                if self.console.apply.take_done() {
+                    self.close_requests.push(Target::Progress);
+                }
+                answer
+            }
         };
         if state.focus.is_none() {
             state.focus = answer.want_focus.clone();

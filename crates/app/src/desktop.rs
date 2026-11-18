@@ -21,6 +21,8 @@ pub enum Target {
     Welcome,
     /// the changelog, read only; opened from the Welcome window and the menu's help rows.
     Changelog,
+    /// the progress of an apply; it opens by itself when one starts and has no desktop icon.
+    Progress,
     /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
     TaskManager,
 }
@@ -46,6 +48,7 @@ impl Target {
             Self::Components => "components",
             Self::Welcome => "welcome",
             Self::Changelog => "changelog",
+            Self::Progress => "apply-progress",
             Self::TaskManager => "taskmgr",
         }
     }
@@ -62,6 +65,7 @@ impl Target {
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
             Self::Changelog => "Changelog",
+            Self::Progress => "Applying Settings",
             Self::TaskManager => "Task Manager",
         }
     }
@@ -120,6 +124,7 @@ impl Target {
                 380.0,
             ),
             Self::Changelog => (520.0, 400.0),
+            Self::Progress => (480.0, 360.0),
             Self::TaskManager => (500.0, 490.0),
         }
     }
@@ -227,5 +232,18 @@ mod tests {
                 "hosts"
             ]
         );
+    }
+
+    #[test]
+    fn the_progress_window_has_no_icon_and_names_itself() {
+        assert_eq!(Target::Progress.id(), "apply-progress");
+        assert_eq!(Target::Progress.title(), "Applying Settings");
+        assert!(
+            Target::Progress.needs_admin(),
+            "applying is for administrators"
+        );
+        assert!(Target::Progress.size().0 > 0.0);
+        assert!(!icons(None).contains(&Target::Progress));
+        assert!(!windows(&icons(None)).contains(&Target::Progress));
     }
 }

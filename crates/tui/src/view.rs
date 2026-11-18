@@ -510,6 +510,7 @@ impl<'a> Painter<'a> {
             Node::Labelled { body, .. } => inner(body, width.saturating_sub(LABEL)).max(1),
             Node::Alert(text) => wrap(text, width.saturating_sub(5)).len() as u16,
             Node::Spin { .. } => 1,
+            Node::Bar { .. } => 1,
             Node::ClockFace { .. } => 1,
             Node::KeyedInput(_) => 1,
             Node::Banner(_) => 3,
@@ -637,6 +638,27 @@ impl<'a> Painter<'a> {
                     t,
                     self.st(fg, GRAY),
                 );
+            }
+            Node::Bar { fraction, text: t } => {
+                fill(buf, area, p, WHITE);
+                let width = usize::from(area.width);
+                let full = (width as f32 * fraction.clamp(0.0, 1.0)).round() as usize;
+                let label: Vec<char> = format!("{t:^width$}").chars().take(width).collect();
+                for (n, ch) in label.iter().enumerate() {
+                    let (fg, bg) = if n < full {
+                        (WHITE, NAVY)
+                    } else {
+                        (BLACK, WHITE)
+                    };
+                    text(
+                        buf,
+                        area.x + n as u16,
+                        area.y,
+                        1,
+                        &ch.to_string(),
+                        self.st(fg, bg),
+                    );
+                }
             }
             Node::Separator => {
                 let line = "─".repeat(usize::from(area.width));
@@ -1675,7 +1697,7 @@ fn log_colour(kind: Kind) -> Rgb {
         Kind::Out => (192, 192, 192),
         Kind::Err => (255, 85, 85),
         Kind::Info => (85, 255, 255),
-        Kind::Debug => SHADOW,
+        Kind::Debug | Kind::Event => SHADOW,
     }
 }
 
@@ -2353,5 +2375,20 @@ mod tests {
             field_value(&nodes, &[3]),
             Some(FieldValue::Plain { multi: false, .. })
         ));
+    }
+
+    #[test]
+    fn a_progress_bar_fills_to_its_fraction_with_the_text_on_it() {
+        let nodes: Vec<Node<()>> = vec![Node::Bar {
+            fraction: 0.5,
+            text: "50%".into(),
+        }];
+        let (text, _) = painted(&nodes);
+        assert!(text.contains("50%"), "{text}");
+        let empty: Vec<Node<()>> = vec![Node::Bar {
+            fraction: 0.0,
+            text: "0%".into(),
+        }];
+        assert!(painted(&empty).0.contains("0%"));
     }
 }

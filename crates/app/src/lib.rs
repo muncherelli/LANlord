@@ -4,6 +4,7 @@
 //! actions.
 
 pub mod admin_setup;
+pub mod apply_progress;
 pub mod ask;
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
