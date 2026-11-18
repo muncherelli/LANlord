@@ -375,6 +375,7 @@ pub fn show(
         // the room above what the contents need on their own, for the growable part to take
         let extra = spare_room(before, sized, fit, room, floor);
         let from = ui.cursor().min;
+        let room_width = ui.available_width();
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_size(
@@ -410,7 +411,13 @@ pub fn show(
             let natural = content_height - (extra - spare.extra);
             remember_room(ctx, id, key, before, natural, spare.claimed, fit);
         }
-        ui.allocate_rect(inner.min_rect(), Sense::hover());
+        // a fixed window keeps its width: the scroll bar takes room from the contents, and a
+        // control that will not narrow must not widen the window
+        let mut taken = inner.min_rect();
+        if fixed {
+            taken.set_width(room_width);
+        }
+        ui.allocate_rect(taken, Sense::hover());
     })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);
