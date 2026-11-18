@@ -14,13 +14,14 @@ S
 cat > "$tmp/docker" <<'S'
 #!/bin/sh
 # the last argument before --format is the image reference
-for a in "$@"; do case "$a" in ghcr.io/*) ref=$a ;; esac; done
+for a in "$@"; do case "$a" in ghcr.io/*) ref=$a ;; *) ;; esac; done
 case "$ref" in
   *:0.1.0) echo 'WARNING: a buildx warning' >&2; echo '{"linux/amd64":{"config":{"Labels":{"org.opencontainers.image.version":"0.1.0","org.opencontainers.image.revision":"aaa"}}}}' ;;
   *:0.1.1) echo '{"config":{"Labels":{"org.opencontainers.image.version":"0.1.0","org.opencontainers.image.revision":"aaa"}}}' ;;
   *:0.1.2) echo 'ERROR: ghcr.io/example-image:0.1.2: not found' >&2; exit 1 ;;
   *:0.1.3) echo 'ERROR: 503 service unavailable' >&2; exit 1 ;;
   *:1.0.0) echo '{"linux/amd64":{"config":{"Labels":{"org.opencontainers.image.version":"1.0.0"}}}}' ;;
+  *) echo "unexpected reference $ref" >&2; exit 1 ;;
 esac
 S
 chmod +x "$tmp/gh" "$tmp/docker"

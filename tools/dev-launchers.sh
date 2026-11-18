@@ -84,6 +84,7 @@ SH
 osascript -e 'tell application "Terminal"' -e 'activate' -e 'do script "$updater; echo; echo --- whats in this preview ---; cat $preview_home/INCLUDED.txt; echo; read -n 1 -s -r -p \\"press any key to close\\""' -e 'end tell' >/dev/null
 SH
         ;;
+      *) echo "unknown launcher kind $kind" >&2; return 1 ;;
     esac
     chmod +x "$app/Contents/MacOS/launch"
   else
@@ -94,6 +95,7 @@ SH
       gui) exec_line="$bin gui"; terminal=false ;;
       tui) exec_line="$bin"; terminal=true ;;
       update) exec_line="$updater"; terminal=true ;;
+      *) echo "unknown launcher kind $kind" >&2; return 1 ;;
     esac
     cat > "$entry" <<DESKTOP
 [Desktop Entry]
