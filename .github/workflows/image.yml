@@ -374,7 +374,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: check the released tag
         run: |
-          set -eu
+          set -euo pipefail
           # the packages api can lag a moment behind the push, so look a few times
           for attempt in 1 2 3 4 5; do
             have=$(tools/ghcr-own-versions.sh "$IMAGE" | sed -n "s/^$VERSION //p")

@@ -14,12 +14,15 @@ elif grep -q 'HTTP 404' <<<"$out"; then
 else
   echo "$out" >&2; exit 1
 fi
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
 for t in $(grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" | sort -uV || true); do
   # a tag deleted since the listing is not there to count; any other error (auth, rate limit,
   # registry) fails, so a published tag never looks unpublished
-  if ! cfg=$(docker buildx imagetools inspect "ghcr.io/muncherelli/$image:$t" --format '{{json .Image}}' 2>&1); then
-    if grep -qiE 'not found|MANIFEST_UNKNOWN' <<<"$cfg"; then continue; fi
-    echo "$cfg" >&2; exit 1
+  # stderr goes to a file, so buildx warnings never end up in the json
+  if ! cfg=$(docker buildx imagetools inspect "ghcr.io/muncherelli/$image:$t" --format '{{json .Image}}' 2>"$err"); then
+    if grep -qiE 'not found|MANIFEST_UNKNOWN' "$err"; then continue; fi
+    cat "$err" >&2; exit 1
   fi
   # a multi-arch index gives one config per platform; the labels are the same in each
   rev=$(jq -r '(if has("config") then . else (to_entries[0].value) end)
