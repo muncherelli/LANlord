@@ -20,7 +20,7 @@ LANlord is early software. The pieces below work today, but expect rough edges.
 | Module | What it does |
 |---|---|
 | Gateway | A baseline: the apply-time record and the message of the day. |
-| Docker | Installs Docker and drops NetBIOS and SMB on the host network. Works on LXC containers, VMs and bare metal. |
+| Docker | Installs Docker and drops NetBIOS and SMB on the host network. Works on LXC containers (with `security.nesting=true` and `keyctl=1`, for example `pct set <CTID> --features nesting=1,keyctl=1`), VMs and bare metal. |
 | NT4 Domain | Samba in a container, as an NT4-style domain controller or a plain workgroup server, bound to the internal network. The desktop window edits its settings and logins (passwords are stored encrypted, apart from the plain settings). |
 | Web Proxy | Caddy in a container, proxying sites on the internal network, with plain HTTP or Caddy's own certificate authority. It also serves a plain HTML retronet status page (machines, services, sites) at `http://lanlord.retronet/` and on the internal address, readable by old browsers. |
 | DNS | dnsmasq in a container: local-only DNS for the retronet and optional DHCP without a gateway option, for Windows 98, 2000, NT4 and old Linux clients. The desktop window edits the zone, the DHCP range, static leases and extra records, and lists the current leases. |
@@ -41,9 +41,11 @@ lanlord                                     # The terminal UI.
 lanlord gui                                 # The desktop window.
 ```
 
+The client needs the `lanlord-vX.Y.Z-linux-ARCH-headless.tar.gz` release asset (ARCH is `x86_64` or `arm64`) for the terminal UI and cli on linux; the `lanlord-vX.Y.Z-web.tar.gz` archive is the browser build that `lanlord install` downloads on the gateway by itself.
+
 Secrets never leave the gateway: it makes its own key on first start (root only, in `/var/lib/lanlord-operations`), and a client can set a secret but never read it back. A settings folder sealed by an older version to a key in `~/.config/lanlord/identity` moves over once with `lanlord move-secrets user@gateway`. On the gateway itself, the terminal UI and the desktop window offer "This server" in the logon box: no ssh, signed in as the account you are using.
 
-The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh` client, so your `~/.ssh/config`, jump hosts and SSH agent (including 1Password) all work.
+The user you connect as needs `sudo` on the gateway, or can be `root`, which works but prints a warning (see Security notes). LANlord uses your own `ssh` client, so your `~/.ssh/config`, jump hosts and SSH agent (including 1Password) all work.
 
 ## Date, time and time zone
 
