@@ -5,6 +5,8 @@ use eframe::egui::{
     Stroke, Ui, Vec2,
 };
 
+/// how wide a scroll bar is, in points.
+pub const SCROLL_BAR_WIDTH: f32 = 16.0;
 pub const TEAL: Color32 = Color32::from_rgb(0, 128, 128);
 pub const GRAY: Color32 = Color32::from_rgb(192, 192, 192);
 pub const LIGHT: Color32 = Color32::from_rgb(223, 223, 223);
@@ -157,12 +159,29 @@ pub fn apply(ctx: &egui::Context) {
     ] {
         widget.corner_radius = square;
     }
+    // the scroll bar thumb is painted in the widget fill, its track in the extreme background
+    visuals.extreme_bg_color = LIGHT;
+    for widget in [
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+    ] {
+        widget.bg_fill = GRAY;
+    }
     ctx.set_visuals(visuals);
     ctx.global_style_mut(|style| {
         for font_id in style.text_styles.values_mut() {
             font_id.size = TEXT;
         }
         style.spacing.item_spacing = Vec2::new(6.0, 4.0);
+        // solid, always visible, 16 points wide: no floating bar that fades away
+        style.spacing.scroll = egui::style::ScrollStyle {
+            bar_width: SCROLL_BAR_WIDTH,
+            bar_inner_margin: 0.0,
+            bar_outer_margin: 0.0,
+            handle_min_length: SCROLL_BAR_WIDTH,
+            ..egui::style::ScrollStyle::solid()
+        };
     });
 }
 
@@ -188,5 +207,30 @@ pub mod probe {
             d.get_temp::<Buttons>(Id::unique("test-buttons"))
                 .and_then(|b| b.get(text).copied())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_bars_are_solid_sixteen_wide_and_always_there() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let style = ctx.global_style();
+        let scroll = style.spacing.scroll;
+        assert!(!scroll.floating, "a floating bar fades away");
+        assert_eq!(scroll.bar_width, 16.0);
+        assert_eq!(scroll.bar_inner_margin + scroll.bar_outer_margin, 0.0);
+        let visuals = &style.visuals;
+        assert_eq!(visuals.extreme_bg_color, LIGHT, "the track");
+        for widget in [
+            &visuals.widgets.inactive,
+            &visuals.widgets.hovered,
+            &visuals.widgets.active,
+        ] {
+            assert_eq!(widget.bg_fill, GRAY, "the thumb");
+        }
     }
 }

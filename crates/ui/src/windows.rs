@@ -375,6 +375,7 @@ pub fn show(
         // the room above what the contents need on their own, for the growable part to take
         let extra = spare_room(before, sized, fit, room, floor);
         let from = ui.cursor().min;
+        let room_width = ui.available_width();
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_size(
@@ -410,7 +411,13 @@ pub fn show(
             let natural = content_height - (extra - spare.extra);
             remember_room(ctx, id, key, before, natural, spare.claimed, fit);
         }
-        ui.allocate_rect(inner.min_rect(), Sense::hover());
+        // a fixed window keeps its width: the scroll bar takes room from the contents, and a
+        // control that will not narrow must not widen the window
+        let mut taken = inner.min_rect();
+        if fixed {
+            taken.set_width(room_width);
+        }
+        ui.allocate_rect(taken, Sense::hover());
     })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);
@@ -492,6 +499,32 @@ mod tests {
                 "{inner}: {size:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_fixed_window_keeps_its_width_when_a_control_will_not_narrow_beside_the_scroll_bar() {
+        let ctx = egui::Context::default();
+        let mut rect = None;
+        for _ in 0..4 {
+            testkit::run(&ctx, vec![], |ui| {
+                let place = Placement {
+                    start: Pos2::new(100.0, 100.0),
+                    width: 300.0,
+                    area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
+                    growable: false,
+                    fixed: true,
+                    floor: 0.0,
+                    height: Some(250.0),
+                };
+                // tall enough for the scroll bar, and as wide as the window before the bar
+                rect = show(ui.ctx(), "f", "F", place, true, false, |ui| {
+                    ui.allocate_space(Vec2::new(300.0 - 2.0 * FRAME, 900.0));
+                })
+                .map(|s| s.rect);
+            });
+        }
+        let width = rect.expect("shown").width();
+        assert!((width - 300.0).abs() < 0.01, "{width}");
     }
 
     #[test]
