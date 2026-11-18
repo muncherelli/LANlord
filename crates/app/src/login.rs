@@ -221,11 +221,31 @@ pub struct LoginBox {
     overlay: Option<Overlay>,
     status: String,
     status_is_error: bool,
+    /// the box's title; a field so an admin setting can replace it later.
+    title: String,
+    /// the web box's body text; a field so an admin setting can replace it later.
+    web_body: String,
     focus: bool,
     /// `user@this-server` when the operations socket is here, and whether it is the choice.
     here: Option<String>,
     local: bool,
 }
+
+/// spacing of the box, in points.
+const BODY_GAP: f32 = 8.0;
+const BUTTON_GAP: f32 = 10.0;
+/// the web box follows the NT 4 logon box: more air under the text, and a wide gap above the button.
+const WEB_BODY_GAP: f32 = 20.0;
+const WEB_FIELD_GAP: f32 = 6.0;
+const WEB_BUTTON_GAP: f32 = 38.0;
+/// the icon column, the text column, the label column and the inputs of the web box.
+const WEB_ICON_COLUMN: f32 = 78.0;
+const WEB_TEXT_COLUMN: f32 = 256.0;
+const WEB_LABEL_COLUMN: f32 = 80.0;
+const WEB_INPUT_WIDTH: f32 = 175.0;
+/// the dialog's width for the web box, in points.
+pub const WEB_WIDTH: f32 = 384.0;
+const STATUS_GAP: f32 = 6.0;
 
 impl LoginBox {
     /// a box for `auth`, with the fields filled from `last` (`user@host`) when there is one.
@@ -249,6 +269,8 @@ impl LoginBox {
             overlay: None,
             status: String::new(),
             status_is_error: false,
+            title: "Login Information".into(),
+            web_body: "Enter a username and password that is valid for this system.".into(),
             focus: false,
         }
     }
@@ -270,7 +292,7 @@ impl LoginBox {
         self.local && self.here.is_some()
     }
 
-    fn is_web(&self) -> bool {
+    pub fn is_web(&self) -> bool {
         matches!(self.backend, Backend::Web(_))
     }
 
@@ -525,12 +547,6 @@ impl LoginBox {
         if self.busy() {
             return;
         }
-        if self.is_web() {
-            self.password = Zeroizing::new(String::new());
-            self.say("", false);
-            self.focus = false;
-            return;
-        }
         if self.stage == Stage::Password {
             self.stage = Stage::Credentials;
         } else {
@@ -548,8 +564,8 @@ impl LoginBox {
     }
 
     /// the title of the box.
-    pub fn title(&self) -> &'static str {
-        "Logon Information"
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
     /// the box's contents; `known` are the servers used before.
@@ -557,22 +573,22 @@ impl LoginBox {
         let busy = self.busy() || self.overlay.is_some();
         let first = !self.focus;
         self.focus = true;
-        let web = self.is_web();
+        if self.is_web() {
+            return self.web_view(busy, first);
+        }
         let local = self.is_local();
         let password_stage = self.stage == Stage::Password;
         let mut nodes = vec![
             Node::Header {
                 icon: "gateway",
                 title: String::new(),
-                lines: vec![if web {
-                    "Type your name and password for this gateway.".into()
-                } else if local {
+                lines: vec![if local {
                     "You are signed in to this server with the account you are using.".into()
                 } else {
                     "Type the name you use on the gateway and its hostname or address.".into()
                 }],
             },
-            Node::Gap(8.0),
+            Node::Gap(BODY_GAP),
         ];
         if let Some(target) = &self.here {
             let user = target
@@ -597,7 +613,7 @@ impl LoginBox {
         if local {
             return self.finish_view(busy, nodes);
         }
-        if !known.is_empty() && !web {
+        if !known.is_empty() {
             nodes.push(Node::Labelled {
                 label: "Server:".into(),
                 body: vec![Node::Choice {
@@ -629,20 +645,18 @@ impl LoginBox {
         nodes.push(field(
             "Username:",
             &self.user,
-            first && (web || !password_stage) && empty,
+            first && !password_stage && empty,
             Msg::User,
             Msg::SubmitUser,
         ));
-        if !web {
-            nodes.push(Node::Gap(4.0));
-            nodes.push(field(
-                "Hostname:",
-                &self.host,
-                first && !password_stage && !empty,
-                Msg::Host,
-                Msg::SubmitHost,
-            ));
-        }
+        nodes.push(Node::Gap(4.0));
+        nodes.push(field(
+            "Hostname:",
+            &self.host,
+            first && !password_stage && !empty,
+            Msg::Host,
+            Msg::SubmitHost,
+        ));
         if password_stage {
             nodes.push(Node::Gap(4.0));
             nodes.push(Node::Labelled {
@@ -651,7 +665,7 @@ impl LoginBox {
                     value: self.password.clone(),
                     size: Size::Points(240.0),
                     shown: false,
-                    focus: first && (!web || !empty),
+                    focus: first && !empty,
                     edit: Box::new(Msg::Password),
                     enter: (!busy).then(|| {
                         Box::new(Msg::SubmitPassword) as Box<dyn Fn(Zeroizing<String>) -> Msg>
@@ -662,21 +676,87 @@ impl LoginBox {
         self.finish_view(busy, nodes)
     }
 
+    /// the web box, laid out like the NT 4 logon box: an icon column, then the text, the two
+    /// fields and the button in a column of their own, and the status bar under them.
+    fn web_view(&self, busy: bool, first: bool) -> Vec<Node<Msg>> {
+        let empty = self.user.is_empty();
+        let row = |label: &str, input: Node<Msg>| {
+            Node::Columns(vec![
+                // the label is a few points shorter than a field, so it is nudged down to its middle
+                (
+                    Some(WEB_LABEL_COLUMN),
+                    vec![Node::Gap(3.0), Node::Text(label.into())],
+                ),
+                (None, vec![input]),
+            ])
+        };
+        let text = vec![
+            Node::Text(self.web_body.clone()),
+            Node::Gap(WEB_BODY_GAP),
+            row(
+                "Username:",
+                Node::Input {
+                    value: self.user.clone(),
+                    size: Size::Points(WEB_INPUT_WIDTH),
+                    focus: first && empty,
+                    hint: String::new(),
+                    edit: Box::new(Msg::User),
+                    enter: (!busy).then(|| Box::new(Msg::SubmitUser) as Box<dyn Fn(String) -> Msg>),
+                },
+            ),
+            Node::Gap(WEB_FIELD_GAP),
+            row(
+                "Password:",
+                Node::Secret {
+                    value: self.password.clone(),
+                    size: Size::Points(WEB_INPUT_WIDTH),
+                    shown: false,
+                    focus: first && !empty,
+                    edit: Box::new(Msg::Password),
+                    enter: (!busy).then(|| {
+                        Box::new(Msg::SubmitPassword) as Box<dyn Fn(Zeroizing<String>) -> Msg>
+                    }),
+                },
+            ),
+            Node::Gap(WEB_BUTTON_GAP),
+            Node::Buttons(vec![Button::new("Log In", !busy, Msg::Ok)]),
+        ];
+        vec![
+            Node::Columns(vec![
+                (
+                    Some(WEB_ICON_COLUMN),
+                    vec![Node::Header {
+                        icon: "gateway",
+                        title: String::new(),
+                        lines: Vec::new(),
+                    }],
+                ),
+                (Some(WEB_TEXT_COLUMN), text),
+            ]),
+            // the status bar is empty when idle, and the gap above it only matters with text
+            Node::Gap(if self.status.is_empty() {
+                0.0
+            } else {
+                STATUS_GAP
+            }),
+            Node::Status {
+                text: self.status.clone(),
+                error: self.status_is_error,
+            },
+        ]
+    }
+
     /// the buttons and the status line under the fields.
     fn finish_view(&self, busy: bool, mut nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
-        let web = self.is_web();
-        // the browser has nothing to shut down
-        let mut buttons = vec![
+        let buttons = vec![
+            Button::new("Shut Down", true, Msg::ShutDown),
             Button::new("Cancel", !busy, Msg::Cancel),
             Button::new("OK", !busy, Msg::Ok),
         ];
-        if !web {
-            buttons.insert(0, Button::new("Shut Down", true, Msg::ShutDown));
-        }
         nodes.extend([
-            Node::Gap(10.0),
+            Node::Gap(BUTTON_GAP),
             Node::Buttons(buttons),
-            Node::Gap(6.0),
+            Node::Gap(STATUS_GAP),
             Node::Status {
                 text: self.status.clone(),
                 error: self.status_is_error,
@@ -978,20 +1058,27 @@ mod tests {
     }
 
     #[test]
-    fn the_web_box_has_no_host_field_or_shut_down() {
+    fn the_web_box_has_no_host_field_or_shut_down_or_cancel() {
         let web = Rc::new(FakeWeb::default());
         let mut login = web_box(&web);
-        let mut labels = Vec::new();
-        let mut buttons = Vec::new();
-        for node in login.view(&["x@y".into()]) {
-            match node {
-                Node::Labelled { label, .. } => labels.push(label),
-                Node::Buttons(list) => buttons.extend(list.into_iter().map(|b| b.label)),
-                _ => {}
+        fn walk(nodes: Vec<Node<Msg>>, labels: &mut Vec<String>, buttons: &mut Vec<String>) {
+            for node in nodes {
+                match node {
+                    Node::Text(text) if text.ends_with(':') => labels.push(text),
+                    Node::Columns(columns) => {
+                        for (_, body) in columns {
+                            walk(body, labels, buttons);
+                        }
+                    }
+                    Node::Buttons(list) => buttons.extend(list.into_iter().map(|b| b.label)),
+                    _ => {}
+                }
             }
         }
+        let (mut labels, mut buttons) = (Vec::new(), Vec::new());
+        walk(login.view(&["x@y".into()]), &mut labels, &mut buttons);
         assert_eq!(labels, ["Username:", "Password:"]);
-        assert_eq!(buttons, ["Cancel", "OK"]);
+        assert_eq!(buttons, ["Log In"]);
     }
 
     #[test]
