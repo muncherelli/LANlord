@@ -14,17 +14,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRef, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use base64::Engine as _;
 use lanlord_core::log::{self, Kind};
+use lanlord_core::ops::{Op, Request as OpRequest, Response as OpResponse, UserChange};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use tower_http::timeout::TimeoutLayer;
+
+use crate::operations_service;
 
 /// how `lanlord webui` was asked to run.
 pub struct Options {
@@ -33,6 +36,8 @@ pub struct Options {
     pub listen: Option<SocketAddr>,
     /// the browser build; `web` next to the binary's folder when not given
     pub static_dir: Option<PathBuf>,
+    /// the operations service's socket
+    pub operations_socket: PathBuf,
 }
 
 /// the largest operation the browser may send.
@@ -40,6 +45,11 @@ const OP_LIMIT: usize = 64 * 1024;
 
 /// how long a request may take before it is answered with a timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// how long an operation request may take: a little more than the service lets one run, so the
+/// service's own answer comes first.
+const OPERATIONS_TIMEOUT: Duration =
+    Duration::from_secs(operations_service::RUN_TIMEOUT.as_secs() + 60);
 
 /// the content security policy, with the hashes of the inline scripts a page may run (the build's
 /// loader). caddy sets the same headers for anything that arrives without them.
@@ -67,15 +77,35 @@ pub fn static_dir(given: Option<PathBuf>) -> Option<PathBuf> {
 /// the routes: the browser build (or a placeholder page), a health check and the operations
 /// endpoint. the build is looked for on every request, so installing or replacing it needs no
 /// restart. every response carries the security headers.
-pub fn router(static_dir: Option<&Path>) -> Router {
-    router_with(static_dir, auth::Auth::system())
+#[cfg(test)]
+fn router(static_dir: Option<&Path>) -> Router {
+    router_at(
+        static_dir,
+        Path::new("/run/lanlord-operations/operations.sock"),
+    )
 }
 
-/// the same, with the logins checked and the sessions kept by `auth`.
-fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
+/// the same, sending operations to the service on `operations_socket`.
+pub fn router_at(static_dir: Option<&Path>, operations_socket: &Path) -> Router {
+    let auth = auth::Auth::system();
+    router_with(
+        static_dir,
+        auth.clone(),
+        roster::Roster::new(auth),
+        service_runner(operations_socket.to_path_buf()),
+    )
+}
+
+/// the same, with the logins checked and the sessions kept by `auth`, the rights read by
+/// `roster` and the operations run by `run`.
+fn router_with(
+    static_dir: Option<&Path>,
+    auth: Arc<auth::Auth>,
+    roster: Arc<roster::Roster>,
+    run: Runner,
+) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
-    let roster = roster::Roster::system();
-    Router::new()
+    let quick = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/login",
@@ -85,13 +115,24 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
         .route("/api/session", roster::route(roster.clone()))
         .route("/api/monitor/end", post(monitor::end))
         .route("/api/events", stream::route(roster))
-        .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
-        .with_state(auth)
         .fallback(move |request: Request| web(dir.clone(), request))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
-        ))
+        ));
+    // an operation may run for minutes (an apply, a purge): its route has its own, longer limit
+    let long = Router::new()
+        .route(
+            "/api/operations",
+            post(operations).layer(DefaultBodyLimit::max(OP_LIMIT)),
+        )
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            OPERATIONS_TIMEOUT,
+        ));
+    quick
+        .merge(long)
+        .with_state(App { auth, run })
         .layer(axum::middleware::map_response(secure))
 }
 
@@ -229,28 +270,163 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
-/// the operations endpoint. it needs a page-origin json request and a login, and until the
-/// operations are handed to core's `execute_as` (which checks `Op::requires` for the session's
-/// account, and ends that user's sessions with `Auth::revoke_user` when a password or permission
-/// changes) it refuses every operation, so nothing here can run unchecked. the body is read
-/// already so the size limit applies.
-async fn op(
-    State(auth): State<Arc<auth::Auth>>,
+/// sends one operation for an account to whatever runs it; the apply events it reports on the
+/// way go to the `Events` it is given.
+type Runner =
+    Arc<dyn Fn(String, Op, operations_service::Events) -> operations_service::Asking + Send + Sync>;
+
+/// the real runner: the root operations service on its unix socket, which checks what the
+/// account may do itself.
+fn service_runner(socket: PathBuf) -> Runner {
+    Arc::new(move |account, op, events| operations_service::ask(&socket, account, op, events))
+}
+
+/// where the apply events of an operation go: to the browsers following applies.
+fn apply_events() -> operations_service::Events {
+    Arc::new(|event| stream::publish_apply(&event))
+}
+
+/// what the handlers share: the logins and the way operations are run.
+#[derive(Clone)]
+struct App {
+    auth: Arc<auth::Auth>,
+    run: Runner,
+}
+
+impl FromRef<App> for Arc<auth::Auth> {
+    fn from_ref(app: &App) -> Self {
+        app.auth.clone()
+    }
+}
+
+/// an error answer: `{"error": message}`.
+fn refusal(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        serde_json::json!({ "error": message }).to_string(),
+    )
+        .into_response()
+}
+
+/// the accounts whose sessions an op leaves out of date, and whether the caller's own session
+/// may stay: a password change keeps the window it was made in, a permission change does not.
+fn affected(op: &Op, caller: &str) -> Vec<(String, bool)> {
+    let own = |name: &str| name == caller;
+    match op {
+        Op::ChangePassword { .. } => vec![(caller.to_string(), true)],
+        Op::ResetPassword { user, .. } => vec![(user.clone(), own(user))],
+        Op::ChangeUsers { changes } => changes
+            .iter()
+            .map(|change| match change {
+                UserChange::SetPassword { name, .. } => (name.clone(), own(name)),
+                UserChange::SetAdmin { name, .. }
+                | UserChange::SetSoftwareAdmin { name, .. }
+                | UserChange::Remove { name } => (name.clone(), false),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// the operations endpoint. it needs a page-origin json request and a login, and takes the same
+/// `Request` body the browser sends. the account's admin state is read again on every request,
+/// and the op goes to the operations service, which checks `Op::requires` for the account itself:
+/// a refusal is a 403, a body that is not an operation a 400, a service that is not there a 503,
+/// and anything else the `Response` json of `lanlord op`. after an op that changes a password or
+/// a user's permissions, even one that failed half way, the affected users' sessions end (see
+/// `Auth::revoke_user`). no sudo password travels: the service is root. live streams are not
+/// operations: they are served on `/api/events`. the body is read already so the size limit
+/// applies.
+async fn operations(
+    State(app): State<App>,
     headers: HeaderMap,
-    _operation: axum::body::Bytes,
+    body: axum::body::Bytes,
 ) -> Response {
     if let Err(refused) = auth::same_origin_json(&headers) {
         return refused;
     }
-    if let Err(unauthorized) = auth::require(&auth, &headers) {
-        return unauthorized;
+    let (user, _) = match auth::require_current(&app.auth, &headers).await {
+        Ok(who) => who,
+        Err(unauthorized) => return unauthorized,
+    };
+    let Ok(request) = serde_json::from_slice::<OpRequest>(&body) else {
+        return refusal(StatusCode::BAD_REQUEST, "not an operation");
+    };
+    drop(body);
+    if matches!(request.op, Op::Subscribe { .. }) {
+        return refusal(
+            StatusCode::NOT_IMPLEMENTED,
+            "live streams are served on /api/events, not here",
+        );
     }
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        [(header::CONTENT_TYPE, "application/json")],
-        r#"{"error":"operations over the web are not available yet; every operation is refused until it is checked against the account's permissions"}"#,
-    )
-        .into_response()
+    let changed = affected(&request.op, &user);
+    // the operation and the sessions it ends run in their own task: a browser that goes away
+    // drops this handler, and the sessions must still end
+    match tokio::spawn(settle(app, headers, user, request.op, changed)).await {
+        Ok(response) => response,
+        Err(_) => refusal(StatusCode::INTERNAL_SERVER_ERROR, "the operation stopped"),
+    }
+}
+
+/// run `op` for `user`, end the sessions of those it affects, and make the answer.
+async fn settle(
+    app: App,
+    headers: HeaderMap,
+    user: String,
+    op: Op,
+    changed: Vec<(String, bool)>,
+) -> Response {
+    let answer = (app.run)(user, op, apply_events()).await;
+    let revoke = |app: &App| {
+        for (name, keep_own) in &changed {
+            if *keep_own {
+                app.auth.revoke_others(name, &headers);
+            } else {
+                app.auth.revoke_user(name);
+            }
+        }
+    };
+    let response = match answer {
+        Ok(OpResponse::Denied(message)) => return refusal(StatusCode::FORBIDDEN, &message),
+        Ok(response) => {
+            // a failed batch may have changed some of it: end the sessions either way
+            revoke(&app);
+            response
+        }
+        Err(operations_service::Unreachable::Down) => {
+            return refusal(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the operations service is not running",
+            )
+        }
+        Err(operations_service::Unreachable::NoAnswer) => {
+            // it may have run
+            revoke(&app);
+            return refusal(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the operations service did not answer",
+            );
+        }
+    };
+    match serde_json::to_string(&response) {
+        Ok(text) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            text,
+        )
+            .into_response(),
+        Err(_) => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not encode the answer",
+        ),
+    }
 }
 
 /// shown until the browser build is installed.
@@ -290,7 +466,7 @@ pub async fn serve(
             "no web ui build found yet; serving a placeholder page until there is one",
         ),
     }
-    let app = router(dir.as_deref());
+    let app = router_at(dir.as_deref(), &options.operations_socket);
     match options.listen {
         Some(addr) => {
             let listener = tokio::net::TcpListener::bind(addr)
@@ -387,7 +563,7 @@ pub async fn remove_if_ours(path: &Path, ours: &Ours) {
 }
 
 /// resolves when the service is asked to stop: ctrl-c, or systemd's sigterm.
-async fn stopped() {
+pub(crate) async fn stopped() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -464,8 +640,9 @@ mod tests {
 
     #[test]
     fn operations_are_refused_without_the_pages_origin() {
-        // (with a session they still answer 501; see the session tests in auth.rs)
-        let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/op"));
+        // (with a session they still get their answer from the operations service; see the
+        // session tests in auth.rs)
+        let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/operations"));
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(kind, "application/json");
     }
@@ -694,6 +871,7 @@ mod tests {
                     socket: path.clone(),
                     listen: None,
                     static_dir: Some(build.clone()),
+                    operations_socket: path.with_extension("operations"),
                 },
                 async {
                     let _ = stopped.await;
@@ -726,6 +904,7 @@ mod tests {
                     socket: PathBuf::from("/nonexistent/unused.sock"),
                     listen: Some(addr),
                     static_dir: Some(PathBuf::from("/nonexistent/web")),
+                    operations_socket: PathBuf::from("/nonexistent/operations.sock"),
                 },
                 async {
                     let _ = stopped.await;
@@ -760,6 +939,7 @@ mod tests {
                     socket: PathBuf::from("/nonexistent/unused.sock"),
                     listen: Some(addr),
                     static_dir: None,
+                    operations_socket: PathBuf::from("/nonexistent/operations.sock"),
                 },
                 async {},
             ))
@@ -779,6 +959,7 @@ mod tests {
                     socket: root.join("run/web.sock"),
                     listen: None,
                     static_dir: None,
+                    operations_socket: PathBuf::from("/nonexistent/operations.sock"),
                 },
                 async {},
             ))
@@ -827,7 +1008,7 @@ mod tests {
         for (app, method, uri) in [
             (router(None), "GET", "/"),
             (router(None), "GET", "/healthz"),
-            (router(None), "POST", "/api/op"),
+            (router(None), "POST", "/api/operations"),
             (router(None), "GET", "/missing.js"),
             (router(Some(&dir)), "GET", "/"),
             (router(Some(&dir)), "GET", "/lanlord.js"),
@@ -943,7 +1124,7 @@ mod tests {
         let (status, h) = rt.block_on(headers(
             router(None),
             "POST",
-            "/api/op",
+            "/api/operations",
             Body::from(vec![b'x'; OP_LIMIT + 1]),
         ));
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
@@ -951,7 +1132,7 @@ mod tests {
         let (status, _) = rt.block_on(headers(
             router(None),
             "POST",
-            "/api/op",
+            "/api/operations",
             Body::from(vec![b'x'; 100]),
         ));
         assert_eq!(status, StatusCode::FORBIDDEN);

@@ -1,5 +1,5 @@
 //! ending a process from the web desktop. the live numbers themselves come from the event stream
-//! (see `stream`); ending a process is for admins, the same rule as `/api/op`.
+//! (see `stream`); ending a process is for admins, the same rule as `/api/operations`.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use lanlord_core::monitor::end_process;
 
-use super::auth::{require, same_origin_json, Auth};
+use super::auth::{require_current, same_origin_json, Auth};
 
 fn reply(status: StatusCode, body: String) -> Response {
     (
@@ -44,7 +44,7 @@ pub async fn end(
     if let Err(refused) = same_origin_json(&headers) {
         return refused;
     }
-    let admin = match require(&auth, &headers) {
+    let admin = match require_current(&auth, &headers).await {
         Ok((_, admin)) => admin,
         Err(unauthorized) => return unauthorized,
     };

@@ -2,7 +2,7 @@
 //! cannot hold a thread or a socket of its own opens one `EventSource` per topic and gets the
 //! monitor samples (the Task Manager and the tray) or the progress of an apply pushed to it.
 //!
-//! the rules are those of `/api/op`: a login, a request that comes from the page itself and the
+//! the rules are those of `/api/operations`: a login, a request that comes from the page itself and the
 //! permission the subscription needs (`Op::requires`), read from the account's real roles and
 //! its live group membership (see [`Roster`]) when the stream opens and at every recheck. a
 //! stream keeps checking, so ending the session (logout, idle, a revoked user) or losing the
@@ -86,7 +86,11 @@ fn same_origin_get(headers: &HeaderMap) -> Result<(), Response> {
 }
 
 /// the route of the streams, reading accounts' permissions from `roster`.
-pub fn route(roster: Arc<Roster>) -> MethodRouter<Arc<Auth>> {
+pub fn route<S>(roster: Arc<Roster>) -> MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    Arc<Auth>: axum::extract::FromRef<S>,
+{
     get(stream).layer(Extension(roster))
 }
 
@@ -166,8 +170,6 @@ fn apply_hub() -> &'static broadcast::Sender<Arc<str>> {
 }
 
 /// hand an apply event to the streams that follow applies. none open is not an error.
-// nothing in the server calls it until the operations service is connected
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn publish_apply(event: &ApplyEvent) {
     if let Ok(text) = serde_json::to_string(event) {
         let _ = apply_hub().send(text.into());
@@ -196,8 +198,15 @@ async fn stream(
         topic: topic.into(),
     }
     .requires();
-    if !roster.grants_of(&user).await.allows(need) {
-        return refuse(StatusCode::FORBIDDEN, "your account may not follow this");
+    match roster.grants_of(&user).await {
+        Some(grants) if grants.allows(need) => {}
+        Some(_) => return refuse(StatusCode::FORBIDDEN, "your account may not follow this"),
+        None => {
+            return refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the account could not be checked",
+            )
+        }
     }
     // a page asking only whether it would be served (after a dropped connection) gets the
     // answer without taking a place among the open streams
@@ -255,8 +264,9 @@ async fn feed(
                     return;
                 };
                 // roles and groups change while a stream is open
-                if !roster.grants_of(&user).await.allows(need) {
-                    return;
+                match roster.grants_of(&user).await {
+                    Some(grants) if grants.allows(need) => {}
+                    _ => return,
                 }
                 continue;
             }
@@ -288,7 +298,7 @@ async fn feed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webui::auth::{Check, Limits, Verifier};
+    use crate::webui::auth::{Check, Limits, Lookup, Standing, Verifier};
     use crate::webui::roster::Roster;
     use axum::body::Body;
     use axum::http::Request;
@@ -303,9 +313,13 @@ mod tests {
 
     const HOST: &str = "gw.example.test";
 
-    /// accepts the password `right` for these names; whether they are administrators is the
-    /// roster's business, not the login's.
-    struct Fake;
+    /// accepts the password `right` for these names; who is an administrator now is the set a
+    /// test changes, as a change of group would.
+    struct Fake {
+        admins: Arc<Mutex<Vec<String>>>,
+        /// when set, the account lookup fails
+        failing: Arc<std::sync::atomic::AtomicBool>,
+    }
 
     impl Verifier for Fake {
         fn check(
@@ -322,6 +336,18 @@ mod tests {
             };
             Box::pin(async move { answer })
         }
+
+        fn admin(&self, user: &str) -> Lookup {
+            let admin = self.admins.lock().unwrap().iter().any(|a| a == user);
+            let failing = self.failing.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if failing {
+                    Standing::Failed
+                } else {
+                    Standing::Account { admin }
+                }
+            })
+        }
     }
 
     struct Rig {
@@ -329,6 +355,8 @@ mod tests {
         auth: Arc<Auth>,
         folder: PathBuf,
         offset: Arc<AtomicU64>,
+        admins: Arc<Mutex<Vec<String>>>,
+        failing: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl Rig {
@@ -345,7 +373,7 @@ mod tests {
         access
     }
 
-    /// a server with its own folder of settings and groups: `admin` is in the admins group.
+    /// a server with its own folder of settings: `admin` is in the admins group.
     fn app() -> Rig {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         let folder = std::env::temp_dir().join(format!(
@@ -355,27 +383,22 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("group"), "root:x:0:\nadmins:x:900:admin\n").unwrap();
-        std::fs::write(
-            folder.join("passwd"),
-            "carol:x:1001:1001::/home/carol:/bin/sh\n",
-        )
-        .unwrap();
-        let roster = Arc::new(Roster {
-            settings: folder.join("settings.yml"),
-            group: folder.join("group"),
-            passwd: folder.join("passwd"),
-        });
+        let admins = Arc::new(Mutex::new(vec!["admin".to_string()]));
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let offset = Arc::new(AtomicU64::new(0));
         let (base, seen) = (Instant::now(), offset.clone());
         let auth = Auth::with_clock(
-            Box::new(Fake),
+            Box::new(Fake {
+                admins: admins.clone(),
+                failing: failing.clone(),
+            }),
             Limits {
                 fail_delay: Duration::ZERO,
                 ..Limits::default()
             },
             Box::new(move || base + Duration::from_secs(seen.load(Ordering::SeqCst))),
         );
+        let roster = Roster::at(folder.join("settings.yml"), auth.clone());
         let app = axum::Router::new()
             .route("/api/login", axum::routing::post(super::super::auth::login))
             .route("/api/events", route(roster))
@@ -385,6 +408,8 @@ mod tests {
             auth,
             folder,
             offset,
+            admins,
+            failing,
         }
     }
 
@@ -646,10 +671,28 @@ mod tests {
                 status_of(&rig, "apply", Some(&cookie)).await,
                 StatusCode::OK
             );
-            std::fs::write(rig.folder.join("group"), "admins:x:900:\n").unwrap();
+            rig.admins.lock().unwrap().clear();
             assert_eq!(
                 status_of(&rig, "apply", Some(&cookie)).await,
                 StatusCode::FORBIDDEN
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_account_lookup_is_retryable_not_a_refusal() {
+        runtime().block_on(async {
+            let rig = app();
+            let cookie = cookie_for(&rig.app, "admin").await;
+            rig.failing.store(true, Ordering::SeqCst);
+            assert_eq!(
+                status_of(&rig, "apply", Some(&cookie)).await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            rig.failing.store(false, Ordering::SeqCst);
+            assert_eq!(
+                status_of(&rig, "apply", Some(&cookie)).await,
+                StatusCode::OK
             );
         });
     }

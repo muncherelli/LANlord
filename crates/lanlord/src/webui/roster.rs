@@ -3,62 +3,34 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{FromRef, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
-use lanlord_core::admins::ADMINS_GROUP;
 use lanlord_model::access::{Access, Grants, Level};
 use lanlord_model::settings::Settings;
 
-use super::auth::{require, Auth};
+use super::auth::{require_current, Auth, Standing};
 
-/// where the web server learns what an account may do: the gateway's role assignments in the
-/// plain settings (which the unprivileged `lanlord` account owns) and the live membership of the
-/// admins group, the same inputs the operations path reads. nothing here needs root, ssh or a
-/// network.
-///
-/// the group is read from `/etc/group` and `/etc/passwd`, where the operations path asks the
-/// system (`id -nG`, which also sees LDAP or winbind). on a gateway whose accounts live
-/// elsewhere nobody is found in the admins group here, so it fails closed: such administrators
-/// get what their roles give, and no more.
+/// where the web server learns what an account may do: whether it is an administrator now, asked
+/// of the system by the same lookup the operations path uses (the groups of the account, as
+/// `id -nG` gives them, so LDAP and winbind accounts count), and for everyone else the gateway's
+/// role assignments in the plain settings, which the unprivileged `lanlord` account owns. nothing
+/// here needs root, ssh or a network.
 pub struct Roster {
     pub(super) settings: PathBuf,
-    pub(super) group: PathBuf,
-    pub(super) passwd: PathBuf,
+    pub(super) auth: Arc<Auth>,
 }
 
 impl Roster {
-    pub fn system() -> Arc<Self> {
-        Arc::new(Self {
-            settings: "/opt/lanlord/config/settings.yml".into(),
-            group: "/etc/group".into(),
-            passwd: "/etc/passwd".into(),
-        })
+    pub fn new(auth: Arc<Auth>) -> Arc<Self> {
+        Self::at("/opt/lanlord/config/settings.yml".into(), auth)
     }
 
-    /// is `user` in the admins group now, as a member or by primary group? this reads
-    /// `/etc/group` and `/etc/passwd` directly, where core asks `id -nG` (which sees NSS: LDAP,
-    /// winbind), so under such accounts it finds nobody and fails closed.
-    fn is_admin(&self, user: &str) -> bool {
-        let fields = |line: &str| line.split(':').map(str::to_string).collect::<Vec<_>>();
-        let group = std::fs::read_to_string(&self.group).unwrap_or_default();
-        let Some(admins) = group
-            .lines()
-            .map(fields)
-            .find(|f| f.first().map(String::as_str) == Some(ADMINS_GROUP) && f.len() >= 4)
-        else {
-            return false;
-        };
-        if admins[3].split(',').any(|member| member == user) {
-            return true;
-        }
-        std::fs::read_to_string(&self.passwd)
-            .unwrap_or_default()
-            .lines()
-            .map(fields)
-            .any(|f| f.len() >= 4 && f[0] == user && f[3] == admins[2])
+    /// as `new`, reading the assignments from `settings`.
+    pub(super) fn at(settings: PathBuf, auth: Arc<Auth>) -> Arc<Self> {
+        Arc::new(Self { settings, auth })
     }
 
     /// the stored assignments: none when the gateway never saved any, an error when they cannot
@@ -72,11 +44,11 @@ impl Roster {
         Access::from_settings(&Settings::parse(&text)?).map_err(|e| anyhow::anyhow!(e))
     }
 
-    /// what `user` may do: administrators everything, the others what their roles give. what
-    /// cannot be read gives nothing, so a damaged settings file closes streams rather than
-    /// opening them.
-    pub fn grants(&self, user: &str) -> Grants {
-        if self.is_admin(user) {
+    /// what `user` may do, given whether they are an administrator now: administrators
+    /// everything, the others what their roles give. what cannot be read gives nothing, so a
+    /// damaged settings file closes streams rather than opening them.
+    fn grants(&self, user: &str, admin: bool) -> Grants {
+        if admin {
             return Grants::all(Level::Manage);
         }
         match self.access() {
@@ -86,28 +58,43 @@ impl Roster {
     }
 
     /// as `grants`, off the async threads.
-    pub(super) async fn grants_of(self: &Arc<Self>, user: &str) -> Grants {
+    pub(super) async fn grants_given(self: &Arc<Self>, user: &str, admin: bool) -> Grants {
         let (roster, user) = (self.clone(), user.to_string());
-        tokio::task::spawn_blocking(move || roster.grants(&user))
+        tokio::task::spawn_blocking(move || roster.grants(&user, admin))
             .await
             .unwrap_or_default()
+    }
+
+    /// what `user` may do now: nothing for an account that is gone, and `None` when the account
+    /// could not be looked up (which is worth trying again, not a refusal).
+    pub(super) async fn grants_of(self: &Arc<Self>, user: &str) -> Option<Grants> {
+        match self.auth.standing(user).await {
+            Standing::Account { admin } => Some(self.grants_given(user, admin).await),
+            Standing::Unknown => Some(Grants::default()),
+            Standing::Failed => None,
+        }
     }
 }
 
 /// the route of `/api/session`, which also says what the account may do, read now.
-pub fn route(roster: Arc<Roster>) -> MethodRouter<Arc<Auth>> {
+pub fn route<S>(roster: Arc<Roster>) -> MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    Arc<Auth>: FromRef<S>,
+{
     get(session).layer(Extension(roster))
 }
 
-/// GET /api/session: who is logged in, whether they are an admin, and their grants.
+/// GET /api/session: who is logged in, whether they are an admin, and their grants. both are
+/// read from the account now, not as they were at login.
 async fn session(
     State(auth): State<Arc<Auth>>,
     Extension(roster): Extension<Arc<Roster>>,
     headers: HeaderMap,
 ) -> Response {
-    match require(&auth, &headers) {
+    match require_current(&auth, &headers).await {
         Ok((user, admin)) => {
-            let grants = roster.grants_of(&user).await;
+            let grants = roster.grants_given(&user, admin).await;
             (
                 StatusCode::OK,
                 [
@@ -132,7 +119,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::webui::auth::{Check, Limits, Verifier};
+    use crate::webui::auth::{Check, Limits, Lookup, Standing, Verifier};
 
     struct Fake;
 
@@ -149,6 +136,17 @@ mod tests {
                 Check::Denied
             };
             Box::pin(async move { answer })
+        }
+
+        fn admin(&self, user: &str) -> Lookup {
+            let known = user == "pat";
+            Box::pin(async move {
+                if known {
+                    Standing::Account { admin: false }
+                } else {
+                    Standing::Unknown
+                }
+            })
         }
     }
 
@@ -169,11 +167,6 @@ mod tests {
         let mut settings = Settings::empty();
         access.store(&mut settings);
         std::fs::write(folder.join("settings.yml"), settings.text()).unwrap();
-        let roster = Arc::new(Roster {
-            settings: folder.join("settings.yml"),
-            group: folder.join("group"),
-            passwd: folder.join("passwd"),
-        });
         let auth = Auth::with_clock(
             Box::new(Fake),
             Limits {
@@ -182,6 +175,7 @@ mod tests {
             },
             Box::new(Instant::now),
         );
+        let roster = Roster::at(folder.join("settings.yml"), auth.clone());
         let app = axum::Router::new()
             .route("/api/login", axum::routing::post(super::super::auth::login))
             .route("/api/session", route(roster))

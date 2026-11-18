@@ -4,7 +4,7 @@
 //! every action is an [`Op`] answered by a [`Reply`]: a backend implements [`Gateway::call`],
 //! and the typed methods the windows use are a thin layer over it. on the desktop the op runs
 //! over ssh (client mode) or on the gateway itself (server mode); in the browser it goes to
-//! the web ui's `/api/op`.
+//! the web ui's `/api/operations`.
 
 use anyhow::{anyhow, Result};
 use lanlord_model::access::{Access, Profile};
