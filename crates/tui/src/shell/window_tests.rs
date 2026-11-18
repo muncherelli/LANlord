@@ -398,7 +398,8 @@ fn a_users_roles_are_ticked_and_saved() {
     until(&mut shell, "alice");
     // Save has nothing to save yet
     press(&mut shell, "Save");
-    assert_eq!(count(&fake, "save-access demo@gateway"), 0);
+    settle(&mut shell);
+    assert_eq!(calls_starting(&fake, "save-access "), 0);
     let text = press(&mut shell, "ben");
     assert!(text.contains("[ ] Operators"), "{text}");
     assert!(text.contains("[✓] Users"), "{text}");
@@ -547,10 +548,30 @@ fn a_read_only_account_sees_permissions_but_changes_nothing() {
         assert!(shell.permissions.dialog().is_none(), "{button}");
     }
     press(&mut shell, "Save");
-    assert_eq!(calls_starting(&fake, "save-access"), 0);
+    // saving is async: draw until no task is running, so a queued save would have been recorded
+    settle(&mut shell);
+    assert_eq!(calls_starting(&fake, "load-access "), 1);
+    assert_eq!(
+        calls_starting(&fake, "save-access "),
+        0,
+        "{:?}",
+        fake.calls.lock().unwrap()
+    );
     let text = frame(&mut shell);
     let ben = text.lines().find(|l| l.contains("ben")).unwrap();
     assert!(ben.contains("Users") && !ben.contains("Operators"), "{ben}");
+}
+
+/// draw frames until no task is running against the shell's host, then once more to take the result.
+fn settle(shell: &mut Shell) {
+    let host = shell.host().expect("a host");
+    let started = Instant::now();
+    while shell.services.busy(&host) && started.elapsed() < Duration::from_secs(5) {
+        frame(shell);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!shell.services.busy(&host), "tasks never finished");
+    frame(shell);
 }
 
 fn small(shell: &mut Shell) -> String {
