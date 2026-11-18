@@ -61,6 +61,18 @@ jobs:
       - run: cargo clippy -p lanlord --no-default-features --features webui --all-targets --locked -- -D warnings
       - run: cargo test -p lanlord --no-default-features --features webui --locked
 
+  run-as-caller:
+    name: run as the caller (root)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # the gateway's operations service is root, and a command it runs for a signed-in account
+      # must run as that account: this test needs root to make an account and switch to it
+      - run: cargo test -p lanlord-core --locked --no-run
+      - run: sudo -E env "PATH=$PATH" cargo test -p lanlord-core --locked -- --ignored root_ --nocapture
+
   wasm:
     name: model builds for the browser
     runs-on: ubuntu-latest
