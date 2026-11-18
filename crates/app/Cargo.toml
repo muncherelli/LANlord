@@ -16,7 +16,7 @@ fake = []
 [dependencies]
 anyhow.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-lanlord-core = { version = "0.1.0", path = "../core", optional = true }
+lanlord-core = { version = "0.1.1", path = "../core", optional = true }
 lanlord-model.workspace = true
 serde_json.workspace = true
 web-time = "1.1"
