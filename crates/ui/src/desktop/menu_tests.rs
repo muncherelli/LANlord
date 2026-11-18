@@ -138,3 +138,15 @@ fn the_client_mode_hosts_window_has_its_list() {
     frames(&mut desktop, &ctx, 3);
     assert!(theme::probe::find(&ctx, "Add...").is_some());
 }
+
+#[test]
+fn until_the_gateway_says_what_an_account_may_do_it_may_do_only_what_a_user_may() {
+    use lanlord_model::access::{Area, Grants, Level};
+    let (mut desktop, _ctx, _fake) = desktop();
+    desktop.grants_remote.data = None;
+    assert_eq!(desktop.grants(), Grants::fallback(false));
+    assert!(desktop.grants().level(Area::Users) < Level::Manage);
+    // the demo server is made up, so it shows everything
+    desktop.mark_demo();
+    assert_eq!(desktop.grants(), Grants::fallback(true));
+}

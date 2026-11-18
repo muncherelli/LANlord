@@ -2,12 +2,14 @@
 //! with their parsing and validation. nothing here touches the network, files or processes,
 //! so it also builds for the browser.
 
+pub mod access;
 pub mod apply;
 pub mod bridge;
 pub mod clock;
 pub mod compat;
 pub mod components;
 pub mod doctor;
+pub mod identity;
 pub mod lan_networks;
 pub mod leases;
 pub mod log;

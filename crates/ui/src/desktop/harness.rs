@@ -14,6 +14,11 @@ pub fn desktop() -> (Desktop, egui::Context, Arc<Fake>) {
     let ctx = egui::Context::default();
     let fake = Arc::new(Fake::new());
     let mut desktop = Desktop::new(fake.clone(), &ctx, None);
+    // an account that may do everything, known already: the tests are not about the lookup
+    desktop.grants_remote.data = Some(lanlord_model::identity::AccountInfo {
+        grants: lanlord_core::access::Grants::all(lanlord_core::access::Level::Manage),
+        ..Default::default()
+    });
     desktop.pinned = Some(every_component());
     desktop.icons = lanlord_app::desktop::icons(desktop.pinned.as_ref());
     (desktop, ctx, fake)

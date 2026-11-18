@@ -1,6 +1,7 @@
 //! shared logic for every LANlord front end: SSH, config encryption,
 //! gateway bootstrap, apply and remote commands.
 
+pub mod access;
 pub mod account;
 pub mod admins;
 pub mod apply;
@@ -13,12 +14,15 @@ pub mod doctor;
 pub mod env;
 pub mod exec;
 pub mod hosts;
+pub mod identity;
 pub mod lan;
 pub mod leases;
 #[cfg(unix)]
 pub mod local;
 pub mod log;
 pub mod logon;
+mod save_guard;
+mod self_service;
 pub use lanlord_model::modules;
 pub mod monitor;
 pub mod netstatus;

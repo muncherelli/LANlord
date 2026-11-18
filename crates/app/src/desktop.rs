@@ -1,6 +1,7 @@
 //! the desktop every front end shows: which icons it has and in what order, the windows they
 //! open, how big those windows start, and the title of the whole app.
 
+use lanlord_model::access::{Area, Grants, Level};
 use lanlord_model::components::Selection;
 use lanlord_model::modules::MODULES;
 
@@ -21,6 +22,10 @@ pub enum Target {
     Welcome,
     /// the changelog, read only; opened from the Welcome window and the menu's help rows.
     Changelog,
+    /// the signed-in person's own account, for everyone; opened from the menu.
+    MyAccount,
+    /// users, roles and what each role may do; opened from the menu.
+    Permissions,
     /// the progress of an apply; it opens by itself when one starts and has no desktop icon.
     Progress,
     /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
@@ -48,6 +53,8 @@ impl Target {
             Self::Components => "components",
             Self::Welcome => "welcome",
             Self::Changelog => "changelog",
+            Self::MyAccount => "my-account",
+            Self::Permissions => "permissions",
             Self::Progress => "apply-progress",
             Self::TaskManager => "taskmgr",
         }
@@ -65,6 +72,8 @@ impl Target {
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
             Self::Changelog => "Changelog",
+            Self::MyAccount => "My Account",
+            Self::Permissions => "Users and Permissions",
             Self::Progress => "Applying Settings",
             Self::TaskManager => "Task Manager",
         }
@@ -95,18 +104,63 @@ impl Target {
         }
     }
 
-    /// a dialog has only a close button, cannot be resized and is as tall as its contents.
-    pub fn is_dialog(self) -> bool {
-        matches!(self, Self::Welcome | Self::DateTime | Self::Components)
+    /// the area whose data the window shows, `None` for a window that shows nothing of the
+    /// server's (Hosts, Welcome, Changelog, My Account).
+    pub fn area(self) -> Option<Area> {
+        match self {
+            Self::Module(i) => Some(match MODULES[i].id {
+                "nt4-domain" => Area::Domain,
+                "dns" => Area::Dns,
+                "remote-commands" => Area::Commands,
+                _ => Area::Services,
+            }),
+            // anyone may watch the Task Manager; ending a process is for administrators
+            Self::MyServer | Self::TaskManager => Some(Area::Status),
+            Self::Networks => Some(Area::Network),
+            Self::Console => Some(Area::Commands),
+            Self::Settings | Self::Components => Some(Area::Services),
+            Self::DateTime => Some(Area::Clock),
+            Self::Permissions => Some(Area::Users),
+            // the progress of an apply opens by itself for whoever ran it; the apply op is what is checked
+            Self::Hosts | Self::Welcome | Self::Changelog | Self::MyAccount | Self::Progress => {
+                None
+            }
+        }
     }
 
-    /// the window changes things on the server (settings, components, networks, users, the
-    /// clock, commands), so only an administrator may open it. My Server stays open to anyone:
-    /// it reads, and its purge is switched off for the rest. the Task Manager is open to anyone too; ending a process is the part that needs an admin.
-    pub fn needs_admin(self) -> bool {
-        !matches!(
+    /// the windows that can show their data read-only; every other one only opens for someone
+    /// who may change it.
+    fn reads_only(self) -> bool {
+        matches!(self, Self::MyServer | Self::Permissions | Self::TaskManager)
+    }
+
+    /// the level of the window's area needed to open it: View for the windows that can be
+    /// read-only, Manage for the rest. nothing is needed where there is no area.
+    pub fn opens_at(self) -> Level {
+        match self.area() {
+            None => Level::Hidden,
+            Some(_) if self.reads_only() => Level::View,
+            Some(_) => Level::Manage,
+        }
+    }
+
+    /// may these grants open the window? the menu and the desktop hide it when not.
+    pub fn visible(self, grants: &Grants) -> bool {
+        self.area()
+            .is_none_or(|area| grants.level(area) >= self.opens_at())
+    }
+
+    /// may these grants change what the window shows? when not, its controls are read-only.
+    pub fn writable(self, grants: &Grants) -> bool {
+        self.area()
+            .is_none_or(|area| grants.level(area) >= Level::Manage)
+    }
+
+    /// a dialog has only a close button, cannot be resized and is as tall as its contents.
+    pub fn is_dialog(self) -> bool {
+        matches!(
             self,
-            Self::MyServer | Self::Hosts | Self::Welcome | Self::Changelog | Self::TaskManager
+            Self::Welcome | Self::DateTime | Self::Components | Self::MyAccount
         )
     }
 
@@ -133,6 +187,8 @@ impl Target {
                 380.0,
             ),
             Self::Changelog => (520.0, 400.0),
+            Self::MyAccount => (400.0, 0.0),
+            Self::Permissions => (640.0, 520.0),
             Self::Progress => (480.0, 360.0),
             Self::TaskManager => (500.0, 490.0),
         }
@@ -154,6 +210,7 @@ pub fn icons(enabled: Option<&Selection>) -> Vec<Target> {
 pub fn windows(icons: &[Target]) -> Vec<Target> {
     let mut windows = icons.to_vec();
     windows.push(Target::Components);
+    windows.extend([Target::MyAccount, Target::Permissions]);
     windows
 }
 
@@ -197,6 +254,29 @@ mod tests {
             window_title(true, Some("local")),
             format!("LANlord Server v{version} - local")
         );
+    }
+
+    #[test]
+    fn windows_follow_the_grants() {
+        use lanlord_model::access::Access;
+        let user = Access::default().grants("dana", false);
+        let admin = Grants::all(Level::Manage);
+        // a User sees My Server (read-only) and their own account, nothing that changes things
+        assert!(Target::MyServer.visible(&user) && !Target::MyServer.writable(&user));
+        assert!(Target::MyAccount.visible(&user) && Target::Hosts.visible(&user));
+        for hidden in [
+            Target::Networks,
+            Target::Settings,
+            Target::Console,
+            Target::Permissions,
+        ] {
+            assert!(!hidden.visible(&user), "{hidden:?}");
+        }
+        assert!(Target::Permissions.visible(&admin) && Target::Permissions.writable(&admin));
+        // viewing the users does not let you change them
+        let mut viewer = Grants::default();
+        viewer.0.insert(Area::Users, Level::View);
+        assert!(Target::Permissions.visible(&viewer) && !Target::Permissions.writable(&viewer));
     }
 
     #[test]
@@ -244,13 +324,18 @@ mod tests {
     }
 
     #[test]
+    fn anyone_may_open_the_task_manager() {
+        use lanlord_model::access::{Grants, Level};
+        assert!(Target::TaskManager.visible(&Grants::fallback(false)));
+        assert_eq!(Target::TaskManager.opens_at(), Level::View);
+    }
+
+    #[test]
     fn the_progress_window_has_no_icon_and_names_itself() {
         assert_eq!(Target::Progress.id(), "apply-progress");
         assert_eq!(Target::Progress.title(), "Applying Settings");
-        assert!(
-            Target::Progress.needs_admin(),
-            "applying is for administrators"
-        );
+        // it opens by itself for whoever ran the apply, which is what the server checks
+        assert_eq!(Target::Progress.area(), None);
         assert!(Target::Progress.size().0 > 0.0);
         assert!(!icons(None).contains(&Target::Progress));
         assert!(!windows(&icons(None)).contains(&Target::Progress));

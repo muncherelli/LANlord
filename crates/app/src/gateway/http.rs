@@ -191,6 +191,7 @@ async fn session_now() -> Result<Option<Identity>> {
             .get("admin")
             .and_then(|v| v.as_bool())
             .ok_or_else(|| field("admin"))?,
+        grants: None,
     }))
 }
 

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Each account gets a role (Administrators, Operators or Users, or one you define) that says what it may see and change in each area; windows and menu items you may not use are hidden
+- My Account for everyone: edit your profile and change your password, which is changed on every linked account or on none
+- Users and Permissions window for administrators: roles, a grid of areas and levels, and who has which role
 - Applying settings shows a progress dialog with a bar, the task being worked on, the elapsed time and the tasks done so far, with the raw output under Details
 - A Task Manager (Processes, Performance and Networking) opens from the LANlord menu, and a network activity icon in the taskbar tray lights up with traffic and opens it on Networking. Anyone logged in can look; only administrators can end a process (#114)
 - The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
@@ -76,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss`
 - The taskbar start button shows the logo with no separator after it (#106)
 - NT4 domain group mappings that drifted are repaired (#40)
 - Settings are read when the plain settings directory cannot be searched (#39)
