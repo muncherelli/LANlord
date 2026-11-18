@@ -243,7 +243,7 @@ const WEB_ICON_COLUMN: f32 = 78.0;
 const WEB_TEXT_COLUMN: f32 = 256.0;
 const WEB_LABEL_COLUMN: f32 = 80.0;
 const WEB_INPUT_WIDTH: f32 = 175.0;
-/// how far the dialog's width is for the web box, in points.
+/// the dialog's width for the web box, in points.
 pub const WEB_WIDTH: f32 = 384.0;
 const STATUS_GAP: f32 = 6.0;
 
@@ -547,12 +547,6 @@ impl LoginBox {
         if self.busy() {
             return;
         }
-        if self.is_web() {
-            self.password = Zeroizing::new(String::new());
-            self.say("", false);
-            self.focus = false;
-            return;
-        }
         if self.stage == Stage::Password {
             self.stage = Stage::Credentials;
         } else {
@@ -582,22 +576,19 @@ impl LoginBox {
         if self.is_web() {
             return self.web_view(busy, first);
         }
-        let web = false;
         let local = self.is_local();
         let password_stage = self.stage == Stage::Password;
         let mut nodes = vec![
             Node::Header {
                 icon: "gateway",
                 title: String::new(),
-                lines: vec![if web {
-                    self.web_body.clone()
-                } else if local {
+                lines: vec![if local {
                     "You are signed in to this server with the account you are using.".into()
                 } else {
                     "Type the name you use on the gateway and its hostname or address.".into()
                 }],
             },
-            Node::Gap(if web { WEB_BODY_GAP } else { BODY_GAP }),
+            Node::Gap(BODY_GAP),
         ];
         if let Some(target) = &self.here {
             let user = target
@@ -622,7 +613,7 @@ impl LoginBox {
         if local {
             return self.finish_view(busy, nodes);
         }
-        if !known.is_empty() && !web {
+        if !known.is_empty() {
             nodes.push(Node::Labelled {
                 label: "Server:".into(),
                 body: vec![Node::Choice {
@@ -654,29 +645,27 @@ impl LoginBox {
         nodes.push(field(
             "Username:",
             &self.user,
-            first && (web || !password_stage) && empty,
+            first && !password_stage && empty,
             Msg::User,
             Msg::SubmitUser,
         ));
-        if !web {
-            nodes.push(Node::Gap(4.0));
-            nodes.push(field(
-                "Hostname:",
-                &self.host,
-                first && !password_stage && !empty,
-                Msg::Host,
-                Msg::SubmitHost,
-            ));
-        }
+        nodes.push(Node::Gap(4.0));
+        nodes.push(field(
+            "Hostname:",
+            &self.host,
+            first && !password_stage && !empty,
+            Msg::Host,
+            Msg::SubmitHost,
+        ));
         if password_stage {
-            nodes.push(Node::Gap(if web { WEB_FIELD_GAP } else { 4.0 }));
+            nodes.push(Node::Gap(4.0));
             nodes.push(Node::Labelled {
                 label: "Password:".into(),
                 body: vec![Node::Secret {
                     value: self.password.clone(),
                     size: Size::Points(240.0),
                     shown: false,
-                    focus: first && (!web || !empty),
+                    focus: first && !empty,
                     edit: Box::new(Msg::Password),
                     enter: (!busy).then(|| {
                         Box::new(Msg::SubmitPassword) as Box<dyn Fn(Zeroizing<String>) -> Msg>
@@ -759,20 +748,13 @@ impl LoginBox {
 
     /// the buttons and the status line under the fields.
     fn finish_view(&self, busy: bool, mut nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
-        let web = self.is_web();
-        // the browser has nothing to shut down
-        // the browser has nothing to shut down or cancel back to
-        let buttons = if web {
-            vec![Button::new("Log In", !busy, Msg::Ok)]
-        } else {
-            vec![
-                Button::new("Shut Down", true, Msg::ShutDown),
-                Button::new("Cancel", !busy, Msg::Cancel),
-                Button::new("OK", !busy, Msg::Ok),
-            ]
-        };
+        let buttons = vec![
+            Button::new("Shut Down", true, Msg::ShutDown),
+            Button::new("Cancel", !busy, Msg::Cancel),
+            Button::new("OK", !busy, Msg::Ok),
+        ];
         nodes.extend([
-            Node::Gap(if web { WEB_BUTTON_GAP } else { BUTTON_GAP }),
+            Node::Gap(BUTTON_GAP),
             Node::Buttons(buttons),
             Node::Gap(STATUS_GAP),
             Node::Status {
