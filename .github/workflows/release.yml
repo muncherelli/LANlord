@@ -83,6 +83,7 @@ jobs:
             *-headless)
               cargo zigbuild --release --locked --target "$target.2.17" -p lanlord-auth-helper
               files="$files target/$target/release/lanlord-auth-helper" ;;
+            *) ;;
           esac
           # the packaged binaries are the ones checked
           mkdir -p target/release
