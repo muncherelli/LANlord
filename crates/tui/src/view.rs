@@ -1408,9 +1408,14 @@ impl<'a> Painter<'a> {
                 for line in self.row_lines(body, area.width) {
                     let mut x = area.x;
                     let mut tallest = 1;
+                    let several = line.len() > 1;
                     for (n, width) in line {
                         let here = child(path, n);
                         let height = self.node_height(&body[n], width, &here);
+                        // buttons that end a row sit at its right edge, like a button row
+                        if several && n + 1 == body.len() && matches!(body[n], Node::Buttons(_)) {
+                            x = area.right().saturating_sub(width).max(x);
+                        }
                         let rect = Rect::new(x, y, width, height);
                         self.node(&body[n], rect, buf, &here);
                         tallest = tallest.max(height);

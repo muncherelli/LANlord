@@ -318,10 +318,6 @@ impl SettingsWindow {
             },
             Node::Gap(6.0),
             Node::Row(vec![
-                Node::Button(Button::new("Save", can_save, Msg::Save)),
-                Node::Button(Button::new("Reload", idle, Msg::Reload)),
-                Node::Button(Button::new("Apply", idle, Msg::Apply)),
-                Node::Gap(12.0),
                 Node::Choice {
                     id: "settings-module",
                     current: MODULES.get(self.module).map_or("-", |m| m.name).into(),
@@ -330,6 +326,13 @@ impl SettingsWindow {
                     pick: Msg::PickModule,
                 },
                 Node::Button(Button::new("Apply module", idle, Msg::ApplyModule)),
+            ]),
+            Node::Gap(6.0),
+            // the last button is drawn first from the right edge
+            Node::Buttons(vec![
+                Button::new("Apply", idle, Msg::Apply),
+                Button::new("Reload", idle, Msg::Reload),
+                Button::new("Save", can_save, Msg::Save),
             ]),
             Node::Gap(6.0),
             Node::Status { text, error },

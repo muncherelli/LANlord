@@ -3,9 +3,9 @@
     ▏▏                                                                         ▕
     ▏▏ Monitoring another server needs the bridge connection, which is not     ▕
   My ▏ available yet.                                                          ▕
-     ▏             ▏ Image Name ▕ ▏    PID     ▕ ▏    CPU     ▕ ▏ Mem Usage  ▕ ▕
+     ▏ ▏    PID     ▕ ▏    CPU     ▕ ▏ Mem Usage  ▕ ▏ Image Name ▕             ▕
      ▏  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  ▕
-    ▔▏ ▕     PID USER          CPU%        MEM  THR  NAME                    ▏ ▕
+    ▔▏ ▕                                                                     ▏ ▕
     ▏▏ ▕                                                                     ▏ ▕
     ▏▏ ▕                                                                     ▏ ▕
    Ne▏ ▕                                                                     ▏ ▕

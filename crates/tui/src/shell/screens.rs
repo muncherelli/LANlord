@@ -8,8 +8,11 @@ use std::time::{Duration, Instant};
 use lanlord_app::gateway::Fake;
 use lanlord_app::login::fake::FakeAuth;
 
-use super::*;
+use super::{
+    AdminSetup, Arc, Buffer, Form, HostList, Modal, Palette, Power, Rect, Shell, Target, MODULES,
+};
 use crate::paint::{cut, lines};
+use crate::view::{Part, Region};
 
 /// the smallest terminal the tui supports, and a large one.
 pub const SMALL: (u16, u16) = (80, 24);
@@ -188,7 +191,10 @@ fn picture(scene: &Scene, size: (u16, u16)) -> String {
 }
 
 fn snapshot_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/shell/snapshots")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("shell")
+        .join("snapshots")
 }
 
 /// every scene at the small and the large size looks like its stored snapshot. run with
@@ -200,7 +206,7 @@ fn every_screen_looks_like_its_snapshot() {
     let mut wrong = Vec::new();
     for scene in scenes() {
         for size in [SMALL, LARGE] {
-            let shown = picture(&scene, size) + "\n";
+            let shown = picture(&scene, size).replace("\r\n", "\n") + "\n";
             let file = snapshot_dir().join(format!("{}-{}x{}.txt", scene.name, size.0, size.1));
             if update {
                 std::fs::create_dir_all(snapshot_dir()).unwrap();
@@ -208,7 +214,7 @@ fn every_screen_looks_like_its_snapshot() {
                 continue;
             }
             match std::fs::read_to_string(&file) {
-                Ok(stored) if stored == shown => {}
+                Ok(stored) if stored.replace("\r\n", "\n") == shown => {}
                 Ok(stored) => {
                     let line = stored
                         .lines()
@@ -322,4 +328,69 @@ fn no_text_is_cut_off_at_80_by_24() {
         }
     }
     assert!(cut_off.is_empty(), "{}", cut_off.join("\n"));
+}
+
+/// how many blank cells lie next to `(x, y)` on one side before something is drawn.
+fn blanks(buf: &Buffer, x: u16, y: u16, step: i32) -> u16 {
+    let mut count = 0;
+    let mut at = i32::from(x) + step;
+    while at >= 0 && at < i32::from(buf.area.width) && buf[(at as u16, y)].symbol() == " " {
+        count += 1;
+        at += step;
+    }
+    count
+}
+
+/// every row of two or more buttons, in every window and dialog, has buttons of one width a cell
+/// apart, and sits flush to one side of its box: right for a button row, left for a toolbar.
+#[test]
+fn button_rows_are_equal_and_flush() {
+    let mut wrong = Vec::new();
+    for scene in scenes_for_frames() {
+        for size in [SMALL, LARGE] {
+            let mut shell = (scene.build)(size);
+            let buf = draw(&mut shell, size);
+            let mut owners: Vec<Vec<Region>> = shell
+                .hits
+                .windows
+                .iter()
+                .map(|(_, _, _, regions)| regions.clone())
+                .collect();
+            owners.extend(shell.hits.dialog.iter().map(|(_, regions)| regions.clone()));
+            for regions in owners {
+                let mut rows: Vec<(Vec<usize>, Vec<Rect>)> = Vec::new();
+                for region in regions {
+                    if !matches!(region.part, Part::Press(_)) {
+                        continue;
+                    }
+                    match rows.iter_mut().find(|(path, _)| *path == region.path) {
+                        Some((_, rects)) => rects.push(region.rect),
+                        None => rows.push((region.path.clone(), vec![region.rect])),
+                    }
+                }
+                for (_, mut rects) in rows.into_iter().filter(|(_, rects)| rects.len() > 1) {
+                    rects.sort_by_key(|rect| rect.x);
+                    let (first, last) = (rects[0], rects[rects.len() - 1]);
+                    let name = format!("{} at {size:?}: buttons at y={}", scene.name, first.y);
+                    if rects
+                        .iter()
+                        .any(|r| r.width != first.width || r.y != first.y)
+                    {
+                        wrong.push(format!("{name} are not one width"));
+                    }
+                    // a disabled button has no region, so a step may span several buttons
+                    let pitch = first.width + 1;
+                    if rects.windows(2).any(|w| (w[1].x - w[0].x) % pitch != 0) {
+                        wrong.push(format!("{name} are not a cell apart"));
+                    }
+                    let right = blanks(&buf, last.right() - 1, last.y, 1) <= 1;
+                    let left = blanks(&buf, first.x, first.y, -1) <= 1;
+                    if !right && !left {
+                        wrong.push(format!("{name} are not flush to a side"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
