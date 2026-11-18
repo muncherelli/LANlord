@@ -1,7 +1,7 @@
-                     ┌ ◆ My Account ──────────────────────────────────── _ □ × ┐
-      ≡           ▣  │This window is not available in the text view yet. Open  │
-  My Server     Hosts│it in the LANlord window or the web UI.                  │
-                     └─────────────────────────────────────────────────────────┘
+                   ┌ ◆ My Account ────────────────────────────────────── _ □ × ┐
+      ≡           ▣│ This window is not available in the text view yet. Open   │
+  My Server     Hos│ it in the LANlord window or the web UI.                   │
+                   └───────────────────────────────────────────────────────────┘
 
       □
    Networks

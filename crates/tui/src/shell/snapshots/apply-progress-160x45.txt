@@ -1,27 +1,27 @@
-              ┌ ◆ Applying Settings ───────────────────────────────────────── _ □ × ┐
-      ≡       │Starting...                                                          │
-  My Server   │                                 0%                                  │
-              │Elapsed: 0:00                                                        │
-              │                                                                     │
-      □       │                                                                     │
-   Networks   │                                                                     │
-              │                                                                     │
-              │                                                                     │
-      ►       │                                                                     │
-   Gateway    │                                                                     │
-              │                                                                     │
-              │                                                                     │
-      ▦       │                                                                     │
-   Settings   │                                                                     │
-              │                                                                     │
-              │                                                                     │
-      >       │                                                                     │
-   Console    │                                                                     │
-              │                                                                     │
-              │[+] Details                                                          │
-      ▣       │                                                            [ Close ]│
-    Hosts     │Applying settings...                                                 │
-              └─────────────────────────────────────────────────────────────────────┘
+              ┌ ◆ Applying Settings ─────────────────────────────────────────── _ □ × ┐
+      ≡       │ Starting...                                                           │
+  My Server   │                                  0%                                   │
+              │ Elapsed: 0:00                                                         │
+              │                                                                       │
+      □       │                                                                       │
+   Networks   │                                                                       │
+              │                                                                       │
+              │                                                                       │
+      ►       │                                                                       │
+   Gateway    │                                                                       │
+              │                                                                       │
+              │                                                                       │
+      ▦       │                                                                       │
+   Settings   │                                                                       │
+              │                                                                       │
+              │                                                                       │
+      >       │                                                                       │
+   Console    │                                                                       │
+              │                                                                       │
+              │ [+] Details                                                           │
+      ▣       │                                                             [ Close ] │
+    Hosts     │ Applying settings...                                                  │
+              └───────────────────────────────────────────────────────────────────────┘
 
 
 

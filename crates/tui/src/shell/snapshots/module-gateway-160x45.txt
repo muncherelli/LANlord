@@ -1,16 +1,16 @@
-              ┌ ► Gateway ─────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ ►  Gateway                                                          │
-  My Server   │    Status: available                                                │
-              │                                                                     │
-              │Baseline for the gateway: its state record and message of the day.   │
-      □       │─────────────────────────────────────────────────────────────────────│
-   Networks   │┌ Settings (in your settings file) ─────────────────────────────────┐│
-              ││  gateway:                                                         ││
-              ││    motd: "welcome to the retronet\n"                              ││
-      ►       │└───────────────────────────────────────────────────────────────────┘│
-   Gateway    │                                                            [ Apply ]│
-              │Host: demo@gateway                                                   │
-              └─────────────────────────────────────────────────────────────────────┘
+              ┌ ► Gateway ───────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ Gateway                                                               │
+  My Server   │ Status: available                                                     │
+              │                                                                       │
+              │ Baseline for the gateway: its state record and message of the day.    │
+      □       │ ───────────────────────────────────────────────────────────────────── │
+   Networks   │ ┌ Settings (in your settings file) ─────────────────────────────────┐ │
+              │ │  gateway:                                                         │ │
+              │ │    motd: "welcome to the retronet\n"                              │ │
+      ►       │ └───────────────────────────────────────────────────────────────────┘ │
+   Gateway    │                                                             [ Apply ] │
+              │ Host: demo@gateway                                                    │
+              └───────────────────────────────────────────────────────────────────────┘
       ▦
    Settings
 

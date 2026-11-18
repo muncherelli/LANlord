@@ -19,8 +19,8 @@
    Console
 
                                                             ┌ Reboot server ──────────────── _ □ × ┐
-      ▣                                                     │Restart demo@gateway now?             │
-    Hosts                                                   │                 [   OK   ] [ Cancel ]│
+      ▣                                                     │ Restart demo@gateway now?            │
+    Hosts                                                   │                    [ OK ] [ Cancel ] │
                                                             └──────────────────────────────────────┘
 
 

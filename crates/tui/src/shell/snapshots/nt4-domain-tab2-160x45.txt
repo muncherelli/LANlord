@@ -1,37 +1,37 @@
-              ┌ ▌ NT4 Domain ───────────────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ ▌  NT4 Domain                                                                        │
-  My Server   │    Status: available                                                                 │
-              │                                                                                      │
-              │A Samba server in Docker for old Windows clients, on the internal network only: an    │
-      □       │NT4-style domain controller or a plain workgroup, with a basic set of logins.         │
-   Networks   │──────────────────────────────────────────────────────────────────────────────────────│
-              │[ Settings ][ Logins ][ Logon scripts ]                                               │
-              │┌────────────────────────────────────────────────────────────────────────────────────┐│
-      ►       ││Every domain logon runs these after S: is mapped: logon.bat for everyone, then      ││
-   Gateway    ││<login>.bat for one login.                                                          ││
-              ││┌ Scripts ─────────────────────────────────────────────────────────────────────────┐││
-              │││  Script                 Runs for                                                 │││
-      ▦       │││  logon.bat              everyone (not saved yet)                                 │││
-   Settings   │││                                                                                  │││
-              │││                                                                                  │││
-              │││                                                                                  │││
-      >       │││ [ New script...  ] [ Reload scripts ]                                            │││
-   Console    ││└──────────────────────────────────────────────────────────────────────────────────┘││
-              ││┌ logon.bat ───────────────────────────────────────────────────────────────────────┐││
-              │││                                                                                  │││
-      ▣       │││                                                                                  │││
-    Hosts     │││                                                                                  │││
-              │││                                                                                  │││
-              │││                                                                                  │││
-              │││                                                                                  │││
-              │││                                                                                  │││
-              │││                                                                                  │││
-              │││ [ Save script ] [   Revert    ]                                                  │││
-              ││└──────────────────────────────────────────────────────────────────────────────────┘││
-              ││[+] lanlord.bat (generated, read-only)                                              ││
-              ││loaded the logon scripts                                                            ││
-              │└────────────────────────────────────────────────────────────────────────────────────┘│
-              └──────────────────────────────────────────────────────────────────────────────────────┘
+              ┌ ▌ NT4 Domain ─────────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ NT4 Domain                                                                             │
+  My Server   │ Status: available                                                                      │
+              │                                                                                        │
+              │ A Samba server in Docker for old Windows clients, on the internal network only: an     │
+      □       │ NT4-style domain controller or a plain workgroup, with a basic set of logins.          │
+   Networks   │ ────────────────────────────────────────────────────────────────────────────────────── │
+              │ [ Settings ][ Logins ][ Logon scripts ]                                                │
+              │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+      ►       │ │Every domain logon runs these after S: is mapped: logon.bat for everyone, then      │ │
+   Gateway    │ │<login>.bat for one login.                                                          │ │
+              │ │┌ Scripts ─────────────────────────────────────────────────────────────────────────┐│ │
+              │ ││  Script                 Runs for                                                 ││ │
+      ▦       │ ││  logon.bat              everyone (not saved yet)                                 ││ │
+   Settings   │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+      >       │ ││ [ New script...  ] [ Reload scripts ]                                            ││ │
+   Console    │ │└──────────────────────────────────────────────────────────────────────────────────┘│ │
+              │ │┌ logon.bat ───────────────────────────────────────────────────────────────────────┐│ │
+              │ ││                                                                                  ││ │
+      ▣       │ ││                                                                                  ││ │
+    Hosts     │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
+              │ ││ [ Save script ] [   Revert    ]                                                  ││ │
+              │ │└──────────────────────────────────────────────────────────────────────────────────┘│ │
+              │ │[+] lanlord.bat (generated, read-only)                                              │ │
+              │ │loaded the logon scripts                                                            │ │
+              │ └────────────────────────────────────────────────────────────────────────────────────┘ │
+              └────────────────────────────────────────────────────────────────────────────────────────┘
 
 
 

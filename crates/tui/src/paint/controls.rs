@@ -168,17 +168,12 @@ impl List<'_> {
         let height = usize::from(height.max(1));
         selected.map_or(0, |s| (s + 1).saturating_sub(height))
     }
-
-    /// the rows area: all of it, the list has no frame.
-    pub fn inner(area: Rect) -> Rect {
-        area
-    }
 }
 
 impl Widget for List<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
-        let inner = List::inner(area);
+        let inner = area;
         fill(buf, inner, palette, WHITE);
         let offset = List::offset(self.selected, inner.height);
         for (i, row) in self

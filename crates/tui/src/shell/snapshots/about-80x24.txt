@@ -7,11 +7,11 @@
    Networks
 
 
-      ►             ┌ About LANlord ──────────────── _ □ × ┐
-   Gateway          │LANlord                               │
-                    │Retro networks, run from one desktop. │
-                    │                 [   OK   ] [ Cancel ]│
-      ▦             └──────────────────────────────────────┘
+      ►            ┌ About LANlord ───────────────── _ □ × ┐
+   Gateway         │ LANlord                               │
+                   │ Retro networks, run from one desktop. │
+                   │                     [ OK ] [ Cancel ] │
+      ▦            └───────────────────────────────────────┘
    Settings
 
 

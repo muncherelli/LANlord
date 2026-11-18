@@ -18,10 +18,10 @@
       >
    Console
                                                             ┌ Add a host ─────────────────── _ □ × ┐
-                                                            │Gateway as user@host:                 │
-      ▣                                                     │Host                                  │
+                                                            │ Gateway as user@host:                │
+      ▣                                                     │ Host                                 │
     Hosts                                                   │                                      │
-                                                            │                 [   OK   ] [ Cancel ]│
+                                                            │                    [ OK ] [ Cancel ] │
                                                             └──────────────────────────────────────┘
 
 

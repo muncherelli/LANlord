@@ -290,9 +290,6 @@ pub enum Column {
     Threads,
 }
 
-/// the width of a sort button in the text view, which the process list's cells match.
-const SORT_CELL: usize = 14;
-
 pub const COLUMNS: [(Column, &str); 6] = [
     (Column::Name, "Image Name"),
     (Column::Pid, "PID"),
@@ -461,6 +458,13 @@ pub fn top_view(monitor: &Monitor, order: Order) -> Vec<crate::view::Node<TopMsg
             .map(|(c, label)| Button::new(label, order.column != *c, TopMsg::Sort(*c)))
             .collect(),
     ));
+    // a process cell is as wide as the widest heading button: its label and two cells each side
+    let cell = shown
+        .iter()
+        .filter_map(|c| COLUMNS.iter().find(|(column, _)| column == c))
+        .map(|(_, label)| label.chars().count() + 4)
+        .max()
+        .unwrap_or(0);
     let mut lines = Vec::new();
     if let Some(procs) = &monitor.history.procs {
         for (row, cpu) in sorted(&procs.procs, &monitor.history.process_cpu, order) {
@@ -471,7 +475,7 @@ pub fn top_view(monitor: &Monitor, order: Order) -> Vec<crate::view::Node<TopMsg
                 human_bytes(row.rss_bytes as f64),
                 row.name,
                 row.user,
-                w = SORT_CELL
+                w = cell
             ));
         }
     }

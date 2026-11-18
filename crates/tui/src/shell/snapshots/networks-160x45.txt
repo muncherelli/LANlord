@@ -1,7 +1,7 @@
-              ┌ □ Networks ───────────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │This window is not available in the text view yet. Open it in the LANlord window│
-  My Server   │or the web UI.                                                                  │
-              └────────────────────────────────────────────────────────────────────────────────┘
+              ┌ □ Networks ─────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ This window is not available in the text view yet. Open it in the LANlord window │
+  My Server   │ or the web UI.                                                                   │
+              └──────────────────────────────────────────────────────────────────────────────────┘
 
       □
    Networks

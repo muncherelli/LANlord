@@ -7,10 +7,10 @@
    Networks
 
                     ┌ Add a host ─────────────────── _ □ × ┐
-      ►             │Gateway as user@host:                 │
-   Gateway          │Host                                  │
+      ►             │ Gateway as user@host:                │
+   Gateway          │ Host                                 │
                     │                                      │
-                    │                 [   OK   ] [ Cancel ]│
+                    │                    [ OK ] [ Cancel ] │
       ▦             └──────────────────────────────────────┘
    Settings
 

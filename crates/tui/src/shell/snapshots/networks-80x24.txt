@@ -1,6 +1,6 @@
 ┌ □ Networks ─────────────────────────────────────────────────────────── _ □ × ┐
-│This window is not available in the text view yet. Open it in the LANlord     │
-│window or the web UI.                                                         │
+│ This window is not available in the text view yet. Open it in the LANlord    │
+│ window or the web UI.                                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
 
       □

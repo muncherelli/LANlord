@@ -1,7 +1,7 @@
-              ┌ ◆ Users and Permissions ─────────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │This window is not available in the text view yet. Open it in the LANlord window or the web│
-  My Server   │UI.                                                                                        │
-              └───────────────────────────────────────────────────────────────────────────────────────────┘
+              ┌ ◆ Users and Permissions ───────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ This window is not available in the text view yet. Open it in the LANlord window or the web │
+  My Server   │ UI.                                                                                         │
+              └─────────────────────────────────────────────────────────────────────────────────────────────┘
 
       □
    Networks

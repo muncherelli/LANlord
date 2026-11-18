@@ -1,29 +1,29 @@
-              ┌ ▌ NT4 Domain ───────────────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ ▌  NT4 Domain                                                                        │
-  My Server   │    Status: available                                                                 │
-              │                                                                                      │
-              │A Samba server in Docker for old Windows clients, on the internal network only: an    │
-      □       │NT4-style domain controller or a plain workgroup, with a basic set of logins.         │
-   Networks   │──────────────────────────────────────────────────────────────────────────────────────│
-              │[ Settings ][ Logins ][ Logon scripts ]                                               │
-              │┌────────────────────────────────────────────────────────────────────────────────────┐│
-      ►       ││ Login                Domain admin  Software admin  Password                        ││
-   Gateway    ││                                                                                    ││
-              ││                                                                                    ││
-              ││                                                                                    ││
-      ▦       ││                                                                                    ││
-   Settings   ││                                                                                    ││
-              ││                                                                                    ││
-              ││                                                                                    ││
-      >       ││                                                                                    ││
-   Console    ││                                                                                    ││
-              ││                                                                                    ││
-              ││                                                                                    ││
-      ▣       ││[ Add login... ] [ Password...  ] [  Delete...   ]                                  ││
-    Hosts     ││[  Make domain admin  ] [ Make software admin ] [    Reload logins    ]             ││
-              ││your settings have no nt4-domain section; add one first                             ││
-              │└────────────────────────────────────────────────────────────────────────────────────┘│
-              └──────────────────────────────────────────────────────────────────────────────────────┘
+              ┌ ▌ NT4 Domain ─────────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ NT4 Domain                                                                             │
+  My Server   │ Status: available                                                                      │
+              │                                                                                        │
+              │ A Samba server in Docker for old Windows clients, on the internal network only: an     │
+      □       │ NT4-style domain controller or a plain workgroup, with a basic set of logins.          │
+   Networks   │ ────────────────────────────────────────────────────────────────────────────────────── │
+              │ [ Settings ][ Logins ][ Logon scripts ]                                                │
+              │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+      ►       │ │ Login                Domain admin  Software admin  Password                        │ │
+   Gateway    │ │                                                                                    │ │
+              │ │                                                                                    │ │
+              │ │                                                                                    │ │
+      ▦       │ │                                                                                    │ │
+   Settings   │ │                                                                                    │ │
+              │ │                                                                                    │ │
+              │ │                                                                                    │ │
+      >       │ │                                                                                    │ │
+   Console    │ │                                                                                    │ │
+              │ │                                                                                    │ │
+              │ │                                                                                    │ │
+      ▣       │ │[ Add login... ] [ Password...  ] [  Delete...   ]                                  │ │
+    Hosts     │ │[  Make domain admin  ] [ Make software admin ] [    Reload logins    ]             │ │
+              │ │your settings have no nt4-domain section; add one first                             │ │
+              │ └────────────────────────────────────────────────────────────────────────────────────┘ │
+              └────────────────────────────────────────────────────────────────────────────────────────┘
 
 
 

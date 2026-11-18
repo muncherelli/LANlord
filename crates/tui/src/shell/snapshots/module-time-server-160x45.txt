@@ -1,20 +1,20 @@
-              ┌ ◆ Time Server (NTP) ───────────────────────────────────────── _ □ × ┐
-      ≡       │ ◆  Time Server (NTP)                                                │
-  My Server   │    Status: available                                                │
-              │                                                                     │
-              │chrony in Docker: serves the time to the networks you pick, taking it│
-      □       │from public pools. It never sets the server's own clock, and dnsmasq │
-   Networks   │hands its address out as DHCP option 42 (set from the settings,      │
-              │whether or not it is running).                                       │
-              │─────────────────────────────────────────────────────────────────────│
-      ►       │┌ Settings (in your settings file) ─────────────────────────────────┐│
-   Gateway    ││  time-server:                                                     ││
-              ││    pools: [pool.ntp.org]                                          ││
-              ││    servers: [192.0.2.123]                                         ││
-      ▦       │└───────────────────────────────────────────────────────────────────┘│
-   Settings   │                                                            [ Apply ]│
-              │Host: demo@gateway                                                   │
-              └─────────────────────────────────────────────────────────────────────┘
+              ┌ ◆ Time Server (NTP) ─────────────────────────────────────────── _ □ × ┐
+      ≡       │ Time Server (NTP)                                                     │
+  My Server   │ Status: available                                                     │
+              │                                                                       │
+              │ chrony in Docker: serves the time to the networks you pick, taking it │
+      □       │ from public pools. It never sets the server's own clock, and dnsmasq  │
+   Networks   │ hands its address out as DHCP option 42 (set from the settings,       │
+              │ whether or not it is running).                                        │
+              │ ───────────────────────────────────────────────────────────────────── │
+      ►       │ ┌ Settings (in your settings file) ─────────────────────────────────┐ │
+   Gateway    │ │  time-server:                                                     │ │
+              │ │    pools: [pool.ntp.org]                                          │ │
+              │ │    servers: [192.0.2.123]                                         │ │
+      ▦       │ └───────────────────────────────────────────────────────────────────┘ │
+   Settings   │                                                             [ Apply ] │
+              │ Host: demo@gateway                                                    │
+              └───────────────────────────────────────────────────────────────────────┘
       >
    Console
 

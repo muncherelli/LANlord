@@ -1,22 +1,22 @@
-              ┌ ▓ Docker ──────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ ▓  Docker                                                           │
-  My Server   │    Status: available                                                │
-              │                                                                     │
-              │Installs Docker and drops NetBIOS and SMB on the host network. Finds │
-      □       │the host and internal interfaces itself and works on lxc, vms and    │
-   Networks   │bare metal.                                                          │
-              │─────────────────────────────────────────────────────────────────────│
-              │┌ Settings (in your settings file) ─────────────────────────────────┐│
-      ►       ││  docker: {}                                                       ││
-   Gateway    ││                                                                   ││
-              ││  # optional, found automatically:                                 ││
-              ││  network:                                                         ││
-      ▦       ││    host_interface: eth0                                           ││
-   Settings   ││    internal_interface: eth1                                       ││
-              │└───────────────────────────────────────────────────────────────────┘│
-              │                                                            [ Apply ]│
-      >       │Host: demo@gateway                                                   │
-   Console    └─────────────────────────────────────────────────────────────────────┘
+              ┌ ▓ Docker ────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ Docker                                                                │
+  My Server   │ Status: available                                                     │
+              │                                                                       │
+              │ Installs Docker and drops NetBIOS and SMB on the host network. Finds  │
+      □       │ the host and internal interfaces itself and works on lxc, vms and     │
+   Networks   │ bare metal.                                                           │
+              │ ───────────────────────────────────────────────────────────────────── │
+              │ ┌ Settings (in your settings file) ─────────────────────────────────┐ │
+      ►       │ │  docker: {}                                                       │ │
+   Gateway    │ │                                                                   │ │
+              │ │  # optional, found automatically:                                 │ │
+              │ │  network:                                                         │ │
+      ▦       │ │    host_interface: eth0                                           │ │
+   Settings   │ │    internal_interface: eth1                                       │ │
+              │ └───────────────────────────────────────────────────────────────────┘ │
+              │                                                             [ Apply ] │
+      >       │ Host: demo@gateway                                                    │
+   Console    └───────────────────────────────────────────────────────────────────────┘
 
 
       ▣

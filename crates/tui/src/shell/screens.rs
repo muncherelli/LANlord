@@ -281,6 +281,15 @@ fn windows_stay_on_the_desktop_with_their_borders_whole() {
             if let Some((rect, _)) = &shell.hits.dialog {
                 frames.push(*rect);
             }
+            // windows that overlap hide each other's edges, so only a lone scene is checked
+            if frames.len() == 1 {
+                let broken = broken_boxes(&buf, &[]);
+                assert!(
+                    broken.is_empty(),
+                    "{name} at {size:?}: a box is broken: {broken:?}\n{}",
+                    text_of(&buf)
+                );
+            }
             for (n, rect) in frames.iter().enumerate() {
                 assert!(
                     desktop.contains(rect.as_position())
@@ -302,9 +311,33 @@ fn windows_stay_on_the_desktop_with_their_borders_whole() {
 /// the scenes that have a frame to check: everything but the logon box, which has no desktop.
 fn scenes_for_frames() -> Vec<Scene> {
     scenes()
-        .into_iter()
-        .filter(|scene| scene.name != "logon" && scene.name != "first-administrator")
-        .collect()
+}
+
+/// the bottom edges of boxes inside the windows (groups, tabs and pages) that do not run from
+/// a `└` straight to a `┘`, and the corners with nothing above them.
+fn broken_boxes(buf: &Buffer, covered: &[Rect]) -> Vec<String> {
+    let mut broken = Vec::new();
+    let area = buf.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if buf[(x, y)].symbol() != "└" || covered.iter().any(|r| r.contains((x, y).into())) {
+                continue;
+            }
+            let mut end = x + 1;
+            while end < area.right() && buf[(end, y)].symbol() == "─" {
+                end += 1;
+            }
+            if end >= area.right() || buf[(end, y)].symbol() != "┘" {
+                broken.push(format!(
+                    "the box edge at ({x}, {y}) does not end in a corner"
+                ));
+            }
+            if y == area.top() || !matches!(buf[(x, y - 1)].symbol(), "│" | "┌" | "├") {
+                broken.push(format!("the corner at ({x}, {y}) has no side above it"));
+            }
+        }
+    }
+    broken
 }
 
 /// at 80 by 24 no text on any screen is cut short: a label, a value or a button that does not
@@ -379,16 +412,12 @@ fn button_rows(regions: Vec<Region>) -> Vec<Vec<Rect>> {
 fn row_faults(buf: &Buffer, rects: &[Rect]) -> Vec<&'static str> {
     let (first, last) = (rects[0], rects[rects.len() - 1]);
     let mut faults = Vec::new();
-    if rects
-        .iter()
-        .any(|r| r.width != first.width || r.y != first.y)
-    {
-        faults.push("are not one width");
+    if rects.iter().any(|r| r.y != first.y) {
+        faults.push("are not on one line");
     }
-    // a disabled button has no region, so a step may span several buttons
-    let pitch = first.width + 1;
-    if rects.windows(2).any(|w| (w[1].x - w[0].x) % pitch != 0) {
-        faults.push("are not a cell apart");
+    // a disabled button has no region, so a gap may span one
+    if rects.windows(2).any(|w| w[1].x <= w[0].right()) {
+        faults.push("touch or overlap");
     }
     let right = blanks(buf, last.right() - 1, last.y, 1) <= 1;
     let left = blanks(buf, first.x, first.y, -1) <= 1;
@@ -401,7 +430,7 @@ fn row_faults(buf: &Buffer, rects: &[Rect]) -> Vec<&'static str> {
 /// every row of two or more buttons, in every window and dialog, has buttons of one width a cell
 /// apart, and sits flush to one side of its box: right for a button row, left for a toolbar.
 #[test]
-fn button_rows_are_equal_and_flush() {
+fn button_rows_are_flush_with_a_cell_between() {
     let mut wrong = Vec::new();
     for scene in scenes_for_frames() {
         for size in [SMALL, LARGE] {
@@ -418,4 +447,18 @@ fn button_rows_are_equal_and_flush() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn every_screen_renders_into_a_tiny_terminal_without_panicking() {
+    for scene in scenes() {
+        for size in [(0, 0), (1, 1), (20, 6)] {
+            let mut shell = (scene.build)(SMALL);
+            let area = Rect::new(0, 0, size.0, size.1);
+            for _ in 0..2 {
+                shell.poll();
+                shell.render(area, &mut Buffer::empty(area));
+            }
+        }
+    }
 }

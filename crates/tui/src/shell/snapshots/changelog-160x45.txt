@@ -1,45 +1,45 @@
-              ┌ ◆ Changelog ────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │[Unreleased]                                                              │
-  My Server   │Added                                                                     │
-              │  • Each account gets a role (Administrators, Operators or Users, or one  │
-              │    you define) that says what it may see and change in each area; windows│
-      □       │    and menu items you may not use are hidden                             │
-   Networks   │  • My Account for everyone: edit your profile and change your password,  │
-              │    which is changed on every linked account or on none                   │
-              │  • Users and Permissions window for administrators: roles, a grid of     │
-      ►       │    areas and levels, and who has which role                              │
-   Gateway    │  • Applying settings shows a progress dialog with a bar, the task being  │
-              │    worked on, the elapsed time and the tasks done so far, with the raw   │
-              │    output under Details                                                  │
-      ▦       │  • A Task Manager (Processes, Performance and Networking) opens from the │
-   Settings   │    LANlord menu, and a network activity icon in the taskbar tray lights  │
-              │    up with traffic and opens it on Networking. Anyone logged in can look;│
-              │    only administrators can end a process (#114)                          │
-      >       │  • The web desktop asks you to log on, and Log Off returns to the logon  │
-   Console    │    box. Accounts that are not administrators can read but cannot change  │
-              │    the server (#102)                                                     │
-              │  • The web interface logs in with the gateway's accounts and keeps       │
-      ▣       │    sessions (#101)                                                       │
-    Hosts     │  • The browser desktop runs every server operation over HTTP (#98)       │
-              │  • Install and set up the web interface (#93)                            │
-              │  • `lanlord install` and `lanlord reinstall` set up a gateway in         │
-              │    resumable steps (#88)                                                 │
-              │  • Each component shows which LXC features it needs, with checks and     │
-              │    fixes (#87)                                                           │
-              │  • A Welcome window opens after logon (#86)                              │
-              │  • The real LANlord desktop runs in the browser (#75, #65)               │
-              │  • Networks has a tab per network, with an `ncpa.cpl`-style status for   │
-              │    the external one (#77)                                                │
-              │  • The terminal UI draws the same desktop as the window, with the mouse  │
-              │    (#76, #69)                                                            │
-              │  • Only switched-on components show, and a components setup wizard turns │
-              │    them on and off (#73)                                                 │
-              │  • `lanlord doctor` checks the environment in one place (#78)            │
-              │  • Any number of LANlord networks, each with its own dnsmasq (#83)       │
-              │  • Developer tools: cross-compile the server for Linux, preview the web  │
-              │    interface locally and deploy to a test server (#82)                   │
-              │  • Developer and preview launchers, and dev builds with demo data (#81)  │
-              │  • The web interface is served from the gateway behind Caddy on port 8443│
-              │    (#66)                                                                 │
-              └──────────────────────────────────────────────────────────────────────────┘
+              ┌ ◆ Changelog ──────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ [Unreleased]                                                               │
+  My Server   │ Added                                                                      │
+              │   • Each account gets a role (Administrators, Operators or Users, or one   │
+              │     you define) that says what it may see and change in each area; windows │
+      □       │     and menu items you may not use are hidden                              │
+   Networks   │   • My Account for everyone: edit your profile and change your password,   │
+              │     which is changed on every linked account or on none                    │
+              │   • Users and Permissions window for administrators: roles, a grid of      │
+      ►       │     areas and levels, and who has which role                               │
+   Gateway    │   • Applying settings shows a progress dialog with a bar, the task being   │
+              │     worked on, the elapsed time and the tasks done so far, with the raw    │
+              │     output under Details                                                   │
+      ▦       │   • A Task Manager (Processes, Performance and Networking) opens from the  │
+   Settings   │     LANlord menu, and a network activity icon in the taskbar tray lights   │
+              │     up with traffic and opens it on Networking. Anyone logged in can look; │
+              │     only administrators can end a process (#114)                           │
+      >       │   • The web desktop asks you to log on, and Log Off returns to the logon   │
+   Console    │     box. Accounts that are not administrators can read but cannot change   │
+              │     the server (#102)                                                      │
+              │   • The web interface logs in with the gateway's accounts and keeps        │
+      ▣       │     sessions (#101)                                                        │
+    Hosts     │   • The browser desktop runs every server operation over HTTP (#98)        │
+              │   • Install and set up the web interface (#93)                             │
+              │   • `lanlord install` and `lanlord reinstall` set up a gateway in          │
+              │     resumable steps (#88)                                                  │
+              │   • Each component shows which LXC features it needs, with checks and      │
+              │     fixes (#87)                                                            │
+              │   • A Welcome window opens after logon (#86)                               │
+              │   • The real LANlord desktop runs in the browser (#75, #65)                │
+              │   • Networks has a tab per network, with an `ncpa.cpl`-style status for    │
+              │     the external one (#77)                                                 │
+              │   • The terminal UI draws the same desktop as the window, with the mouse   │
+              │     (#76, #69)                                                             │
+              │   • Only switched-on components show, and a components setup wizard turns  │
+              │     them on and off (#73)                                                  │
+              │   • `lanlord doctor` checks the environment in one place (#78)             │
+              │   • Any number of LANlord networks, each with its own dnsmasq (#83)        │
+              │   • Developer tools: cross-compile the server for Linux, preview the web   │
+              │     interface locally and deploy to a test server (#82)                    │
+              │   • Developer and preview launchers, and dev builds with demo data (#81)   │
+              │   • The web interface is served from the gateway behind Caddy on port 8443 │
+              │     (#66)                                                                  │
+              └────────────────────────────────────────────────────────────────────────────┘
 [ L LANlord ] [ ◆ Changelog ]                                                                                                                         12:00 PM

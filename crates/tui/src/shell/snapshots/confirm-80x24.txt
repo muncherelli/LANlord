@@ -8,8 +8,8 @@
 
 
       ►             ┌ Reboot server ──────────────── _ □ × ┐
-   Gateway          │Restart demo@gateway now?             │
-                    │                 [   OK   ] [ Cancel ]│
+   Gateway          │ Restart demo@gateway now?            │
+                    │                    [ OK ] [ Cancel ] │
                     └──────────────────────────────────────┘
       ▦
    Settings

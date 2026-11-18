@@ -1,35 +1,35 @@
-              ┌ ▃ Task Manager ──────────────────────────────────────────────── _ □ × ┐
-      ≡       │Monitoring another server needs the bridge connection, which is not    │
-  My Server   │available yet.                                                         │
-              │[    PID     ] [    CPU     ] [ Mem Usage  ] [ Image Name ]            │
-              │                                                                       │
-      □       │                                                                       │
-   Networks   │                                                                       │
-              │                                                                       │
-              │                                                                       │
-      ►       │                                                                       │
-   Gateway    │                                                                       │
-              │                                                                       │
-              │                                                                       │
-      ▦       │                                                                       │
-   Settings   │                                                                       │
-              │                                                                       │
-              │                                                                       │
-      >       │                                                                       │
-   Console    │                                                                       │
-              │                                                                       │
-              │                                                                       │
-      ▣       │                                                                       │
-    Hosts     │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              │                                                                       │
-              └───────────────────────────────────────────────────────────────────────┘
+              ┌ ▃ Task Manager ────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ Monitoring another server needs the bridge connection, which is not     │
+  My Server   │ available yet.                                                          │
+              │ [    PID     ] [    CPU     ] [ Mem Usage  ] [ Image Name ]             │
+              │                                                                         │
+      □       │                                                                         │
+   Networks   │                                                                         │
+              │                                                                         │
+              │                                                                         │
+      ►       │                                                                         │
+   Gateway    │                                                                         │
+              │                                                                         │
+              │                                                                         │
+      ▦       │                                                                         │
+   Settings   │                                                                         │
+              │                                                                         │
+              │                                                                         │
+      >       │                                                                         │
+   Console    │                                                                         │
+              │                                                                         │
+              │                                                                         │
+      ▣       │                                                                         │
+    Hosts     │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              │                                                                         │
+              └─────────────────────────────────────────────────────────────────────────┘
 
 
 

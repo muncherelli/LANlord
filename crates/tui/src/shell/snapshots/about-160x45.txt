@@ -17,11 +17,11 @@
 
       >
    Console
-                                                            ┌ About LANlord ──────────────── _ □ × ┐
-                                                            │LANlord                               │
-      ▣                                                     │Retro networks, run from one desktop. │
-    Hosts                                                   │                 [   OK   ] [ Cancel ]│
-                                                            └──────────────────────────────────────┘
+                                                           ┌ About LANlord ───────────────── _ □ × ┐
+                                                           │ LANlord                               │
+      ▣                                                    │ Retro networks, run from one desktop. │
+    Hosts                                                  │                     [ OK ] [ Cancel ] │
+                                                           └───────────────────────────────────────┘
 
 
 

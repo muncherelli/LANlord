@@ -1,11 +1,11 @@
 //! drawing blocks that make the terminal look like the gui: the teal desktop with its icon
-//! tiles, bevelled gray windows with navy title bars, the taskbar, menus and the common
+//! tiles, gray windows boxed in single lines with the title on a navy top line, the taskbar, menus and the common
 //! controls, plus mouse handling. each widget takes plain data, so a renderer of the shared
 //! app layer can feed them later. every widget clips to the buffer, so a window dragged
 //! partly off screen draws only what is visible.
 //!
-//! the glyphs used (edges `▔ ▁ ▏ ▕`, marks `✓ ▸ × □ •` and the icon glyphs in glyphs.rs) are one cell wide in unicode, but some are
-//! "ambiguous width": a terminal set to draw ambiguous characters wide (a common cjk setting)
+//! the glyphs used (box lines `┌ ─ │`, marks `✓ ▸ × □ •` and the icon glyphs in glyphs.rs) are one cell
+//! wide in unicode, but some are "ambiguous width": a terminal set to draw ambiguous characters wide (a common cjk setting)
 //! shifts everything after them on the row, so layouts look broken there.
 
 pub mod chrome;
