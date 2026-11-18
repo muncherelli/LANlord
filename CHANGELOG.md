@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A save whose secret path does not fit what is stored (such as `docker[a].token` over a section) is refused instead of wiping the stored secrets
 - The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss`
 - The taskbar start button shows the logo with no separator after it (#106)
 - NT4 domain group mappings that drifted are repaired (#40)
