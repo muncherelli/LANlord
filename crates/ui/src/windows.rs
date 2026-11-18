@@ -267,6 +267,35 @@ fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
             .is_none_or(|layer| layer.id == Id::unique(id))
 }
 
+/// keep what a growable window's contents were, to share its room out the next frame, and draw
+/// again until they settle.
+fn remember_room(
+    ctx: &egui::Context,
+    id: &str,
+    key: Id,
+    before: Option<Room>,
+    natural: f32,
+    claimed: f32,
+    fit: bool,
+) {
+    let grabbed = grabbed_edge(ctx, id);
+    let user = !fit || grabbed || before.is_some_and(|r| r.user);
+    let now = Room {
+        natural,
+        claimed,
+        user,
+        // frames the contents have kept their height, for the window to catch up
+        age: before
+            .filter(|r| (r.natural - natural).abs() <= 0.5)
+            .map_or(0, |r| r.age.saturating_add(1)),
+    };
+    ctx.data_mut(|d| d.insert_temp(key, now));
+    if before.is_none_or(|r| r.age < SETTLE || (r.natural - natural).abs() > 0.5) {
+        // the room to spare is worked out from this, so draw again with it
+        ctx.request_repaint();
+    }
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -379,22 +408,7 @@ pub fn show(
         });
         if growable {
             let natural = content_height - (extra - spare.extra);
-            let grabbed = grabbed_edge(ctx, id);
-            let user = !fit || grabbed || before.is_some_and(|r| r.user);
-            let now = Room {
-                natural,
-                claimed: spare.claimed,
-                user,
-                // frames the contents have kept their height, for the window to catch up
-                age: before
-                    .filter(|r| (r.natural - natural).abs() <= 0.5)
-                    .map_or(0, |r| r.age.saturating_add(1)),
-            };
-            ctx.data_mut(|d| d.insert_temp(key, now));
-            if before.is_none_or(|r| r.age < SETTLE || (r.natural - natural).abs() > 0.5) {
-                // the room to spare is worked out from this, so draw again with it
-                ctx.request_repaint();
-            }
+            remember_room(ctx, id, key, before, natural, spare.claimed, fit);
         }
         ui.allocate_rect(inner.min_rect(), Sense::hover());
     })?;
