@@ -518,6 +518,14 @@ impl Desktop {
         self.devtools_menu(&ctx, TASKBAR + 2.0);
 
         self.console.drain();
+        self.console.apply.tick(ctx.input(|i| i.time));
+        if self.console.apply.running() {
+            // the elapsed time on the progress dialog keeps counting between events
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        if self.console.apply.take_started() {
+            self.open(Target::Progress);
+        }
         #[cfg(feature = "native")]
         {
             self.updates.tick(&ctx);
@@ -1416,6 +1424,14 @@ impl Desktop {
                     self.close_requests.push(Target::Welcome);
                 }
             }
+            Target::Progress => {
+                if let Some(msg) = view::show(ui, &self.console.apply.view()) {
+                    self.console.apply.update(msg);
+                }
+                if self.console.apply.take_done() {
+                    self.close_requests.push(Target::Progress);
+                }
+            }
             Target::Components => {
                 let host = self.host();
                 components_window::show(&mut self.components, ui, &self.services, host.as_deref());
@@ -2032,5 +2048,26 @@ mod tests {
                 == 4
         });
         frames(&mut desktop, &ctx, 2);
+    }
+
+    #[test]
+    fn an_apply_opens_its_progress_dialog_and_close_ends_it() {
+        use lanlord_app::apply_progress::{ApplyEvent, Msg, Stats};
+        let (mut desktop, ctx, _) = desktop();
+        let open = |d: &Desktop| d.windows.iter().any(|w| w.target == Target::Progress);
+        desktop.console.apply.event(&ApplyEvent::Total { n: 2 });
+        desktop.console.apply.event(&ApplyEvent::TaskStart {
+            name: "write the config".into(),
+        });
+        frames(&mut desktop, &ctx, 3);
+        assert!(open(&desktop), "the first event opens the dialog");
+        let finished = ApplyEvent::Finished {
+            stats: Stats::default(),
+        };
+        desktop.console.apply.event(&finished);
+        frames(&mut desktop, &ctx, 2);
+        desktop.console.apply.update(Msg::Close);
+        frames(&mut desktop, &ctx, 2);
+        assert!(!open(&desktop), "Close closes it");
     }
 }

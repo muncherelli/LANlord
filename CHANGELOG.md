@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Applying settings shows a progress dialog with a bar, the task being worked on, the elapsed time and the tasks done so far, with the raw output under Details
 - A Task Manager (Processes, Performance and Networking) opens from the LANlord menu, and a network activity icon in the taskbar tray lights up with traffic and opens it on Networking. Anyone logged in can look; only administrators can end a process (#114)
 - The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
 - The web interface logs in with the gateway's accounts and keeps sessions (#101)
@@ -70,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The administrators group is renamed `admins`, one group for the gateway and the domain (#49)
 - Every window opens fitted to its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small; the console opens 80 by 24 cells, and the windows with a list, log or text (hosts, settings, changelog, networks, My Server and the rest) can be resized, their lists filling whatever room they are given, while plain forms keep a fixed size. The Changelog window shows plain text without the template's intro (#105)
 - The Welcome window shows the version and has a Changelog topic that opens the changelog (#105)
-- NT4 domain and network services now run from published `lanlord-nt4-server-components` (Samba built from source) and `lanlord-dhcp-dns-components` (dnsmasq) images, each versioned on its own (`X.Y.Z`, plus rolling `X.Y`, `X` and `latest`) and rebuilt only when it changes. The playbooks pin the image version they ship with. The old `image` and `build_locally` settings are gone.
+
+- NT4 domain and network services now run from published `lanlord-nt4-server-components` (Samba built from source) and `lanlord-network-server-components` (dnsmasq) images, tagged with the LANlord version (`X.Y.Z`; the rolling `X.Y`, `X` and `latest` move on releases), published from trunk during development and frozen at release. The playbooks pin the version their build was made for. The old `image` and `build_locally` settings are gone.
 
 ### Fixed
 
