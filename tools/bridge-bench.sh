@@ -59,6 +59,8 @@ else
     start=$(date +%s)
     i=0
     while [ "$i" -lt "$runs" ]; do
+      # cmd is set by the eval above
+      # shellcheck disable=SC2154
       eval "$cmd" > /dev/null
       i=$((i + 1))
     done

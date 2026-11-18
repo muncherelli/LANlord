@@ -62,6 +62,7 @@ case "$1" in
   cat) echo "ExecStart=/opt/lanlord/bin/lanlord webui --socket /run/lanlord-web/web.sock" ;;
   is-active) echo active ;;
   restart) echo "systemctl $*" >> "$FAKE_LOG" ;;
+  *) ;;
 esac
 SH
 # the service "answers" unless the installed binary is the bad build
@@ -78,6 +79,7 @@ file=$3
 case "$fmt" in
   %u:%g) echo 0:0 ;;
   %a) if [ -d "$file" ]; then echo 755; elif [ "${file##*/}" = lanlord ]; then echo 755; else echo 644; fi ;;
+  *) ;;
 esac
 SH
 printf '#!/bin/sh\nexit 0\n' > "$bin/chown"

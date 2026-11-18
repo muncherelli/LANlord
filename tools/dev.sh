@@ -123,7 +123,7 @@ case "$cmd" in
       esac
       shift
     done
-    case "$port" in '' | *[!0-9]*) echo "the port must be a number" >&2; exit 2 ;; esac
+    case "$port" in '' | *[!0-9]*) echo "the port must be a number" >&2; exit 2 ;; *) ;; esac
     "$root/tools/build-web.sh" --dev
     if [ "$serve" = 1 ]; then
       # the real web server from this checkout, on this machine only, so the page comes with the

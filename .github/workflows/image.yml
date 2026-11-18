@@ -104,7 +104,7 @@ jobs:
           base=""
           mode=dev
           case "$EVENT" in
-            pull_request) mode=pr; base="$BASE" ;;
+            pull_request) mode="pr"; base="$BASE" ;;
             # an all-zero "before" (a new branch) has no base: every image counts as changed
             push) case "$BEFORE" in *[!0]*) base="$BEFORE" ;; *) base="" ;; esac ;;
             workflow_dispatch)
@@ -134,6 +134,8 @@ jobs:
             local entry=$1 commit=$2 dir
             dir=$(jq -r .dir <<<"$entry")
             git cat-file -e "$commit^{commit}" 2>/dev/null || return 1
+            # the inputs are separate words on purpose
+            # shellcheck disable=SC2046
             git diff --quiet "$commit" "v$version" -- $(jq -r --arg d "$dir" '.inputs[] | $d + "/" + .' <<<"$entry")
           }
           include='[]'
@@ -171,6 +173,8 @@ jobs:
                 if [ -n "$have" ] && unchanged "$entry" "$have"; then echo "$image:$version is already published; skipping $name"; continue; fi
                 # an older version whose image inputs equal the tag's is retagged, no rebuild; any change
                 # since (or an unknown revision) builds from the tag
+                # the version list is separate words on purpose
+                # shellcheck disable=SC2046
                 from=$(printf '%s\n' "$version" $(cut -d' ' -f1 <<<"$own") | sort -uV | sed "/^$version\$/,\$d" | tail -n1)
                 if [ -n "$from" ]; then
                   frev=$(sed -n "s/^$from //p" <<<"$own")
@@ -184,10 +188,12 @@ jobs:
           arch='[{"arch":"amd64","platform":"linux/amd64","runner":"ubuntu-latest"},{"arch":"arm64","platform":"linux/arm64","runner":"ubuntu-24.04-arm"}]'
           builds=$(jq -c '[.[] | select(.action == "build")]' <<<"$include")
           expanded=$(jq -c --argjson a "$arch" '[.[] as $e | $a[] | $e + .]' <<<"$builds")
-          echo "matrix={\"include\":$expanded}" >> "$GITHUB_OUTPUT"
-          echo "images={\"include\":$include}" >> "$GITHUB_OUTPUT"
-          echo "builds=$(jq 'length > 0' <<<"$builds")" >> "$GITHUB_OUTPUT"
-          echo "any=$(jq 'length > 0' <<<"$include")" >> "$GITHUB_OUTPUT"
+          {
+            echo "matrix={\"include\":$expanded}"
+            echo "images={\"include\":$include}"
+            echo "builds=$(jq 'length > 0' <<<"$builds")"
+            echo "any=$(jq 'length > 0' <<<"$include")"
+          } >> "$GITHUB_OUTPUT"
           echo "images to handle: $(jq -c '[.[] | {name, action, from}]' <<<"$include")"
 
   build:
@@ -306,7 +312,7 @@ jobs:
           set -eu
           if [ "$ACTION" = build ]; then
             # both architectures must have been built
-            [ -d /tmp/digests ] && [ "$(ls /tmp/digests | wc -l)" = 2 ] || { echo "$IMAGE is missing a built architecture; nothing was tagged" >&2; exit 1; }
+            [ -d /tmp/digests ] && [ "$(find /tmp/digests -mindepth 1 -maxdepth 1 | wc -l)" = 2 ] || { echo "$IMAGE is missing a built architecture; nothing was tagged" >&2; exit 1; }
           fi
           # look at the versions again right before tagging
           own=$(tools/ghcr-own-versions.sh "$IMAGE")
@@ -327,6 +333,8 @@ jobs:
           if [ "$MODE" = release ]; then
             minor=${VERSION%.*}; major=${VERSION%%.*}
             tags=$(cut -d' ' -f1 <<<"$own")
+            # the version list is separate words on purpose
+            # shellcheck disable=SC2046
             newest() { local pattern=$1; printf '%s\n' "$VERSION" $(grep -E "$pattern" <<<"$tags" || true) | sort -V | tail -n1; }
             [ "$(newest '^[0-9]+\.[0-9]+\.[0-9]+$')" = "$VERSION" ] && args="$args -t $REPO:latest"
             [ "$(newest "^$major\\.[0-9]+\\.[0-9]+$")" = "$VERSION" ] && args="$args -t $REPO:$major"
