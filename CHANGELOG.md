@@ -94,7 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `lanlord doctor` reports container nesting correctly (the check ran inside the operations service's sandbox and said no), and the web interface shows the real signed-in login instead of root for a sudo user (#137)
+- `lanlord doctor` checks container nesting outside the operations service's sandbox (inside it the check always said no), and the web interface, window and terminal desktops show the real signed-in login instead of root for a sudo user (#137)
 - A save whose secret path does not fit what is stored (such as `docker[a].token` over a section) is refused instead of wiping the stored secrets (#123)
 - The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss` (#122)
 - The taskbar start button shows the logo with no separator after it (#106)
