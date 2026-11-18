@@ -168,6 +168,87 @@ pub fn least_size(ctx: &egui::Context, title: &str, contents: f32) -> Vec2 {
     )
 }
 
+/// the least the contents can be without the room they are given, with their margins.
+fn contents_least(before: Option<Room>) -> f32 {
+    let least = match before {
+        Some(r) if r.claimed > 0.0 => r.natural - r.claimed + r.claimed.min(controls::FILL_MIN),
+        // nothing grows, so the contents scroll when the window is smaller: no smaller than
+        // they are, or than a part that fills would be
+        Some(r) => (r.natural - 2.0 * MARGIN).min(controls::FILL_MIN),
+        // not measured yet: no floor, so a window that is small can open small
+        None => 0.0,
+    };
+    least + 2.0 * MARGIN
+}
+
+/// the size a document window opens at, and how far it may shrink.
+fn open_size(
+    window: egui::Window<'_>,
+    place: Placement,
+    least: Vec2,
+    before: Option<Room>,
+    fit: bool,
+    floor: f32,
+) -> egui::Window<'_> {
+    let max_height = place.area.height();
+    match (place.growable, place.height) {
+        (true, Some(h)) => window
+            .default_size(Vec2::new(place.width, h.min(max_height)))
+            .min_size(least),
+        // no height to open at: it starts at nothing and takes the height of its contents
+        (true, None) => {
+            let window = window
+                .default_size(Vec2::new(place.width, floor - 2.0 * FRAME))
+                .min_size(least);
+            match before {
+                // until the user sizes it, it is as tall as its contents, or the floor, and
+                // shrinks with them
+                Some(r) if fit => window.max_size(Vec2::new(
+                    f32::INFINITY,
+                    (TITLE_BAR + r.natural)
+                        .max(floor - 2.0 * FRAME)
+                        .min(max_height - 2.0 * FRAME),
+                )),
+                _ => window,
+            }
+        }
+        _ => window.default_width(place.width),
+    }
+}
+
+/// the room above what the contents need on their own, for the growable part to take.
+fn spare_room(before: Option<Room>, sized: bool, fit: bool, room: f32, floor: f32) -> f32 {
+    match before {
+        Some(r) if sized => (room - r.natural).max(0.0),
+        // a window with less than it opens at gives the rest to its growable part
+        Some(r) if fit => (floor - CHROME - r.natural).max(0.0),
+        _ => 0.0,
+    }
+}
+
+/// the user has sized the window once they press on its edge or corner.
+fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
+    let Some(r) = ctx.memory(|m| m.area_rect(Id::unique(id))) else {
+        return false;
+    };
+    let Some(p) = ctx.input(|i| {
+        i.pointer
+            .primary_down()
+            .then(|| i.pointer.press_origin())
+            .flatten()
+    }) else {
+        return false;
+    };
+    // not the title bar, whose buttons are not a resize
+    p.y > r.top() + TITLE_BAR + FRAME
+        && r.expand(FRAME * 2.0).contains(p)
+        && !r.shrink(FRAME).contains(p)
+        // not a window on top of this one
+        && ctx
+            .layer_id_at(p)
+            .is_none_or(|layer| layer.id == Id::unique(id))
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -197,14 +278,7 @@ pub fn show(
     let fit = growable && place.height.is_none() && !before.is_some_and(|r| r.user);
     let sized = growable && !fit;
     let floor = place.floor.min(max_height);
-    let contents_least = match before {
-        Some(r) if r.claimed > 0.0 => r.natural - r.claimed + r.claimed.min(controls::FILL_MIN),
-        // nothing grows, so the contents scroll when the window is smaller: no smaller than
-        // they are, or than a part that fills would be
-        Some(r) => (r.natural - 2.0 * MARGIN).min(controls::FILL_MIN),
-        // not measured yet: no floor, so a window that is small can open small
-        None => 0.0,
-    } + 2.0 * MARGIN;
+    let contents_least = contents_least(before);
     // never more than the desktop, whose room the contents then scroll in
     let mut least = least_size(ctx, title, contents_least);
     least.y = least.y.min(max_height);
@@ -226,29 +300,7 @@ pub fn show(
         window.pivot(Align2::CENTER_CENTER).default_pos(place.start)
     } else {
         let window = window.constrain_to(place.area).default_pos(place.start);
-        match (growable, place.height) {
-            (true, Some(h)) => window
-                .default_size(Vec2::new(width, h.min(max_height)))
-                .min_size(least),
-            // no height to open at: it starts at nothing and takes the height of its contents
-            (true, None) => {
-                let window = window
-                    .default_size(Vec2::new(width, floor - 2.0 * FRAME))
-                    .min_size(least);
-                match before {
-                    // until the user sizes it, it is as tall as its contents, or the floor, and
-                    // shrinks with them
-                    Some(r) if fit => window.max_size(Vec2::new(
-                        f32::INFINITY,
-                        (TITLE_BAR + r.natural)
-                            .max(floor - 2.0 * FRAME)
-                            .min(max_height - 2.0 * FRAME),
-                    )),
-                    _ => window,
-                }
-            }
-            _ => window.default_width(width),
-        }
+        open_size(window, place, least, before, fit, floor)
     };
     let shown = window.show(ctx, |ui| {
         // the title bar spans the window inside its 3 pixel border; the contents sit in
@@ -270,12 +322,7 @@ pub fn show(
             (max_height - CHROME).max(40.0)
         };
         // the room above what the contents need on their own, for the growable part to take
-        let extra = match before {
-            Some(r) if sized => (room - r.natural).max(0.0),
-            // a window with less than it opens at gives the rest to its growable part
-            Some(r) if fit => (floor - CHROME - r.natural).max(0.0),
-            _ => 0.0,
-        };
+        let extra = spare_room(before, sized, fit, room, floor);
         let from = ui.cursor().min;
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
@@ -310,20 +357,7 @@ pub fn show(
         });
         if growable {
             let natural = content_height - (extra - spare.extra);
-            // the user has sized it once they press on its edge or corner
-            let grabbed = ctx
-                .memory(|m| m.area_rect(Id::unique(id)))
-                .is_some_and(|r| {
-                    ctx.input(|i| {
-                        i.pointer.primary_down()
-                            && i.pointer.press_origin().is_some_and(|p| {
-                                // not the title bar, whose buttons are not a resize
-                                p.y > r.top() + TITLE_BAR + FRAME
-                                    && r.expand(FRAME * 2.0).contains(p)
-                                    && !r.shrink(FRAME * 2.0).contains(p)
-                            })
-                    })
-                });
+            let grabbed = grabbed_edge(ctx, id);
             let user = !fit || grabbed || before.is_some_and(|r| r.user);
             let now = Room {
                 natural,

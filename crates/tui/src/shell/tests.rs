@@ -833,6 +833,7 @@ fn the_welcome_window_opens_after_logon_only_while_its_box_is_ticked() {
             user: user.into(),
             uid: 1000,
             admin: true,
+            grants: None,
         },
     };
     let mut shell = demo();

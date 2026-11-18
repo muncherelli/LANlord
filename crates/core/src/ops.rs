@@ -5,22 +5,33 @@ use anyhow::{anyhow, bail, Result};
 
 pub use lanlord_model::ops::*;
 
+use crate::access::{Caller, Grants, Need};
 use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
+use crate::{access, save_guard, self_service, settings, users};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
 };
-use crate::{settings, users};
 
 /// the message when there is no key to decrypt the secrets with.
 pub const NO_KEY: &str = "no key yet; run `lanlord keygen` in a terminal first";
 
-/// run `op` on `host`, asking for the sudo password through `ask` when the server needs it.
+/// run `op` on `host` as the account the session signs in as, asking for the sudo password
+/// through `ask` when the server needs it.
 pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
-    match op {
+    let caller = Caller::of_session(&Session::new(host)?)?;
+    execute_as(host, &caller, op, ask)
+}
+
+/// run `op` on `host` for `caller`: refused with [`Denied`] when the caller's roles do not
+/// cover it, and the reply holds only what the caller may see. this is the one door every front
+/// end uses; the web ui passes the account it signed in.
+pub fn execute_as(host: &str, caller: &Caller, op: &Op, ask: AskPassword) -> Result<Reply> {
+    let session = Session::new(host)?;
+    guarded(&session, caller, op, ask, |grants, ask| match op {
         // these two reach the server their own way
         Op::Bootstrap => {
             let options = Options {
@@ -35,17 +46,70 @@ pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
             let target = Target::Gateway { host: host.into() };
             Ok(Reply::ExitCode(exec::exec_detached(&target, command)?))
         }
-        _ => execute_with(&Session::new(host)?, host, op, ask, crypto::load_default),
-    }
+        _ => {
+            let who = Who { caller, grants };
+            dispatch(&session, host, &who, op, ask, crypto::load_default)
+        }
+    })
+}
+
+/// who asks and what they may do.
+struct Who<'a> {
+    caller: &'a Caller,
+    grants: &'a Grants,
+}
+
+/// check the caller's grants, run, and redact what comes back.
+fn guarded(
+    session: &Session,
+    caller: &Caller,
+    op: &Op,
+    ask: AskPassword,
+    run: impl FnOnce(&Grants, AskPassword) -> Result<Reply>,
+) -> Result<Reply> {
+    // a person's own account needs no lookup of rights, which needs root on the server
+    let grants = match access::grants_of(session, caller, &mut *ask) {
+        Ok(grants) => grants,
+        Err(_) if op.requires() == Need::SelfOnly => Grants::fallback(caller.admin),
+        Err(e) => return Err(e),
+    };
+    access::authorize(&grants, op)?;
+    let reply = run(&grants, ask)?;
+    Ok(access::redact(&grants, caller, reply))
 }
 
 /// where the key that decrypts the settings comes from; `None` when there is none yet.
 type Keys = fn() -> Result<Option<crypto::Identity>>;
 
-/// run `op` through `session`. `host` names the server in the settings and messages.
+/// run `op` through `session` for `caller`. `host` names the server in the settings and
+/// messages.
+#[cfg(all(test, unix))]
 pub(crate) fn execute_with(
     session: &Session,
     host: &str,
+    caller: &Caller,
+    op: &Op,
+    ask: AskPassword,
+    keys: Keys,
+) -> Result<Reply> {
+    guarded(session, caller, op, ask, |grants, ask| {
+        dispatch(session, host, &Who { caller, grants }, op, ask, keys)
+    })
+}
+
+/// the settings to write for a save: only what the caller may change differs from what is stored.
+fn plain_for_save(session: &Session, who: &Who, plain: &str, ask: AskPassword) -> Result<String> {
+    if who.caller.admin {
+        return Ok(plain.to_string());
+    }
+    let (stored, _) = access::load(session, ask)?;
+    save_guard::merge_save(&stored, plain, who.grants, who.caller)
+}
+
+fn dispatch(
+    session: &Session,
+    host: &str,
+    who: &Who,
     op: &Op,
     ask: AskPassword,
     keys: Keys,
@@ -65,7 +129,9 @@ pub(crate) fn execute_with(
                 .map(|u| (u.path.clone(), u.value.expose().to_string()))
                 .collect();
             let saved = key().and_then(|key| {
-                settings::save_document_with(session, host, &key, plain, &updates, ask)
+                save_guard::check_updates(&updates, who.grants, who.caller)?;
+                let plain = plain_for_save(session, who, plain, &mut *ask)?;
+                settings::save_document_with(session, host, &key, &plain, &updates, ask)
             });
             // the plain copies of the secrets go before anything else can fail
             drop(zeroize_pairs(updates));
@@ -92,6 +158,11 @@ pub(crate) fn execute_with(
             ssh_key,
             passwordless_sudo,
         } => {
+            if !who.caller.admin {
+                return Err(
+                    access::Refused("only an administrator creates administrators".into()).into(),
+                );
+            }
             account::create_admin(
                 session,
                 host,
@@ -141,6 +212,20 @@ pub(crate) fn execute_with(
         }
         Op::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
         Op::Doctor => Reply::Doctor(doctor::run_with(session, ask)?),
+        Op::AccountInfo => self_service::account_info(session, who.caller, ask)?,
+        Op::ChangePassword { old, new } => {
+            self_service::change_password(session, who.caller, old, new, ask)?
+        }
+        Op::UpdateProfile { profile } => {
+            self_service::update_profile(session, host, who.caller, profile, ask)?
+        }
+        Op::ResetPassword { user, new } => {
+            self_service::reset_password(session, (who.caller, who.grants), user, new, ask)?
+        }
+        Op::LoadAccess => self_service::load_access(session, ask)?,
+        Op::SaveAccess { access } => {
+            self_service::save_access(session, host, (who.caller, who.grants), access, ask)?
+        }
         Op::Subscribe { .. } => bail!("live streams are not available yet"),
     })
 }
@@ -166,6 +251,7 @@ fn zeroize_pairs(mut pairs: Vec<(String, String)>) -> Vec<(String, String)> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::access::Level;
     use std::sync::OnceLock;
 
     use super::*;
@@ -190,14 +276,22 @@ mod tests {
             r#"for a; do last=$a; done
 case "$last" in
   "id -un") echo tester ;;
+  "id -nG") echo "tester admins" ;;
   "sudo -n true") exit 0 ;;
   *) cat > /dev/null; exit 0 ;;
 esac"#,
         )
     }
 
+    fn admin() -> Caller {
+        Caller {
+            user: "tester".into(),
+            admin: true,
+        }
+    }
+
     fn run(session: &Session, op: Op) -> Result<Reply> {
-        execute_with(session, "gw", &op, &mut no_password, key)
+        execute_with(session, "gw", &admin(), &op, &mut no_password, key)
     }
 
     #[test]
@@ -334,9 +428,205 @@ esac"#,
             },
             Op::ChangeUsers { changes: vec![] },
         ] {
-            let err = execute_with(&server, "gw", &op, &mut no_password, no_key).unwrap_err();
+            let err =
+                execute_with(&server, "gw", &admin(), &op, &mut no_password, no_key).unwrap_err();
             assert_eq!(err.to_string(), NO_KEY, "{op:?}");
         }
+    }
+
+    #[test]
+    fn only_an_administrator_creates_administrators_and_applies_every_area() {
+        let gw = Gateway::new("ops-create-admin");
+        let everything = Grants::all(Level::Manage);
+        let olly = Caller {
+            user: "olly".into(),
+            admin: false,
+        };
+        let create = Op::CreateAdmin {
+            name: "eve".into(),
+            password: "pw".into(),
+            ssh_key: None,
+            passwordless_sudo: false,
+        };
+        let result = dispatch(
+            &gw.session,
+            "gw",
+            &Who {
+                caller: &olly,
+                grants: &everything,
+            },
+            &create,
+            &mut no_password,
+            key,
+        );
+        let err = result.unwrap_err();
+        assert!(err.downcast_ref::<access::Refused>().is_some(), "{err:#}");
+    }
+
+    #[test]
+    fn someone_who_is_not_an_administrator_is_a_user() {
+        let gw = Gateway::new("ops-user");
+        let dana = Caller {
+            user: "dana".into(),
+            admin: false,
+        };
+        let go = |op: Op| execute_with(&gw.session, "gw", &dana, &op, &mut no_password, key);
+        let denied = go(Op::Leases).unwrap_err();
+        assert!(
+            denied.downcast_ref::<access::Denied>().is_some(),
+            "{denied:#}"
+        );
+        assert!(go(Op::Power {
+            power: Power::Reboot
+        })
+        .is_err());
+        assert!(go(Op::Apply { modules: vec![] }).is_err());
+        // status is open to everyone, so this one is not refused
+        let facts = go(Op::ServerFacts);
+        assert!(
+            facts.is_ok()
+                || facts
+                    .unwrap_err()
+                    .downcast_ref::<access::Denied>()
+                    .is_none()
+        );
+    }
+
+    #[test]
+    fn a_save_by_someone_without_users_manage_cannot_change_the_assignments() {
+        let gw = Gateway::new("ops-save-access");
+        let key = key().unwrap().unwrap();
+        gw.seed_sealed(&key, "dns: {}\n");
+        let plain = "dns: {}\naccess:\n  members:\n    dana: [Administrators]\n";
+        let operator_grants = Grants::fallback(false);
+        let olly = Caller {
+            user: "olly".into(),
+            admin: false,
+        };
+        let who = Who {
+            caller: &olly,
+            grants: &operator_grants,
+        };
+        let kept = plain_for_save(&gw.session, &who, plain, &mut no_password);
+        // the assignments are an area this caller cannot see, so what is stored stays
+        let kept = kept.unwrap();
+        assert!(!kept.contains("dana"), "{kept}");
+    }
+
+    fn is_denied(result: &Result<Reply>) -> bool {
+        result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.downcast_ref::<access::Denied>().is_some())
+    }
+
+    #[test]
+    fn each_built_in_role_is_allowed_exactly_what_its_grants_say() {
+        let gw = Gateway::new("ops-roles");
+        std::fs::write(
+            gw.dir.join("yml"),
+            "access:\n  members:\n    olly: [Operators]\n    dana: [Users]\n",
+        )
+        .unwrap();
+        let ops = [
+            Op::Leases,
+            Op::ServerFacts,
+            Op::LoadAccess,
+            Op::ResetMachine {
+                name: "pc01".into(),
+            },
+            Op::Power {
+                power: Power::Reboot,
+            },
+            Op::LogonScripts,
+            Op::AccountInfo,
+        ];
+        let callers = [
+            (admin(), true),
+            (
+                Caller {
+                    user: "olly".into(),
+                    admin: false,
+                },
+                false,
+            ),
+            (
+                Caller {
+                    user: "dana".into(),
+                    admin: false,
+                },
+                false,
+            ),
+        ];
+        let stored = access::Access::from_settings(
+            &lanlord_model::settings::Settings::parse(
+                &std::fs::read_to_string(gw.dir.join("yml")).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        for (caller, is_admin) in callers {
+            let grants = stored.grants(&caller.user, is_admin);
+            for op in &ops {
+                let got = execute_with(&gw.session, "gw", &caller, op, &mut no_password, key);
+                let allowed = grants.allows(op.requires());
+                assert_eq!(
+                    is_denied(&got),
+                    !allowed,
+                    "{} on {op:?}: {got:?}",
+                    caller.user
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_user_reaches_their_own_account_and_nobody_elses_or_the_permissions() {
+        let gw = Gateway::new("ops-self");
+        let dana = Caller {
+            user: "dana".into(),
+            admin: false,
+        };
+        let go = |caller: &Caller, op: Op| {
+            execute_with(&gw.session, "gw", caller, &op, &mut no_password, key)
+        };
+        let Ok(Reply::Account(info)) = go(&dana, Op::AccountInfo) else {
+            panic!("a user may read their own account");
+        };
+        assert_eq!(info.user, "dana");
+        let profile = access::Profile {
+            full_name: "Dana Example".into(),
+            description: String::new(),
+        };
+        assert_eq!(
+            go(&dana, Op::UpdateProfile { profile }).unwrap(),
+            Reply::Done
+        );
+        let reset = Op::ResetPassword {
+            user: "ann".into(),
+            new: lanlord_model::secret::Secret::new("pw"),
+        };
+        assert!(is_denied(&go(&dana, reset.clone())));
+        assert!(is_denied(&go(&dana, Op::LoadAccess)));
+        assert!(is_denied(&go(
+            &dana,
+            Op::SaveAccess {
+                access: access::Access::default()
+            }
+        )));
+        // an administrator may do all three
+        assert!(matches!(go(&admin(), reset), Ok(Reply::Password(_))));
+        assert!(matches!(go(&admin(), Op::LoadAccess), Ok(Reply::Access(_))));
+        let mut open = access::Access::default();
+        open.members
+            .insert("dana".into(), vec![access::OPERATORS.into()]);
+        assert_eq!(
+            go(&admin(), Op::SaveAccess { access: open }).unwrap(),
+            Reply::Done
+        );
+        // and the new role takes effect for dana's next request
+        assert!(go(&dana, Op::Leases).is_ok());
     }
 
     #[test]

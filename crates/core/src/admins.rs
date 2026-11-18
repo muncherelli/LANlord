@@ -90,7 +90,7 @@ pub fn list(host: &str, ask_password: AskPassword) -> Result<Vec<String>> {
     list_with(&Session::new(host)?, ask_password)
 }
 
-fn list_with(session: &Session, ask_password: AskPassword) -> Result<Vec<String>> {
+pub(crate) fn list_with(session: &Session, ask_password: AskPassword) -> Result<Vec<String>> {
     let admin = admin_of(session)?;
     let out = capture_as_root(session, &admin, list_script(), ask_password)?;
     Ok(out.lines().map(str::to_string).collect())

@@ -1,6 +1,7 @@
 //! the LANlord menu: the server it works on, the windows, power actions, updates and quitting.
 //! the rows are built here; each front end draws them and hands back the chosen action.
 
+use lanlord_model::access::{Area, Grants, Level};
 use lanlord_model::modules::MODULES;
 use lanlord_model::power::Power;
 
@@ -72,8 +73,8 @@ pub struct State<'a> {
     pub signed_in: Option<&'a str>,
     /// a different server can be chosen at the logon box (not in the browser, which has one).
     pub switch_server: bool,
-    /// the signed-in account is an administrator; the power items are off for anyone else.
-    pub admin: bool,
+    /// what the signed-in account may do; what it may not is left out of the menu.
+    pub grants: Grants,
     /// the server is there and nothing is running against it.
     pub ready: bool,
     /// automatic updates are on; `None` where lanlord is not updated from the menu (the browser).
@@ -87,6 +88,38 @@ pub struct State<'a> {
 /// the line at the top of the menu naming the server every action targets.
 pub fn server_line(host: Option<&str>) -> String {
     host.map_or_else(|| "No server".to_string(), |h| format!("Server: {h}"))
+}
+
+/// everyone's own account, and the permissions window for whoever may open it.
+fn account_rows(state: &State) -> Vec<Row> {
+    let mut rows = vec![Row::Separator];
+    for target in [Target::MyAccount, Target::Permissions] {
+        if target.visible(&state.grants) {
+            rows.push(Row::Item(Item::new(
+                &format!("{}...", target.title()),
+                Action::Open(target),
+            )));
+        }
+    }
+    rows
+}
+
+/// reboot and shut down, for whoever may manage the server's status.
+fn power_rows(state: &State) -> Vec<Row> {
+    if state.grants.level(Area::Status) < Level::Manage {
+        return Vec::new();
+    }
+    let mut rows = vec![Row::Separator];
+    for (label, power) in [
+        ("Reboot server...", Power::Reboot),
+        ("Shut down server...", Power::PowerOff),
+    ] {
+        rows.push(Row::Item(Item {
+            enabled: state.ready,
+            ..Item::new(label, Action::Power(power))
+        }));
+    }
+    rows
 }
 
 /// the main menu.
@@ -108,41 +141,42 @@ pub fn rows(state: &State) -> Vec<Row> {
         )));
     }
     rows.push(Row::Separator);
-    rows.extend(state.modules.iter().map(|&i| {
-        let m = &MODULES[i];
-        Row::Item(Item {
-            art: Some(m.id),
-            enabled: state.admin,
-            ..Item::new(m.name, Action::Open(Target::Module(i)))
-        })
-    }));
+    rows.extend(
+        state
+            .modules
+            .iter()
+            .filter(|&&i| Target::Module(i).visible(&state.grants))
+            .map(|&i| {
+                let m = &MODULES[i];
+                Row::Item(Item {
+                    art: Some(m.id),
+                    ..Item::new(m.name, Action::Open(Target::Module(i)))
+                })
+            }),
+    );
     for target in [
         Target::MyServer,
         Target::Networks,
         Target::Settings,
         Target::Console,
         Target::TaskManager,
-    ] {
+    ]
+    .into_iter()
+    .filter(|t| t.visible(&state.grants))
+    {
         rows.push(Row::Item(Item {
             art: Some(target.id()),
-            enabled: state.admin || !target.needs_admin(),
             ..Item::new(target.title(), Action::Open(target))
         }));
     }
-    rows.push(Row::Item(Item {
-        enabled: state.host.is_some() && state.admin,
-        ..Item::new("Add/Remove Components...", Action::Open(Target::Components))
-    }));
-    rows.push(Row::Separator);
-    for (label, power) in [
-        ("Reboot server...", Power::Reboot),
-        ("Shut down server...", Power::PowerOff),
-    ] {
+    if Target::Components.visible(&state.grants) {
         rows.push(Row::Item(Item {
-            enabled: state.ready && state.admin,
-            ..Item::new(label, Action::Power(power))
+            enabled: state.host.is_some(),
+            ..Item::new("Add/Remove Components...", Action::Open(Target::Components))
         }));
     }
+    rows.extend(account_rows(state));
+    rows.extend(power_rows(state));
     rows.push(Row::Separator);
     if let Some(on) = state.updates {
         rows.push(Row::Item(Item {
@@ -180,13 +214,14 @@ pub fn developer_rows(rebuilding: bool) -> Vec<Row> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lanlord_model::access::Access;
 
     fn labels(updates: Option<bool>) -> Vec<String> {
         let state = State {
             host: Some("local"),
             signed_in: None,
             switch_server: true,
-            admin: true,
+            grants: Grants::all(Level::Manage),
             ready: true,
             updates,
             developer: false,
@@ -207,7 +242,7 @@ mod tests {
             host: Some("local"),
             signed_in: Some("ann"),
             switch_server,
-            admin: true,
+            grants: Grants::all(Level::Manage),
             ready: true,
             updates: None,
             developer: false,
@@ -224,13 +259,13 @@ mod tests {
     }
 
     #[test]
-    fn only_an_admin_gets_the_power_items() {
-        let power = |admin| {
+    fn only_those_who_may_get_the_power_and_admin_items() {
+        let titles = |grants| {
             let state = State {
                 host: Some("local"),
                 signed_in: Some("ann"),
                 switch_server: false,
-                admin,
+                grants,
                 ready: true,
                 updates: None,
                 developer: false,
@@ -239,18 +274,33 @@ mod tests {
             rows(&state)
                 .into_iter()
                 .filter_map(|r| match r {
-                    Row::Item(i) if matches!(i.action, Action::Power(_)) => Some(i.enabled),
-                    Row::Item(i) if matches!(i.action, Action::Open(t) if t.needs_admin()) => {
-                        Some(i.enabled)
-                    }
-                    _ => None,
+                    Row::Item(i) => Some(i.label),
+                    Row::Separator => None,
                 })
                 .collect::<Vec<_>>()
         };
-        // power, Networks, Settings, Console and Components follow the account
-        assert!(power(true).iter().all(|&on| on));
-        assert!(power(false).iter().all(|&on| !on));
-        assert!(power(true).len() >= 5);
+        let admin = titles(Grants::all(Level::Manage));
+        for item in [
+            "Reboot server...",
+            "Settings",
+            "Networks",
+            "Users and Permissions...",
+        ] {
+            assert!(admin.iter().any(|l| l == item), "{item}");
+        }
+        let user = titles(Access::default().grants("ann", false));
+        for item in [
+            "Reboot server...",
+            "Settings",
+            "Networks",
+            "Console",
+            "Users and Permissions...",
+        ] {
+            assert!(!user.iter().any(|l| l == item), "{item}");
+        }
+        for item in ["My Server", "My Account..."] {
+            assert!(user.iter().any(|l| l == item), "{item}");
+        }
     }
 
     #[test]
