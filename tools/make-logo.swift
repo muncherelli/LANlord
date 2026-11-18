@@ -237,21 +237,38 @@ func gentleman(_ ctx: CGContext, _ robe: Cloth, shadow: Bool) {
     flat(ctx, poly([(355, 360), (515, 360), (515, 920), (355, 920)]), 0xD7DBE8)
     flat(ctx, poly([(515, 360), (585, 324), (585, 884), (515, 920)]), robe.side)
     flat(ctx, poly([(355, 360), (425, 324), (585, 324), (515, 360)]), robe.top)
-    // the bays down the open middle, where the robe falls away
-    for i in 0..<3 {
-        let y = 600 + CGFloat(i) * 52
-        flat(ctx, box(426, y, 62, 34), 0x1F2A6B)
-        flat(ctx, circle(438, y + 17, 6), 0x3FD07A)
-        flat(ctx, box(450, y + 13, 30, 8), 0x39458F)
+    // the bays down the open middle, where the robe falls away; the short figure shows more of the front,
+    // with four broad bays and big lights so it reads as a compact server
+    if iconMode {
+        for i in 0..<4 {
+            let y = 540 + CGFloat(i) * 92
+            flat(ctx, box(396, y, 96, 76), 0x1F2A6B)
+            stroke(ctx, box(396, y, 96, 76), 0x0E1540, 4)
+            flat(ctx, circle(424, y + 38, 18), 0x6BF0A0)
+            flat(ctx, circle(424, y + 38, 12), 0x3FD07A)
+            flat(ctx, box(450, y + 28, 32, 20), 0x39458F)
+        }
+    } else {
+        for i in 0..<3 {
+            let y = 600 + CGFloat(i) * 52
+            flat(ctx, box(426, y, 62, 34), 0x1F2A6B)
+            flat(ctx, circle(438, y + 17, 6), 0x3FD07A)
+            flat(ctx, box(450, y + 13, 30, 8), 0x39458F)
+        }
     }
     // the side face: one broad fold of cloth
     flat(ctx, poly([(515, 372), (548, 356), (578, 640), (556, 886), (515, 912)]), robe.front)
     // the robe: a large fold falling from the left shoulder, and a narrow one at the right edge
-    flat(ctx, poly([(346, 352), (474, 350), (446, 470), (420, 640), (398, 790), (382, 916), (346, 916)]), robe.front)
-    flat(ctx, poly([(366, 364), (398, 362), (390, 560), (376, 912), (356, 912)]), robe.side)
+    if iconMode {
+        flat(ctx, poly([(346, 352), (440, 350), (410, 470), (384, 640), (370, 790), (362, 916), (346, 916)]), robe.front)
+        flat(ctx, poly([(362, 364), (386, 362), (374, 560), (366, 912), (352, 912)]), robe.side)
+    } else {
+        flat(ctx, poly([(346, 352), (474, 350), (446, 470), (420, 640), (398, 790), (382, 916), (346, 916)]), robe.front)
+        flat(ctx, poly([(366, 364), (398, 362), (390, 560), (376, 912), (356, 912)]), robe.side)
+    }
     flat(ctx, poly([(515, 358), (490, 356), (494, 560), (500, 720), (498, 916), (515, 916)]), robe.front)
     // gold on the collar edge only
-    stroke(ctx, segment(474, 350, 446, 470), gold, 5)
+    stroke(ctx, iconMode ? segment(440, 350, 410, 470) : segment(474, 350, 446, 470), gold, 5)
     // one lit edge
     stroke(ctx, segment(346, 352, 425, 324), 0xFFFFFF, 5, alpha: 0.8)
     if iconMode { ctx.restoreGState() }
@@ -682,13 +699,13 @@ func pixelIcon32() -> CGContext {
     p.rect(10, 16, 10, 13, towerFront)
     for (x, t) in [(20, 16), (21, 15), (22, 15), (23, 14)] { p.rect(x, t, 1, 29 - t - (x - 20) / 2, c.side) }
     p.rect(10, 15, 14, 1, c.top)
-    for y in 16..<29 { p.rect(10, y, 6 - (y - 16) / 4, 1, c.front) }
+    for y in 16..<29 { p.rect(10, y, 4 - (y - 16) / 5, 1, c.front) }
     p.rect(11, 17, 1, 9, c.side)
     p.rect(19, 16, 1, 13, c.front)
     p[15, 16] = gold
-    for y in [19, 22, 25] {
-        p.rect(15, y, 4, 2, bay)
-        p[15, y] = led
+    for y in [17, 21, 25] {
+        p.rect(14, y, 5, 3, bay)
+        p.rect(14, y, 2, 2, led)
     }
     // the staff, leaning on the left, with a gold ball
     for y in 17...28 { p[7 - (y - 17) / 5, y] = shaft }
@@ -714,11 +731,11 @@ func pixelIcon16() -> CGContext {
     p.rect(4, 8, 6, 6, towerFront)
     p.rect(10, 8, 3, 6, c.side)
     p.rect(4, 7, 9, 1, c.top)
-    p.rect(4, 8, 3, 6, c.front)
+    p.rect(4, 8, 2, 6, c.front)
     p.rect(9, 8, 1, 6, c.front)
-    for y in [9, 11] {
-        p.rect(7, y, 2, 1, bay)
-        p[7, y] = led
+    for y in [9, 12] {
+        p.rect(6, y, 3, 2, bay)
+        p[6, y] = led
     }
     // the hat, tipped to the right
     p.rect(2, 6, 12, 1, hatBrim)
