@@ -52,6 +52,76 @@ pub const RUN_TIMEOUT: Duration = lanlord_core::ops::RUN_LIMIT;
 
 /// how many operations run at the same time.
 const WORKERS: usize = 4;
+/// operations the accounts of this machine may run at once, in a pool of their own so the web
+/// ui always has its own slots.
+const LOCAL_WORKERS: usize = 2;
+/// connections held open at once on a socket, and by one local uid.
+const CONNECTIONS: usize = 64;
+const PER_UID_CONNECTIONS: usize = 4;
+/// the pause after a failed accept (out of file descriptors, say), so a failure never spins.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// what a socket may use up: its own pool of operation slots, a cap on open connections, and a
+/// cap per local uid. connections over a cap are dropped at once, before any work is done for
+/// them (before the account lookup, which forks).
+#[derive(Clone)]
+struct Limits {
+    workers: Arc<Semaphore>,
+    connections: Arc<Semaphore>,
+    per_uid: usize,
+    held: Arc<Mutex<std::collections::HashMap<u32, usize>>>,
+}
+
+impl Limits {
+    fn new(workers: usize, connections: usize, per_uid: usize) -> Self {
+        Self {
+            workers: Arc::new(Semaphore::new(workers)),
+            connections: Arc::new(Semaphore::new(connections)),
+            per_uid,
+            held: Arc::default(),
+        }
+    }
+
+    fn web() -> Self {
+        Self::new(WORKERS, CONNECTIONS, usize::MAX)
+    }
+
+    fn local() -> Self {
+        Self::new(LOCAL_WORKERS, CONNECTIONS, PER_UID_CONNECTIONS)
+    }
+
+    /// a place for one more connection from `uid`, or `None` when it has its share.
+    fn hold(&self, uid: u32) -> Option<UidHold> {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let count = held.entry(uid).or_default();
+        if *count >= self.per_uid {
+            return None;
+        }
+        *count += 1;
+        Some(UidHold {
+            uid,
+            held: self.held.clone(),
+        })
+    }
+}
+
+/// one connection's place in a uid's share; freed on drop.
+struct UidHold {
+    uid: u32,
+    held: Arc<Mutex<std::collections::HashMap<u32, usize>>>,
+}
+
+impl Drop for UidHold {
+    fn drop(&mut self) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = held.get_mut(&self.uid) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.uid);
+            }
+        }
+    }
+}
 
 /// the longest error text sent back to the web ui.
 const MESSAGE_LIMIT: usize = 200;
@@ -141,32 +211,31 @@ fn account_of_uid(uid: u32) -> Option<String> {
 }
 
 /// the request of a peer that is `account` itself, in the form the service reads: the op,
-/// with the account taken from the kernel. a request that names any other account is refused;
-/// a request that is not an op comes back as it is, to be refused as garbled.
+/// with the account taken from the kernel. only exactly `{"op":..}` or `{"account":<self>,"op":..}`
+/// is accepted; anything else, however it is wrong, is refused and never passed on.
 fn bind_account(line: &[u8], account: &str) -> Result<Vec<u8>, String> {
-    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(line) else {
-        return Ok(line.to_vec());
-    };
-    let Some(fields) = value.as_object_mut() else {
-        return Ok(line.to_vec());
-    };
+    const NOT_AN_OPERATION: &str = "not an operation";
+    let mut value: serde_json::Value =
+        serde_json::from_slice(line).map_err(|_| NOT_AN_OPERATION.to_string())?;
+    let fields = value
+        .as_object_mut()
+        .ok_or_else(|| NOT_AN_OPERATION.to_string())?;
     if let Some(named) = fields.remove("account") {
         if named.as_str() != Some(account) {
             return Err("a request here acts as your own account, not another".into());
         }
     }
-    let Some(op) = fields.remove("op").filter(|_| fields.is_empty()) else {
-        return Ok(line.to_vec());
-    };
+    let op = fields
+        .remove("op")
+        .filter(|_| fields.is_empty())
+        .and_then(|op| serde_json::from_value(op).ok())
+        .ok_or_else(|| NOT_AN_OPERATION.to_string())?;
     Forwarded {
         account: account.to_string(),
-        op: match serde_json::from_value(op) {
-            Ok(op) => op,
-            Err(_) => return Ok(line.to_vec()),
-        },
+        op,
     }
     .to_line()
-    .ok_or_else(|| "not an operation".to_string())
+    .ok_or_else(|| NOT_AN_OPERATION.to_string())
 }
 
 /// the short text of an error: its outermost message on one line, never the chain of causes
@@ -335,7 +404,7 @@ async fn handle(
     audience: Audience,
     names: Names,
     answer: Answer,
-    workers: Arc<Semaphore>,
+    (limits, _connection): (Limits, tokio::sync::OwnedSemaphorePermit),
 ) {
     let standing = match stream.peer_cred() {
         Ok(cred) => match standing(&audience, cred.uid()) {
@@ -350,6 +419,18 @@ async fn handle(
         },
         Err(_) => return,
     };
+    // a login uid has its share of connections; over it, dropped before anything is looked up
+    let _share = match standing {
+        Standing::Itself(uid) => match limits.hold(uid) {
+            Some(hold) => Some(hold),
+            None => {
+                log::emit(Kind::Err, format!("too many connections from uid {uid}"));
+                return;
+            }
+        },
+        Standing::Forwarder => None,
+    };
+    let workers = limits.workers.clone();
     // the account a login peer acts as: whoever the kernel says it is
     let account = match standing {
         Standing::Forwarder => None,
@@ -438,13 +519,12 @@ async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
     }
 }
 
-/// serve connections on `listener` until `shutdown` resolves. the sockets share `workers`, so
-/// together they never run more than `WORKERS` operations.
+/// serve connections on `listener` until `shutdown` resolves, within `limits`.
 async fn accept_loop(
     listener: tokio::net::UnixListener,
     (audience, names): (Audience, Names),
     answer: Answer,
-    workers: Arc<Semaphore>,
+    limits: Limits,
     shutdown: impl Future<Output = ()>,
 ) {
     tokio::pin!(shutdown);
@@ -452,7 +532,15 @@ async fn accept_loop(
         tokio::select! {
             () = &mut shutdown => return,
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
+                let Ok((stream, _)) = accepted else {
+                    // no descriptors left, or the like: wait, never spin
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                    continue;
+                };
+                // over the socket's connection cap, drop it at once
+                let Ok(connection) = limits.connections.clone().try_acquire_owned() else {
+                    continue;
+                };
                 // waiting for a slot happens in the connection's own task, so a full pool
                 // neither stops accepting nor delays shutdown
                 tokio::spawn(handle(
@@ -460,7 +548,7 @@ async fn accept_loop(
                     audience.clone(),
                     names.clone(),
                     answer.clone(),
-                    workers.clone(),
+                    (limits.clone(), connection),
                 ));
             }
         }
@@ -502,7 +590,6 @@ async fn serve(options: Options) -> Result<()> {
             None
         }
     };
-    let workers = Arc::new(Semaphore::new(WORKERS));
     let answer: Answer = Arc::new(system_answer);
     let names: Names = Arc::new(account_of_uid);
     let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -515,7 +602,7 @@ async fn serve(options: Options) -> Result<()> {
             names.clone(),
         ),
         answer.clone(),
-        workers.clone(),
+        Limits::web(),
         wait_for(stopping.clone()),
     );
     let (local_listener, local_ours) = match local {
@@ -529,7 +616,7 @@ async fn serve(options: Options) -> Result<()> {
                 listener,
                 (audience, names.clone()),
                 answer.clone(),
-                workers.clone(),
+                Limits::local(),
                 wait_for(stopping.clone()),
             )
             .await;
@@ -743,7 +830,7 @@ mod tests {
     ) -> Vec<u8> {
         let (dir, socket, listener) = test_socket().await;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let workers = Arc::new(Semaphore::new(WORKERS));
+        let workers = Limits::web();
         let server = tokio::spawn(accept_loop(
             listener,
             (audience, names),
@@ -1009,11 +1096,92 @@ mod tests {
     }
 
     #[test]
-    fn the_account_binding_keeps_other_garbage_as_it_is() {
-        let kept = bind_account(b"not json\n", "ann").unwrap();
-        assert_eq!(kept, b"not json\n");
-        let extra = br#"{"op":{"op":"load_document"},"x":1}"#;
-        assert_eq!(bind_account(extra, "ann").unwrap(), extra);
+    fn the_account_binding_refuses_anything_but_an_op_alone_or_with_its_own_name() {
+        for bad in [
+            &b"not json\n"[..],
+            br#"[1]"#,
+            br#"{"op":{"op":"load_document"},"x":1}"#,
+            br#"{"account":"ann"}"#,
+            br#"{"op":{"op":"no_such_operation"}}"#,
+            br#"{"account":"bob","op":{"op":"load_document"}}"#,
+        ] {
+            assert!(bind_account(bad, "ann").is_err(), "{bad:?}");
+        }
+        for good in [
+            &br#"{"op":{"op":"load_document"}}"#[..],
+            br#"{"account":"ann","op":{"op":"load_document"}}"#,
+        ] {
+            assert!(bind_account(good, "ann").is_ok());
+        }
+    }
+
+    #[test]
+    fn a_uid_holds_only_its_share_of_connections_and_frees_it_on_drop() {
+        let limits = Limits::new(1, 8, 2);
+        let first = limits.hold(1000).unwrap();
+        let _second = limits.hold(1000).unwrap();
+        assert!(limits.hold(1000).is_none());
+        // another uid is not held up by it
+        assert!(limits.hold(1001).is_some());
+        drop(first);
+        assert!(limits.hold(1000).is_some());
+    }
+
+    #[test]
+    fn the_web_and_local_sockets_have_pools_of_their_own() {
+        let (web, local) = (Limits::web(), Limits::local());
+        assert!(!Arc::ptr_eq(&web.workers, &local.workers));
+        assert!(!Arc::ptr_eq(&web.connections, &local.connections));
+        // using up the local pool leaves the web's untouched
+        let _held: Vec<_> = (0..LOCAL_WORKERS)
+            .map(|_| local.workers.clone().try_acquire_owned().unwrap())
+            .collect();
+        assert!(local.workers.clone().try_acquire_owned().is_err());
+        assert!(web.workers.clone().try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn connections_over_the_cap_are_dropped_at_once_and_the_service_keeps_answering() {
+        runtime().block_on(async {
+            let (dir, socket, listener) = test_socket().await;
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let uid = our_uid();
+            let audience = (
+                Audience::LoginAccounts { uids: uid..=uid },
+                Arc::new(|_| Some("ann".to_string())) as Names,
+            );
+            let server = tokio::spawn(accept_loop(
+                listener,
+                audience,
+                echo(),
+                Limits::new(1, 2, 1),
+                async {
+                    let _ = stopped.await;
+                },
+            ));
+            // two idle connections take the whole share (one per uid), the rest are dropped
+            let idle = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let mut dropped = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let mut text = Vec::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(5), dropped.read_to_end(&mut text)).await;
+            assert!(read.is_ok(), "the extra connection was not dropped");
+            assert!(text.is_empty());
+            // once the idle one goes, a new connection is served
+            drop(idle);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let mut again = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            again
+                .write_all(format!("{LOAD}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut text = Vec::new();
+            let _ = again.read_to_end(&mut text).await;
+            assert!(!text.is_empty());
+            let _ = stop.send(());
+            server.await.unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 
     /// as root: make a login account, connect to the local socket as that account and check the
@@ -1041,7 +1209,7 @@ mod tests {
         let (as_named, as_root) = runtime().block_on(async {
             let (dir, socket, listener) = test_socket().await;
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-            let workers = Arc::new(Semaphore::new(WORKERS));
+            let workers = Limits::web();
             let server = tokio::spawn(accept_loop(listener, audience, echo(), workers, async {
                 let _ = stopped.await;
             }));

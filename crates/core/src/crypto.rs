@@ -59,15 +59,28 @@ static DEFAULT_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLo
 pub const GATEWAY_KEY: &str = "/var/lib/lanlord-operations/identity";
 
 /// use the key at `path` for the rest of this process, and make sure it exists: only the
-/// gateway's root service does this. only the first call counts.
+/// gateway's root service does this. the load is retried, so a service never runs without a
+/// key because another starter was making it at the same moment. only the first call counts.
 pub fn use_gateway_key(path: std::path::PathBuf) -> Result<()> {
-    ensure(&path)?;
+    let mut tries = 0;
+    loop {
+        match ensure(&path) {
+            Ok(_) => break,
+            Err(error) if tries >= 5 => return Err(error),
+            Err(_) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    }
     let _ = DEFAULT_PATH.set(path);
     Ok(())
 }
 
 /// the gateway's key at `path`: created (root only, mode 0600 in a 0700 folder) when it is not
-/// there yet. two starters at once end with the same key.
+/// there yet. the key is written whole to a private temp file in the same folder, synced, and
+/// linked to its name, which fails when another starter got there first: then the temp file goes
+/// and the winner's key is the one loaded. so a key file is never seen half written.
 pub fn ensure(path: &Path) -> Result<Identity> {
     if !path.exists() {
         if let Some(dir) = path.parent() {
@@ -81,10 +94,30 @@ pub fn ensure(path: &Path) -> Result<Identity> {
                 }
             }
         }
-        // losing the race to another starter is fine: the key is theirs, and ours
-        let _ = generate(path);
+        create_atomically(path)?;
     }
     load(path)
+}
+
+/// write a new key to a temp file beside `path` and link it into place.
+fn create_atomically(path: &Path) -> Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let temp = dir.join(format!(".identity-{}.tmp", std::process::id()));
+    let _ = fs::remove_file(&temp);
+    generate(&temp)?;
+    fs::File::open(&temp)?.sync_all()?;
+    let linked = fs::hard_link(&temp, path);
+    let _ = fs::remove_file(&temp);
+    match linked {
+        Ok(()) => {}
+        // lost the race: the winner's key is the key
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    // a folder cannot be opened to sync on every platform; where it can, the link is made durable
+    #[cfg(unix)]
+    fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// the gateway's key. on a client there is none, by design: it fails there instead of finding a
@@ -148,6 +181,28 @@ mod tests {
         // a second start finds the same key
         let again = ensure(&path).unwrap();
         assert_eq!(first.to_public().to_string(), again.to_public().to_string());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn two_starters_end_with_one_key_and_no_temp_file_is_left() {
+        let path = temp("race");
+        let keys: Vec<String> = std::thread::scope(|scope| {
+            let starters: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| ensure(&path).map(|k| k.to_public().to_string())))
+                .collect();
+            starters
+                .into_iter()
+                .filter_map(|s| s.join().unwrap().ok())
+                .collect()
+        });
+        assert!(!keys.is_empty());
+        assert!(keys.iter().all(|k| *k == keys[0]));
+        let left: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["identity"]);
         cleanup(&path);
     }
 

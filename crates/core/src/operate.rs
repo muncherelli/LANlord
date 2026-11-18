@@ -210,4 +210,66 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// a service on a socket of its own that reads one line and answers with `lines`.
+    #[cfg(unix)]
+    fn serve_once(name: &str, lines: &'static [&'static str]) -> std::path::PathBuf {
+        use std::io::{BufRead, BufReader, Write};
+        let dir = std::env::temp_dir().join(format!("lanlord-op-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("local.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut asked = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut asked)
+                .unwrap();
+            assert!(asked.contains("load_document"), "{asked}");
+            for line in lines {
+                writeln!(stream, "{line}").unwrap();
+            }
+        });
+        socket
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_request_through_the_socket_gets_the_response_after_the_events() {
+        let socket = serve_once(
+            "ok",
+            &[
+                r#"{"event":{"event":"log","text":"hi"}}"#,
+                "noise",
+                r#"{"response":{"ok":{"reply":"done"}}}"#,
+            ],
+        );
+        assert!(matches!(
+            through_socket(&socket, &Op::LoadDocument).unwrap(),
+            Reply::Done
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_socket_says_denied_as_a_refusal_and_silence_as_an_error() {
+        let socket = serve_once("denied", &[r#"{"response":{"denied":"no"}}"#]);
+        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        assert!(error.downcast_ref::<Refused>().is_some());
+        let socket = serve_once("silent", &[]);
+        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        assert!(error.to_string().contains("no answer"), "{error}");
+        let socket = serve_once("failed", &[r#"{"response":{"error":"broke"}}"#]);
+        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        assert_eq!(error.to_string(), "broke");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_service_is_said_with_where_it_looked() {
+        let socket = std::env::temp_dir().join("lanlord-op-nothing-here.sock");
+        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        assert!(error.to_string().contains("not reachable"), "{error}");
+    }
 }
