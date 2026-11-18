@@ -68,7 +68,11 @@ impl LoginBox {
             .show(ctx, |ui| {
                 let frame = Frame::new().fill(GRAY).inner_margin(Margin::same(3));
                 let shown = frame.show(ui, |ui| {
-                    ui.set_width(420.0);
+                    ui.set_width(if self.0.is_web() {
+                        lanlord_app::login::WEB_WIDTH
+                    } else {
+                        420.0
+                    });
                     title_bar(ui, self.0.title());
                     ui.add_space(6.0);
                     Frame::new()

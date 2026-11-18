@@ -366,7 +366,7 @@ fn client_mode_starts_at_the_logon_box() {
     shell.require_login(fake_auth());
     let text = frame(&mut shell);
     assert!(shell.login.is_some());
-    assert!(text.contains("Logon Information"), "{text}");
+    assert!(text.contains("Login Information"), "{text}");
     assert!(
         !text.contains("12:00 PM"),
         "no taskbar before the logon:\n{text}"

@@ -17,7 +17,7 @@
 
 
 
-                                                            ┌ Logon Information ──────────── _ □ × ┐
+                                                            ┌ Login Information ──────────── _ □ × ┐
                                                             │ You are signed in to this server     │
                                                             │ with the account you are using.      │
                                                             │                                      │
