@@ -136,6 +136,8 @@ pub struct Session {
     program: Vec<String>,
     /// set once the gateway turned out to have no usable `lanlord bridge`; later ops skip it.
     pub(crate) no_bridge: std::sync::atomic::AtomicBool,
+    /// run the commands on this machine, as the current user, instead of through ssh.
+    local: bool,
 }
 
 impl Session {
@@ -147,10 +149,38 @@ impl Session {
             host: host.to_string(),
             program: vec!["ssh".to_string()],
             no_bridge: std::sync::atomic::AtomicBool::new(false),
+            local: false,
         })
     }
 
+    /// a session on this machine: the commands run directly as the current user, with no ssh.
+    /// the gateway's own privileged service uses it.
+    pub fn local() -> Self {
+        Self {
+            host: "localhost".to_string(),
+            program: Vec::new(),
+            no_bridge: std::sync::atomic::AtomicBool::new(true),
+            local: true,
+        }
+    }
+
+    /// whether the commands run on this machine without ssh.
+    pub fn is_local(&self) -> bool {
+        self.local
+    }
+
     fn command(&self, remote: &[String]) -> Command {
+        if self.local {
+            // the same shell line ssh would hand to the remote shell
+            let line: Vec<String> = remote.iter().map(|a| shell_quote(a)).collect();
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(if line.is_empty() {
+                "true".to_string()
+            } else {
+                line.join(" ")
+            });
+            return cmd;
+        }
         let mut cmd = Command::new(&self.program[0]);
         cmd.args(&self.program[1..]);
         // never prompt on the terminal; the gui and tui have no tty to answer
@@ -380,6 +410,25 @@ mod tests {
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote("$(rm -rf /)"), "'$(rm -rf /)'");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_local_session_runs_commands_directly_without_ssh() {
+        let session = Session::local();
+        assert!(session.is_local());
+        let out = session
+            .capture(&["echo".into(), "a b".into(), "$HOME".into()])
+            .unwrap();
+        assert_eq!(out, "a b $HOME\n");
+        let err = session
+            .capture(&["sh".into(), "-c".into(), "echo nope >&2; exit 3".into()])
+            .unwrap_err();
+        assert!(err.to_string().contains("status 3"), "{err:#}");
+        assert!(session
+            .capture_with_stdin(&["cat".into()], b"in")
+            .is_ok_and(|text| text == "in"));
+        assert!(!Session::new("gw").unwrap().is_local());
     }
 
     #[test]

@@ -275,6 +275,8 @@ pub struct Request {
 pub enum Response {
     Ok(Reply),
     Error(String),
+    /// the caller's roles do not cover the op; the reason, in words.
+    Denied(String),
 }
 
 impl<E: std::fmt::Display> From<Result<Reply, E>> for Response {

@@ -1,7 +1,10 @@
 # Web UI login
 
 The LANlord web UI runs on the gateway under an unprivileged account (`lanlord` by default) and
-lets in the members of the `admins` group (gid 9998), with their usual gateway password.
+lets in any ordinary gateway account, with its usual gateway password. Being in the `admins` group
+(gid 9998) does not decide who may sign in; it decides what the account may do, because the
+operations the web UI forwards are checked against the account's roles and only the permitted ones
+run (see the web UI section of `ansible/README.md`).
 
 An unprivileged process cannot check another user's password through PAM (`pam_unix` needs root
 to read the shadow file), so the check is done by a small separate program,
@@ -23,13 +26,14 @@ to read the shadow file), so the check is done by a small separate program,
    - runs PAM as the `lanlord` service (`/etc/pam.d/lanlord`: the distro's normal password and
      account rules), so expired or locked accounts are refused too, and hands PAM the browser's
      address as the remote host;
-   - when the password is right, checks that `alice` is in the `admins` group.
-5. It answers one line: `ok`, `denied` or `error <code>`.
+   - when the password is right, checks whether `alice` is in the `admins` group, and answers
+     `ok` for an administrator or `ok user` for any other ordinary account.
+5. It answers one line: `ok`, `ok user`, `denied` or `error <code>`.
 
 ## What it never gives away
 
-- An unknown user, a wrong password, an expired account and a user outside `admins` all get the
-  same `denied`, after the same time: every answer but `ok` takes two seconds plus a random
+- An unknown user, a wrong password, an expired account and a system or service account all get the
+  same `denied`, after the same time: every answer but `ok` and `ok user` takes two seconds plus a random
   quarter of a second at most. That is the only delay; libpam's own failure delay, which only
   follows a wrong password, is switched off so it cannot set that case apart.
 - The password is never logged, never passed as an argument or in the environment, and only
@@ -37,8 +41,7 @@ to read the shadow file), so the check is done by a small separate program,
   without any library buffering. The process cannot be traced or dumped by other users, and
   systemd turns core dumps off.
 - The journal records who asked and how it went, for example
-  `web ui login for alice from 192.0.2.7: denied, right password but not in group admins
-  (gid 9998)` or `refused uid 1000: only lanlord may ask`. A name typed for an account that does
+  `web ui login for alice from 192.0.2.7: ok, not in group admins (gid 9998)` or `refused uid 1000: only lanlord may ask`. A name typed for an account that does
   not exist is logged as `an unknown user`, since it may be a password typed into the wrong
   field.
 

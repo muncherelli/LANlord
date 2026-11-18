@@ -78,7 +78,7 @@ pub fn answer(status: u16, body: &str) -> Result<Reply> {
     }
     match serde_json::from_str::<Response>(body)? {
         Response::Ok(reply) => Ok(reply),
-        Response::Error(message) => Err(anyhow!(message)),
+        Response::Error(message) | Response::Denied(message) => Err(anyhow!(message)),
     }
 }
 

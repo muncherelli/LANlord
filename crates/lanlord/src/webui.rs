@@ -18,15 +18,14 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use base64::Engine as _;
-use lanlord_core::access::{Caller, Denied};
 use lanlord_core::log::{self, Kind};
-use lanlord_core::ops::{
-    execute_as, Op, Reply, Request as OpRequest, Response as OpResponse, UserChange,
-};
+use lanlord_core::ops::{Op, Request as OpRequest, Response as OpResponse, UserChange};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use tower_http::timeout::TimeoutLayer;
+
+use crate::operations_service;
 
 /// how `lanlord webui` was asked to run.
 pub struct Options {
@@ -35,6 +34,8 @@ pub struct Options {
     pub listen: Option<SocketAddr>,
     /// the browser build; `web` next to the binary's folder when not given
     pub static_dir: Option<PathBuf>,
+    /// the operations service's socket
+    pub operations_socket: PathBuf,
 }
 
 /// the largest operation the browser may send.
@@ -69,8 +70,21 @@ pub fn static_dir(given: Option<PathBuf>) -> Option<PathBuf> {
 /// the routes: the browser build (or a placeholder page), a health check and the operations
 /// endpoint. the build is looked for on every request, so installing or replacing it needs no
 /// restart. every response carries the security headers.
-pub fn router(static_dir: Option<&Path>) -> Router {
-    router_with(static_dir, auth::Auth::system(), system_runner())
+#[cfg(test)]
+fn router(static_dir: Option<&Path>) -> Router {
+    router_at(
+        static_dir,
+        Path::new("/run/lanlord-operations/operations.sock"),
+    )
+}
+
+/// the same, sending operations to the service on `operations_socket`.
+pub fn router_at(static_dir: Option<&Path>, operations_socket: &Path) -> Router {
+    router_with(
+        static_dir,
+        auth::Auth::system(),
+        service_runner(operations_socket.to_path_buf()),
+    )
 }
 
 /// the same, with the logins checked and the sessions kept by `auth` and the operations run by
@@ -234,17 +248,13 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
-/// the gateway the operations run against: the machine this server runs on.
-const GATEWAY: &str = "localhost";
+/// sends one operation for an account to whatever runs it.
+type Runner = Arc<dyn Fn(String, Op) -> operations_service::Asking + Send + Sync>;
 
-/// runs one operation for a caller, asking for the sudo password through the callback.
-type Runner = Arc<
-    dyn Fn(&Caller, &Op, &mut dyn FnMut(&str) -> Result<String>) -> Result<Reply> + Send + Sync,
->;
-
-/// the real runner: core's `execute_as`, which refuses what the caller's roles do not cover.
-fn system_runner() -> Runner {
-    Arc::new(|caller, op, ask| execute_as(GATEWAY, caller, op, ask))
+/// the real runner: the root operations service on its unix socket, which checks what the
+/// account may do itself.
+fn service_runner(socket: PathBuf) -> Runner {
+    Arc::new(move |account, op| operations_service::ask(&socket, account, op))
 }
 
 /// what the handlers share: the logins and the way operations are run.
@@ -260,16 +270,6 @@ impl FromRef<App> for Arc<auth::Auth> {
     }
 }
 
-/// how an operation ended.
-enum Outcome {
-    Reply(Reply),
-    /// the server needs the sudo password to go on, with the prompt to show.
-    NeedsPassword(String),
-    /// the caller's roles do not cover it.
-    Denied(String),
-    Failed(String),
-}
-
 /// an error answer: `{"error": message}`.
 fn refusal(status: StatusCode, message: &str) -> Response {
     (
@@ -281,28 +281,6 @@ fn refusal(status: StatusCode, message: &str) -> Response {
         serde_json::json!({ "error": message }).to_string(),
     )
         .into_response()
-}
-
-/// run the request for `caller`. sudo prompts are answered with the request's password; without
-/// one the outcome asks for it instead, as `lanlord op` does.
-fn run_request(run: &Runner, caller: &Caller, request: &OpRequest) -> Outcome {
-    let mut asked = None;
-    let result = {
-        let mut ask = |prompt: &str| match &request.password {
-            Some(password) => Ok(password.expose().to_string()),
-            None => {
-                asked.get_or_insert_with(|| prompt.to_string());
-                bail!("the sudo password is needed")
-            }
-        };
-        run(caller, &request.op, &mut ask)
-    };
-    match (asked, result) {
-        (Some(prompt), _) => Outcome::NeedsPassword(prompt),
-        (None, Ok(reply)) => Outcome::Reply(reply),
-        (None, Err(e)) if e.downcast_ref::<Denied>().is_some() => Outcome::Denied(format!("{e:#}")),
-        (None, Err(e)) => Outcome::Failed(format!("{e:#}")),
-    }
 }
 
 /// the accounts whose sessions an op leaves out of date, and whether the caller's own session
@@ -326,12 +304,13 @@ fn affected(op: &Op, caller: &str) -> Vec<(String, bool)> {
 }
 
 /// the operations endpoint. it needs a page-origin json request and a login, and takes the same
-/// `Request` body the browser sends. the admin state is read from the account on every request,
-/// and `execute_as` checks `Op::requires` against the account: a refusal is a 403, a body that is
-/// not an operation a 400, and anything else the `Response` json of `lanlord op`. after an op
-/// that changes a password or a user's permissions the affected user's sessions end (see
-/// `Auth::revoke_user`). live streams are not served yet. the body is read already so the size
-/// limit applies.
+/// `Request` body the browser sends. the account's admin state is read again on every request,
+/// and the op goes to the operations service, which checks `Op::requires` for the account itself:
+/// a refusal is a 403, a body that is not an operation a 400, a service that is not there a 503,
+/// and anything else the `Response` json of `lanlord op`. after an op that changes a password or
+/// a user's permissions, even one that failed half way, the affected users' sessions end (see
+/// `Auth::revoke_user`). no sudo password travels: the service is root. live streams are not
+/// served yet. the body is read already so the size limit applies.
 async fn operations(
     State(app): State<App>,
     headers: HeaderMap,
@@ -340,7 +319,7 @@ async fn operations(
     if let Err(refused) = auth::same_origin_json(&headers) {
         return refused;
     }
-    let (user, admin) = match auth::require_current(&app.auth, &headers).await {
+    let (user, _) = match auth::require_current(&app.auth, &headers).await {
         Ok(who) => who,
         Err(unauthorized) => return unauthorized,
     };
@@ -354,33 +333,38 @@ async fn operations(
             "live streams are not available yet",
         );
     }
-    let caller = Caller {
-        user: user.clone(),
-        admin,
-    };
-    let run = app.run.clone();
-    let ran = tokio::task::spawn_blocking(move || {
-        let outcome = run_request(&run, &caller, &request);
-        (outcome, affected(&request.op, &caller.user))
-    })
-    .await;
-    let Ok((outcome, changed)) = ran else {
-        return refusal(StatusCode::INTERNAL_SERVER_ERROR, "the operation stopped");
-    };
-    let response = match outcome {
-        Outcome::Reply(reply) => {
-            for (name, keep_own) in changed {
-                if keep_own {
-                    app.auth.revoke_others(&name, &headers);
-                } else {
-                    app.auth.revoke_user(&name);
-                }
+    let changed = affected(&request.op, &user);
+    let answer = (app.run)(user, request.op).await;
+    let revoke = |app: &App| {
+        for (name, keep_own) in &changed {
+            if *keep_own {
+                app.auth.revoke_others(name, &headers);
+            } else {
+                app.auth.revoke_user(name);
             }
-            OpResponse::Ok(reply)
         }
-        Outcome::NeedsPassword(prompt) => OpResponse::Ok(Reply::NeedsPassword { prompt }),
-        Outcome::Denied(message) => return refusal(StatusCode::FORBIDDEN, &message),
-        Outcome::Failed(message) => OpResponse::Error(message),
+    };
+    let response = match answer {
+        Ok(OpResponse::Denied(message)) => return refusal(StatusCode::FORBIDDEN, &message),
+        Ok(response) => {
+            // a failed batch may have changed some of it: end the sessions either way
+            revoke(&app);
+            response
+        }
+        Err(operations_service::Unreachable::Down) => {
+            return refusal(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the operations service is not running",
+            )
+        }
+        Err(operations_service::Unreachable::NoAnswer) => {
+            // it may have run
+            revoke(&app);
+            return refusal(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the operations service did not answer",
+            );
+        }
     };
     match serde_json::to_string(&response) {
         Ok(text) => (
@@ -436,7 +420,7 @@ pub async fn serve(
             "no web ui build found yet; serving a placeholder page until there is one",
         ),
     }
-    let app = router(dir.as_deref());
+    let app = router_at(dir.as_deref(), &options.operations_socket);
     match options.listen {
         Some(addr) => {
             let listener = tokio::net::TcpListener::bind(addr)
@@ -533,7 +517,7 @@ pub async fn remove_if_ours(path: &Path, ours: &Ours) {
 }
 
 /// resolves when the service is asked to stop: ctrl-c, or systemd's sigterm.
-async fn stopped() {
+pub(crate) async fn stopped() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
@@ -610,7 +594,7 @@ mod tests {
 
     #[test]
     fn operations_are_refused_without_the_pages_origin() {
-        // (with a session they still answer 501; see the session tests in auth.rs)
+        // (with a session they still get their answer from the operations service; see the session tests in auth.rs)
         let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/operations"));
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(kind, "application/json");
@@ -840,6 +824,7 @@ mod tests {
                     socket: path.clone(),
                     listen: None,
                     static_dir: Some(build.clone()),
+                    operations_socket: path.with_extension("operations"),
                 },
                 async {
                     let _ = stopped.await;
@@ -872,6 +857,7 @@ mod tests {
                     socket: PathBuf::from("/nonexistent/unused.sock"),
                     listen: Some(addr),
                     static_dir: Some(PathBuf::from("/nonexistent/web")),
+                    operations_socket: PathBuf::from("/nonexistent/operations.sock"),
                 },
                 async {
                     let _ = stopped.await;
@@ -906,6 +892,7 @@ mod tests {
                     socket: PathBuf::from("/nonexistent/unused.sock"),
                     listen: Some(addr),
                     static_dir: None,
+                    operations_socket: PathBuf::from("/nonexistent/operations.sock"),
                 },
                 async {},
             ))
@@ -925,6 +912,7 @@ mod tests {
                     socket: root.join("run/web.sock"),
                     listen: None,
                     static_dir: None,
+                    operations_socket: PathBuf::from("/nonexistent/operations.sock"),
                 },
                 async {},
             ))

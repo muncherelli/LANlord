@@ -1,5 +1,7 @@
 mod launcher;
 #[cfg(feature = "webui")]
+mod operations_service;
+#[cfg(feature = "webui")]
 mod webui;
 
 use std::io::{IsTerminal, Read, Write};
@@ -268,6 +270,26 @@ enum Command {
         /// the browser build to serve (default: the web folder beside the binary's folder)
         #[arg(long = "static", value_name = "DIR")]
         static_dir: Option<PathBuf>,
+        /// the operations service's unix socket
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "/run/lanlord-operations/operations.sock"
+        )]
+        operations_socket: PathBuf,
+    },
+    /// run the root service that carries out the operations the web server forwards
+    OperationsService {
+        /// the unix socket to listen on
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "/run/lanlord-operations/operations.sock"
+        )]
+        socket: PathBuf,
+        /// the uid of the web server's account; only it and root may connect
+        #[arg(long, value_name = "UID")]
+        allowed_uid: u32,
     },
     /// install the gateway payload on a host
     Bootstrap {
@@ -1076,11 +1098,25 @@ fn main() -> Result<()> {
             socket,
             listen,
             static_dir,
+            operations_socket,
         }) => webui::run(webui::Options {
             socket,
             listen,
             static_dir,
+            operations_socket,
         }),
+        #[cfg(feature = "webui")]
+        Some(Command::OperationsService {
+            socket,
+            allowed_uid,
+        }) => operations_service::run(operations_service::Options {
+            socket,
+            allowed_uid,
+        }),
+        #[cfg(not(feature = "webui"))]
+        Some(Command::OperationsService { .. }) => {
+            bail!("this build has no operations service; build lanlord with --features webui")
+        }
         #[cfg(not(feature = "webui"))]
         Some(Command::Webui { .. }) => {
             bail!("this build has no web server; build lanlord with --features webui")

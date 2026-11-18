@@ -45,9 +45,18 @@ pub enum Check {
 
 type Checking = Pin<Box<dyn Future<Output = Check> + Send>>;
 
-/// whether an account is in the admins group right now; none when it cannot be told (the
-/// account is gone, or the lookup failed).
-type Standing = Pin<Box<dyn Future<Output = Option<bool>> + Send>>;
+/// what is known of an account right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// the account exists; whether it is in the admins group.
+    Account { admin: bool },
+    /// there is no such account any more.
+    Unknown,
+    /// the lookup itself failed, so nothing is known.
+    Failed,
+}
+
+type Lookup = Pin<Box<dyn Future<Output = Standing> + Send>>;
 
 /// asks something to check a login.
 pub trait Verifier: Send + Sync {
@@ -55,7 +64,7 @@ pub trait Verifier: Send + Sync {
 
     /// the account's current admin state, asked again on every operation so that a change of
     /// group takes effect at once and not at the next login.
-    fn admin(&self, user: &str) -> Standing;
+    fn admin(&self, user: &str) -> Lookup;
 }
 
 /// the real check, through the helper's socket.
@@ -82,32 +91,38 @@ impl Verifier for Helper {
         })
     }
 
-    fn admin(&self, user: &str) -> Standing {
+    fn admin(&self, user: &str) -> Lookup {
         let user = user.to_string();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || in_admins(&user))
+            tokio::task::spawn_blocking(move || standing(&user))
                 .await
-                .ok()
-                .flatten()
+                .unwrap_or(Standing::Failed)
         })
     }
 }
 
-/// whether `user` is in the admins group, from the system's group list; none for an unknown
-/// account or when `id` cannot run.
-fn in_admins(user: &str) -> Option<bool> {
+/// the account's groups from the system: whether it is in the admins group, that it is gone,
+/// or that the lookup could not be made.
+fn standing(user: &str) -> Standing {
+    use std::process::Command;
     if !valid_login(user) {
-        return None;
+        return Standing::Unknown;
     }
-    let out = std::process::Command::new("id")
-        .args(["-nG", "--", user])
-        .output()
-        .ok()?;
-    out.status.success().then(|| {
-        String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .any(|g| g == "admins")
-    })
+    match Command::new("id").args(["-nG", "--", user]).output() {
+        Ok(out) if out.status.success() => Standing::Account {
+            admin: String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .any(|g| g == lanlord_core::admins::ADMINS_GROUP),
+        },
+        Ok(_) => {
+            // `id` fails for a missing account and for a broken lookup alike; getent says which
+            match Command::new("getent").args(["passwd", "--", user]).status() {
+                Ok(status) if status.code() == Some(2) => Standing::Unknown,
+                _ => Standing::Failed,
+            }
+        }
+        Err(_) => Standing::Failed,
+    }
 }
 
 #[cfg(unix)]
@@ -187,6 +202,15 @@ struct Book {
 
 /// at most this many user names and addresses are remembered for lockouts.
 const REMEMBERED: usize = 10_000;
+
+/// what `Auth::current` found.
+pub enum Current {
+    Now(String, bool),
+    /// no session, or it ended, or the account is gone.
+    Gone,
+    /// the account could not be looked up.
+    Unavailable,
+}
 
 pub struct Auth {
     verifier: Box<dyn Verifier>,
@@ -372,18 +396,32 @@ impl Auth {
     }
 
     /// the user of the request's session and their admin state as the account is now, not as
-    /// it was at login. an account that can no longer be found loses its sessions.
-    pub async fn current(&self, headers: &HeaderMap) -> Option<(String, bool)> {
-        let (user, _) = self.session(headers)?;
-        let Some(admin) = self.verifier.admin(&user).await else {
-            self.revoke_user(&user);
-            return None;
+    /// it was at login. an account that is gone loses its sessions; a lookup that failed
+    /// changes nothing and is reported as such.
+    pub async fn current(&self, headers: &HeaderMap) -> Current {
+        let Some(token) = cookie_token(headers) else {
+            return Current::Gone;
         };
+        let Some((user, _)) = self.user_of(&token) else {
+            return Current::Gone;
+        };
+        let admin = match self.verifier.admin(&user).await {
+            Standing::Account { admin } => admin,
+            Standing::Unknown => {
+                self.revoke_user(&user);
+                return Current::Gone;
+            }
+            Standing::Failed => return Current::Unavailable,
+        };
+        // the session may have ended while the account was looked up
         let mut book = self.book();
+        if !book.sessions.contains_key(&digest(&token)) {
+            return Current::Gone;
+        }
         for session in book.sessions.values_mut().filter(|s| s.user == user) {
             session.admin = admin;
         }
-        Some((user, admin))
+        Current::Now(user, admin)
     }
 
     /// the user of the session a request's cookie names.
@@ -487,12 +525,17 @@ pub fn require(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Respo
 }
 
 /// as `require`, with the admin state read from the account now. the 401 says `session`, which
-/// is what the page takes to mean "sign in again".
+/// is what the page takes to mean "sign in again"; an account that cannot be looked up is a 503.
 #[allow(clippy::result_large_err)]
 pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
-    auth.current(headers)
-        .await
-        .ok_or_else(|| json(StatusCode::UNAUTHORIZED, r#"{"error":"session"}"#))
+    match auth.current(headers).await {
+        Current::Now(user, admin) => Ok((user, admin)),
+        Current::Gone => Err(json(StatusCode::UNAUTHORIZED, r#"{"error":"session"}"#)),
+        Current::Unavailable => Err(json(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"the account could not be checked"}"#,
+        )),
+    }
 }
 
 /// as `require`, for a request the page makes on its own (a live meter): the session must be
@@ -648,7 +691,7 @@ pub async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Respo
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use axum::body::Body;
     use axum::http::Request;
@@ -674,15 +717,42 @@ mod tests {
     /// every operation the fake runner was given: who asked and what.
     type Ran = Arc<Mutex<Vec<(String, lanlord_core::ops::Op)>>>;
 
-    /// runs operations the way core's `execute_as` guards them: the caller's grants must cover
-    /// `Op::requires`. what is allowed answers with the name of the user, and is recorded.
-    fn runner(ran: Ran) -> super::super::Runner {
+    /// what a test can break: the account lookup and the operations service.
+    #[derive(Clone, Default)]
+    struct Faults {
+        lookup: Arc<AtomicBool>,
+        service: Arc<AtomicBool>,
+    }
+
+    /// runs operations the way the operations service guards them: the account's grants, from
+    /// its current admin state, must cover `Op::requires`. what is allowed answers with the name
+    /// of the user, and is recorded. an op that names the user `broken` fails half way.
+    fn runner(ran: Ran, roles: Roles, faults: Faults) -> super::super::Runner {
         use lanlord_core::access::{authorize, Grants};
-        Arc::new(move |caller, op, _ask| {
-            let grants = Grants::fallback(caller.admin);
-            authorize(&grants, op)?;
-            ran.lock().unwrap().push((caller.user.clone(), op.clone()));
-            Ok(lanlord_core::ops::Reply::Names(vec![caller.user.clone()]))
+        use lanlord_core::ops::{Op, Reply, Response, UserChange};
+        Arc::new(move |account, op| {
+            let (ran, roles, faults) = (ran.clone(), roles.clone(), faults.clone());
+            Box::pin(async move {
+                if faults.service.load(Ordering::SeqCst) {
+                    return Err(super::super::operations_service::Unreachable::Down);
+                }
+                let admin = roles
+                    .lock()
+                    .unwrap()
+                    .get(&account)
+                    .copied()
+                    .unwrap_or(false);
+                if let Err(denied) = authorize(&Grants::fallback(admin), &op) {
+                    return Ok(Response::Denied(denied.to_string()));
+                }
+                ran.lock().unwrap().push((account.clone(), op.clone()));
+                let broken = matches!(&op, Op::ChangeUsers { changes } if changes.iter().any(
+                    |c| matches!(c, UserChange::SetPassword { name, .. } if name == "broken")));
+                if broken {
+                    return Ok(Response::Error("failed half way".into()));
+                }
+                Ok(Response::Ok(Reply::Names(vec![account])))
+            })
         })
     }
 
@@ -692,6 +762,9 @@ mod tests {
         calls: Calls,
         down: bool,
         roles: Roles,
+        faults: Faults,
+        /// when set, the account lookup ends this user's sessions first, as a logout would
+        revoke_during: Arc<Mutex<Option<Arc<Auth>>>>,
     }
 
     impl Verifier for Fake {
@@ -706,8 +779,18 @@ mod tests {
             Box::pin(async move { answer })
         }
 
-        fn admin(&self, user: &str) -> Standing {
-            let now = self.roles.lock().unwrap().get(user).copied();
+        fn admin(&self, user: &str) -> Lookup {
+            if let Some(auth) = self.revoke_during.lock().unwrap().as_ref() {
+                auth.revoke_user(user);
+            }
+            let now = if self.faults.lookup.load(Ordering::SeqCst) {
+                Standing::Failed
+            } else {
+                match self.roles.lock().unwrap().get(user) {
+                    Some(admin) => Standing::Account { admin: *admin },
+                    None => Standing::Unknown,
+                }
+            };
             Box::pin(async move { now })
         }
     }
@@ -719,6 +802,8 @@ mod tests {
         offset: Arc<AtomicU64>,
         roles: Roles,
         ran: Ran,
+        faults: Faults,
+        revoke_during: Arc<Mutex<Option<Arc<Auth>>>>,
     }
 
     fn rig_with(down: bool) -> Rig {
@@ -727,11 +812,14 @@ mod tests {
         let base = Instant::now();
         let seen = offset.clone();
         let (roles, ran) = (roles(), Ran::default());
+        let (faults, revoke_during) = (Faults::default(), Arc::default());
         let auth = Auth::with_clock(
             Box::new(Fake {
                 calls: calls.clone(),
                 down,
                 roles: roles.clone(),
+                faults: faults.clone(),
+                revoke_during: Arc::clone(&revoke_during),
             }),
             Limits {
                 fail_delay: Duration::ZERO,
@@ -740,12 +828,18 @@ mod tests {
             Box::new(move || base + Duration::from_secs(seen.load(Ordering::SeqCst))),
         );
         Rig {
-            app: super::super::router_with(None, auth.clone(), runner(ran.clone())),
+            app: super::super::router_with(
+                None,
+                auth.clone(),
+                runner(ran.clone(), roles.clone(), faults.clone()),
+            ),
             auth,
             calls,
             offset,
             roles,
             ran,
+            faults,
+            revoke_during,
         }
     }
 
@@ -952,6 +1046,8 @@ mod tests {
                     calls,
                     down: false,
                     roles: roles.clone(),
+                    faults: Faults::default(),
+                    revoke_during: Arc::default(),
                 }),
                 Limits {
                     fail_delay: Duration::from_millis(300),
@@ -959,12 +1055,18 @@ mod tests {
                 },
             );
             let rig = Rig {
-                app: super::super::router_with(None, auth.clone(), runner(Ran::default())),
+                app: super::super::router_with(
+                    None,
+                    auth.clone(),
+                    runner(Ran::default(), roles.clone(), Faults::default()),
+                ),
                 auth,
                 calls: Arc::default(),
                 offset: Arc::default(),
                 roles,
                 ran: Ran::default(),
+                faults: Faults::default(),
+                revoke_during: Arc::default(),
             };
             let started = Instant::now();
             let (status, _, _) = login_as(&rig, "admin", "wrong").await;
@@ -1173,6 +1275,71 @@ mod tests {
             );
             // the administrator's own session is untouched
             assert_eq!(post_body(&rig, &admin, FACTS).await.0, StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn a_batch_that_fails_half_way_still_ends_the_affected_sessions() {
+        runtime().block_on(async {
+            let rig = rig();
+            let admin = session_for(&rig, "admin").await;
+            let carol = session_for(&rig, "carol").await;
+            let batch = r#"{"op":{"op":"change_users","changes":[
+                {"change":"set_password","name":"carol","password":"p"},
+                {"change":"set_password","name":"broken","password":"p"}]}}"#;
+            let (status, text) = post_body(&rig, &admin, batch).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(text.contains("failed half way"), "{text}");
+            assert_eq!(
+                post_body(&rig, &carol, FACTS).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+            // a refused op changed nothing, so nobody is signed out for it
+            let carol = session_for(&rig, "carol").await;
+            let (status, _) = post_body(&rig, &carol, RESET).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(post_body(&rig, &carol, FACTS).await.0, StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn a_session_that_ends_during_the_account_check_runs_nothing() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "carol").await;
+            *rig.revoke_during.lock().unwrap() = Some(rig.auth.clone());
+            let (status, _) = post_body(&rig, &cookie, FACTS).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert!(rig.ran.lock().unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn a_failed_account_lookup_is_a_503_and_keeps_the_sessions() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "carol").await;
+            rig.faults.lookup.store(true, Ordering::SeqCst);
+            let (status, _) = post_body(&rig, &cookie, FACTS).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            // the lookup works again: the session was not ended by the failure
+            rig.faults.lookup.store(false, Ordering::SeqCst);
+            assert_eq!(post_body(&rig, &cookie, FACTS).await.0, StatusCode::OK);
+        });
+    }
+
+    #[test]
+    fn a_missing_operations_service_is_a_503_with_a_reason() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "carol").await;
+            rig.faults.service.store(true, Ordering::SeqCst);
+            let (status, text) = post_body(&rig, &cookie, FACTS).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(
+                text.contains("the operations service is not running"),
+                "{text}"
+            );
         });
     }
 

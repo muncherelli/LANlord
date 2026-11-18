@@ -299,6 +299,72 @@
             path: /opt/lanlord/bin/lanlord
           register: lanlord_bin
 
+        # the web ui is sandboxed (no network, no privileges), so the operations it forwards are
+        # run by a root service on its own socket. only the lanlord account is in the socket's
+        # group, and the service checks the connecting uid as well.
+        - name: make the operations socket group
+          ansible.builtin.group:
+            name: lanlord-operations
+            gid: 9991
+            system: true
+
+        - name: let the web ui account reach the operations socket
+          ansible.builtin.user:
+            name: lanlord
+            groups: lanlord-operations
+            append: true
+            create_home: false
+          register: operations_member
+
+        - name: look up the web ui account
+          ansible.builtin.getent:
+            database: passwd
+            key: lanlord
+
+        - name: install the operations service
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/lanlord-operations.service
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=LANlord operations service (runs what the web UI forwards)
+              After=network.target
+
+              [Service]
+              User=root
+              Group=lanlord-operations
+              ExecStart=/opt/lanlord/bin/lanlord operations-service --socket /run/lanlord-operations/operations.sock --allowed-uid {{ getent_passwd['lanlord'][1] }}
+              RuntimeDirectory=lanlord-operations
+              RuntimeDirectoryMode=0750
+              RuntimeDirectoryPreserve=yes
+              UMask=0007
+              Restart=on-failure
+              # it runs as root and runs sudo and setuid tools, so no NoNewPrivileges and no
+              # capability bounding; what can be closed is closed
+              ProtectHome=read-only
+              PrivateTmp=yes
+              ProtectKernelModules=yes
+              ProtectKernelLogs=yes
+              ProtectClock=yes
+              ProtectHostname=yes
+              RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+              RestrictNamespaces=yes
+              RestrictRealtime=yes
+              LockPersonality=yes
+              SystemCallArchitectures=native
+
+              [Install]
+              WantedBy=multi-user.target
+          register: operations_unit
+
+        - name: start the operations service
+          ansible.builtin.systemd:
+            name: lanlord-operations.service
+            enabled: true
+            state: "{{ 'restarted' if operations_unit is changed else 'started' }}"
+            daemon_reload: true
+          when: lanlord_bin.stat.exists
+
         - name: install the web ui service
           ansible.builtin.copy:
             dest: /etc/systemd/system/lanlord-webui.service
@@ -350,7 +416,8 @@
           ansible.builtin.systemd:
             name: lanlord-webui.service
             enabled: true
-            state: "{{ 'restarted' if webui_unit is changed else 'started' }}"
+            # a group added to lanlord is only picked up when the service starts
+            state: "{{ 'restarted' if webui_unit is changed or operations_member is changed else 'started' }}"
             daemon_reload: true
           when: lanlord_bin.stat.exists
 

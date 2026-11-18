@@ -7,7 +7,6 @@ pub use lanlord_model::ops::*;
 
 use crate::access::{Caller, Grants, Need};
 use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
-use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
@@ -30,10 +29,24 @@ pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
 /// cover it, and the reply holds only what the caller may see. this is the one door every front
 /// end uses; the web ui passes the account it signed in.
 pub fn execute_as(host: &str, caller: &Caller, op: &Op, ask: AskPassword) -> Result<Reply> {
-    let session = Session::new(host)?;
-    guarded(&session, caller, op, ask, |grants, ask| match op {
+    execute_in(&Session::new(host)?, host, caller, op, ask)
+}
+
+/// as [`execute_as`], through `session`: ssh for a client, [`Session::local`] on the gateway.
+/// `host` only names the server in messages and settings.
+pub fn execute_in(
+    session: &Session,
+    host: &str,
+    caller: &Caller,
+    op: &Op,
+    ask: AskPassword,
+) -> Result<Reply> {
+    guarded(session, caller, op, ask, |grants, ask| match op {
         // these two reach the server their own way
         Op::Bootstrap => {
+            if session.is_local() {
+                bail!("bootstrap is run from a client, not on the gateway itself");
+            }
             let options = Options {
                 host: host.to_string(),
                 ansible: AnsibleMode::detect(),
@@ -42,13 +55,10 @@ pub fn execute_as(host: &str, caller: &Caller, op: &Op, ask: AskPassword) -> Res
             bootstrap::bootstrap(&options, ask)?;
             Ok(Reply::Done)
         }
-        Op::Run { command } => {
-            let target = Target::Gateway { host: host.into() };
-            Ok(Reply::ExitCode(exec::exec_detached(&target, command)?))
-        }
+        Op::Run { command } => Ok(Reply::ExitCode(session.stream(command)?)),
         _ => {
             let who = Who { caller, grants };
-            dispatch(&session, host, &who, op, ask, crypto::load_default)
+            dispatch(session, host, &who, op, ask, crypto::load_default)
         }
     })
 }
