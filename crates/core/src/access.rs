@@ -1,5 +1,5 @@
 //! who is asking, whether they may, and what they get to see: the server side of the access
-//! table (`Op::requires`). every front end reaches it through the op dispatch.
+//! table (`Operation::requires`). every front end reaches it through the operation dispatch.
 
 use anyhow::Result;
 use serde_yaml_ng::Value;
@@ -9,10 +9,10 @@ use crate::config;
 use crate::ssh::Session;
 
 pub use lanlord_model::access::*;
-use lanlord_model::ops::{Op, Reply};
+use lanlord_model::operations::{Operation, Reply};
 use lanlord_model::settings::{Document, Settings};
 
-/// who sends an op.
+/// who sends an operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caller {
     pub user: String,
@@ -63,7 +63,7 @@ pub fn plain_account(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// the typed error for an op the caller may not run.
+/// the typed error for an operation the caller may not run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Denied {
     pub area: Area,
@@ -83,7 +83,7 @@ impl std::fmt::Display for Denied {
 
 impl std::error::Error for Denied {}
 
-/// an op the caller may run in general but not with what it asks for: the reason, in words.
+/// an operation the caller may run in general but not with what it asks for: the reason, in words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Refused(pub String);
 
@@ -119,14 +119,14 @@ pub(crate) fn grants_of(session: &Session, caller: &Caller, ask: AskPassword) ->
     Ok(assignments(session, ask)?.grants(&caller.user, false))
 }
 
-/// refuse an op the grants do not cover.
-pub fn authorize(grants: &Grants, op: &Op) -> Result<(), Denied> {
-    let need = op.requires();
+/// refuse an operation the grants do not cover.
+pub fn authorize(grants: &Grants, operation: &Operation) -> Result<(), Denied> {
+    let need = operation.requires();
     if !grants.allows(need) {
         return Err(denied(need));
     }
     // applying components changes what each of them configures
-    if let Op::Apply { modules } = op {
+    if let Operation::Apply { modules } = operation {
         for area in areas_applied(modules) {
             if grants.level(area) < Level::Manage {
                 return Err(Denied {
@@ -267,28 +267,31 @@ mod tests {
         access.grants("u", false)
     }
 
-    fn ops() -> Vec<Op> {
+    fn operations() -> Vec<Operation> {
         vec![
-            Op::Leases,
-            Op::ServerFacts,
-            Op::ClockUpdateNow,
-            Op::Power {
+            Operation::Leases,
+            Operation::ServerFacts,
+            Operation::ClockUpdateNow,
+            Operation::Power {
                 power: lanlord_model::power::Power::Reboot,
             },
-            Op::LoadAccess,
-            Op::AccountInfo,
-            Op::Apply { modules: vec![] },
+            Operation::LoadAccess,
+            Operation::AccountInfo,
+            Operation::Apply { modules: vec![] },
         ]
     }
 
     fn allowed(grants: &Grants) -> Vec<bool> {
-        ops().iter().map(|o| authorize(grants, o).is_ok()).collect()
+        operations()
+            .iter()
+            .map(|o| authorize(grants, o).is_ok())
+            .collect()
     }
 
     #[test]
     fn an_apply_needs_manage_on_every_area_it_changes() {
         let operator = grants(OPERATORS);
-        let apply = |m: &[&str]| Op::Apply {
+        let apply = |m: &[&str]| Operation::Apply {
             modules: m.iter().map(|s| s.to_string()).collect(),
         };
         assert!(authorize(&operator, &apply(&["docker"])).is_ok());
@@ -315,7 +318,7 @@ mod tests {
     fn users_get_status_and_their_own_account() {
         let want = [false, true, false, false, false, true, false];
         assert_eq!(allowed(&grants(USERS)), want);
-        let denied = authorize(&grants(USERS), &Op::Leases).unwrap_err();
+        let denied = authorize(&grants(USERS), &Operation::Leases).unwrap_err();
         assert_eq!(denied.area, Area::Network);
         assert!(denied.to_string().contains("permission denied"));
     }

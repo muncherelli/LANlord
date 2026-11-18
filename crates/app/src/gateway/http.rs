@@ -1,13 +1,14 @@
-//! the browser's backend: every op goes to the web ui's `/api/operations` as json.
+//! the browser's backend: every operation goes to the web ui's `/api/operations` as json.
 //!
-//! a browser cannot wait for an answer, so ops are awaited with [`Http::exchange`]; tasks run
-//! on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says so.
+//! a browser cannot wait for an answer, so operations are awaited with [`Http::exchange`]; tasks
+//! run on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says
+//! so.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use lanlord_model::ops::{Op, Reply, Request};
+use lanlord_model::operations::{Operation, Reply, Request};
 use lanlord_model::secret::Secret;
 use lanlord_model::signin::{Identity, SigninError};
 use wasm_bindgen::closure::Closure;
@@ -22,7 +23,7 @@ use crate::login::{login_status, LocalFuture, WebSession};
 /// the gateway this page was served from.
 #[derive(Clone)]
 pub struct Http {
-    /// where ops are posted, `/api/operations` on the page's own server.
+    /// where operations are posted, `/api/operations` on the page's own server.
     pub endpoint: String,
     /// set once the server answered that the session is gone; shared by every clone.
     ended: Arc<AtomicBool>,
@@ -38,10 +39,17 @@ impl Default for Http {
 }
 
 impl Http {
-    /// post one op, with the sudo password once the server has asked for it. an answer that
+    /// post one operation, with the sudo password once the server has asked for it. an answer that
     /// says the session is over also raises the flag [`Gateway::session_ended`] reads.
-    pub async fn exchange(&self, op: Op, password: Option<Secret>) -> Result<Reply> {
-        let answer = post(&self.endpoint, Request { op, password }).await;
+    pub async fn exchange(&self, operation: Operation, password: Option<Secret>) -> Result<Reply> {
+        let answer = post(
+            &self.endpoint,
+            Request {
+                operation,
+                password,
+            },
+        )
+        .await;
         if matches!(&answer, Err(err) if err.is::<SessionEnded>()) {
             self.ended.store(true, Ordering::SeqCst);
         }
@@ -50,9 +58,9 @@ impl Http {
 }
 
 impl Gateway for Http {
-    fn call(&self, _host: &str, _op: Op, _ask: AskPassword) -> Result<Reply> {
+    fn call(&self, _host: &str, _operation: Operation, _ask: AskPassword) -> Result<Reply> {
         Err(anyhow!(
-            "the browser cannot wait for the server; tasks send ops with Http::exchange"
+            "the browser cannot wait for the server; tasks send operations with Http::exchange"
         ))
     }
 
@@ -76,7 +84,7 @@ impl Gateway for Http {
 
 async fn post(endpoint: &str, request: Request) -> Result<Reply> {
     // the body holds the password in plain text: keep it only until the browser has its copy
-    let op = request.op.clone();
+    let operation = request.operation.clone();
     let body = Zeroizing::new(serde_json::to_string(&request)?);
     drop(request);
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
@@ -91,7 +99,7 @@ async fn post(endpoint: &str, request: Request) -> Result<Reply> {
         .headers()
         .set("content-type", "application/json")
         .map_err(js)?;
-    let timeout = round_trip::timeout_ms(&op);
+    let timeout = round_trip::timeout_ms(&operation);
     let abort = Closure::once(move || controller.abort());
     let timer = window
         .set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -206,7 +214,7 @@ pub async fn monitor_end(pid: u32) -> Result<()> {
 }
 
 /// a monitor route answers 401 only for want of a login, so that is the session ending, the
-/// same as for an op: the desktop goes back to the logon box.
+/// same as for an operation: the desktop goes back to the logon box.
 fn monitor_status(status: u16, body: &str) -> Result<()> {
     match status {
         200 => Ok(()),

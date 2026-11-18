@@ -698,7 +698,7 @@ mod tests {
     }
 
     /// every operation the fake runner was given: who asked and what.
-    type Ran = Arc<Mutex<Vec<(String, lanlord_core::ops::Op)>>>;
+    type Ran = Arc<Mutex<Vec<(String, lanlord_core::operations::Operation)>>>;
 
     /// what a test can break: the account lookup and the operations service.
     #[derive(Clone, Default)]
@@ -709,13 +709,13 @@ mod tests {
         slow: Arc<AtomicU64>,
     }
 
-    /// runs operations the way the operations service guards them: the account's grants, from
-    /// its current admin state, must cover `Op::requires`. what is allowed answers with the name
-    /// of the user, and is recorded. an op that names the user `broken` fails half way.
+    /// runs operations the way the operations service guards them: the account's grants, from its
+    /// current admin state, must cover `Operation::requires`. what is allowed answers with the name
+    /// of the user, and is recorded. an operation that names the user `broken` fails half way.
     fn runner(ran: Ran, roles: Roles, faults: Faults) -> super::super::Runner {
         use lanlord_core::access::{authorize, Grants};
-        use lanlord_core::ops::{Op, Reply, Response, UserChange};
-        Arc::new(move |account, op, events| {
+        use lanlord_core::operations::{Operation, Reply, Response, UserChange};
+        Arc::new(move |account, operation, events| {
             let (ran, roles, faults) = (ran.clone(), roles.clone(), faults.clone());
             Box::pin(async move {
                 if faults.service.load(Ordering::SeqCst) {
@@ -731,16 +731,18 @@ mod tests {
                     .get(&account)
                     .copied()
                     .unwrap_or(false);
-                if let Err(denied) = authorize(&Grants::fallback(admin), &op) {
+                if let Err(denied) = authorize(&Grants::fallback(admin), &operation) {
                     return Ok(Response::Denied(denied.to_string()));
                 }
-                ran.lock().unwrap().push((account.clone(), op.clone()));
-                if matches!(op, lanlord_core::ops::Op::Apply { .. }) {
+                ran.lock()
+                    .unwrap()
+                    .push((account.clone(), operation.clone()));
+                if matches!(operation, lanlord_core::operations::Operation::Apply { .. }) {
                     use lanlord_core::apply::ApplyEvent;
                     events(ApplyEvent::Started);
                     events(ApplyEvent::Total { n: 2 });
                 }
-                let broken = matches!(&op, Op::ChangeUsers { changes } if changes.iter().any(
+                let broken = matches!(&operation, Operation::ChangeUsers { changes } if changes.iter().any(
                     |c| matches!(c, UserChange::SetPassword { name, .. } if name == "broken")));
                 if broken {
                     return Ok(Response::Error("failed half way".into()));
@@ -904,7 +906,7 @@ mod tests {
         (status, body)
     }
 
-    async fn post_op(rig: &Rig, cookie: Option<&str>) -> StatusCode {
+    async fn post_operation(rig: &Rig, cookie: Option<&str>) -> StatusCode {
         let mut builder = page("POST", "/api/operations", "{}");
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
@@ -1097,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_page_of_this_site_sending_json_may_log_in_out_or_run_ops() {
+    fn only_a_page_of_this_site_sending_json_may_log_in_out_or_run_operations() {
         runtime().block_on(async {
             let rig = rig();
             let body = r#"{"user":"admin","password":"right"}"#;
@@ -1158,21 +1160,30 @@ mod tests {
     fn operations_need_a_session() {
         runtime().block_on(async {
             let rig = rig();
-            assert_eq!(post_op(&rig, None).await, StatusCode::UNAUTHORIZED);
+            assert_eq!(post_operation(&rig, None).await, StatusCode::UNAUTHORIZED);
             let forged = format!("__Host-lanlord={}", "ab".repeat(32));
-            assert_eq!(post_op(&rig, Some(&forged)).await, StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                post_operation(&rig, Some(&forged)).await,
+                StatusCode::UNAUTHORIZED
+            );
             for junk in ["__Host-lanlord=short", "other=1", "__Host-lanlord="] {
-                assert_eq!(post_op(&rig, Some(junk)).await, StatusCode::UNAUTHORIZED);
+                assert_eq!(
+                    post_operation(&rig, Some(junk)).await,
+                    StatusCode::UNAUTHORIZED
+                );
             }
             // a cookie without the prefix is not ours
             let cookie = session_for(&rig, "admin").await;
             let unprefixed = cookie.replace("__Host-", "");
             assert_eq!(
-                post_op(&rig, Some(&unprefixed)).await,
+                post_operation(&rig, Some(&unprefixed)).await,
                 StatusCode::UNAUTHORIZED
             );
             // with a session, a body that is not an operation is a 400
-            assert_eq!(post_op(&rig, Some(&cookie)).await, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                post_operation(&rig, Some(&cookie)).await,
+                StatusCode::BAD_REQUEST
+            );
         });
     }
 
@@ -1278,10 +1289,10 @@ mod tests {
             let (status, text) = post_body(&rig, &cookie, FACTS).await;
             assert_eq!(status, StatusCode::OK, "{text}");
             assert_eq!(
-                serde_json::from_str::<lanlord_core::ops::Response>(&text).unwrap(),
-                lanlord_core::ops::Response::Ok(lanlord_core::ops::Reply::Names(vec![
-                    "carol".into()
-                ]))
+                serde_json::from_str::<lanlord_core::operations::Response>(&text).unwrap(),
+                lanlord_core::operations::Response::Ok(lanlord_core::operations::Reply::Names(
+                    vec!["carol".into()]
+                ))
             );
             assert_eq!(rig.ran.lock().unwrap().len(), 1);
         });
@@ -1311,7 +1322,12 @@ mod tests {
         runtime().block_on(async {
             let rig = rig();
             let cookie = session_for(&rig, "admin").await;
-            for body in ["", "nope", r#"{"op":{"op":"no_such_op"}}"#, r#"{"x":1}"#] {
+            for body in [
+                "",
+                "nope",
+                r#"{"op":{"op":"no_such_operation"}}"#,
+                r#"{"x":1}"#,
+            ] {
                 let (status, text) = post_body(&rig, &cookie, body).await;
                 assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
                 assert!(text.contains("error"));
@@ -1391,7 +1407,7 @@ mod tests {
                 post_body(&rig, &carol, FACTS).await.0,
                 StatusCode::UNAUTHORIZED
             );
-            // a refused op changed nothing, so nobody is signed out for it
+            // a refused operation changed nothing, so nobody is signed out for it
             let carol = session_for(&rig, "carol").await;
             let (status, _) = post_body(&rig, &carol, RESET).await;
             assert_eq!(status, StatusCode::FORBIDDEN);
@@ -1474,8 +1490,14 @@ mod tests {
             let other = session_for(&rig, "carol").await;
             assert_eq!(rig.auth.revoke_user("admin"), 1);
             assert_eq!(rig.auth.revoke_user("admin"), 0);
-            assert_eq!(post_op(&rig, Some(&admin)).await, StatusCode::UNAUTHORIZED);
-            assert_eq!(post_op(&rig, Some(&other)).await, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                post_operation(&rig, Some(&admin)).await,
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                post_operation(&rig, Some(&other)).await,
+                StatusCode::BAD_REQUEST
+            );
         });
     }
 
@@ -1507,7 +1529,10 @@ mod tests {
                 .unwrap()
                 .contains("Max-Age=0"));
             assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
-            assert_eq!(post_op(&rig, Some(&cookie)).await, StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                post_operation(&rig, Some(&cookie)).await,
+                StatusCode::UNAUTHORIZED
+            );
         });
     }
 

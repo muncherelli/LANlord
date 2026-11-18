@@ -1,4 +1,4 @@
-//! running a task in the browser: its ops are sent over http one at a time, and the task is
+//! running a task in the browser: its operations are sent over http one at a time, and the task is
 //! run again after each answer (see `replay`), so the windows that spawned it need not know.
 
 use std::sync::mpsc::{self, Sender, TryRecvError};
@@ -18,7 +18,7 @@ use crate::wake::Wake;
 const POLL_MS: i32 = 50;
 
 /// run `work` to its end. a sudo prompt goes to the ui through `requests` once per task and the
-/// password is sent with every later op; without `requests` (a quiet read) it is an error.
+/// password is sent with every later operation; without `requests` (a quiet read) it is an error.
 pub async fn run<T>(
     http: &Http,
     requests: Option<&Sender<PasswordRequest>>,
@@ -32,11 +32,11 @@ pub async fn run<T>(
             let mut ask = |what: &str| Err(anyhow!("{PROMPT_IN_BROWSER} ({what})"));
             work(gateway, &mut ask)
         });
-        let op = match pass {
+        let operation = match pass {
             Pass::Finished(result) => return result,
-            Pass::Needs(op) => op,
+            Pass::Needs(operation) => operation,
         };
-        let first = http.exchange(op.clone(), password.clone()).await;
+        let first = http.exchange(operation.clone(), password.clone()).await;
         let answer = match round_trip::first(first) {
             Step::Done(result) => result,
             Step::Ask(prompt) => match (&password, requests) {
@@ -45,7 +45,7 @@ pub async fn run<T>(
                 (None, Some(requests)) => match ask(requests, wake, prompt).await {
                     None => Err(anyhow!(CANCELLED)),
                     Some(given) => {
-                        let again = http.exchange(op.clone(), Some(given.clone())).await;
+                        let again = http.exchange(operation.clone(), Some(given.clone())).await;
                         let (kept, answer) = round_trip::after_retry(given, again);
                         password = kept;
                         answer
@@ -53,7 +53,7 @@ pub async fn run<T>(
                 },
             },
         };
-        replay.record(op, answer);
+        replay.record(operation, answer);
     }
 }
 

@@ -1,10 +1,11 @@
-//! `lanlord bridge`, both ends. on the gateway [`serve`] reads requests and runs the ops it can in
-//! plain rust ([`run_local`]); on the controller [`Session::bridge`] starts it over the ssh session
-//! that is already open and [`Bridge::call`] talks to it. frames are in `lanlord_model::bridge`.
+//! `lanlord bridge`, both ends. on the gateway [`serve`] reads requests and runs the operations it
+//! can in plain rust ([`run_local`]); on the controller [`Session::bridge`] starts it over the ssh
+//! session that is already open and [`Bridge::call`] talks to it. frames are in
+//! `lanlord_model::bridge`.
 //!
-//! the bridge is a speedup and a cleaner way to run an op, never a requirement: when the gateway
-//! has no bridge, or one that speaks another protocol, [`try_call`] says so and the caller uses
-//! the shell scripts it always had.
+//! the bridge is a speedup and a cleaner way to run an operation, never a requirement: when the
+//! gateway has no bridge, or one that speaks another protocol, [`try_call`] says so and the caller
+//! uses the shell scripts it always had.
 //!
 //! # sudo and stdin
 //!
@@ -22,7 +23,7 @@ use std::sync::atomic::Ordering;
 use anyhow::{bail, Context, Result};
 
 use lanlord_model::bridge::{Event, Hello, Request};
-use lanlord_model::ops::{Op, Reply};
+use lanlord_model::operations::{Operation, Reply};
 
 use crate::bootstrap::{root_argv, AskPassword};
 use crate::config;
@@ -55,38 +56,39 @@ impl std::fmt::Display for BridgeError {
 
 impl std::error::Error for BridgeError {}
 
-/// run `op` the way the bridge does, on this machine. `log` gets progress lines.
-pub fn run_local(op: &Op, log: &mut dyn FnMut(&str)) -> Result<Reply> {
-    match op {
-        Op::Subscribe { .. } => {
+/// run `operation` the way the bridge does, on this machine. `log` gets progress lines.
+pub fn run_local(operation: &Operation, log: &mut dyn FnMut(&str)) -> Result<Reply> {
+    match operation {
+        Operation::Subscribe { .. } => {
             bail!("live streams are served by the web ui, not run as an operation")
         }
-        op if op.runs_on_bridge() => run_clock(op, log),
+        operation if operation.runs_on_bridge() => run_clock(operation, log),
         _ => bail!("the bridge does not run this operation"),
     }
 }
 
-/// the clock ops; the bridge only runs on linux gateways, so elsewhere there is nothing to run.
+/// the clock operations; the bridge only runs on linux gateways, so elsewhere there is nothing to
+/// run.
 #[cfg(unix)]
-fn run_clock(op: &Op, log: &mut dyn FnMut(&str)) -> Result<Reply> {
+fn run_clock(operation: &Operation, log: &mut dyn FnMut(&str)) -> Result<Reply> {
     use crate::local::clock;
-    Ok(match op {
-        Op::ClockState => Reply::Clock(clock::read()?),
-        Op::ClockZones => Reply::Names(clock::zones()?),
-        Op::ClockZoneNow { zone } => Reply::ZoneNow(clock::zone_now(zone)?),
-        Op::ClockApply { change } => Reply::Lines(clock::apply(change, log)?),
-        Op::ClockUpdateNow => Reply::Lines(clock::update_now()?),
+    Ok(match operation {
+        Operation::ClockState => Reply::Clock(clock::read()?),
+        Operation::ClockZones => Reply::Names(clock::zones()?),
+        Operation::ClockZoneNow { zone } => Reply::ZoneNow(clock::zone_now(zone)?),
+        Operation::ClockApply { change } => Reply::Lines(clock::apply(change, log)?),
+        Operation::ClockUpdateNow => Reply::Lines(clock::update_now()?),
         _ => bail!("the bridge does not run this operation"),
     })
 }
 
 #[cfg(not(unix))]
-fn run_clock(_: &Op, _: &mut dyn FnMut(&str)) -> Result<Reply> {
+fn run_clock(_: &Operation, _: &mut dyn FnMut(&str)) -> Result<Reply> {
     bail!("the bridge runs on a gateway")
 }
 
-/// what runs an op for [`serve`]: it gets the op and a sink for progress lines.
-pub type RunOp<'a> = dyn FnMut(&Op, &mut dyn FnMut(&str)) -> Result<Reply> + 'a;
+/// what runs an operation for [`serve`]: it gets the operation and a sink for progress lines.
+pub type RunOperation<'a> = dyn FnMut(&Operation, &mut dyn FnMut(&str)) -> Result<Reply> + 'a;
 
 /// the gateway side: greet, then answer requests from `input` until it ends. nothing but frames
 /// is written to `out`.
@@ -94,7 +96,7 @@ pub fn serve(
     input: impl BufRead,
     out: &mut impl Write,
     version: &str,
-    run: &mut RunOp,
+    run: &mut RunOperation,
 ) -> Result<()> {
     write_frame(out, &Hello::current(version))?;
     for line in input.lines() {
@@ -112,7 +114,7 @@ pub fn serve(
         };
         let id = request.id;
         let mut failed = None;
-        let result = run(&request.op, &mut |line: &str| {
+        let result = run(&request.operation, &mut |line: &str| {
             let event = Event::Log {
                 id,
                 line: line.to_string(),
@@ -223,12 +225,18 @@ impl Bridge {
         ))
     }
 
-    /// run `op` and wait for its reply; `on_log` sees the progress lines.
-    pub fn call(&mut self, op: &Op, on_log: &mut dyn FnMut(&str)) -> Result<Reply> {
+    /// run `operation` and wait for its reply; `on_log` sees the progress lines.
+    pub fn call(&mut self, operation: &Operation, on_log: &mut dyn FnMut(&str)) -> Result<Reply> {
         self.next += 1;
         let id = self.next;
         let stdin = self.stdin.as_mut().context("the bridge is closed")?;
-        write_frame(stdin, &Request { id, op: op.clone() })?;
+        write_frame(
+            stdin,
+            &Request {
+                id,
+                operation: operation.clone(),
+            },
+        )?;
         loop {
             let mut line = String::new();
             if self.out.read_line(&mut line)? == 0 {
@@ -253,13 +261,18 @@ impl Drop for Bridge {
     }
 }
 
-/// run `op` through the bridge. `Ok(None)` when the gateway has none (or a mismatched one): the
-/// reason is logged, later ops skip the attempt, and the caller runs its shell script instead.
-pub fn try_call(session: &Session, op: &Op, ask_password: AskPassword) -> Result<Option<Reply>> {
+/// run `operation` through the bridge. `Ok(None)` when the gateway has none (or a mismatched one):
+/// the reason is logged, later operations skip the attempt, and the caller runs its shell script
+/// instead.
+pub fn try_call(
+    session: &Session,
+    operation: &Operation,
+    ask_password: AskPassword,
+) -> Result<Option<Reply>> {
     if session.no_bridge.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    let mut bridge = match session.bridge(op.needs_root(), ask_password) {
+    let mut bridge = match session.bridge(operation.needs_root(), ask_password) {
         Ok(bridge) => bridge,
         Err(err) => match err.downcast_ref::<BridgeError>() {
             Some(BridgeError::Failed(why)) => {
@@ -282,7 +295,7 @@ pub fn try_call(session: &Session, op: &Op, ask_password: AskPassword) -> Result
         },
     };
     bridge
-        .call(op, &mut |line| emit(Kind::Debug, line))
+        .call(operation, &mut |line| emit(Kind::Debug, line))
         .map(Some)
 }
 
@@ -290,7 +303,7 @@ pub fn try_call(session: &Session, op: &Op, ask_password: AskPassword) -> Result
 mod tests {
     use super::*;
 
-    fn frames(input: &str, run: &mut RunOp) -> Vec<String> {
+    fn frames(input: &str, run: &mut RunOperation) -> Vec<String> {
         let mut out = Vec::new();
         serve(input.as_bytes(), &mut out, "9.9.9", run).unwrap();
         String::from_utf8(out)
@@ -312,13 +325,13 @@ mod tests {
             r#"{"id":3,"op":{"op":"subscribe","topic":"clock"}}"#,
             "\n",
         );
-        let lines = frames(input, &mut |op, log| match op {
-            Op::ClockZones => Ok(Reply::Names(vec!["UTC".into()])),
-            Op::ClockUpdateNow => {
+        let lines = frames(input, &mut |operation, log| match operation {
+            Operation::ClockZones => Ok(Reply::Names(vec!["UTC".into()])),
+            Operation::ClockUpdateNow => {
                 log("restarting");
                 bail!("there is no time service to restart")
             }
-            _ => run_local(op, log),
+            _ => run_local(operation, log),
         });
         assert_eq!(lines[0], r#"{"proto":1,"version":"9.9.9"}"#);
         assert_eq!(
@@ -368,7 +381,7 @@ mod tests {
         let gw = gateway(&format!("{HELLO}; read req; {log}; echo '{{\"kind\":\"sample\",\"id\":1,\"topic\":\"t\",\"value\":\"1\"}}'; {REPLY}"));
         let mut bridge = gw.bridge(false, &mut no_password).unwrap();
         let mut lines = Vec::new();
-        let reply = bridge.call(&Op::ClockZones, &mut |l| lines.push(l.to_string()));
+        let reply = bridge.call(&Operation::ClockZones, &mut |l| lines.push(l.to_string()));
         assert_eq!(reply.unwrap(), Reply::Names(vec!["UTC".into()]));
         assert_eq!(lines, ["working"]);
     }
@@ -377,7 +390,7 @@ mod tests {
     #[test]
     fn the_root_bridge_runs_directly_for_root() {
         let gw = gateway(&format!("{HELLO}; read req; {REPLY}"));
-        let got = try_call(&gw, &Op::ClockUpdateNow, &mut no_password).unwrap();
+        let got = try_call(&gw, &Operation::ClockUpdateNow, &mut no_password).unwrap();
         assert_eq!(got, Some(Reply::Names(vec!["UTC".into()])));
     }
 
@@ -386,7 +399,7 @@ mod tests {
     fn a_failed_request_is_an_error_with_the_bridges_words() {
         let err = r#"echo '{"kind":"error","id":1,"message":"unknown time zone: X"}'"#;
         let gw = gateway(&format!("{HELLO}; read req; {err}"));
-        let got = try_call(&gw, &Op::ClockZones, &mut no_password).unwrap_err();
+        let got = try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap_err();
         assert!(got.to_string().contains("unknown time zone: X"), "{got}");
     }
 
@@ -394,10 +407,10 @@ mod tests {
     #[test]
     fn a_broken_or_missing_answer_is_an_error() {
         let gw = gateway(&format!("{HELLO}; read req; echo nonsense"));
-        let err = try_call(&gw, &Op::ClockZones, &mut no_password).unwrap_err();
+        let err = try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("broken frame"), "{err}");
         let gw = gateway(&format!("{HELLO}; read req"));
-        let err = try_call(&gw, &Op::ClockZones, &mut no_password).unwrap_err();
+        let err = try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("without an answer"), "{err}");
     }
 
@@ -406,12 +419,12 @@ mod tests {
     fn a_missing_bridge_falls_back_once_and_is_not_tried_again() {
         let gw = gateway("echo 'sh: lanlord: not found' >&2; exit 127");
         assert_eq!(
-            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap(),
             None
         );
         assert!(gw.no_bridge.load(Ordering::Relaxed));
         assert_eq!(
-            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap(),
             None
         );
     }
@@ -426,7 +439,7 @@ mod tests {
             Some(BridgeError::Failed(why)) if why.contains("password is required")
         ));
         assert_eq!(
-            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap(),
             None
         );
         assert!(!gw.no_bridge.load(Ordering::Relaxed));
@@ -453,7 +466,7 @@ mod tests {
             Some(BridgeError::Mismatch(_))
         ));
         assert_eq!(
-            try_call(&gw, &Op::ClockZones, &mut no_password).unwrap(),
+            try_call(&gw, &Operation::ClockZones, &mut no_password).unwrap(),
             None
         );
         assert!(gw.no_bridge.load(Ordering::Relaxed));
@@ -476,8 +489,8 @@ mod tests {
     }
 
     #[test]
-    fn an_op_the_bridge_does_not_run_is_an_error() {
-        let err = run_local(&Op::Doctor, &mut |_| {}).unwrap_err();
+    fn an_operation_the_bridge_does_not_run_is_an_error() {
+        let err = run_local(&Operation::Doctor, &mut |_| {}).unwrap_err();
         assert!(err.to_string().contains("does not run"), "{err}");
     }
 }

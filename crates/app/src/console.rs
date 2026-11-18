@@ -108,7 +108,7 @@ impl Console {
                     wake.wake();
                 };
                 self.feed = Some(Stream::open(
-                    lanlord_model::ops::topic::APPLY,
+                    lanlord_model::operations::topic::APPLY,
                     std::rc::Rc::new(handler),
                 ));
             }

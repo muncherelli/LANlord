@@ -154,7 +154,7 @@ impl Tasks {
 /// way a thread's does, with the result on the job's channel and a wake.
 #[cfg(target_arch = "wasm32")]
 impl Tasks {
-    /// like [`Tasks::spawn`], for a gateway whose ops go over http.
+    /// like [`Tasks::spawn`], for a gateway whose operations go over http.
     pub fn spawn_web<T: 'static>(
         &self,
         wake: &Wake,
@@ -187,7 +187,7 @@ impl Tasks {
         })
     }
 
-    /// like [`Tasks::quiet`], for a gateway whose ops go over http.
+    /// like [`Tasks::quiet`], for a gateway whose operations go over http.
     pub fn quiet_web<T: 'static>(
         &self,
         wake: &Wake,
@@ -215,7 +215,7 @@ fn background(work: impl FnOnce() + Send + 'static) {
 }
 
 /// in the browser there are no threads: the work runs on the page's event loop once the
-/// current frame is done. a task that talks to the server sends its op with
+/// current frame is done. a task that talks to the server sends its operation with
 /// `gateway::http::Http::run`, which does not block.
 #[cfg(target_arch = "wasm32")]
 fn background(work: impl FnOnce() + Send + 'static) {
@@ -246,7 +246,7 @@ fn asker(requests: Sender<PasswordRequest>, wake: Wake) -> impl FnMut(&str) -> R
 
 /// in the browser a task runs on the page's only thread, so waiting for the dialog would wait
 /// forever. a prompt fails at once instead; the web ui asks for the password itself when the
-/// server answers an op with `Reply::NeedsPassword` (see `gateway::http::Http::run`).
+/// server answers an operation with `Reply::NeedsPassword` (see `gateway::http::Http::run`).
 #[cfg(target_arch = "wasm32")]
 fn asker(_requests: Sender<PasswordRequest>, _wake: Wake) -> impl FnMut(&str) -> Result<String> {
     |what: &str| Err(anyhow!("{PROMPT_IN_BROWSER} ({what})"))
@@ -254,7 +254,7 @@ fn asker(_requests: Sender<PasswordRequest>, _wake: Wake) -> impl FnMut(&str) ->
 
 /// why a task in the browser cannot ask for a password in the middle of its work.
 pub const PROMPT_IN_BROWSER: &str =
-    "the browser cannot stop a task to ask for a password; send the op again with it";
+    "the browser cannot stop a task to ask for a password; send the operation again with it";
 
 #[cfg(test)]
 mod tests {

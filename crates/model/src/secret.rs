@@ -6,7 +6,7 @@
 //! the stdin of `lanlord op`. it is never logged or stored.
 //!
 //! `lanlord op` runs what it is given as is: purge, power and run ask for no confirmation there,
-//! by design, because the front end that sent the op already asked.
+//! by design, because the front end that sent the operation already asked.
 
 use std::fmt;
 

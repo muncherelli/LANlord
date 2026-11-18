@@ -5,20 +5,20 @@
 use anyhow::{bail, Result};
 
 use crate::bootstrap::AskPassword;
-use crate::ops::{execute, Op, Reply};
+use crate::operations::{execute, Operation, Reply};
 use crate::settings::Document;
 use crate::users::{self, cached, User};
 
 /// one operation on the gateway and what it answers: `execute` towards a host, or a stand-in.
-type Run<'a> = &'a mut dyn FnMut(&Op) -> Result<Reply>;
+type Run<'a> = &'a mut dyn FnMut(&Operation) -> Result<Reply>;
 
 /// the settings document on `host`, without its secrets.
 pub fn document(host: &str, ask: AskPassword) -> Result<Document> {
-    document_with(host, &mut |op| execute(host, op, ask))
+    document_with(host, &mut |operation| execute(host, operation, ask))
 }
 
 fn document_with(host: &str, run: Run) -> Result<Document> {
-    match run(&Op::LoadDocument)? {
+    match run(&Operation::LoadDocument)? {
         Reply::Document(document) if document == Document::default() => {
             bail!("no settings on {host}; run lanlord config push first")
         }
@@ -35,12 +35,14 @@ pub fn users_on(host: &str, ask: AskPassword) -> Result<Vec<User>> {
 /// change logins on `host` and apply the module; returns the users now defined.
 pub fn change_users(host: &str, changes: &[users::Change], ask: AskPassword) -> Result<Vec<User>> {
     let mut ask = cached(ask);
-    change_users_with(host, changes, &mut |op| execute(host, op, &mut ask))
+    change_users_with(host, changes, &mut |operation| {
+        execute(host, operation, &mut ask)
+    })
 }
 
 fn change_users_with(host: &str, changes: &[users::Change], run: Run) -> Result<Vec<User>> {
     let changes = changes.iter().map(Into::into).collect();
-    done(run(&Op::ChangeUsers { changes })?)?;
+    done(run(&Operation::ChangeUsers { changes })?)?;
     users::list(document_with(host, run)?.plain.as_bytes())
 }
 
@@ -52,7 +54,9 @@ pub fn edit(
     ask: AskPassword,
 ) -> Result<()> {
     let mut ask = cached(ask);
-    edit_with(host, modules, edit, &mut |op| execute(host, op, &mut ask))
+    edit_with(host, modules, edit, &mut |operation| {
+        execute(host, operation, &mut ask)
+    })
 }
 
 fn edit_with(
@@ -62,12 +66,12 @@ fn edit_with(
     run: Run,
 ) -> Result<()> {
     let plain = edit(&document_with(host, run)?.plain)?;
-    let save = Op::SaveDocument {
+    let save = Operation::SaveDocument {
         plain,
         updates: Vec::new(),
     };
     done(run(&save)?)?;
-    let apply = Op::Apply {
+    let apply = Operation::Apply {
         modules: modules.to_vec(),
     };
     done(run(&apply)?)
@@ -83,12 +87,12 @@ fn done(reply: Reply) -> Result<()> {
 /// store a whole settings file on `host`: the plain part as the settings, each secret in it set
 /// on the gateway, where it is sealed. nothing is read back.
 pub fn push_file(host: &str, file: &[u8], ask: AskPassword) -> Result<()> {
-    push_file_with(file, &mut |op| execute(host, op, ask))
+    push_file_with(file, &mut |operation| execute(host, operation, ask))
 }
 
 fn push_file_with(file: &[u8], run: Run) -> Result<()> {
     use crate::settings::{dump, parse_value, secret_values, split};
-    use lanlord_model::ops::SecretUpdate;
+    use lanlord_model::operations::SecretUpdate;
     let (plain, secrets) = split(&parse_value(file)?);
     let updates = secret_values(&secrets)
         .into_iter()
@@ -97,7 +101,7 @@ fn push_file_with(file: &[u8], run: Run) -> Result<()> {
             value: value.into(),
         })
         .collect();
-    let save = Op::SaveDocument {
+    let save = Operation::SaveDocument {
         plain: dump(&plain)?,
         updates,
     };
@@ -127,12 +131,12 @@ mod tests {
     /// a gateway that keeps what it was sent, and answers with `document` to every read.
     fn gateway(
         document: Document,
-        sent: &RefCell<Vec<Op>>,
-    ) -> impl FnMut(&Op) -> Result<Reply> + '_ {
-        move |op| {
-            sent.borrow_mut().push(op.clone());
-            Ok(match op {
-                Op::LoadDocument => Reply::Document(document.clone()),
+        sent: &RefCell<Vec<Operation>>,
+    ) -> impl FnMut(&Operation) -> Result<Reply> + '_ {
+        move |operation| {
+            sent.borrow_mut().push(operation.clone());
+            Ok(match operation {
+                Operation::LoadDocument => Reply::Document(document.clone()),
                 _ => Reply::Done,
             })
         }
@@ -167,12 +171,12 @@ mod tests {
             &mut run,
         )
         .unwrap();
-        assert!(matches!(sent.borrow()[0], Op::LoadDocument));
+        assert!(matches!(sent.borrow()[0], Operation::LoadDocument));
         assert!(
-            matches!(&sent.borrow()[1], Op::SaveDocument { plain, updates }
+            matches!(&sent.borrow()[1], Operation::SaveDocument { plain, updates }
             if plain == "a: 1\nb: 2\n" && updates.is_empty())
         );
-        assert!(matches!(&sent.borrow()[2], Op::Apply { modules } if modules == &["samba"]));
+        assert!(matches!(&sent.borrow()[2], Operation::Apply { modules } if modules == &["samba"]));
     }
 
     #[test]
@@ -190,7 +194,7 @@ mod tests {
         let mut run = gateway(Document::default(), &sent);
         push_file_with(b"name: lan\n", &mut run).unwrap();
         assert!(
-            matches!(&sent.borrow()[..], [Op::SaveDocument { plain, .. }] if plain.contains("lan"))
+            matches!(&sent.borrow()[..], [Operation::SaveDocument { plain, .. }] if plain.contains("lan"))
         );
         assert!(push_file_with(b": : not yaml [", &mut |_| Ok(Reply::Done)).is_err());
     }
@@ -201,7 +205,7 @@ mod tests {
         let mut run = gateway(document_of("nt4-domain:\n  users: []\n", &[]), &sent);
         let users = change_users_with("srv", &[], &mut run).unwrap();
         assert!(users.is_empty());
-        assert!(matches!(sent.borrow()[0], Op::ChangeUsers { .. }));
-        assert!(matches!(sent.borrow()[1], Op::LoadDocument));
+        assert!(matches!(sent.borrow()[0], Operation::ChangeUsers { .. }));
+        assert!(matches!(sent.borrow()[1], Operation::LoadDocument));
     }
 }
