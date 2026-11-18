@@ -205,6 +205,15 @@ fn last_line(text: &str) -> &str {
         .trim()
 }
 
+/// who this machine's own account is, for the logon box's "This server" choice: no ssh, the
+/// account that runs lanlord.
+pub fn local_identity() -> Result<Identity, SigninError> {
+    let out = Session::local()
+        .capture(&["sh".into(), "-c".into(), "id -un && id -u && id -nG".into()])
+        .map_err(|err| SigninError::Other(err.to_string()))?;
+    parse_identity(&out)
+}
+
 fn parse_identity(stdout: &str) -> Result<Identity, SigninError> {
     let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
     let (Some(user), Some(uid)) = (lines.next(), lines.next()) else {

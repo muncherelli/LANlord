@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+                    ┌ Logon Information ──────────── _ □ × ┐
+                    │ You are signed in to this server     │
+                    │ with the account you are using.      │
+                    │                                      │
+                    │ Sign in to:  This server (ann) ▼     │
+                    │      [ OK ] [ Cancel ] [ Shut Down ] │
+                    └──────────────────────────────────────┘
+
+
+
+
+
+
+
+
+

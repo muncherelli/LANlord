@@ -1,5 +1,5 @@
-//! the encrypted settings stored on a gateway. it only ever holds
-//! ciphertext; the key stays on the client.
+//! the encrypted settings stored on a gateway. the file only ever holds ciphertext, sealed to
+//! the gateway's own key, which only the root operations service loads.
 
 use anyhow::{bail, Context, Result};
 use base64::Engine;
@@ -171,16 +171,25 @@ pub(crate) fn pull_with(
     identity: &age::x25519::Identity,
     ask_password: AskPassword,
 ) -> Result<Option<Vec<u8>>> {
+    pull_sealed_with(session, ask_password)?
+        .map(|sealed| crypto::decrypt(identity, &sealed))
+        .transpose()
+}
+
+/// the stored ciphertext as it is, for moving it to another key; `None` when nothing is stored.
+pub(crate) fn pull_sealed_with(
+    session: &Session,
+    ask_password: AskPassword,
+) -> Result<Option<Vec<u8>>> {
     let admin = admin(session)?;
     let encoded = capture_as_root(session, &admin, PULL_SCRIPT.to_string(), ask_password)?;
     let compact: String = encoded.split_whitespace().collect();
     if compact.is_empty() {
         return Ok(None);
     }
-    let sealed = B64
-        .decode(compact)
-        .context("the gateway returned damaged settings")?;
-    crypto::decrypt(identity, &sealed).map(Some)
+    B64.decode(compact)
+        .map(Some)
+        .context("the gateway returned damaged settings")
 }
 
 /// store the plain (unencrypted, readable) settings on the gateway.

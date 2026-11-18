@@ -342,6 +342,7 @@ mod tests {
             plain: "nt4-domain:\n  users:\n    - name: dana\n    - name: eve\n  machines: [pc01]\ndns:\n  dhcp:\n    range: [192.0.2.10, 192.0.2.20]\n    hosts:\n      - {name: pc01, mac: '00:00:5e:00:53:01', address: 192.0.2.11}\naccess:\n  members:\n    eve: [Operators]\n".into(),
             secrets_set: vec!["nt4-domain.admin_password".into()],
             legacy: false,
+            needs_move: false,
         }
     }
 

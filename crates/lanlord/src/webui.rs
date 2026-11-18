@@ -522,6 +522,12 @@ pub struct Ours {
 /// says which socket is ours, so only that one is removed later.
 #[cfg(unix)]
 pub async fn bind_socket(path: &Path) -> Result<(tokio::net::UnixListener, Ours)> {
+    bind_socket_mode(path, 0o660).await
+}
+
+/// `bind_socket` with the socket's mode chosen by the caller.
+#[cfg(unix)]
+pub async fn bind_socket_mode(path: &Path, mode: u32) -> Result<(tokio::net::UnixListener, Ours)> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 
     if let Some(parent) = path.parent() {
@@ -541,7 +547,7 @@ pub async fn bind_socket(path: &Path) -> Result<(tokio::net::UnixListener, Ours)
     let held = listener.try_clone()?;
     listener.set_nonblocking(true)?;
     let listener = tokio::net::UnixListener::from_std(listener)?;
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660)).await?;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await?;
     let meta = tokio::fs::symlink_metadata(path).await?;
     let ours = Ours {
         id: (meta.dev(), meta.ino()),

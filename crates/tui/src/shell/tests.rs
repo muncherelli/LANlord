@@ -308,6 +308,35 @@ fn client_mode_starts_at_the_logon_box() {
     assert!(shell.hits.icons.is_empty());
 }
 
+/// the logon box on a machine that offers "This server": the choice is there, the box still
+/// fits the 80x24 screen, and picking the other server brings the ssh fields back.
+#[test]
+fn the_logon_box_with_this_server_fits_the_small_screen_in_both_states() {
+    let auth = fake_auth();
+    *auth.here.lock().unwrap() = Some("ann@this-server.localhost".into());
+    let mut shell = shell_with(Fake::new());
+    shell.require_login(auth);
+    let here = frame(&mut shell);
+    assert!(here.contains("Sign in to:"), "{here}");
+    assert!(here.contains("This server (ann)"), "{here}");
+    assert!(here.contains("[ OK ]"), "{here}");
+    shell
+        .login
+        .as_mut()
+        .unwrap()
+        .update(login::Msg::Where(1), &[]);
+    let other = frame(&mut shell);
+    for part in [
+        "Sign in to:",
+        "Another server",
+        "Username:",
+        "Hostname:",
+        "[ OK ]",
+    ] {
+        assert!(other.contains(part), "{part} missing:\n{other}");
+    }
+}
+
 #[test]
 fn server_mode_skips_the_logon_box() {
     let fake = Fake::new();

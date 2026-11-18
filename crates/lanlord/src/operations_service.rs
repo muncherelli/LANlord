@@ -8,7 +8,19 @@
 //! not believe it about what that account may do. it reads the account's group membership again
 //! and runs core's permission check itself before anything runs. what keeps others from claiming
 //! to be the web ui is the socket's group and a uid check on every connection (`SO_PEERCRED`):
-//! only the web ui's account and root are served.
+//! only the web ui's account and root are served there.
+//!
+//! a second socket serves the accounts of this machine (the desktop and the tui on the gateway).
+//! its folder can be searched by anyone and the socket can be connected to by anyone, because
+//! the kernel's word on who connected is the whole check: a peer whose uid is not an ordinary
+//! login account (`login_uids`) is dropped before it can take a slot, and one that is, is
+//! served as the account that uid belongs to. the account is never read from the request: a
+//! request that names a different account is refused. what the account may do is checked as
+//! for everyone.
+//!
+//! the gateway's settings key is created here on first start (root only) and used only here (and
+//! in `lanlord operate`): secrets are decrypted inside this process, for operations the account
+//! may run, and never leave it.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -21,7 +33,7 @@ use anyhow::{bail, Result};
 use lanlord_core::access::{Caller, Denied, Refused};
 use lanlord_core::apply::ApplyEvent;
 use lanlord_core::log::{self, Kind};
-use lanlord_core::ops::{execute_in, Op, Reply, Response, NO_KEY};
+use lanlord_core::ops::{execute_in, login_uids, Op, Reply, Response};
 use lanlord_core::ssh::Session;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
@@ -40,6 +52,82 @@ pub const RUN_TIMEOUT: Duration = lanlord_core::ops::RUN_LIMIT;
 
 /// how many operations run at the same time.
 const WORKERS: usize = 4;
+/// operations the accounts of this machine may run at once, in a pool of their own so the web
+/// ui always has its own slots.
+const LOCAL_WORKERS: usize = 2;
+/// connections held open at once on a socket, and by one local uid.
+const CONNECTIONS: usize = 64;
+const PER_UID_CONNECTIONS: usize = 4;
+/// the pause after a failed accept (out of file descriptors, say), so a failure never spins.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// what a socket may use up: its own pool of operation slots, a cap on open connections, and a
+/// cap per local uid. connections over a cap are dropped at once, before any work is done for
+/// them (before the account lookup, which forks).
+#[derive(Clone)]
+struct Limits {
+    workers: Arc<Semaphore>,
+    connections: Arc<Semaphore>,
+    per_uid: usize,
+    held: Arc<Mutex<std::collections::HashMap<u32, usize>>>,
+}
+
+impl Limits {
+    fn new(workers: usize, connections: usize, per_uid: usize) -> Self {
+        Self {
+            workers: Arc::new(Semaphore::new(workers)),
+            connections: Arc::new(Semaphore::new(connections)),
+            per_uid,
+            held: Arc::default(),
+        }
+    }
+
+    fn web() -> Self {
+        Self::new(WORKERS, CONNECTIONS, usize::MAX)
+    }
+
+    fn local() -> Self {
+        Self::new(LOCAL_WORKERS, CONNECTIONS, PER_UID_CONNECTIONS)
+    }
+
+    /// a place for one more connection from `uid`, or `None` when it has its share.
+    fn hold(&self, uid: u32) -> Option<UidHold> {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = held.entry(uid).or_default();
+        if *count >= self.per_uid {
+            return None;
+        }
+        *count += 1;
+        Some(UidHold {
+            uid,
+            held: self.held.clone(),
+        })
+    }
+}
+
+/// one connection's place in a uid's share; freed on drop.
+struct UidHold {
+    uid: u32,
+    held: Arc<Mutex<std::collections::HashMap<u32, usize>>>,
+}
+
+impl Drop for UidHold {
+    fn drop(&mut self) {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = held.get_mut(&self.uid) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.uid);
+            }
+        }
+    }
+}
 
 /// the longest error text sent back to the web ui.
 const MESSAGE_LIMIT: usize = 200;
@@ -70,10 +158,6 @@ impl Forwarded {
     }
 }
 
-/// the answer for an op that reads secrets when the gateway has no settings key.
-const NO_GATEWAY_KEY: &str =
-    "the gateway has no settings key; operations that read secrets need one";
-
 /// the answer for a second apply while one still runs.
 const APPLY_RUNNING: &str = "an apply is already running";
 
@@ -84,27 +168,86 @@ static APPLY: Mutex<()> = Mutex::new(());
 /// how the service is run.
 pub struct Options {
     pub socket: PathBuf,
+    /// where the accounts of this machine connect, each served as itself
+    pub local_socket: PathBuf,
     /// the uid of the web ui's account; root is always served too
     pub allowed_uid: u32,
-    /// the settings key; the service has no home folder to look in
+    /// the gateway's settings key, made on first start; the service has no home folder
     pub identity: PathBuf,
 }
 
-/// whether a peer with this uid is served.
-fn served(peer: u32, allowed_uid: u32) -> bool {
-    peer == 0 || peer == allowed_uid
+/// who may connect to a socket.
+#[derive(Clone, Debug)]
+pub enum Audience {
+    /// the web socket: root and the web ui's account, which name the account they forward.
+    Forwarders { allowed_uid: u32 },
+    /// the local socket: the ordinary login accounts of this machine, each as itself.
+    LoginAccounts { uids: std::ops::RangeInclusive<u32> },
+}
+
+/// how a connected peer is served.
+#[derive(Debug, PartialEq, Eq)]
+enum Standing {
+    /// it forwards a request that names the account.
+    Forwarder,
+    /// it is this uid's account, whatever the request says.
+    Itself(u32),
+}
+
+/// how the uid of a peer is served by a socket, or `None` when it is not.
+fn standing(audience: &Audience, peer: u32) -> Option<Standing> {
+    match audience {
+        Audience::Forwarders { allowed_uid } => {
+            (peer == 0 || peer == *allowed_uid).then_some(Standing::Forwarder)
+        }
+        Audience::LoginAccounts { uids } => uids.contains(&peer).then_some(Standing::Itself(peer)),
+    }
+}
+
+/// the account of a uid on this machine, or `None`.
+type Names = Arc<dyn Fn(u32) -> Option<String> + Send + Sync>;
+
+/// the account name of `uid`, from the machine's own account database.
+fn account_of_uid(uid: u32) -> Option<String> {
+    let found = Session::local()
+        .capture(&["getent".into(), "passwd".into(), uid.to_string()])
+        .ok()?;
+    let name = found.lines().next()?.split(':').next()?.to_string();
+    lanlord_core::access::plain_account(&name).then_some(name)
+}
+
+/// the request of a peer that is `account` itself, in the form the service reads: the op,
+/// with the account taken from the kernel. only exactly `{"op":..}` or `{"account":<self>,"op":..}`
+/// is accepted; anything else, however it is wrong, is refused and never passed on.
+fn bind_account(line: &[u8], account: &str) -> Result<Vec<u8>, String> {
+    const NOT_AN_OPERATION: &str = "not an operation";
+    let mut value: serde_json::Value =
+        serde_json::from_slice(line).map_err(|_| NOT_AN_OPERATION.to_string())?;
+    let fields = value
+        .as_object_mut()
+        .ok_or_else(|| NOT_AN_OPERATION.to_string())?;
+    if let Some(named) = fields.remove("account") {
+        if named.as_str() != Some(account) {
+            return Err("a request here acts as your own account, not another".into());
+        }
+    }
+    let op = fields
+        .remove("op")
+        .filter(|_| fields.is_empty())
+        .and_then(|op| serde_json::from_value(op).ok())
+        .ok_or_else(|| NOT_AN_OPERATION.to_string())?;
+    Forwarded {
+        account: account.to_string(),
+        op,
+    }
+    .to_line()
+    .ok_or_else(|| NOT_AN_OPERATION.to_string())
 }
 
 /// the short text of an error: its outermost message on one line, never the chain of causes
 /// (paths, command output). the whole chain goes to the log.
 fn short(error: &anyhow::Error) -> String {
     let text = error.to_string();
-    // the gateway keeps its key in its own place, not behind a terminal command
-    let text = if text == NO_KEY {
-        NO_GATEWAY_KEY.to_string()
-    } else {
-        text
-    };
     let line = text.lines().next().unwrap_or_default().trim();
     line.chars().take(MESSAGE_LIMIT).collect()
 }
@@ -264,25 +407,67 @@ fn response_line(response: &Response) -> Option<Vec<u8>> {
 /// waiting for it.
 async fn handle(
     mut stream: tokio::net::UnixStream,
-    allowed_uid: u32,
+    audience: Audience,
+    names: Names,
     answer: Answer,
-    workers: Arc<Semaphore>,
+    (limits, _connection): (Limits, tokio::sync::OwnedSemaphorePermit),
 ) {
-    match stream.peer_cred() {
-        Ok(cred) if served(cred.uid(), allowed_uid) => {}
-        Ok(cred) => {
-            log::emit(
-                Kind::Err,
-                format!("refused a connection from uid {}", cred.uid()),
-            );
-            return;
-        }
+    let standing = match stream.peer_cred() {
+        Ok(cred) => match standing(&audience, cred.uid()) {
+            Some(standing) => standing,
+            None => {
+                log::emit(
+                    Kind::Err,
+                    format!("refused a connection from uid {}", cred.uid()),
+                );
+                return;
+            }
+        },
         Err(_) => return,
-    }
+    };
+    // a login uid has its share of connections; over it, dropped before anything is looked up
+    let _share = match standing {
+        Standing::Itself(uid) => match limits.hold(uid) {
+            Some(hold) => Some(hold),
+            None => {
+                log::emit(Kind::Err, format!("too many connections from uid {uid}"));
+                return;
+            }
+        },
+        Standing::Forwarder => None,
+    };
+    let workers = limits.workers.clone();
+    // the account a login peer acts as: whoever the kernel says it is
+    let account = match standing {
+        Standing::Forwarder => None,
+        Standing::Itself(uid) => {
+            match tokio::task::spawn_blocking(move || names(uid))
+                .await
+                .ok()
+                .flatten()
+            {
+                Some(account) => Some(account),
+                None => {
+                    log::emit(Kind::Err, format!("uid {uid} has no account name here"));
+                    return;
+                }
+            }
+        }
+    };
     let (read, mut write) = stream.split();
     let response = match read_line(read).await {
         Err(reason) => Response::Error(reason.into()),
         Ok(line) => {
+            let line = match &account {
+                Some(account) => match bind_account(&line, account) {
+                    Ok(line) => line,
+                    Err(refused) => {
+                        let _ = write_response(&mut write, &Response::Denied(refused)).await;
+                        return;
+                    }
+                },
+                None => line,
+            };
             // a small fixed pool: further requests wait their turn
             let Ok(permit) = workers.acquire_owned().await else {
                 return;
@@ -326,28 +511,51 @@ async fn handle(
             response
         }
     };
-    if let Some(line) = response_line(&response) {
-        let _ = write.write_all(&line).await;
+    let _ = write_response(&mut write, &response).await;
+}
+
+/// write the last line of an answer.
+async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
+    write: &mut W,
+    response: &Response,
+) -> std::io::Result<()> {
+    match response_line(response) {
+        Some(line) => write.write_all(&line).await,
+        None => Ok(()),
     }
 }
 
-/// serve connections on `listener` until `shutdown` resolves.
+/// serve connections on `listener` until `shutdown` resolves, within `limits`.
 async fn accept_loop(
     listener: tokio::net::UnixListener,
-    allowed_uid: u32,
+    (audience, names): (Audience, Names),
     answer: Answer,
+    limits: Limits,
     shutdown: impl Future<Output = ()>,
 ) {
-    let workers = Arc::new(Semaphore::new(WORKERS));
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             () = &mut shutdown => return,
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
+                let Ok((stream, _)) = accepted else {
+                    // no descriptors left, or the like: wait, never spin
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                    continue;
+                };
+                // over the socket's connection cap, drop it at once
+                let Ok(connection) = limits.connections.clone().try_acquire_owned() else {
+                    continue;
+                };
                 // waiting for a slot happens in the connection's own task, so a full pool
                 // neither stops accepting nor delays shutdown
-                tokio::spawn(handle(stream, allowed_uid, answer.clone(), workers.clone()));
+                tokio::spawn(handle(
+                    stream,
+                    audience.clone(),
+                    names.clone(),
+                    answer.clone(),
+                    (limits.clone(), connection),
+                ));
             }
         }
     }
@@ -362,12 +570,17 @@ pub fn run(options: Options) -> Result<()> {
 }
 
 async fn serve(options: Options) -> Result<()> {
-    lanlord_core::crypto::set_default_path(options.identity.clone());
-    if !options.identity.exists() {
+    serve_until(options, crate::webui::stopped()).await
+}
+
+/// the service on its sockets until `stop` resolves; then the sockets are removed.
+async fn serve_until(options: Options, stop_signal: impl Future<Output = ()>) -> Result<()> {
+    // the gateway's own key: made here on first start, root only, and used only in this process
+    if let Err(error) = lanlord_core::crypto::use_gateway_key(options.identity.clone()) {
         log::emit(
-            Kind::Info,
+            Kind::Err,
             format!(
-                "no settings key at {}: operations that read secrets will say so",
+                "no settings key at {}: operations that read secrets will say so ({error:#})",
                 options.identity.display()
             ),
         );
@@ -380,15 +593,61 @@ async fn serve(options: Options) -> Result<()> {
             options.socket.display()
         ),
     );
-    accept_loop(
+    // the accounts of this machine; the web socket works without it when it cannot be made
+    let local = match crate::webui::bind_socket_mode(&options.local_socket, 0o666).await {
+        Ok(bound) => Some(bound),
+        Err(error) => {
+            log::emit(Kind::Err, format!("no local socket: {error:#}"));
+            None
+        }
+    };
+    let answer: Answer = Arc::new(system_answer);
+    let names: Names = Arc::new(account_of_uid);
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let web = accept_loop(
         listener,
-        options.allowed_uid,
-        Arc::new(system_answer),
-        crate::webui::stopped(),
-    )
-    .await;
+        (
+            Audience::Forwarders {
+                allowed_uid: options.allowed_uid,
+            },
+            names.clone(),
+        ),
+        answer.clone(),
+        Limits::web(),
+        wait_for(stopping.clone()),
+    );
+    let (local_listener, local_ours) = match local {
+        Some((listener, ours)) => (Some(listener), Some(ours)),
+        None => (None, None),
+    };
+    let here = async {
+        if let Some(listener) = local_listener {
+            let audience = Audience::LoginAccounts { uids: login_uids() };
+            accept_loop(
+                listener,
+                (audience, names.clone()),
+                answer.clone(),
+                Limits::local(),
+                wait_for(stopping.clone()),
+            )
+            .await;
+        }
+    };
+    let stopper = async {
+        stop_signal.await;
+        let _ = stop.send(true);
+    };
+    tokio::join!(web, here, stopper);
     crate::webui::remove_if_ours(&options.socket, &ours).await;
+    if let Some(ours) = &local_ours {
+        crate::webui::remove_if_ours(&options.local_socket, ours).await;
+    }
     Ok(())
+}
+
+/// resolves once the flag is set.
+async fn wait_for(mut flag: tokio::sync::watch::Receiver<bool>) {
+    let _ = flag.wait_for(|stopped| *stopped).await;
 }
 
 /// why the service could not be asked.
@@ -452,6 +711,7 @@ pub fn ask(socket: &Path, account: String, op: Op, events: Events) -> Asking {
 mod tests {
     use super::*;
     use lanlord_core::access::{authorize, Grants};
+    use lanlord_core::ops::NO_KEY;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -482,11 +742,12 @@ mod tests {
     const FACTS: &str = r#"{"account":"carol","op":{"op":"server_facts"}}"#;
 
     #[test]
-    fn only_root_and_the_web_account_are_served() {
-        assert!(served(0, 990));
-        assert!(served(990, 990));
-        assert!(!served(1000, 990));
-        assert!(!served(991, 990));
+    fn only_root_and_the_web_account_are_served_on_the_web_socket() {
+        let web = Audience::Forwarders { allowed_uid: 990 };
+        assert_eq!(standing(&web, 0), Some(Standing::Forwarder));
+        assert_eq!(standing(&web, 990), Some(Standing::Forwarder));
+        assert_eq!(standing(&web, 1000), None);
+        assert_eq!(standing(&web, 991), None);
     }
 
     #[test]
@@ -568,19 +829,28 @@ mod tests {
     /// serve one request on a fresh socket, as a client with this process's uid, and return
     /// everything the service wrote.
     async fn serve_text(allowed_uid: u32, line: &str, answer: Answer) -> Vec<u8> {
-        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "lanlord-ops-{}-{allowed_uid}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("operations.sock");
-        let (listener, _ours) = crate::webui::bind_socket(&socket).await.unwrap();
+        let web = Audience::Forwarders { allowed_uid };
+        serve_audience((web, Arc::new(|_| None)), line, answer).await
+    }
+
+    /// as `serve_text`, on a socket for `audience`; `tag` makes the socket's folder its own.
+    async fn serve_audience(
+        (audience, names): (Audience, Names),
+        line: &str,
+        answer: Answer,
+    ) -> Vec<u8> {
+        let (dir, socket, listener) = test_socket().await;
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(accept_loop(listener, allowed_uid, answer, async {
-            let _ = stopped.await;
-        }));
+        let workers = Limits::web();
+        let server = tokio::spawn(accept_loop(
+            listener,
+            (audience, names),
+            answer,
+            workers,
+            async {
+                let _ = stopped.await;
+            },
+        ));
         let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
         stream
             .write_all(format!("{line}\n").as_bytes())
@@ -592,6 +862,24 @@ mod tests {
         server.await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         text
+    }
+
+    async fn test_socket() -> (PathBuf, PathBuf, tokio::net::UnixListener) {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "lanlord-ops-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // searchable by all, as the service's own folder is
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let socket = dir.join("local.sock");
+        let (listener, _ours) = crate::webui::bind_socket_mode(&socket, 0o666)
+            .await
+            .unwrap();
+        (dir, socket, listener)
     }
 
     async fn serve_one(allowed_uid: u32, line: &str) -> Option<Response> {
@@ -742,6 +1030,274 @@ mod tests {
                 Some(Response::Ok(Reply::Done))
             ));
         });
+    }
+
+    /// an answer that says what request it was given, after the account was bound to it.
+    fn echo() -> Answer {
+        Arc::new(|line, _| Response::Error(String::from_utf8_lossy(line).trim().to_string()))
+    }
+
+    fn login_audience(name: &'static str) -> (Audience, Names) {
+        let uid = our_uid();
+        (
+            Audience::LoginAccounts { uids: uid..=uid },
+            Arc::new(move |_| Some(name.to_string())),
+        )
+    }
+
+    const LOAD: &str = r#"{"op":{"op":"load_document"}}"#;
+
+    #[test]
+    fn a_login_peer_is_served_as_the_account_its_uid_belongs_to() {
+        runtime().block_on(async {
+            let text = serve_audience(login_audience("ann"), LOAD, echo()).await;
+            let response = read_answer(&text[..], &|_| {}).await;
+            let Some(Response::Error(seen)) = response else {
+                panic!("{response:?}")
+            };
+            let seen = Forwarded::from_line(seen.as_bytes()).expect("a bound request");
+            assert_eq!(seen.account, "ann");
+            assert!(matches!(seen.op, Op::LoadDocument));
+        });
+    }
+
+    #[test]
+    fn a_login_peer_cannot_act_as_another_account() {
+        runtime().block_on(async {
+            for other in ["root", "bob"] {
+                let line = format!(r#"{{"account":"{other}","op":{{"op":"load_document"}}}}"#);
+                let text = serve_audience(login_audience("ann"), &line, echo()).await;
+                let response = read_answer(&text[..], &|_| {}).await;
+                assert!(matches!(response, Some(Response::Denied(_))), "{other}");
+            }
+            // naming itself is fine
+            let line = r#"{"account":"ann","op":{"op":"load_document"}}"#;
+            let text = serve_audience(login_audience("ann"), line, echo()).await;
+            assert!(matches!(
+                read_answer(&text[..], &|_| {}).await,
+                Some(Response::Error(_))
+            ));
+        });
+    }
+
+    #[test]
+    fn a_peer_outside_the_login_range_is_dropped_on_the_local_socket() {
+        runtime().block_on(async {
+            let outside = (
+                Audience::LoginAccounts {
+                    uids: our_uid() + 1..=our_uid() + 2,
+                },
+                Arc::new(|_| Some("ann".to_string())) as Names,
+            );
+            let text = serve_audience(outside, LOAD, echo()).await;
+            assert!(text.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_uid_without_an_account_name_is_dropped() {
+        runtime().block_on(async {
+            let uid = our_uid();
+            let nameless = (
+                Audience::LoginAccounts { uids: uid..=uid },
+                Arc::new(|_| None) as Names,
+            );
+            assert!(serve_audience(nameless, LOAD, echo()).await.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_account_binding_refuses_anything_but_an_op_alone_or_with_its_own_name() {
+        for bad in [
+            &b"not json\n"[..],
+            br#"[1]"#,
+            br#"{"op":{"op":"load_document"},"x":1}"#,
+            br#"{"account":"ann"}"#,
+            br#"{"op":{"op":"no_such_operation"}}"#,
+            br#"{"account":"bob","op":{"op":"load_document"}}"#,
+        ] {
+            assert!(bind_account(bad, "ann").is_err(), "{bad:?}");
+        }
+        for good in [
+            &br#"{"op":{"op":"load_document"}}"#[..],
+            br#"{"account":"ann","op":{"op":"load_document"}}"#,
+        ] {
+            assert!(bind_account(good, "ann").is_ok());
+        }
+    }
+
+    #[test]
+    fn the_service_answers_on_both_sockets_and_removes_them_when_stopped() {
+        runtime().block_on(async {
+            let dir = std::env::temp_dir().join(format!("lanlord-serve-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let options = Options {
+                socket: dir.join("operations.sock"),
+                local_socket: dir.join("local.sock"),
+                allowed_uid: our_uid(),
+                // a key that cannot be made: the service says so and runs without one
+                identity: "/proc/lanlord-no-such-folder/identity".into(),
+            };
+            let (socket, local) = (options.socket.clone(), options.local_socket.clone());
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let service = tokio::spawn(serve_until(options, async {
+                let _ = stopped.await;
+            }));
+            for _ in 0..100 {
+                if socket.exists() && local.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            // the web socket serves its allowed uid: a garbled request is answered as such
+            let mut web = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            web.write_all(b"garbled\n").await.unwrap();
+            let mut text = Vec::new();
+            web.read_to_end(&mut text).await.unwrap();
+            assert!(String::from_utf8_lossy(&text).contains("response"));
+            // the local socket takes the connection too (what it says depends on the account)
+            let mut here = tokio::net::UnixStream::connect(&local).await.unwrap();
+            here.write_all(b"garbled\n").await.unwrap();
+            let mut text = Vec::new();
+            let _ = here.read_to_end(&mut text).await;
+            let _ = stop.send(());
+            service.await.unwrap().unwrap();
+            assert!(!socket.exists() && !local.exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_uid_holds_only_its_share_of_connections_and_frees_it_on_drop() {
+        let limits = Limits::new(1, 8, 2);
+        let first = limits.hold(1000).unwrap();
+        let _second = limits.hold(1000).unwrap();
+        assert!(limits.hold(1000).is_none());
+        // another uid is not held up by it
+        assert!(limits.hold(1001).is_some());
+        drop(first);
+        assert!(limits.hold(1000).is_some());
+    }
+
+    #[test]
+    fn the_web_and_local_sockets_have_pools_of_their_own() {
+        let (web, local) = (Limits::web(), Limits::local());
+        assert!(!Arc::ptr_eq(&web.workers, &local.workers));
+        assert!(!Arc::ptr_eq(&web.connections, &local.connections));
+        // using up the local pool leaves the web's untouched
+        let _held: Vec<_> = (0..LOCAL_WORKERS)
+            .map(|_| local.workers.clone().try_acquire_owned().unwrap())
+            .collect();
+        assert!(local.workers.clone().try_acquire_owned().is_err());
+        assert!(web.workers.clone().try_acquire_owned().is_ok());
+    }
+
+    #[test]
+    fn connections_over_the_cap_are_dropped_at_once_and_the_service_keeps_answering() {
+        runtime().block_on(async {
+            let (dir, socket, listener) = test_socket().await;
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let uid = our_uid();
+            let audience = (
+                Audience::LoginAccounts { uids: uid..=uid },
+                Arc::new(|_| Some("ann".to_string())) as Names,
+            );
+            let server = tokio::spawn(accept_loop(
+                listener,
+                audience,
+                echo(),
+                Limits::new(1, 2, 1),
+                async {
+                    let _ = stopped.await;
+                },
+            ));
+            // two idle connections take the whole share (one per uid), the rest are dropped
+            let idle = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let mut dropped = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let mut text = Vec::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(5), dropped.read_to_end(&mut text)).await;
+            assert!(read.is_ok(), "the extra connection was not dropped");
+            assert!(text.is_empty());
+            // once the idle one goes, a new connection is served
+            drop(idle);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let mut again = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            again
+                .write_all(format!("{LOAD}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut text = Vec::new();
+            let _ = again.read_to_end(&mut text).await;
+            assert!(!text.is_empty());
+            let _ = stop.send(());
+            server.await.unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// as root: make a login account, connect to the local socket as that account and check the
+    /// service names it from its uid, and refuses a request that names root. the ci job runs it
+    /// as root; elsewhere it is skipped.
+    #[test]
+    #[ignore = "needs root"]
+    fn root_a_local_peer_is_served_as_its_own_account_and_cannot_name_root() {
+        let local = Session::local();
+        let sh = |args: &[&str]| {
+            let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            local.capture(&argv).unwrap()
+        };
+        let user = format!("lltest{}", std::process::id());
+        sh(&["useradd", "-m", "-s", "/bin/sh", &user]);
+        let ids = sh(&["id", "-u", &user]).trim().to_string();
+        let gid = sh(&["id", "-g", &user]).trim().to_string();
+        let uid: u32 = ids.parse().unwrap();
+        // the real login range and the real account lookup
+        assert!(login_uids().contains(&uid), "{uid} is not a login uid");
+        let audience = (
+            Audience::LoginAccounts { uids: login_uids() },
+            Arc::new(account_of_uid) as Names,
+        );
+        let (as_named, as_root) = runtime().block_on(async {
+            let (dir, socket, listener) = test_socket().await;
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let workers = Limits::web();
+            let server = tokio::spawn(accept_loop(listener, audience, echo(), workers, async {
+                let _ = stopped.await;
+            }));
+            // a client with the new account's uid, through python on the runner
+            let talk = |request: String| {
+                let (socket, ids, gid) = (socket.clone(), ids.clone(), gid.clone());
+                tokio::task::spawn_blocking(move || {
+                    let script = "import socket,sys;s=socket.socket(socket.AF_UNIX);\
+                        s.connect(sys.argv[1]);s.sendall(sys.argv[2].encode()+b'\\n');\
+                        print(s.makefile().read())";
+                    let out = std::process::Command::new("setpriv")
+                        .args(["--reuid", &ids, "--regid", &gid, "--clear-groups"])
+                        .args(["python3", "-c", script])
+                        .arg(&socket)
+                        .arg(&request)
+                        .output()
+                        .unwrap();
+                    String::from_utf8_lossy(&out.stdout).to_string()
+                })
+            };
+            let named = talk(LOAD.to_string()).await.unwrap();
+            let root = talk(r#"{"account":"root","op":{"op":"load_document"}}"#.to_string())
+                .await
+                .unwrap();
+            let _ = stop.send(());
+            server.await.unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            (named, root)
+        });
+        sh(&["userdel", "-r", &user]);
+        assert!(
+            as_named.contains(&format!(r#"\"account\":\"{user}\""#)),
+            "{as_named}"
+        );
+        assert!(as_root.contains("denied"), "{as_root}");
     }
 
     #[test]
