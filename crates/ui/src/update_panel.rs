@@ -147,7 +147,7 @@ impl Updates {
         Self {
             notice: Notice::new(runner, prefs_path, enabled, Arc::clone(&clock), wake),
             window,
-            reduce_motion: std::env::var_os("LANLORD_REDUCE_MOTION").is_some(),
+            reduce_motion: view::reduce_motion(),
             clock,
             balloon_since: None,
             tip_seen: None,
