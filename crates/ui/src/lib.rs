@@ -127,13 +127,35 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
                 }
                 // `?open=gateway,nt4-domain@1` opens windows, like LANLORD_OPEN on a desktop,
                 // but only the ones that are safe to open from a link
-                if let Some(spec) = query("open") {
+                #[cfg(feature = "devtools")]
+                let open_all = apply_devtools_links(&mut desktop);
+                #[cfg(not(feature = "devtools"))]
+                let open_all = false;
+                if let (Some(spec), false) = (query("open"), open_all) {
                     desktop.open_spec_after_logon(&safe_open_spec(&spec));
                 }
                 Ok(Box::new(desktop))
             }),
         )
         .await
+}
+
+/// `?demo=1` starts on the demo desktop, `?wmdebug=1` turns the window-manager outlines on and
+/// `?menu=1` shows the debug menu. `?open=all` opens every window; any other `?open=` list keeps
+/// the safe filter a release has (no purge prompt from a link). true when `all` was handled.
+/// only devtools builds look at these; a release keeps the safe list.
+#[cfg(all(target_arch = "wasm32", feature = "devtools"))]
+fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
+    if query("demo").as_deref() == Some("1") {
+        desktop.enter_demo();
+    }
+    desktop.set_wm_debug(query("wmdebug").as_deref() == Some("1"));
+    desktop.set_menu(query("menu").as_deref() == Some("1"));
+    let all = query("open").is_some_and(|spec| spec.trim() == "all");
+    if all {
+        desktop.open_spec_after_logon("all");
+    }
+    all
 }
 
 /// the made-up demo server in a demo build, the gateway the page came from otherwise.
@@ -210,6 +232,15 @@ fn query(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::safe_open_spec;
+
+    /// a plain build (what a release is) has no developer tools; `tools/check-no-devtools.sh`
+    /// checks the same for the release workflows.
+    #[cfg(not(feature = "devtools"))]
+    #[test]
+    fn a_plain_build_has_no_developer_tools() {
+        // a link may not open any window by id, `all` or the Welcome screen included
+        assert_eq!(safe_open_spec("all,welcome,changelog"), "");
+    }
 
     #[test]
     fn links_open_only_known_windows_and_never_the_purge_prompt() {

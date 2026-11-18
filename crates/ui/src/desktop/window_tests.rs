@@ -870,6 +870,17 @@ fn a_growable_window_opens_as_tall_as_its_contents_up_to_the_desktop() {
 }
 
 #[test]
+fn a_link_opens_the_changelog_the_welcome_and_the_start_menu() {
+    let (mut desktop, ctx, _fake) = desktop();
+    desktop.open_spec("changelog, welcome,menu,,developer");
+    frames(&mut desktop, &ctx, 2);
+    for target in [Target::Changelog, Target::Welcome] {
+        assert!(desktop.windows.iter().any(|w| w.target == target));
+    }
+    assert!(desktop.start_open && desktop.dev_open);
+}
+
+#[test]
 fn the_users_progress_and_task_windows_are_resizable_and_their_lists_fill() {
     use eframe::egui::Vec2;
     let size = Vec2::new(1280.0, 720.0);

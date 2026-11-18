@@ -11,6 +11,9 @@ native = ["dep:lanlord-core", "lanlord-app/native"]
 # the browser demo: the made-up in-memory server instead of the gateway the page came from
 demo = ["lanlord-app/fake"]
 
+# developer tools: the red bug, the debug menu and the demo desktop. never in release builds
+devtools = ["lanlord-app/fake"]
+
 [dependencies]
 anyhow.workspace = true
 lanlord-app.workspace = true

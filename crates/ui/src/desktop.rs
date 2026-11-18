@@ -12,6 +12,8 @@ use lanlord_app::log::{emit, Kind};
 use lanlord_core::update;
 use lanlord_model::modules::{Module, MODULES};
 
+#[cfg(feature = "devtools")]
+mod devtools;
 mod menu;
 
 use menu::Confirm;
@@ -154,6 +156,8 @@ pub struct Desktop {
     window_title: String,
     /// the made-up demo server, not a real gateway: the title and the taskbar say so.
     demo: bool,
+    #[cfg(feature = "devtools")]
+    devtools: devtools::Devtools,
 }
 
 impl Desktop {
@@ -222,6 +226,8 @@ impl Desktop {
             dev_open: false,
             window_title: "LANlord".into(),
             demo: false,
+            #[cfg(feature = "devtools")]
+            devtools: Default::default(),
         }
     }
 
@@ -340,6 +346,9 @@ impl Desktop {
     /// drop everything one session left open: windows, dialogs and the state behind them, so the
     /// next account starts clean and cannot answer a box the last one opened.
     fn reset_session_ui(&mut self) {
+        // a logon or log off ends the demo desktop; the real one comes back
+        #[cfg(feature = "devtools")]
+        self.end_demo();
         self.windows.clear();
         self.active = None;
         self.selected = None;
@@ -436,6 +445,9 @@ impl Desktop {
             let (id, tab) = item.split_once('@').unwrap_or((item, ""));
             if id == "menu" {
                 self.start_open = true;
+            } else if id == "all" && cfg!(feature = "devtools") {
+                #[cfg(feature = "devtools")]
+                self.open_all();
             } else if id == "datetime" {
                 self.open(Target::DateTime);
                 self.clock.open_tab(tab);
@@ -446,6 +458,8 @@ impl Desktop {
                 self.open(Target::Components);
             } else if id == "welcome" {
                 self.open(Target::Welcome);
+            } else if id == "changelog" {
+                self.open(Target::Changelog);
             } else if id == "taskmgr" {
                 self.open(Target::TaskManager);
                 self.task_manager.tab = tab.parse().unwrap_or(0).min(2);
@@ -492,6 +506,10 @@ impl Desktop {
         if self.demo {
             title.push_str(" (demo)");
         }
+        #[cfg(feature = "devtools")]
+        if self.in_demo() {
+            title = "LANlord (demo)".into();
+        }
         if title != self.window_title {
             crate::platform::set_title(ctx, &title);
             self.window_title = title;
@@ -523,10 +541,11 @@ impl Desktop {
         // keep the clock moving
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         self.sync_window_title(&ctx);
-
         self.poll_log_off();
         if self.login.is_some() {
             self.show_login(ui, &ctx);
+            #[cfg(feature = "devtools")]
+            self.devtools_corner(&ctx);
             return;
         }
         if self.web.is_some() && (self.services.session_ended() || self.monitor.signed_out()) {
@@ -534,6 +553,8 @@ impl Desktop {
             self.monitor.clear_signed_out();
             self.return_to_web_login(Some("Your session ended. Log on again."), false);
             self.show_login(ui, &ctx);
+            #[cfg(feature = "devtools")]
+            self.devtools_corner(&ctx);
             return;
         }
         if self.admin_setup.is_some() {
@@ -554,6 +575,8 @@ impl Desktop {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(TEAL))
             .show(ui, |ui| self.icons(ui));
+        #[cfg(feature = "devtools")]
+        self.devtools_menu(&ctx, TASKBAR + 2.0);
 
         self.console.drain();
         self.console.apply.tick(ctx.input(|i| i.time));
@@ -1097,7 +1120,12 @@ impl Desktop {
                     + CLOCK
                     + if shield { TRAY_ICON } else { 0.0 }
                     + if warn { TRAY_ICON } else { 0.0 }
-                    + if net { TRAY_ICON } else { 0.0 };
+                    + if net { TRAY_ICON } else { 0.0 }
+                    + if cfg!(feature = "devtools") {
+                        TRAY_ICON
+                    } else {
+                        0.0
+                    };
                 let (tray, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
                 controls::thin_bevel(ui, tray, false);
                 let clock_at = Rect::from_min_size(
@@ -1164,6 +1192,16 @@ impl Desktop {
                         self.open(Target::TaskManager);
                         self.task_manager.tab = crate::task_manager::NETWORKING;
                     }
+                }
+                #[cfg(feature = "devtools")]
+                {
+                    let shift =
+                        (u8::from(warn) + u8::from(shield) + u8::from(net)) as f32 * TRAY_ICON;
+                    let bug_at = Rect::from_min_size(
+                        Pos2::new(clock_at.left() - TRAY_ICON - shift, tray.top()),
+                        Vec2::splat(TRAY_ICON),
+                    );
+                    self.devtools_tray(ui, bug_at);
                 }
                 if shield {
                     let shift = if warn { TRAY_ICON } else { 0.0 };
@@ -1361,6 +1399,8 @@ impl Desktop {
                 }
             }
         }
+        #[cfg(feature = "devtools")]
+        self.wm_overlay(ctx);
         close.append(&mut self.close_requests);
         windows.retain(|w| !close.contains(&w.target));
         self.windows = windows;
@@ -1681,8 +1721,8 @@ mod tests {
             for target in targets {
                 desktop.windows.clear();
                 desktop.open(target);
-                frames_on(&mut desktop, &ctx, size, 4);
-                let area = Rect::from_min_max(Pos2::ZERO, Pos2::new(size.x, size.y - TASKBAR));
+                frames_on(&mut desktop, &ctx, size, 9);
+                let area = desktop_area(&ctx);
                 let &(_, rect, content) = desktop
                     .measured
                     .iter()

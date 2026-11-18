@@ -143,7 +143,7 @@ pub(crate) const FRAME: f32 = 3.0;
 /// frames a window needs to take the size of its contents
 const SETTLE: u8 = 3;
 
-const MARGIN: f32 = 8.0;
+pub(crate) const MARGIN: f32 = 8.0;
 /// where the title's text starts in the title bar: past the small icon and the gap after it.
 const TITLE_TEXT: f32 = 23.0;
 
