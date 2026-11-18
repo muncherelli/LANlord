@@ -126,6 +126,65 @@ esac"#
             );
         }
 
+        /// what the probe says about nesting with stub tools first on the path: `uid` is what
+        /// `id -u` prints, `unshare` and `systemd_run` are the stubs' shell bodies.
+        fn nesting_with(uid: &str, invocation: bool, unshare: &str, systemd_run: &str) -> String {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = std::env::temp_dir().join(format!(
+                "lanlord-nesting-{}-{:p}",
+                std::process::id(),
+                &uid
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            for (name, body) in [
+                ("id", format!("echo {uid}")),
+                ("unshare", unshare.to_string()),
+                ("systemd-run", systemd_run.to_string()),
+            ] {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let path_var = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c").arg(PROBE).env("PATH", path_var);
+            cmd.env_remove("INVOCATION_ID");
+            if invocation {
+                cmd.env("INVOCATION_ID", "0123456789abcdef");
+            }
+            let out = cmd.output().unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find_map(|l| l.strip_prefix("nesting=").map(str::to_string))
+                .unwrap_or_default()
+        }
+
+        const DENIED: &str = "echo 'unshare: unshare failed: Operation not permitted' >&2; exit 1";
+
+        #[test]
+        fn nesting_is_tested_outside_the_callers_sandbox_when_root_under_systemd() {
+            // the service's sandbox would make a direct unshare fail; the transient unit works
+            assert_eq!(nesting_with("0", true, DENIED, "exit 0"), "yes");
+            // a refusal from the unit itself is a real no
+            assert_eq!(nesting_with("0", true, DENIED, DENIED), "no");
+        }
+
+        #[test]
+        fn a_refusal_that_could_be_the_sandbox_is_unknown_never_no() {
+            // systemd-run couldn't start the unit: nothing was learned
+            let broken = "echo 'Failed to connect to bus: Permission denied' >&2; exit 1";
+            assert_eq!(nesting_with("0", true, DENIED, broken), "unknown");
+            // not root, inside a service: the direct test may be the sandbox talking
+            assert_eq!(nesting_with("1000", true, DENIED, "exit 1"), "unknown");
+        }
+
+        #[test]
+        fn a_plain_refusal_outside_any_service_is_a_no_and_success_is_a_yes() {
+            assert_eq!(nesting_with("1000", false, DENIED, "exit 1"), "no");
+            assert_eq!(nesting_with("1000", false, "exit 0", "exit 1"), "yes");
+        }
+
         #[test]
         fn the_probe_script_runs_here_from_stdin_and_prints_what_it_found() {
             use std::io::Write;

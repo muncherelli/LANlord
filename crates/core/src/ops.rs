@@ -365,7 +365,14 @@ fn dispatch(
             Reply::Done
         }
         Op::Power { power } => Reply::Outcome(power::run_with(session, *power, ask)?),
-        Op::ServerFacts => Reply::Facts(server::read(session)?),
+        Op::ServerFacts => {
+            // the session may be root's (the operations service runs as root, and sudo is
+            // elevation, not a login), so the account shown is the caller's, never `id -un`
+            let mut facts = server::read(session)?;
+            facts.user = who.caller.user.clone();
+            facts.is_root = who.caller.user == "root";
+            Reply::Facts(facts)
+        }
         Op::NetworkStatus => Reply::Interfaces(netstatus::read(session)?),
         Op::PurgePreview { remove_admins } => Reply::Lines(purge::preview(
             session,
@@ -852,6 +859,30 @@ esac"#,
                     .downcast_ref::<access::Denied>()
                     .is_none()
         );
+    }
+
+    #[test]
+    fn server_facts_name_the_caller_not_the_account_the_session_runs_as() {
+        // the gateway answers as root, like the operations service's own session
+        let session = Session::fake(
+            r#"cat > /dev/null; printf 'hostname=gw\nuser=root\nuid=0\ninstalled=1\n---link\n'"#,
+        );
+        let alice = Caller {
+            user: "alice".into(),
+            admin: true,
+        };
+        let Ok(Reply::Facts(facts)) = execute_with(
+            &session,
+            "gw",
+            &alice,
+            &Op::ServerFacts,
+            &mut no_password,
+            key,
+        ) else {
+            panic!("no facts");
+        };
+        assert_eq!(facts.user, "alice");
+        assert!(!facts.is_root);
     }
 
     #[test]

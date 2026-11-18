@@ -49,6 +49,12 @@ pub struct System {
 /// the proxmox fix for docker in an unprivileged lxc container.
 pub const PROXMOX_FEATURES_FIX: &str = "on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1` (replace <CTID> with this container's number) and restart the container with `pct reboot <CTID>`; lanlord cannot do this from inside the container";
 
+/// the fix for nesting in an incus or lxd container (not proxmox); keyctl is allowed by default there.
+pub const INCUS_NESTING_FIX: &str = "on the incus or lxd host run `incus config set <name> security.nesting=true` (replace <name> with this container's name; lxd uses `lxc config set`) and restart it with `incus restart <name>`; lanlord cannot do this from inside the container";
+
+/// the fix for keyctl in an incus or lxd container (not proxmox).
+pub const INCUS_KEYCTL_FIX: &str = "incus and lxd allow keyctl by default: on the host check `incus config show <name>` for a seccomp or `raw.lxc` setting that blocks it and remove it, then restart the container with `incus restart <name>`; lanlord cannot do this from inside the container";
+
 /// the proxmox fix for a missing /dev/net/tun in a container.
 pub const PROXMOX_TUN_FIX: &str = "on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun` (proxmox ve 8.1 or newer; replace <CTID> with this container's number), or on proxmox ve 7 or newer add these two lines to /etc/pve/lxc/<CTID>.conf:\nlxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\nand then restart the container with `pct reboot <CTID>`";
 
@@ -182,7 +188,7 @@ impl Report {
         checks.push(forward_check(get("ip_forward")));
         checks.push(nft_check(get("nft")));
         if environment.is_lxc() {
-            checks.push(feature_check(
+            checks.push(host_fix(get("pve_marker"), INCUS_NESTING_FIX, feature_check(
                 "lxc-nesting",
                 "container nesting",
                 "containers can run inside this one (docker needs this)",
@@ -191,9 +197,9 @@ impl Report {
                  needs it",
                 get("nesting"),
                 true,
-            ));
+            )));
             let needed = environment.needs_keyctl();
-            checks.push(feature_check(
+            checks.push(host_fix(get("pve_marker"), INCUS_KEYCTL_FIX, feature_check(
                 "lxc-keyctl",
                 "container keyctl",
                 if needed {
@@ -206,7 +212,7 @@ impl Report {
                  needs it",
                 get("keyctl"),
                 needed,
-            ));
+            )));
         }
         if let Environment::Container { technology, .. } = &environment {
             if technology == "docker" || technology == "podman" {
@@ -534,7 +540,20 @@ fn or_unknown(s: &str) -> &str {
     }
 }
 
-/// a proxmox container feature that docker needs, such as nesting or keyctl. only a definite no
+/// the fix for the host: the `pct` one on proxmox, the incus or lxd one when the probe saw no
+/// proxmox marker, and both when it could not say.
+fn host_fix(marker: &str, other: &str, mut check: Check) -> Check {
+    if let Some(pct) = check.fix.take() {
+        check.fix = Some(match marker {
+            "1" => pct,
+            "0" => other.to_string(),
+            _ => format!("on proxmox: {pct}\non incus or lxd: {other}"),
+        });
+    }
+    check
+}
+
+/// a container feature that docker needs, such as nesting or keyctl. only a definite no
 /// fails; a probe that couldn't tell is unknown. `needed` is false when this machine doesn't
 /// need the feature at all, which is always fine.
 fn feature_check(
@@ -979,6 +998,35 @@ vde_plug=missing
             let report = with(&[("ntp_port", said)]);
             assert_eq!(check(&report, "ntp-port").status, Status::Unknown);
         }
+    }
+
+    #[test]
+    fn the_feature_fix_names_incus_unless_the_container_is_on_proxmox() {
+        let report = Report::parse(
+            "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=0\nnesting=no\nkeyctl=unknown\n",
+        );
+        let nesting = check(&report, "lxc-nesting");
+        assert_eq!(nesting.fix.as_deref(), Some(INCUS_NESTING_FIX));
+        assert!(INCUS_NESTING_FIX.contains("security.nesting=true"));
+        assert_eq!(
+            check(&report, "lxc-keyctl").fix.as_deref(),
+            Some(INCUS_KEYCTL_FIX)
+        );
+        let report = Report::parse(
+            "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\n",
+        );
+        assert_eq!(
+            check(&report, "lxc-nesting").fix.as_deref(),
+            Some(PROXMOX_FEATURES_FIX)
+        );
+        // no marker at all: both are listed
+        let report =
+            Report::parse("virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\nnesting=no\n");
+        let fix = check(&report, "lxc-nesting").fix.clone().unwrap();
+        assert!(
+            fix.contains("pct set") && fix.contains("security.nesting=true"),
+            "{fix}"
+        );
     }
 
     #[test]
