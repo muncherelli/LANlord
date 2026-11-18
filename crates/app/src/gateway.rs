@@ -606,6 +606,7 @@ mod native {
 #[cfg(target_arch = "wasm32")]
 pub mod http;
 pub mod round_trip;
+pub mod stream;
 
 #[cfg(any(test, feature = "fake"))]
 pub use fake::Fake;
@@ -835,7 +836,9 @@ mod fake {
                     self.enter(format!("save-access {host}"), ask)?;
                     Reply::Done
                 }
-                Op::Subscribe { .. } => anyhow::bail!("live streams are not available yet"),
+                Op::Subscribe { .. } => {
+                    anyhow::bail!("live streams are served by the web ui, not run as an operation")
+                }
             })
         }
 

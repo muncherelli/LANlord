@@ -7,7 +7,7 @@ use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
 /// the unix group whose members may administer lanlord.
-pub(crate) const ADMINS_GROUP: &str = "admins";
+pub const ADMINS_GROUP: &str = "admins";
 
 /// its gid, the same on the gateway and inside the samba container so file ownership matches.
 pub const ADMINS_GID: u32 = 9998;

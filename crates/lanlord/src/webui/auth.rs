@@ -560,22 +560,6 @@ pub async fn logout(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Respon
     response
 }
 
-/// GET /api/session: who is logged in, and whether they are an admin.
-pub async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
-    match require(&auth, &headers) {
-        Ok((user, admin)) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            serde_json::json!({ "user": user, "admin": admin }).to_string(),
-        )
-            .into_response(),
-        Err(unauthorized) => unauthorized,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -710,14 +694,6 @@ mod tests {
         send(rig, builder.body(Body::from("{}")).unwrap()).await.0
     }
 
-    async fn get_monitor(rig: &Rig, cookie: Option<&str>) -> StatusCode {
-        let mut builder = Request::builder().uri("/api/monitor");
-        if let Some(cookie) = cookie {
-            builder = builder.header(header::COOKIE, cookie);
-        }
-        send(rig, builder.body(Body::empty()).unwrap()).await.0
-    }
-
     async fn post_end(rig: &Rig, cookie: &str, body: &str) -> StatusCode {
         let request = page("POST", "/api/monitor/end", body)
             .header(header::COOKIE, cookie)
@@ -727,20 +703,11 @@ mod tests {
     }
 
     #[test]
-    fn any_signed_in_user_may_watch_but_only_an_admin_may_end_a_process() {
+    fn only_an_admin_may_end_a_process() {
         runtime().block_on(async {
             let rig = rig();
-            assert_eq!(get_monitor(&rig, None).await, StatusCode::UNAUTHORIZED);
             let user = session_for(&rig, "carol").await;
             let admin = session_for(&rig, "admin").await;
-            for cookie in [&user, &admin] {
-                let status = get_monitor(&rig, Some(cookie)).await;
-                // a host without /proc says so; one with it answers
-                assert!(
-                    status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-                    "{status}"
-                );
-            }
             // refused for an ordinary user before the pid is even read
             assert_eq!(
                 post_end(&rig, &user, r#"{"pid":1}"#).await,
@@ -794,10 +761,20 @@ mod tests {
             let carol = session_for(&rig, "carol").await;
             let (status, body) = get_session(&rig, &admin).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, r#"{"admin":true,"user":"admin"}"#);
+            let told: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                (told["user"].as_str(), told["admin"].as_bool()),
+                (Some("admin"), Some(true))
+            );
             let (status, body) = get_session(&rig, &carol).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, r#"{"admin":false,"user":"carol"}"#);
+            let told: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                (told["user"].as_str(), told["admin"].as_bool()),
+                (Some("carol"), Some(false))
+            );
+            // what they may do comes with it
+            assert!(told["grants"].is_object());
         });
     }
 
@@ -1013,27 +990,6 @@ mod tests {
                 assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::OK);
             }
             rig.offset.fetch_add(15 * 60, Ordering::SeqCst);
-            assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
-        });
-    }
-
-    #[test]
-    fn monitor_polls_do_not_keep_an_idle_session_alive() {
-        runtime().block_on(async {
-            let rig = rig();
-            let cookie = session_for(&rig, "admin").await;
-            rig.offset.fetch_add(10 * 60, Ordering::SeqCst);
-            // the meter polls, but the person has done nothing
-            assert_ne!(
-                get_monitor(&rig, Some(&cookie)).await,
-                StatusCode::UNAUTHORIZED
-            );
-            // twenty minutes after the last real use the poll finds the session gone
-            rig.offset.fetch_add(10 * 60, Ordering::SeqCst);
-            assert_eq!(
-                get_monitor(&rig, Some(&cookie)).await,
-                StatusCode::UNAUTHORIZED
-            );
             assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
         });
     }

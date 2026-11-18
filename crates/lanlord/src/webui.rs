@@ -4,6 +4,8 @@
 
 mod auth;
 mod monitor;
+mod roster;
+mod stream;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -72,6 +74,7 @@ pub fn router(static_dir: Option<&Path>) -> Router {
 /// the same, with the logins checked and the sessions kept by `auth`.
 fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
+    let roster = roster::Roster::system();
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
@@ -79,9 +82,9 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
             post(auth::login).layer(DefaultBodyLimit::max(auth::LOGIN_LIMIT)),
         )
         .route("/api/logout", post(auth::logout))
-        .route("/api/session", get(auth::session))
-        .route("/api/monitor", get(monitor::sample))
+        .route("/api/session", roster::route(roster.clone()))
         .route("/api/monitor/end", post(monitor::end))
+        .route("/api/events", stream::route(roster))
         .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
         .with_state(auth)
         .fallback(move |request: Request| web(dir.clone(), request))
