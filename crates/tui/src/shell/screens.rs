@@ -341,6 +341,63 @@ fn blanks(buf: &Buffer, x: u16, y: u16, step: i32) -> u16 {
     count
 }
 
+/// the regions of every window and of the dialog, one list each.
+fn region_lists(shell: &Shell) -> Vec<Vec<Region>> {
+    let mut lists: Vec<Vec<Region>> = shell
+        .hits
+        .windows
+        .iter()
+        .map(|(_, _, _, regions)| regions.clone())
+        .collect();
+    lists.extend(shell.hits.dialog.iter().map(|(_, regions)| regions.clone()));
+    lists
+}
+
+/// the buttons of each button row among `regions`, left to right: rows of two or more only.
+fn button_rows(regions: Vec<Region>) -> Vec<Vec<Rect>> {
+    let mut rows: Vec<(Vec<usize>, Vec<Rect>)> = Vec::new();
+    for region in regions
+        .into_iter()
+        .filter(|region| matches!(region.part, Part::Press(_)))
+    {
+        match rows.iter_mut().find(|(path, _)| *path == region.path) {
+            Some((_, rects)) => rects.push(region.rect),
+            None => rows.push((region.path.clone(), vec![region.rect])),
+        }
+    }
+    rows.into_iter()
+        .map(|(_, mut rects)| {
+            rects.sort_by_key(|rect| rect.x);
+            rects
+        })
+        .filter(|rects| rects.len() > 1)
+        .collect()
+}
+
+/// what is wrong with one button row, if anything: its buttons are one width on one line, a
+/// whole number of buttons apart, and it sits flush to the right or the left of its box.
+fn row_faults(buf: &Buffer, rects: &[Rect]) -> Vec<&'static str> {
+    let (first, last) = (rects[0], rects[rects.len() - 1]);
+    let mut faults = Vec::new();
+    if rects
+        .iter()
+        .any(|r| r.width != first.width || r.y != first.y)
+    {
+        faults.push("are not one width");
+    }
+    // a disabled button has no region, so a step may span several buttons
+    let pitch = first.width + 1;
+    if rects.windows(2).any(|w| (w[1].x - w[0].x) % pitch != 0) {
+        faults.push("are not a cell apart");
+    }
+    let right = blanks(buf, last.right() - 1, last.y, 1) <= 1;
+    let left = blanks(buf, first.x, first.y, -1) <= 1;
+    if !right && !left {
+        faults.push("are not flush to a side");
+    }
+    faults
+}
+
 /// every row of two or more buttons, in every window and dialog, has buttons of one width a cell
 /// apart, and sits flush to one side of its box: right for a button row, left for a toolbar.
 #[test]
@@ -350,44 +407,12 @@ fn button_rows_are_equal_and_flush() {
         for size in [SMALL, LARGE] {
             let mut shell = (scene.build)(size);
             let buf = draw(&mut shell, size);
-            let mut owners: Vec<Vec<Region>> = shell
-                .hits
-                .windows
-                .iter()
-                .map(|(_, _, _, regions)| regions.clone())
-                .collect();
-            owners.extend(shell.hits.dialog.iter().map(|(_, regions)| regions.clone()));
-            for regions in owners {
-                let mut rows: Vec<(Vec<usize>, Vec<Rect>)> = Vec::new();
-                for region in regions {
-                    if !matches!(region.part, Part::Press(_)) {
-                        continue;
-                    }
-                    match rows.iter_mut().find(|(path, _)| *path == region.path) {
-                        Some((_, rects)) => rects.push(region.rect),
-                        None => rows.push((region.path.clone(), vec![region.rect])),
-                    }
-                }
-                for (_, mut rects) in rows.into_iter().filter(|(_, rects)| rects.len() > 1) {
-                    rects.sort_by_key(|rect| rect.x);
-                    let (first, last) = (rects[0], rects[rects.len() - 1]);
-                    let name = format!("{} at {size:?}: buttons at y={}", scene.name, first.y);
-                    if rects
-                        .iter()
-                        .any(|r| r.width != first.width || r.y != first.y)
-                    {
-                        wrong.push(format!("{name} are not one width"));
-                    }
-                    // a disabled button has no region, so a step may span several buttons
-                    let pitch = first.width + 1;
-                    if rects.windows(2).any(|w| (w[1].x - w[0].x) % pitch != 0) {
-                        wrong.push(format!("{name} are not a cell apart"));
-                    }
-                    let right = blanks(&buf, last.right() - 1, last.y, 1) <= 1;
-                    let left = blanks(&buf, first.x, first.y, -1) <= 1;
-                    if !right && !left {
-                        wrong.push(format!("{name} are not flush to a side"));
-                    }
+            for rects in region_lists(&shell).into_iter().flat_map(button_rows) {
+                for fault in row_faults(&buf, &rects) {
+                    wrong.push(format!(
+                        "{} at {size:?}: buttons at y={} {fault}",
+                        scene.name, rects[0].y
+                    ));
                 }
             }
         }
