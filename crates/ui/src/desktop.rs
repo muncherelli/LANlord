@@ -581,8 +581,15 @@ impl Desktop {
         self.devtools_menu(&ctx, TASKBAR + 2.0);
 
         self.console.drain();
-        self.console
-            .follow_server(self.web.is_some(), &crate::wake(&ctx));
+        // only an account that may see apply output asks for it
+        let follows = self.web.is_some()
+            && self.grants().allows(
+                lanlord_model::ops::Op::Subscribe {
+                    topic: lanlord_model::ops::topic::APPLY.into(),
+                }
+                .requires(),
+            );
+        self.console.follow_server(follows, &crate::wake(&ctx));
         self.console.apply.tick(ctx.input(|i| i.time));
         if self.console.apply.running() {
             // the elapsed time on the progress dialog keeps counting between events

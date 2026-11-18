@@ -227,6 +227,8 @@ impl Monitor {
         if self.stream.as_ref().is_some_and(|(p, _)| *p == procs) {
             return;
         }
+        // the old connection goes first, so the two never count against the server's limit
+        self.stream = None;
         let (tx, wake) = (self.tx.clone(), wake.clone());
         let on = std::rc::Rc::new(move |update: Update| {
             let msg = match update {
@@ -235,7 +237,7 @@ impl Monitor {
                 }
                 Update::Item(_) => return,
                 Update::Up => Msg::Up,
-                Update::Down(why) => Msg::Sample(Err(why)),
+                Update::Down(why) | Update::Refused(why) => Msg::Sample(Err(why)),
                 Update::SignedOut => Msg::SignedOut,
             };
             let _ = tx.send(msg);

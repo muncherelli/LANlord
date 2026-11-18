@@ -26,6 +26,9 @@ pub enum Update {
     Down(String),
     /// the server has no session for this page any more; the stream stopped.
     SignedOut,
+    /// the server refuses this stream for good (not allowed, too many open), and why; the
+    /// stream stopped, and trying again would not change the answer.
+    Refused(String),
 }
 
 /// the address of the stream for `topic` (see `lanlord_model::ops::topic`).
@@ -64,6 +67,51 @@ impl Backoff {
     }
 }
 
+/// how a stream's connection is doing. a server may accept a connection and close it again at
+/// once (a failed read, a client that fell behind), so being connected proves nothing: the wait
+/// between tries starts over only once an event has really arrived.
+#[derive(Debug, Default)]
+pub struct Link {
+    backoff: Backoff,
+}
+
+impl Link {
+    /// an event came in over the connection.
+    pub fn heard(&mut self) {
+        self.backoff.reset();
+    }
+
+    /// the connection ended or failed: how long to wait before trying again.
+    pub fn lost(&mut self) -> Duration {
+        self.backoff.next_wait()
+    }
+}
+
+/// what to do after asking the server for a stream's status (see [`Verdict::of`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// it would be served: connect.
+    Connect,
+    /// no session any more.
+    SignedOut,
+    /// refused for good, and the text to show.
+    Refused(&'static str),
+    /// a failure that may pass: wait and ask again.
+    Retry,
+}
+
+impl Verdict {
+    pub fn of(status: u16) -> Self {
+        match status {
+            200 => Self::Connect,
+            401 => Self::SignedOut,
+            403 => Self::Refused("Your account may not follow live updates here."),
+            429 => Self::Refused("Too many live connections are open to this server."),
+            _ => Self::Retry,
+        }
+    }
+}
+
 /// what the page shows while it has no connection.
 pub const DISCONNECTED: &str = "Disconnected from the server. Reconnecting...";
 
@@ -79,7 +127,7 @@ mod browser {
     use wasm_bindgen::JsCast;
     use web_sys::{Event, EventSource, MessageEvent};
 
-    use super::{parse, url, Backoff, Update, DISCONNECTED};
+    use super::{parse, url, Link, Update, Verdict, DISCONNECTED};
 
     type Listener = Closure<dyn FnMut(Event)>;
 
@@ -92,7 +140,7 @@ mod browser {
         listeners: Vec<Listener>,
         retry: Option<Closure<dyn FnMut()>>,
         timer: Option<i32>,
-        backoff: Backoff,
+        link: Link,
     }
 
     impl Shared {
@@ -127,7 +175,7 @@ mod browser {
                 listeners: Vec::new(),
                 retry: None,
                 timer: None,
-                backoff: Backoff::default(),
+                link: Link::default(),
             }));
             connect(&shared);
             Self {
@@ -153,16 +201,11 @@ mod browser {
             listeners.push(closure);
         };
         add("open", {
-            let (weak, on) = (weak.clone(), on.clone());
-            Box::new(move |_| {
-                if let Some(shared) = weak.upgrade() {
-                    shared.borrow_mut().backoff.reset();
-                }
-                on(Update::Up);
-            })
+            let on = on.clone();
+            Box::new(move |_| on(Update::Up))
         });
         for name in ["sample", "apply"] {
-            let on = on.clone();
+            let (on, weak) = (on.clone(), weak.clone());
             add(
                 name,
                 Box::new(move |event: Event| {
@@ -172,6 +215,10 @@ mod browser {
                     else {
                         return;
                     };
+                    // the connection carries data: only now do the waits start over
+                    if let Some(shared) = weak.upgrade() {
+                        shared.borrow_mut().link.heard();
+                    }
                     // an event this page cannot read is skipped; the next one may be fine
                     if let Ok(item) = parse(name, &data) {
                         on(Update::Item(item));
@@ -197,7 +244,7 @@ mod browser {
         let (wait, on) = {
             let mut s = shared.borrow_mut();
             s.hang_up();
-            (s.backoff.next_wait(), s.on.clone())
+            (s.link.lost(), s.on.clone())
         };
         on(Update::Down(DISCONNECTED.into()));
         let weak: Weak<RefCell<Shared>> = Rc::downgrade(shared);
@@ -205,13 +252,16 @@ mod browser {
             let Some(shared) = weak.upgrade() else { return };
             shared.borrow_mut().timer = None;
             wasm_bindgen_futures::spawn_local(async move {
-                // a stream the server refuses for want of a login would only retry for ever
-                match crate::gateway::http::session_now().await {
-                    Ok(None) => {
-                        let on = shared.borrow().on.clone();
-                        on(Update::SignedOut);
-                    }
-                    _ => connect(&shared),
+                // ask first what the server would say: an `EventSource` cannot tell a refusal
+                // from a dropped line, and a refused stream must not be retried for ever
+                let topic = shared.borrow().topic.clone();
+                let verdict = probe(&topic).await.map_or(Verdict::Retry, Verdict::of);
+                let on = shared.borrow().on.clone();
+                match verdict {
+                    Verdict::Connect => connect(&shared),
+                    Verdict::Retry => lost(&shared),
+                    Verdict::SignedOut => on(Update::SignedOut),
+                    Verdict::Refused(why) => on(Update::Refused(why.into())),
                 }
             });
         });
@@ -226,6 +276,23 @@ mod browser {
         let mut s = shared.borrow_mut();
         s.timer = timer.ok();
         s.retry = Some(retry);
+    }
+
+    /// the status the server gives a request for the stream, with the connection closed again as
+    /// soon as the answer's headers are in (a stream's body never ends). neither this nor the
+    /// stream counts as activity on the session.
+    async fn probe(topic: &str) -> Option<u16> {
+        let window = web_sys::window()?;
+        let controller = web_sys::AbortController::new().ok()?;
+        let init = web_sys::RequestInit::new();
+        init.set_signal(Some(&controller.signal()));
+        let pending = window.fetch_with_str_and_init(&url(topic), &init);
+        let answer = wasm_bindgen_futures::JsFuture::from(pending).await.ok();
+        let status = answer
+            .and_then(|a| a.dyn_into::<web_sys::Response>().ok())
+            .map(|r| r.status());
+        controller.abort();
+        status
     }
 }
 
@@ -273,5 +340,26 @@ mod tests {
     #[test]
     fn the_address_names_the_topic() {
         assert_eq!(url("monitor:procs"), "/api/events?topic=monitor:procs");
+    }
+
+    #[test]
+    fn the_wait_starts_over_only_after_an_event_not_after_a_connection() {
+        let mut link = Link::default();
+        // the server accepts and closes again, over and over: connecting is not hearing
+        let waits: Vec<u64> = (0..4).map(|_| link.lost().as_secs()).collect();
+        assert_eq!(waits, [1, 2, 4, 8]);
+        link.heard();
+        assert_eq!(link.lost().as_secs(), 1);
+    }
+
+    #[test]
+    fn a_refusal_is_final_and_a_dropped_line_is_not() {
+        assert_eq!(Verdict::of(200), Verdict::Connect);
+        assert_eq!(Verdict::of(401), Verdict::SignedOut);
+        assert!(matches!(Verdict::of(403), Verdict::Refused(_)));
+        assert!(matches!(Verdict::of(429), Verdict::Refused(_)));
+        for status in [500, 502, 503, 408] {
+            assert_eq!(Verdict::of(status), Verdict::Retry, "{status}");
+        }
     }
 }

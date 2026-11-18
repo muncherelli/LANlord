@@ -56,7 +56,8 @@ impl Console {
         }
     }
 
-    /// in the browser, follow the server's apply events while `on` (signed in to a gateway) and
+    /// in the browser, follow the server's apply events while `on` (signed in to a gateway whose
+    /// account may see them; the server refuses the stream otherwise) and
     /// feed them to the log as an apply on this machine would, so the progress dialog and the
     /// console show them. a lost connection is noted in the console, once each way.
     pub fn follow_server(&mut self, on: bool, wake: &Wake) {
@@ -80,6 +81,7 @@ impl Console {
                             }
                         }
                         Update::Item(Item::Sample(_)) | Update::SignedOut => {}
+                        Update::Refused(why) => log::emit(Kind::Info, why),
                         Update::Up => {
                             if down.replace(false) {
                                 log::emit(Kind::Info, "The live feed from the server is back.");
