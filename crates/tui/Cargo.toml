@@ -16,6 +16,9 @@ lanlord-core = { path = "../core" }
 ratatui = "0.30.2"
 zeroize = "1"
 
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
 [dev-dependencies]
 lanlord-app = { path = "../app", features = ["fake"] }
 lanlord-model.workspace = true

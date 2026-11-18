@@ -268,14 +268,80 @@ fn the_menu_works_from_the_keyboard() {
         frame(&mut shell);
     }
     key(&mut shell, KeyCode::F(10));
-    assert_eq!(shell.menu, Some(0));
     let rows = shell.menu_state();
-    let quit = rows.len() - 1;
+    assert_eq!(shell.menu.as_ref(), menu_actions(&rows).next());
+    let quit = menu_actions(&rows).count() - 1;
     for _ in 0..quit {
         key(&mut shell, KeyCode::Down);
     }
     key(&mut shell, KeyCode::Enter);
     assert!(shell.quit);
+}
+
+#[test]
+fn the_menu_highlight_stays_on_its_item_when_the_components_arrive() {
+    // no frame has run yet, so the components have not been asked for
+    let mut shell = demo();
+    assert!(shell.enabled().is_none());
+    shell.open_menu();
+    // quit, which is there before and after the rows change
+    shell.menu = Some(Action::Quit);
+    let before = shell.menu_state().len();
+    let started = Instant::now();
+    while shell.enabled().is_none() && started.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(10));
+        frame(&mut shell);
+    }
+    assert!(shell.enabled().is_some(), "the components arrive");
+    assert_eq!(shell.menu, Some(Action::Quit));
+    let rows = shell.menu_state();
+    assert!(rows.len() > before, "the menu grew");
+    assert_eq!(menu_row_of(&rows, &Action::Quit), rows.len() - 1);
+    // Enter picks that item, not whatever row the old index points at now
+    key(&mut shell, KeyCode::Enter);
+    assert!(shell.quit);
+}
+
+#[test]
+fn windows_are_fitted_again_only_when_something_could_have_changed() {
+    // with no server chosen nothing runs in the background, so no task finishes under this test
+    let mut shell = shell_with(Fake::new());
+    let add = |shell: &mut Shell, target| {
+        shell.windows.push(Win {
+            target,
+            rect: Rect::new(2, 1, 10, 3),
+            minimized: false,
+            restore: None,
+        });
+    };
+    add(&mut shell, Target::Console);
+    frame(&mut shell);
+    let fitted = shell.windows[0].rect;
+    // an idle frame leaves a window where it is, even one that was moved out of fit
+    shell.windows[0].rect.height = 3;
+    frame(&mut shell);
+    assert_eq!(shell.windows[0].rect.height, 3);
+    // a key press may have changed what it shows
+    key(&mut shell, KeyCode::Down);
+    frame(&mut shell);
+    assert_eq!(shell.windows[0].rect, fitted);
+    // so does a new size for the terminal
+    shell.windows[0].rect.height = 3;
+    let mut buf = Buffer::empty(Rect::new(0, 0, SIZE.width, SIZE.height + 5));
+    shell.render(buf.area, &mut buf);
+    assert_ne!(shell.windows[0].rect.height, 3);
+    // and a new window
+    shell.windows[0].rect.height = 3;
+    add(&mut shell, Target::Progress);
+    frame(&mut shell);
+    assert_ne!(shell.windows[0].rect.height, 3);
+}
+
+#[test]
+fn the_menu_highlight_falls_back_to_the_first_row_when_its_item_is_gone() {
+    let shell = demo();
+    let rows = shell.menu_state();
+    assert_eq!(menu_row_of(&rows, &Action::Rebuild), 0);
 }
 
 #[test]
@@ -606,7 +672,7 @@ fn the_wheel_does_nothing_behind_an_open_menu() {
         .find(|r| r.part == Part::Spin(0) && r.rect.y == minute_up.y)
         .map(|r| r.rect)
         .expect("a spin box");
-    shell.menu = Some(0);
+    shell.open_menu();
     mouse(
         &mut shell,
         MouseEventKind::ScrollUp,

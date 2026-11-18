@@ -543,8 +543,9 @@ impl<'a> Painter<'a> {
     }
 
     /// the height of each of `nodes` stacked in `room` rows: every node takes what it needs,
-    /// except that the ones that fill (a console, a list) share what the rest leave, and never
-    /// get less than 4 rows nor more than are left. with no `room` they take what they need.
+    /// except that the ones that fill (a console, a list) share what the rest leave, the last
+    /// one taking the odd rows. they split what is left, so the total does not pass the room;
+    /// with no `room` they take what they need.
     fn stack_heights<M>(
         &self,
         nodes: &[Node<M>],
@@ -566,15 +567,17 @@ impl<'a> Painter<'a> {
             .map(|(_, h)| *h)
             .sum();
         let count = nodes.iter().filter(|n| fills(n)).count() as u16;
-        // a filling node gets at least 4 rows, but never more than the rows left
-        let share = room.and_then(|room| {
-            let left = room.saturating_sub(fixed);
-            left.checked_div(count).map(|rows| rows.max(4).min(left))
-        });
+        // filling nodes split the rows left, the last one taking the rows that do not divide
+        let left = room.map(|room| room.saturating_sub(fixed));
+        let share = left.and_then(|left| left.checked_div(count));
+        let odd = left.map_or(0, |left| left.checked_rem(count).unwrap_or(0));
+        let last = nodes.iter().rposition(|n| fills(n));
         nodes
             .iter()
             .zip(natural)
-            .map(|(n, height)| match (fills(n), share) {
+            .enumerate()
+            .map(|(i, (n, height))| match (fills(n), share) {
+                (true, Some(rows)) if Some(i) == last => rows + odd,
                 (true, Some(rows)) => rows,
                 _ => height,
             })
@@ -856,13 +859,7 @@ impl<'a> Painter<'a> {
                 let rect = Rect::new(area.x, area.y, size_cells(size, area.width), 1);
                 self.field(value, !shown, rect, buf, path);
             }
-            Node::Spin {
-                text,
-                width,
-                enabled,
-                ..
-            } => {
-                let _ = width;
+            Node::Spin { text, enabled, .. } => {
                 let w = spin_cells(text);
                 let field = Rect::new(area.x, area.y, w.min(area.width), 1).intersection(buf.area);
                 if field.is_empty() {
@@ -1136,8 +1133,7 @@ impl<'a> Painter<'a> {
                     self.draw(body, inner, buf, path);
                 }
             }
-            Node::Choice { current, width, .. } => {
-                let _ = width;
+            Node::Choice { current, .. } => {
                 let w = (current.chars().count() as u16 + 4).min(area.width);
                 let rect = Rect::new(area.x, area.y, w, 1).intersection(buf.area);
                 if rect.width >= 3 {

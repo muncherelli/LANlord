@@ -14,7 +14,7 @@ use lanlord_core::updater::{Pause, RealClock, State};
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Position;
 
-use super::screens::{develop, developer_row, news};
+use super::screens::{develop, news};
 use super::tests::{click, frame, key, shell_with};
 use super::window_tests::{find, press, until};
 use super::{maintenance, Modal, Shell};
@@ -136,7 +136,7 @@ fn the_developer_submenu_opens_beside_the_menu_and_closes_with_it() {
 fn the_developer_submenu_works_from_the_keyboard() {
     let mut shell = developing();
     key(&mut shell, KeyCode::F(10));
-    shell.menu = Some(developer_row(&shell));
+    shell.menu = Some(Action::Developer);
     key(&mut shell, KeyCode::Right);
     assert_eq!(shell.submenu, Some(0));
     key(&mut shell, KeyCode::Down);
@@ -152,7 +152,7 @@ fn the_developer_submenu_works_from_the_keyboard() {
     assert_eq!(shell.submenu, None);
     assert!(shell.menu.is_some(), "Escape closes one level at a time");
     // Right on any other row does nothing
-    shell.menu = Some(0);
+    shell.open_menu();
     key(&mut shell, KeyCode::Right);
     assert_eq!(shell.submenu, None);
 }

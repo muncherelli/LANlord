@@ -149,11 +149,15 @@ impl Shell {
 
     /// once a frame: the update check, the updater and the rebuild.
     pub(super) fn poll_maintenance(&mut self) {
+        let before = (self.updates.checking(), self.updates.found().is_some());
         self.updates.tick(&Wake::none());
+        self.refit_due |= before != (self.updates.checking(), self.updates.found().is_some());
         if self.updates.dialog && self.updates.found().is_none() {
             self.updates.dialog = false;
         }
-        match self.rebuild.poll() {
+        let rebuilt = self.rebuild.poll();
+        self.refit_due |= rebuilt.is_some();
+        match rebuilt {
             Some(Ok(())) => self.hand_over(),
             Some(Err(error)) => self.rebuild_failed(&error),
             None => {}
@@ -328,10 +332,7 @@ impl Shell {
     fn key_submenu(&mut self, key: KeyEvent) -> bool {
         let Some(hover) = self.submenu else {
             // Right opens the submenu from its row
-            let on_developer = self.menu.is_some_and(|n| {
-                matches!(self.menu_state().get(n),
-                    Some(Row::Item(item)) if item.action == Action::Developer)
-            });
+            let on_developer = self.menu == Some(Action::Developer);
             if on_developer && key.code == KeyCode::Right {
                 self.submenu = Some(0);
                 return true;
