@@ -1019,10 +1019,24 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
         format!("kernel:        {}", facts.kernel),
         format!("up for:        {}", facts.uptime()),
         format!("signed in as:  {}{root}", facts.user),
-        format!("processors:    {}", facts.cpus),
         format!(
-            "memory:        {} MB free of {} MB",
-            facts.mem_available_mb, facts.mem_total_mb
+            "processor:     {}",
+            if facts.cpu_model.is_empty() {
+                "unknown"
+            } else {
+                &facts.cpu_model
+            }
+        ),
+        format!("processors:    {}", facts.processors()),
+        format!(
+            "memory:        {} MB free of {} MB{}",
+            facts.mem_available_mb,
+            facts.mem_total_mb,
+            if facts.mem_limited {
+                " (limited by container)"
+            } else {
+                ""
+            }
         ),
         format!("lanlord:       {lanlord}"),
     ];
@@ -1732,9 +1746,12 @@ mod tests {
             uptime_secs: 90_000,
             user: "admin".into(),
             is_root: true,
+            cpu_model: "Example CPU @ 2.00GHz".into(),
             cpus: 2,
+            cpus_limited: false,
             mem_total_mb: 2_048,
             mem_available_mb: 1_024,
+            mem_limited: false,
             lanlord_installed: true,
             lanlord_version: Some("0.1.0".into()),
             last_applied: Some("2026-01-01 12:00".into()),
@@ -1760,6 +1777,8 @@ mod tests {
             "name:          gateway",
             "signed in as:  admin (root)",
             "up for:        1 day, 1 hour, 0 minutes",
+            "processor:     Example CPU @ 2.00GHz",
+            "processors:    2",
             "memory:        1024 MB free of 2048 MB",
             "lanlord:       installed, version 0.1.0",
             "last applied:  2026-01-01 12:00",
@@ -1768,6 +1787,10 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want:?} in\n{text}");
         }
+        facts.cpu_model.clear();
+        assert!(fact_lines(&facts)
+            .join("\n")
+            .contains("processor:     unknown"));
         facts.is_root = false;
         facts.lanlord_version = None;
         facts.last_applied = None;

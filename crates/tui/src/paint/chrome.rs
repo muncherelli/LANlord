@@ -87,12 +87,20 @@ pub struct WindowFrame<'a> {
     pub icon: Option<&'a str>,
     pub active: bool,
     pub palette: Palette,
+    /// a fixed-size window has no maximise button: only minimise and close.
+    pub fixed: bool,
 }
 
 impl WindowFrame<'_> {
     /// the title bar is the top line of the box between its corners, the body everything
     /// inside the border.
     pub fn layout(area: Rect) -> WindowLayout {
+        Self::layout_for(area, false)
+    }
+
+    /// the same for a window that is `fixed` in size: minimise and close, and no maximise, whose
+    /// rectangle is empty so nothing hits it.
+    pub fn layout_for(area: Rect, fixed: bool) -> WindowLayout {
         let inner = Frame::inner(area);
         let title_bar = Rect::new(inner.x, area.y, inner.width, area.height.min(1));
         let button = |from_right: u16| {
@@ -103,10 +111,11 @@ impl WindowFrame<'_> {
                 title_bar.height,
             )
         };
+        let none = Rect::new(title_bar.right(), title_bar.y, 0, 0);
         WindowLayout {
             title_bar,
-            minimise: button(6),
-            maximise: button(4),
+            minimise: button(if fixed { 4 } else { 6 }),
+            maximise: if fixed { none } else { button(4) },
             close: button(2),
             body: inner,
         }
@@ -117,7 +126,7 @@ impl Widget for WindowFrame<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
         Frame { palette }.render(area, buf);
-        let layout = WindowFrame::layout(area);
+        let layout = WindowFrame::layout_for(area, self.fixed);
         let (bar, ink) = if self.active {
             (NAVY, WHITE)
         } else {
@@ -149,7 +158,9 @@ impl Widget for WindowFrame<'_> {
                 (layout.maximise, "□"),
                 (layout.close, "×"),
             ] {
-                text(buf, rect.x, rect.y, 1, glyph, bar_line);
+                if !self.fixed || glyph != "□" {
+                    text(buf, rect.x, rect.y, 1, glyph, bar_line);
+                }
             }
         }
     }
@@ -538,6 +549,7 @@ mod tests {
             icon: Some("console"),
             active: true,
             palette: palette(),
+            fixed: false,
         }
         .render(off, &mut buf);
         let rows = [MenuRow::item("Quit"), MenuRow::Separator];
@@ -592,6 +604,7 @@ mod tests {
             icon: Some("my-server"),
             active: true,
             palette: palette(),
+            fixed: false,
         }
         .render(buf.area, &mut buf);
         assert_eq!(
@@ -623,6 +636,7 @@ mod tests {
             icon: None,
             active: false,
             palette: palette(),
+            fixed: false,
         }
         .render(buf.area, &mut buf);
         assert_eq!(buf[(3, 0)].bg, Color::Rgb(192, 192, 192));

@@ -605,6 +605,11 @@ impl Shell {
     fn fit_size(&mut self, target: Target, desktop: Rect) -> (u16, u16) {
         let (asked, size_height) = target.size();
         let width = layout::frame_width((asked / 7.0).round() as u16).min(desktop.width);
+        // a fixed window is the one size it asks for, whatever it shows
+        if target.fixed() {
+            let rows = (size_height / 16.0).round() as u16;
+            return (width, layout::frame_height(rows).min(desktop.height));
+        }
         let measured = self
             .run_window(
                 target,
@@ -687,6 +692,9 @@ impl Shell {
 
     fn toggle_maximise(&mut self, target: Target) {
         let full = self.hits.desktop;
+        if target.fixed() {
+            return;
+        }
         if let Some(win) = self.windows.iter_mut().find(|w| w.target == target) {
             match win.restore.take() {
                 Some(rect) => win.rect = rect,
@@ -1554,9 +1562,10 @@ impl Shell {
                 icon: Some(target.id()),
                 active,
                 palette,
+                fixed: target.fixed(),
             }
             .render(rect, buf);
-            let layout = WindowFrame::layout(rect);
+            let layout = WindowFrame::layout_for(rect, target.fixed());
             let body = layout::content(rect);
             let answer = self.run_window(
                 target,
@@ -1689,6 +1698,7 @@ impl Shell {
             icon: None,
             active: true,
             palette: self.palette,
+            fixed: false,
         }
         .render(rect, buf);
         let body = layout::content(rect);

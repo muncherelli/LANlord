@@ -574,10 +574,14 @@ fn a_networks_page_taller_than_a_small_screen_scrolls_to_its_status_bar() {
     text = small(&mut shell);
     assert!(text.contains("LANlord network"), "{text}");
     assert!(text.contains("[ Refresh ]"), "{text}");
+    // not a regression: the wheel scrolls the smallest region under it, and a list under the
+    // pointer takes the wheel to move its selection. the interface list sits below the buttons,
+    // so the first notch moves the page and the second lands on the Activity table, which takes
+    // it as a selection. row 4 stays over the page for every notch
     let wheel = MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 40,
-        row: 8,
+        row: 4,
         modifiers: KeyModifiers::NONE,
     };
     for _ in 0..3 {
@@ -585,4 +589,83 @@ fn a_networks_page_taller_than_a_small_screen_scrolls_to_its_status_bar() {
         small(&mut shell);
     }
     assert!(small(&mut shell).contains("up to date"));
+}
+
+fn my_server_rect(shell: &Shell) -> Rect {
+    shell
+        .windows
+        .iter()
+        .find(|w| w.target == Target::MyServer)
+        .unwrap()
+        .rect
+}
+
+#[test]
+fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
+    let fake = Arc::new(Fake::new());
+    let mut shell = server(&fake);
+    open(&mut shell, Target::MyServer);
+    let text = until(&mut shell, "Processor");
+    let rect = my_server_rect(&shell);
+    // minimise and close, and no maximise
+    let bar = text.lines().find(|l| l.contains("My Server ─")).unwrap();
+    assert!(bar.contains("_ ×") && !bar.contains('□'), "{bar}");
+    for needle in [
+        "Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz",
+        "Processors   4",
+        "Memory       4096 MB, 3328 MB free",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    assert!(!text.contains("Network interfaces"), "{text}");
+    // every tab fits in the same window, down to its last line
+    for (tab, last) in [
+        ("Advanced", "Remove LANlord from this server..."),
+        ("Compatibility", "Re-check"),
+        ("General", "Last applied"),
+    ] {
+        let text = press(&mut shell, tab);
+        assert!(text.contains(last), "{tab}:\n{text}");
+        assert_eq!(my_server_rect(&shell), rect, "{tab}");
+    }
+    // a double-click on the title bar and the button's old place do not maximise it
+    let text = frame(&mut shell);
+    let title = find(&text, "My Server ─");
+    shell.double_click(title);
+    assert_eq!(my_server_rect(&shell), rect);
+    let layout = crate::paint::chrome::WindowFrame::layout_for(rect, true);
+    assert_eq!(layout.maximise.width, 0);
+    shell.toggle_maximise(Target::MyServer);
+    frame(&mut shell);
+    assert_eq!(my_server_rect(&shell), rect);
+    // the cell the maximise button has on a resizable window is the minimise button here: it
+    // minimises the window and never maximises it
+    let old = crate::paint::chrome::WindowFrame::layout_for(rect, false).maximise;
+    click(&mut shell, (old.x, old.y).into());
+    let win = shell
+        .windows
+        .iter()
+        .find(|w| w.target == Target::MyServer)
+        .unwrap();
+    assert!(win.minimized && win.restore.is_none());
+    assert_eq!(win.rect, rect);
+}
+
+#[test]
+fn networks_list_every_interface_the_server_has() {
+    let fake = Arc::new(Fake::new());
+    settings(&fake);
+    let mut shell = server(&fake);
+    open(&mut shell, Target::Networks);
+    // the job can finish between a frame's refit check and its draw, so the group shows a frame
+    // before the window has grown to hold it: wait for the last row, which only shows once it fits
+    until(&mut shell, "Network interfaces");
+    let text = until(&mut shell, "eth1   172.16.120.1/22");
+    for needle in [
+        "eth0   192.0.2.10/24   MTU 1500   Connected",
+        "eth1   172.16.120.1/22   MTU 1450   Connected",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    assert!(!text.contains("lo   127.0.0.1"), "{text}");
 }

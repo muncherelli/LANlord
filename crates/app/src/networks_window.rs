@@ -5,6 +5,7 @@
 
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::networks::{self, NetworkRow, Role};
+use lanlord_model::server::Iface;
 use lanlord_model::settings::Settings;
 
 use crate::remote::Remote;
@@ -38,9 +39,18 @@ pub enum Ask {
     Dns,
 }
 
+/// what one read of the server gives the window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Networks {
+    /// the networks, one tab each.
+    pub rows: Vec<NetworkRow>,
+    /// every interface of the server, which the tabs do not all show.
+    pub interfaces: Vec<Iface>,
+}
+
 #[derive(Default)]
 pub struct NetworksWindow {
-    rows: Remote<Vec<NetworkRow>>,
+    rows: Remote<Networks>,
     /// the status of every connection, matched to a row by its interface.
     status: Remote<Vec<InterfaceStatus>>,
     /// the tab that is open.
@@ -63,7 +73,7 @@ impl NetworksWindow {
         self
     }
 
-    pub fn rows(&self) -> &Remote<Vec<NetworkRow>> {
+    pub fn rows(&self) -> &Remote<Networks> {
         &self.rows
     }
 
@@ -97,7 +107,10 @@ impl NetworksWindow {
                 .load_settings(&target, ask)
                 .unwrap_or_else(|_| Settings::empty());
             let leases = gateway.leases(&target, ask).ok().map(|l| l.len());
-            Ok(networks::rows(&facts.interfaces, &settings, leases))
+            Ok(Networks {
+                rows: networks::rows(&facts.interfaces, &settings, leases),
+                interfaces: facts.interfaces,
+            })
         });
         self.rows
             .track(host, job, "reading the networks...", "up to date", true);
@@ -135,7 +148,7 @@ impl NetworksWindow {
     }
 
     fn chosen(&self) -> Option<&NetworkRow> {
-        let rows = self.rows.data.as_ref()?;
+        let rows = &self.rows.data.as_ref()?.rows;
         rows.get(self.selected.min(rows.len().saturating_sub(1)))
     }
 
@@ -156,9 +169,12 @@ impl NetworksWindow {
             return vec![Node::Text("No server yet. Sign in to one first.".into())];
         };
         self.refresh(services, host, now);
-        let rows = self.rows.data.clone().unwrap_or_default();
+        let Networks { rows, interfaces } = self.rows.data.clone().unwrap_or(Networks {
+            rows: Vec::new(),
+            interfaces: Vec::new(),
+        });
         if rows.is_empty() {
-            return vec![view::status(&self.rows)];
+            return self.without_networks(&interfaces);
         }
         self.selected = self.selected.min(rows.len() - 1);
         let titles = rows.iter().map(|r| r.name.clone()).collect();
@@ -182,6 +198,8 @@ impl NetworksWindow {
             tabs,
             Node::Gap(6.0),
             buttons,
+            Node::Gap(6.0),
+            interface_list(&interfaces),
             Node::Gap(4.0),
             Node::Text(
                 "Editing networks comes next. For now you can look at them, and open DNS & DHCP."
@@ -190,6 +208,18 @@ impl NetworksWindow {
             Node::Gap(4.0),
             view::status(&self.rows),
         ]
+    }
+
+    /// the page of a server with no network of its own to show: its interfaces, when it has any,
+    /// and the status.
+    fn without_networks(&self, interfaces: &[Iface]) -> Vec<Node<Msg>> {
+        let mut nodes = Vec::new();
+        if interfaces.iter().any(|i| !i.loopback()) {
+            nodes.push(interface_list(interfaces));
+            nodes.push(Node::Gap(4.0));
+        }
+        nodes.push(view::status(&self.rows));
+        nodes
     }
 
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str, now: f64) -> Option<Ask> {
@@ -222,6 +252,29 @@ impl NetworksWindow {
             return Some(connection_dialog(status, self.time.unwrap_or(local_time)));
         }
         self.details.as_ref().map(properties_dialog)
+    }
+}
+
+/// every interface but the loopback, with its address, MTU and link: the ones the tabs leave
+/// out are here too.
+fn interface_list(interfaces: &[Iface]) -> Node<Msg> {
+    let lines = interfaces
+        .iter()
+        .filter(|i| !i.loopback())
+        .map(|iface| {
+            let address = iface.addresses.first().map_or("no address", String::as_str);
+            Node::Text(format!(
+                "{}   {}   MTU {}   {}",
+                iface.name,
+                address,
+                iface.mtu,
+                iface.link()
+            ))
+        })
+        .collect();
+    Node::Group {
+        title: "Network interfaces".into(),
+        body: lines,
     }
 }
 
@@ -382,6 +435,42 @@ fn local_time(secs: i64) -> String {
 mod tests {
     use super::*;
     use lanlord_model::server::demo;
+
+    #[test]
+    fn a_server_with_no_networks_still_lists_its_interfaces() {
+        let window = NetworksWindow::default();
+        // nothing read yet: only the status
+        assert_eq!(window.without_networks(&[]).len(), 1);
+        let nodes = window.without_networks(&demo().interfaces);
+        assert!(matches!(&nodes[0], Node::Group { title, body }
+            if title == "Network interfaces" && body.len() == 2));
+        assert!(matches!(nodes.last(), Some(Node::Status { .. })));
+        // only the loopback: nothing to list
+        let lo = &demo().interfaces[..1];
+        assert_eq!(window.without_networks(lo).len(), 1);
+    }
+
+    #[test]
+    fn the_interface_list_has_every_interface_but_the_loopback() {
+        let Node::Group { title, body } = interface_list(&demo().interfaces) else {
+            panic!("a group");
+        };
+        assert_eq!(title, "Network interfaces");
+        let lines: Vec<_> = body
+            .into_iter()
+            .map(|n| match n {
+                Node::Text(t) => t,
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "eth0   192.0.2.10/24   MTU 1500   Connected",
+                "eth1   172.16.120.1/22   MTU 1450   Connected"
+            ]
+        );
+    }
 
     #[test]
     fn rows_name_one_tab_per_network() {
