@@ -30,8 +30,14 @@ fn desktop(size: (u16, u16)) -> Shell {
 }
 
 /// a demo desktop over `fake`. lease times are written in UTC, so a snapshot reads the same
-/// in every time zone.
+/// in every time zone. the time lanlord was last applied is not a time that parses, so it is
+/// shown as written and not moved into the host's zone.
 fn desktop_with(size: (u16, u16), fake: Fake) -> Shell {
+    fake.facts.lock().unwrap().get_or_insert_with(|| {
+        let mut facts = lanlord_model::server::demo();
+        facts.last_applied = Some("2026-11-16 02:41 UTC".into());
+        facts
+    });
     let mut shell = Shell::new(Arc::new(fake), HostList::new(None), Palette::default());
     shell.clock = Some("12:00 PM".into());
     shell.use_demo_server();
