@@ -110,8 +110,8 @@
           ansible.builtin.include_tasks: replace-container.yml
           vars:
             rc_name: "{{ container }}"
-            # chronyd keeps running when it cannot open udp 123, so the port must be held by chronyd too
-            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true && ss -Hulnp 'sport = :123' | grep -q chronyd"
+            # chronyd keeps running when it cannot open udp 123, so the port must be held by chronyd too (skipped when the host has no ss)
+            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true && { ! command -v ss >/dev/null 2>&1 || ss -Hulnp 'sport = :123' | grep -q chronyd; }"
             rc_run: >-
               docker run -d --name {{ container }} --network host --restart unless-stopped
               -v {{ state_root }}/chrony.conf:/etc/chrony/chrony.conf:ro

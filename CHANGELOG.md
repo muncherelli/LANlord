@@ -73,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss`
 - The taskbar start button shows the logo with no separator after it (#106)
 - NT4 domain group mappings that drifted are repaired (#40)
 - Settings are read when the plain settings directory cannot be searched (#39)
