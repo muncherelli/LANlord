@@ -575,9 +575,9 @@ fn a_networks_page_taller_than_a_small_screen_scrolls_to_its_status_bar() {
     assert!(text.contains("LANlord network"), "{text}");
     assert!(text.contains("[ Refresh ]"), "{text}");
     // not a regression: the wheel scrolls the smallest region under it, and a list under the
-    // pointer takes the wheel to move its selection. with the interface list above them, the
-    // first notch brings a list under row 8, so later notches stop scrolling the page. row 4 is
-    // over the page for every notch
+    // pointer takes the wheel to move its selection. the interface list sits below the buttons,
+    // so the first notch moves the page and the second lands on the Activity table, which takes
+    // it as a selection. row 4 stays over the page for every notch
     let wheel = MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: 40,
@@ -635,13 +635,20 @@ fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
     assert_eq!(my_server_rect(&shell), rect);
     let layout = crate::paint::chrome::WindowFrame::layout_for(rect, true);
     assert_eq!(layout.maximise.width, 0);
-    // the cell the maximise button has on a resizable window is not a button here
-    let old = crate::paint::chrome::WindowFrame::layout_for(rect, false).maximise;
-    click(&mut shell, (old.x, old.y).into());
-    assert_eq!(my_server_rect(&shell), rect);
     shell.toggle_maximise(Target::MyServer);
     frame(&mut shell);
     assert_eq!(my_server_rect(&shell), rect);
+    // the cell the maximise button has on a resizable window is the minimise button here: it
+    // minimises the window and never maximises it
+    let old = crate::paint::chrome::WindowFrame::layout_for(rect, false).maximise;
+    click(&mut shell, (old.x, old.y).into());
+    let win = shell
+        .windows
+        .iter()
+        .find(|w| w.target == Target::MyServer)
+        .unwrap();
+    assert!(win.minimized && win.restore.is_none());
+    assert_eq!(win.rect, rect);
 }
 
 #[test]
@@ -650,7 +657,10 @@ fn networks_list_every_interface_the_server_has() {
     settings(&fake);
     let mut shell = server(&fake);
     open(&mut shell, Target::Networks);
-    let text = until(&mut shell, "Network interfaces");
+    // the job can finish between a frame's refit check and its draw, so the group shows a frame
+    // before the window has grown to hold it: wait for the last row, which only shows once it fits
+    until(&mut shell, "Network interfaces");
+    let text = until(&mut shell, "eth1   172.16.120.1/22");
     for needle in [
         "eth0   192.0.2.10/24   MTU 1500   Connected",
         "eth1   172.16.120.1/22   MTU 1450   Connected",
