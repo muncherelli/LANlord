@@ -88,7 +88,10 @@ impl Target {
             | Self::Changelog
             | Self::MyServer
             | Self::Networks
-            | Self::Settings => true,
+            | Self::Settings
+            | Self::Permissions
+            | Self::Progress
+            | Self::TaskManager => true,
             // the modules with a list of logins, hosts or commands; the rest are plain forms
             Self::Module(i) => matches!(MODULES[i].id, "nt4-domain" | "dns" | "remote-commands"),
             _ => false,
@@ -96,10 +99,10 @@ impl Target {
     }
 
     /// the least height a growable window opens at, for contents that are near empty: the hosts
-    /// list is not a one line strip. 0 for the rest, which are as tall as their contents.
+    /// list, the apply log and the process list are not a strip. 0 for the rest, which are as tall as their contents.
     pub fn floor(self) -> f32 {
         match self {
-            Self::Hosts => self.size().1,
+            Self::Hosts | Self::Progress | Self::TaskManager => self.size().1,
             _ => 0.0,
         }
     }

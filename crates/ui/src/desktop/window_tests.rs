@@ -868,3 +868,29 @@ fn a_growable_window_opens_as_tall_as_its_contents_up_to_the_desktop() {
         assert!((hosts - 280.0).abs() <= 1.0, "{size:?}: {hosts}");
     }
 }
+
+#[test]
+fn the_users_progress_and_task_windows_are_resizable_and_their_lists_fill() {
+    use eframe::egui::Vec2;
+    let size = Vec2::new(1280.0, 720.0);
+    for target in [Target::Permissions, Target::Progress, Target::TaskManager] {
+        assert!(target.growable(), "{target:?}");
+        let (mut desktop, ctx, _) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(target);
+        frames_on(&mut desktop, &ctx, size, 12);
+        let measured = |d: &Desktop| *d.measured.iter().find(|m| m.0 == target).unwrap();
+        let (_, opened, content) = measured(&desktop);
+        drag_corner(&mut desktop, &ctx, size, target, Vec2::new(0.0, 100.0));
+        frames_on(&mut desktop, &ctx, size, 6);
+        let (_, taller, filled) = measured(&desktop);
+        assert!(
+            taller.height() > opened.height() + 60.0,
+            "{target:?}: {opened:?} {taller:?}"
+        );
+        // the apply log has nothing else that grows, so it takes all of the extra room
+        if target == Target::Progress {
+            assert!(filled > content + 60.0, "{content} {filled}");
+        }
+    }
+}

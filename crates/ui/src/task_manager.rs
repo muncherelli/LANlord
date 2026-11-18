@@ -41,6 +41,9 @@ pub struct TaskManager {
     confirm: Option<(u32, String)>,
 }
 
+/// the height of the process list on its own, before the window gives it room.
+const PROCESS_ROWS: f32 = 200.0;
+
 impl TaskManager {
     pub fn show(&mut self, ui: &mut Ui, monitor: &Monitor, admin: bool) -> Option<Ask> {
         let mut ask = None;
@@ -115,7 +118,8 @@ impl TaskManager {
 
     /// the sortable list of processes.
     fn process_list(&mut self, ui: &mut Ui, rows: &[(&ProcessRow, f32)]) {
-        let height = (controls::fill_height(ui) - 78.0).max(90.0);
+        // the list takes the room the window has to spare
+        let height = controls::grow(ui, PROCESS_ROWS);
         theme::sunken(ui, WHITE, |ui| {
             ui.set_width(ui.available_width());
             self.heading(ui);
