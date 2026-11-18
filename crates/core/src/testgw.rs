@@ -44,6 +44,13 @@ impl Gateway {
 for a; do last=$a; done
 case "$last" in
   "id -un") echo tester ;;
+  "id -u svc") echo 998 ;;
+  "id -u ghost") exit 1 ;;
+  "id -u flaky") echo 1005 ;;
+  "id -nG flaky") exit 1 ;;
+  "id -u "*) echo 1001 ;;
+  "id -nG boss") echo "boss admins" ;;
+  "id -nG "*) echo "users" ;;
   "sudo -n true") exit 0 ;;
   "sh -c "*"getent passwd lanlord"*) echo @INSTALLED@ ;;
   "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;

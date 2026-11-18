@@ -154,7 +154,7 @@ impl Desktop {
             signed_in: (self.auth.is_some() || self.web.is_some())
                 .then(|| who.as_deref().unwrap_or("")),
             switch_server: self.web.is_none(),
-            admin: self.is_admin(),
+            grants: self.grants(),
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
             updates: self.updates_enabled(),
             developer: self.dev.is_some(),
@@ -312,7 +312,9 @@ impl Desktop {
     }
 
     fn ask_power(&mut self, power: Power) {
-        if !self.is_admin() {
+        if self.grants().level(lanlord_model::access::Area::Status)
+            < lanlord_model::access::Level::Manage
+        {
             return;
         }
         let Some(host) = self.host() else { return };
@@ -339,8 +341,10 @@ impl Desktop {
             Some(FormAnswer::Cancel) => {}
             Some(FormAnswer::Ok) => match kind {
                 Confirm::Power(power, host) => {
-                    if !self.is_admin() {
-                        emit(Kind::Err, "only an administrator can do that");
+                    if self.grants().level(lanlord_model::access::Area::Status)
+                        < lanlord_model::access::Level::Manage
+                    {
+                        emit(Kind::Err, "you are not allowed to do that");
                     } else if !self.services.power(&host, power) {
                         emit(Kind::Err, format!("{host} is busy; try again in a moment"));
                     }

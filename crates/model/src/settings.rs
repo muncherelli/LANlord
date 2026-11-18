@@ -51,6 +51,14 @@ impl Settings {
         self.root.get(key)
     }
 
+    /// the names of the top-level sections.
+    pub fn sections(&self) -> Vec<String> {
+        self.root
+            .keys()
+            .filter_map(|k| k.as_str().map(str::to_string))
+            .collect()
+    }
+
     /// replace one top-level section; the other sections are untouched.
     pub fn set_section(&mut self, key: &str, value: Value) {
         self.root.insert(Value::String(key.into()), value);
@@ -287,6 +295,16 @@ fn parse_path(path: &str) -> Result<Vec<Step>> {
     match steps.last() {
         Some(Step::Key(key)) if is_secret_key(key) => Ok(steps),
         _ => bail!("{path:?} is not a secret: it must end in one of {SECRET_KEYS:?}"),
+    }
+}
+
+/// the top-level section a secret `path` writes into: the first step of the very parse the
+/// writer uses, so what is checked is what is changed. a path that does not start with a key
+/// (or is not a secret path at all) has none.
+pub fn secret_section(path: &str) -> Result<String> {
+    match parse_path(path)?.into_iter().next() {
+        Some(Step::Key(key)) => Ok(key),
+        _ => bail!("{path:?} does not start with a section"),
     }
 }
 
@@ -771,6 +789,25 @@ impl Check {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_secret_path_names_the_section_it_writes_into() {
+        assert_eq!(
+            secret_section("nt4-domain.admin_password").unwrap(),
+            "nt4-domain"
+        );
+        assert_eq!(
+            secret_section(".nt4-domain.admin_password").unwrap(),
+            "nt4-domain"
+        );
+        assert_eq!(
+            secret_section("nt4-domain[x].password").unwrap(),
+            "nt4-domain"
+        );
+        assert!(secret_section("[x].password").is_err());
+        assert!(secret_section("").is_err());
+        assert!(secret_section("nt4-domain.name").is_err());
+    }
+
     use super::*;
 
     const GATEWAY: Ipv4Addr = Ipv4Addr::new(172, 16, 120, 1);

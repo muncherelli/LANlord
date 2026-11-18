@@ -82,7 +82,14 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool) -> TitleActions
     }
 }
 
-/// show a window; returns what its title bar asked for and whether it was clicked.
+fn padded(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .inner_margin(Margin::symmetric(7, 3))
+        .show(ui, content);
+}
+
+/// show a window; returns what its title bar asked for and whether it was clicked. a `fixed`
+/// window is a dialog: `size.x` wide, as tall as its contents, without resizing or scrolling.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ctx: &egui::Context,
@@ -91,31 +98,41 @@ pub fn show(
     start: Pos2,
     size: Vec2,
     active: bool,
+    fixed: bool,
     content: impl FnOnce(&mut Ui),
 ) -> Option<(TitleActions, bool)> {
     let mut actions = TitleActions::default();
-    let shown = egui::Window::new(title)
+    let window = egui::Window::new(title)
         .id(Id::unique(id))
         .title_bar(false)
         .collapsible(false)
-        .resizable(true)
         .default_pos(start)
-        .default_size(size)
-        .min_size(Vec2::new(320.0, 180.0))
-        .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)))
-        .show(ctx, |ui| {
-            actions = title_bar(ui, id, title, active);
-            ui.add_space(4.0);
-            // a window smaller than its contents scrolls instead of cutting them off
-            egui::ScrollArea::vertical()
-                .id_salt(("window-scroll", id))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(Margin::symmetric(7, 3))
-                        .show(ui, content);
-                });
-        })?;
+        .frame(egui::Frame::new().fill(GRAY).inner_margin(Margin::same(3)));
+    let window = if fixed {
+        window
+            .resizable(false)
+            .auto_sized()
+            .min_width(size.x)
+            .max_width(size.x)
+    } else {
+        window
+            .resizable(true)
+            .default_size(size)
+            .min_size(Vec2::new(320.0, 180.0))
+    };
+    let shown = window.show(ctx, |ui| {
+        actions = title_bar(ui, id, title, active);
+        ui.add_space(4.0);
+        if fixed {
+            padded(ui, content);
+            return;
+        }
+        // a window smaller than its contents scrolls instead of cutting them off
+        egui::ScrollArea::vertical()
+            .id_salt(("window-scroll", id))
+            .auto_shrink([false, false])
+            .show(ui, |ui| padded(ui, content));
+    })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);
     Some((actions, shown.response.is_pointer_button_down_on()))

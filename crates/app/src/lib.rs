@@ -3,6 +3,7 @@
 //! the actions; each front end only draws that description and turns input back into
 //! actions.
 
+pub mod account_window;
 pub mod admin_setup;
 pub mod apply_progress;
 pub mod ask;
@@ -30,6 +31,7 @@ pub mod module_window;
 pub mod monitor;
 pub mod my_server;
 pub mod nt4_panel;
+pub mod permissions_window;
 pub mod prompt;
 pub mod remote;
 pub mod replay;

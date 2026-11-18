@@ -248,6 +248,8 @@ pub struct Shell {
     /// the logon box, shown instead of the desktop until someone is signed in.
     login: Option<LoginBox>,
     signed_in: Option<SignedIn>,
+    /// showing the made-up demo server.
+    demo: bool,
     /// the screen root lands on to create the first administrator, before the desktop.
     admin_setup: Option<AdminSetup>,
     icons: Vec<Target>,
@@ -304,6 +306,7 @@ impl Shell {
             auth: None,
             login: None,
             signed_in: None,
+            demo: false,
             admin_setup: None,
             icons: desktop::icons(None),
             selected: None,
@@ -327,6 +330,7 @@ impl Shell {
 
     /// act as if signed in to a made-up server (`LANLORD_FAKE_SERVER=1`), like the gui.
     pub fn use_demo_server(&mut self) {
+        self.demo = true;
         self.hosts = HostList::new(None);
         let _ = self.hosts.add("demo@gateway");
     }
@@ -446,6 +450,9 @@ impl Shell {
     }
 
     pub fn open(&mut self, target: Target) {
+        if !target.visible(&self.grants()) {
+            return;
+        }
         if let Some(i) = self.windows.iter().position(|w| w.target == target) {
             let mut win = self.windows.remove(i);
             win.minimized = false;
@@ -574,13 +581,22 @@ impl Shell {
             .flatten()
     }
 
+    /// what the signed-in account may do. without a sign-in only the demo and a shell on the
+    /// gateway itself (where the server decides anyway) show everything.
+    fn grants(&self) -> lanlord_core::access::Grants {
+        self.signed_in.as_ref().map_or_else(
+            || lanlord_core::access::Grants::fallback(self.demo || self.services.is_local()),
+            |s| s.identity.grants(),
+        )
+    }
+
     fn menu_state(&self) -> Vec<Row> {
         let host = self.host();
         menu::rows(&menu::State {
             host: host.as_deref(),
             signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
             switch_server: true,
-            admin: self.signed_in.as_ref().is_none_or(|s| s.identity.admin),
+            grants: self.grants(),
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
             updates: Some(false),
             developer: false,
@@ -829,7 +845,9 @@ impl Shell {
                     drive(&nodes, &mut pass, &state, palette).0
                 }
             },
-            Target::Networks => drive::<()>(&not_yet(), &mut pass, &state, palette).0,
+            Target::Networks | Target::MyAccount | Target::Permissions => {
+                drive::<()>(&not_yet(), &mut pass, &state, palette).0
+            }
             Target::Progress => {
                 let nodes = self.console.apply.view();
                 let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
