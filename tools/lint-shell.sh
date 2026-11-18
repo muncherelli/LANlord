@@ -21,6 +21,9 @@ shellcheck -x -S warning "${scripts[@]}" || status=1
 echo "actionlint: .github/workflows"
 actionlint || status=1
 
+echo "case default scanner self-test"
+tools/test-check-case-default.sh > /dev/null || { tools/test-check-case-default.sh; status=1; }
+
 echo "case defaults"
 tools/check-case-default.sh || status=1
 

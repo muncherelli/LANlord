@@ -174,8 +174,8 @@ jobs:
                 # an older version whose image inputs equal the tag's is retagged, no rebuild; any change
                 # since (or an unknown revision) builds from the tag
                 # the version list is separate words on purpose
-              # shellcheck disable=SC2046
-              from=$(printf '%s\n' "$version" $(cut -d' ' -f1 <<<"$own") | sort -uV | sed "/^$version\$/,\$d" | tail -n1)
+                # shellcheck disable=SC2046
+                from=$(printf '%s\n' "$version" $(cut -d' ' -f1 <<<"$own") | sort -uV | sed "/^$version\$/,\$d" | tail -n1)
                 if [ -n "$from" ]; then
                   frev=$(sed -n "s/^$from //p" <<<"$own")
                   if unchanged "$entry" "$frev"; then action=retag; revision=$frev; else from=""; fi
