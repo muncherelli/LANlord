@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The terminal desktop has the Networks, My Account and Permissions windows (#128)
 - The terminal desktop has the update notice, check for updates, Rebuild and Developer menu actions (#129)
 - A `devtools` build feature, off in releases, adds a red bug menu with a demo desktop and window-manager debug, in the window, the browser and the terminal (#108, #129)
-- A Time Server (NTP) component runs chrony in a container for the networks you tick, and dnsmasq hands out its address as DHCP option 42; `lanlord doctor` checks that nothing else holds udp 123 (#118)
+- A Time Server (NTP) component runs chrony in a container for the networks you tick, and dnsmasq hands out its address as DHCP option 42; `lanlord doctor` warns when a host chronyd or ntpd already listens on udp 123 (#118)
 - `lanlord leases`, `lanlord power` (reboot or shutdown, confirmed by typing the host name) and `lanlord facts` show DHCP leases, power off or restart a server, and print system facts (#63)
 - Clock changes run on the gateway in plain Rust through a bridge, falling back to the old scripts when it is missing (#113)
 - Each account gets a role (Administrators, Operators or Users, or one you define) that says what it may see and change in each area; windows and menu items you may not use are hidden (#115)
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Developer tools: cross-compile the server for Linux, preview the web interface locally and deploy to a test server (#82)
 - Developer and preview launchers, and dev builds with demo data (#81)
 - The web interface is served from the gateway behind Caddy on port 8443 (#66)
-- A root helper checks web interface logins with PAM (#64)
+- A root helper checks web interface logins with PAM and tells administrators (the `admins` group) from other accounts (#64)
 - LXC, nesting and keyctl are detected, and Docker modules stop where they cannot run (#56)
 - Install and remove app launchers on Linux, macOS and Windows (#67)
 - A Date/Time Properties window opens from the taskbar clock (#55)
@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Settings are checked on the server when saved and when applied: stored settings with a top-level section the playbooks do not read, or with text that is just yes, no, on or off (which YAML reads as a boolean), now fail at Apply with a clear error naming the field (#132)
+- Settings are checked on the server when saved and again before Apply: a top-level section LANlord does not know, or (in a component's settings that have no fixed type) text that is just yes, no, on, off, true or false, is refused with an error naming the field; yes/no/on/off in on/off fields are read as true/false (#132)
 - The terminal desktop uses one layout system: windows sized to their contents and clamped to the screen, one column of padding, equal-width buttons, a navy selection and wrapped text (#126, #130)
 - The terminal desktop restores the terminal when it gets SIGTERM or SIGHUP (#130)
 - The administrators group is renamed `admins`, one group for the gateway and the domain (#49)
@@ -118,7 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- The server checks every setting and operation argument before anything runs: host names, domains, addresses, MAC addresses, ports, interface names, time zones, login names and paths must be well formed, and an unknown top-level settings section is refused. Values reach the playbooks marked unsafe so they are never run through Jinja templating (#132)
+- The server checks every setting and operation argument before anything runs: host names, domains, addresses, MAC addresses, ports, interface names, time zones, login names and paths must be well formed, and an unknown top-level settings section is refused. Every text value reaches the playbooks marked unsafe so they are never run through Jinja templating (#132)
+- The release key is downloaded over https only (#94)
 - Secrets are kept only on the gateway, under a root-only key that only the root service uses to decrypt; clients never hold a key (#127)
 - Web interface operations go through a root service that accepts only the web account and root on its socket, limits request size and time, and re-checks the account's permissions each time (#124)
 - Validation patterns now reject values with a trailing newline (#119)
