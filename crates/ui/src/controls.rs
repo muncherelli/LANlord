@@ -210,9 +210,15 @@ pub fn buttons<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// the height of a status bar.
+pub const STATUS_HEIGHT: f32 = 20.0;
+
 /// a sunken panel for status text at the bottom of a window.
 pub fn status_bar(ui: &mut Ui, text: &str, error: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), STATUS_HEIGHT),
+        Sense::hover(),
+    );
     thin_bevel(ui, rect, false);
     let colour = if error { crate::remote::RED } else { BLACK };
     ui.painter().with_clip_rect(rect.shrink(2.0)).text(
