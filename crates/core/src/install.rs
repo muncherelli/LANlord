@@ -129,7 +129,7 @@ fn verify_docker(session: &Session, ask_password: AskPassword) -> Result<()> {
 
 /// the bootstrap options the installer uses. ansible always goes onto the gateway: apply runs it
 /// there, so an ansible on this machine must not make bootstrap skip the gateway's venv.
-fn options_for(host: &str) -> Options {
+pub(crate) fn options_for(host: &str) -> Options {
     Options {
         host: host.to_string(),
         ansible: AnsibleMode::Remote,

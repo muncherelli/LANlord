@@ -142,6 +142,13 @@ echo "== not root with sudo uses it"
 FAKE_UID=1000 FAKE_SUDO=ok deploy user@gateway.example.lan --no-build --yes >/dev/null 2>&1 && ok "sudo deploy works" || bad "sudo deploy works"
 check "sudo was used" has "^sudo -n\|^sudo " "$t/log"
 
+echo "== a build without the web server is refused"
+printf 'x this build has no web server; build lanlord with --features webui' > "$newbin"
+before=$(snap)
+out=$(deploy root@gateway.example.lan --no-build --yes 2>&1) && bad "a build without webui is refused" || ok "a build without webui is refused"
+printf '%s\n' "$out" | grep -q "without the webui feature" && ok "the refusal says why" || bad "the refusal says why"
+[ "$(snap)" = "$before" ] && ok "nothing changed for a build without webui" || bad "nothing changed for a build without webui"
+
 echo "== bad input"
 if deploy >/dev/null 2>&1; then bad "no host refused"; else ok "no host refused"; fi
 if deploy -oProxyCommand=x >/dev/null 2>&1; then bad "option-like host refused"; else ok "option-like host refused"; fi
