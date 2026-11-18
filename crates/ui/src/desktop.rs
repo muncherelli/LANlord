@@ -276,6 +276,14 @@ impl Desktop {
 }
 
 impl Desktop {
+    /// is the account an administrator? ending a process is for them alone, as on the server.
+    /// without a sign-in only the demo and a shell on the gateway itself count.
+    fn is_admin(&self) -> bool {
+        self.signed_in
+            .as_ref()
+            .map_or(self.demo || self.services.is_local(), |s| s.identity.admin)
+    }
+
     /// what the account may do. nothing beyond the Users role until the gateway has said so (and
     /// the demo server, which is made up, may do all); the server enforces it either way.
     fn grants(&self) -> Grants {
@@ -1304,6 +1312,33 @@ impl Desktop {
         }
     }
 
+    fn account_window(&mut self, ui: &mut Ui) {
+        let host = self.host();
+        let nodes = self.account.view(&self.services, host.as_deref());
+        if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host.as_deref()) {
+            self.account.update(msg, &self.services, host);
+        }
+    }
+
+    fn permissions_window(&mut self, ui: &mut Ui) {
+        let (host, writable) = (self.host(), Target::Permissions.writable(&self.grants()));
+        let nodes = self
+            .permissions
+            .view(&self.services, host.as_deref(), writable);
+        if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host.as_deref()) {
+            self.permissions.update(msg, &self.services, host, writable);
+        }
+    }
+
+    fn progress_window(&mut self, ui: &mut Ui) {
+        if let Some(msg) = view::show(ui, &self.console.apply.view()) {
+            self.console.apply.update(msg);
+        }
+        if self.console.apply.take_done() {
+            self.close_requests.push(Target::Progress);
+        }
+    }
+
     fn contents(&mut self, ui: &mut Ui, target: Target) {
         match target {
             Target::Module(i) => self.module_window(ui, &MODULES[i]),
@@ -1339,11 +1374,11 @@ impl Desktop {
                 }
             }
             Target::TaskManager => {
-                let admin = Target::TaskManager.writable(&self.grants());
+                let admin = self.is_admin();
                 if let Some(crate::task_manager::Ask::End(pid)) =
                     self.task_manager.show(ui, &self.monitor, admin)
                 {
-                    // the server checks again; this only keeps someone without Manage on Status from asking
+                    // the server checks again; this only keeps a non-admin from asking
                     if admin {
                         self.monitor.end(pid, &crate::wake(ui.ctx()));
                     }
@@ -1364,30 +1399,9 @@ impl Desktop {
                     self.close_requests.push(Target::Welcome);
                 }
             }
-            Target::MyAccount => {
-                let host = self.host();
-                let nodes = self.account.view(&self.services, host.as_deref());
-                if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host.as_deref()) {
-                    self.account.update(msg, &self.services, host);
-                }
-            }
-            Target::Permissions => {
-                let (host, writable) = (self.host(), Target::Permissions.writable(&self.grants()));
-                let nodes = self
-                    .permissions
-                    .view(&self.services, host.as_deref(), writable);
-                if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host.as_deref()) {
-                    self.permissions.update(msg, &self.services, host, writable);
-                }
-            }
-            Target::Progress => {
-                if let Some(msg) = view::show(ui, &self.console.apply.view()) {
-                    self.console.apply.update(msg);
-                }
-                if self.console.apply.take_done() {
-                    self.close_requests.push(Target::Progress);
-                }
-            }
+            Target::MyAccount => self.account_window(ui),
+            Target::Permissions => self.permissions_window(ui),
+            Target::Progress => self.progress_window(ui),
             Target::Components => {
                 let host = self.host();
                 components_window::show(&mut self.components, ui, &self.services, host.as_deref());

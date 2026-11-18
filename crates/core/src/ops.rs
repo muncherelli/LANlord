@@ -129,6 +129,7 @@ fn dispatch(
                 .map(|u| (u.path.clone(), u.value.expose().to_string()))
                 .collect();
             let saved = key().and_then(|key| {
+                save_guard::check_updates(&updates, who.grants, who.caller)?;
                 let plain = plain_for_save(session, who, plain, &mut *ask)?;
                 settings::save_document_with(session, host, &key, &plain, &updates, ask)
             });
@@ -219,7 +220,7 @@ fn dispatch(
             self_service::update_profile(session, host, who.caller, profile, ask)?
         }
         Op::ResetPassword { user, new } => {
-            self_service::reset_password(session, who.caller, user, new, ask)?
+            self_service::reset_password(session, (who.caller, who.grants), user, new, ask)?
         }
         Op::LoadAccess => self_service::load_access(session, ask)?,
         Op::SaveAccess { access } => {

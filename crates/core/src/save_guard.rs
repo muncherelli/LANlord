@@ -43,6 +43,22 @@ pub fn merge_save(
     Ok(sent.text())
 }
 
+/// the secrets a save sets (by path, `section.key`) need Manage on the area of their section,
+/// like the plain settings do.
+pub fn check_updates(updates: &[(String, String)], grants: &Grants, caller: &Caller) -> Result<()> {
+    if caller.admin {
+        return Ok(());
+    }
+    for (path, _) in updates {
+        let section = path.split('.').next().unwrap_or_default();
+        let area = area_of_section(section);
+        if grants.level(area) < Level::Manage {
+            return Err(Refused(format!("setting {path} needs Manage on {}", area.title())).into());
+        }
+    }
+    Ok(())
+}
+
 fn put(settings: &mut Settings, name: &str, value: Option<Value>) {
     match value {
         Some(value) => settings.set_section(name, value),
@@ -181,6 +197,21 @@ mod tests {
         assert!(err.downcast_ref::<Refused>().is_some(), "{err:#}");
         // the same text unchanged is fine
         assert!(merged(STORED, &g).is_ok());
+    }
+
+    #[test]
+    fn a_secret_is_set_only_by_someone_who_manages_its_area() {
+        let g = grants(&[(Area::Services, Level::Manage)]);
+        let one = |path: &str| vec![(path.to_string(), "pw".to_string())];
+        assert!(check_updates(&one("docker.token"), &g, &caller()).is_ok());
+        let err = check_updates(&one("nt4-domain.admin_password"), &g, &caller()).unwrap_err();
+        assert!(err.downcast_ref::<Refused>().is_some(), "{err:#}");
+        assert!(check_updates(&one("nt4-domain.users.0.password"), &g, &caller()).is_err());
+        let admin = Caller {
+            user: "ann".into(),
+            admin: true,
+        };
+        assert!(check_updates(&one("nt4-domain.admin_password"), &g, &admin).is_ok());
     }
 
     #[test]

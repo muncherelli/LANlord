@@ -11,7 +11,7 @@ use lanlord_model::identity::{AccountInfo, PasswordReport};
 use lanlord_model::ops::Reply;
 use lanlord_model::secret::Secret;
 
-use crate::access::{self, Access, Caller, Grants, Profile};
+use crate::access::{self, Access, Area, Caller, Grants, Profile};
 use crate::bootstrap::AskPassword;
 use crate::ssh::Session;
 use crate::{admins, config, identity};
@@ -82,7 +82,9 @@ fn wait_left(fails: u32, last: Instant, now: Instant) -> Option<Duration> {
 }
 
 fn guesses() -> std::sync::MutexGuard<'static, BTreeMap<String, (u32, Instant)>> {
-    GUESSES.lock().unwrap_or_else(|e| e.into_inner())
+    GUESSES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn check_not_locked(user: &str, now: Instant) -> Result<()> {
@@ -138,9 +140,22 @@ fn refuse(why: impl Into<String>) -> anyhow::Error {
     access::Refused(why.into()).into()
 }
 
-/// whether a password reset of `user` by `caller` is allowed: never a system account, and only
-/// an administrator resets an administrator.
-fn check_target(session: &Session, caller: &Caller, user: &str) -> Result<()> {
+/// the groups of `user`; no answer is a refusal, never an empty list.
+fn groups_of(session: &Session, user: &str) -> Result<Vec<String>> {
+    let out = session
+        .capture(&["id".into(), "-nG".into(), user.into()])
+        .map_err(|_| refuse(format!("the groups of {user} cannot be read")))?;
+    Ok(out.split_whitespace().map(str::to_string).collect())
+}
+
+/// whether a password reset of `user` is allowed for `who`: never a system account, and only an
+/// administrator resets someone who can do more than the caller can.
+fn check_target(
+    session: &Session,
+    who: (&Caller, &Grants),
+    user: &str,
+    ask: AskPassword,
+) -> Result<()> {
     if SYSTEM_ACCOUNTS.contains(&user) {
         return Err(refuse(format!("{user} is a system account")));
     }
@@ -152,26 +167,37 @@ fn check_target(session: &Session, caller: &Caller, user: &str) -> Result<()> {
     if uid < FIRST_PERSON {
         return Err(refuse(format!("{user} is a system account")));
     }
-    let groups = session
-        .capture(&["id".into(), "-nG".into(), user.into()])
-        .unwrap_or_default();
-    let is_admin = groups.split_whitespace().any(|g| g == admins::ADMINS_GROUP);
-    if is_admin && !caller.admin {
-        return Err(refuse("only an administrator can reset an administrator"));
+    let (caller, grants) = who;
+    let is_admin = groups_of(session, user)?
+        .iter()
+        .any(|g| g == admins::ADMINS_GROUP);
+    if caller.admin {
+        return Ok(());
     }
-    Ok(())
+    let theirs = access::assignments(session, ask)?.grants(user, is_admin);
+    match Area::ALL
+        .into_iter()
+        .find(|a| theirs.level(*a) > grants.level(*a))
+    {
+        Some(area) => Err(refuse(format!(
+            "{user} may do more in {} than you; only an administrator resets them",
+            area.title()
+        ))),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn reset_password(
     session: &Session,
-    caller: &Caller,
+    who: (&Caller, &Grants),
     user: &str,
     new: &Secret,
     ask: AskPassword,
 ) -> Result<Reply> {
-    if crate::bootstrap::valid_user(user) {
-        check_target(session, caller, user)?;
+    if !crate::bootstrap::valid_user(user) {
+        return Err(refuse(format!("{user:?} is not a user name")));
     }
+    check_target(session, who, user, &mut *ask)?;
     Ok(Reply::Password(propagate(session, user, new, None, ask)?))
 }
 
@@ -262,6 +288,41 @@ mod tests {
         }
     }
 
+    /// a reset by `who` with the grants their role gives: all for an administrator, a user's else.
+    fn reset(session: &Session, who: &Caller, user: &str) -> Result<Reply> {
+        let grants = Grants::fallback(who.admin);
+        reset_password(
+            session,
+            (who, &grants),
+            user,
+            &secret("new"),
+            &mut no_password,
+        )
+    }
+
+    #[test]
+    fn nobody_resets_someone_who_may_do_more_than_they_do() {
+        let gw = Gateway::new("self-reset-more");
+        std::fs::write(
+            gw.dir.join("yml"),
+            "access:\n  members:\n    dana: [Operators]\n    eve: [Users]\n",
+        )
+        .unwrap();
+        // dana is an operator: more than a user may do
+        assert!(is_refused(&reset(&gw.session, &operator(), "dana")));
+        assert!(reset(&gw.session, &root(), "dana").is_ok());
+        assert!(reset(&gw.session, &operator(), "eve").is_ok());
+    }
+
+    #[test]
+    fn a_name_that_is_not_one_and_groups_that_cannot_be_read_are_refused() {
+        let gw = Gateway::new("self-reset-closed");
+        for who in [root(), operator()] {
+            assert!(is_refused(&reset(&gw.session, &who, "a b;c")));
+            assert!(is_refused(&reset(&gw.session, &who, "flaky")));
+        }
+    }
+
     fn is_refused<T>(result: &Result<T>) -> bool {
         result
             .as_ref()
@@ -274,8 +335,7 @@ mod tests {
         let gw = Gateway::new("self-reset-system");
         for name in ["root", "lanlord", "svc", "ghost"] {
             for who in [root(), operator()] {
-                let result =
-                    reset_password(&gw.session, &who, name, &secret("new"), &mut no_password);
+                let result = reset(&gw.session, &who, name);
                 assert!(is_refused(&result), "{name} by {}", who.user);
             }
         }
@@ -284,30 +344,12 @@ mod tests {
     #[test]
     fn only_an_administrator_resets_an_administrator() {
         let gw = Gateway::new("self-reset-admin");
-        let by_operator = reset_password(
-            &gw.session,
-            &operator(),
-            "boss",
-            &secret("new"),
-            &mut no_password,
-        );
+        let by_operator = reset(&gw.session, &operator(), "boss");
         assert!(is_refused(&by_operator));
-        let by_admin = reset_password(
-            &gw.session,
-            &root(),
-            "boss",
-            &secret("new"),
-            &mut no_password,
-        );
+        let by_admin = reset(&gw.session, &root(), "boss");
         assert!(by_admin.is_ok(), "{by_admin:?}");
         // an operator may reset an ordinary person
-        let person = reset_password(
-            &gw.session,
-            &operator(),
-            "dana",
-            &secret("new"),
-            &mut no_password,
-        );
+        let person = reset(&gw.session, &operator(), "dana");
         assert!(person.is_ok(), "{person:?}");
     }
 
@@ -380,6 +422,8 @@ case "$last" in
   "id -un") echo tester ;;
   "id -u svc") echo 998 ;;
   "id -u ghost") exit 1 ;;
+  "id -u flaky") echo 1005 ;;
+  "id -nG flaky") exit 1 ;;
   "id -u "*) echo 1001 ;;
   "id -nG boss") echo "boss admins" ;;
   "id -nG "*) echo "users" ;;
@@ -466,40 +510,16 @@ esac"#,
         let log = std::env::temp_dir().join(format!("lanlord-pw-reset-{}", std::process::id()));
         let _ = std::fs::remove_file(&log);
         let server = passwd_server("ok", &log);
-        let reply =
-            reset_password(&server, &root(), "dana", &secret("new"), &mut no_password).unwrap();
+        let reply = reset(&server, &root(), "dana").unwrap();
         assert_eq!(the_links(reply), (true, vec![LinkState::Changed]));
         // with the domain component installed there is a second link that does nothing yet
         std::fs::write(gw.dir.join("yml"), "nt4-domain:\n  realm: EXAMPLE\n").unwrap();
-        let reply = reset_password(
-            &gw.session,
-            &root(),
-            "dana",
-            &secret("new"),
-            &mut no_password,
-        )
-        .unwrap();
+        let reply = reset(&gw.session, &root(), "dana").unwrap();
         let (ok, states) = the_links(reply);
         assert!(ok);
         assert_eq!(states.len(), 2);
         assert!(matches!(states[1], LinkState::Skipped(_)));
         let _ = std::fs::remove_file(&log);
-    }
-
-    #[test]
-    fn a_user_name_that_is_not_one_fails_the_link_and_the_report() {
-        let gw = Gateway::new("self-reset-bad");
-        let reply = reset_password(
-            &gw.session,
-            &root(),
-            "a b;c",
-            &secret("new"),
-            &mut no_password,
-        )
-        .unwrap();
-        let (ok, states) = the_links(reply);
-        assert!(!ok);
-        assert!(matches!(states[0], LinkState::Failed(_)));
     }
 
     #[test]

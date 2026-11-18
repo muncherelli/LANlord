@@ -78,7 +78,7 @@ impl Target {
                 "remote-commands" => Area::Commands,
                 _ => Area::Services,
             }),
-            // anyone may watch the Task Manager; ending a process needs Manage on the same area
+            // anyone may watch the Task Manager; ending a process is for administrators
             Self::MyServer | Self::TaskManager => Some(Area::Status),
             Self::Networks => Some(Area::Network),
             Self::Console => Some(Area::Commands),
@@ -278,13 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn anyone_may_watch_the_task_manager_but_only_a_manager_of_status_may_end_a_process() {
+    fn anyone_may_open_the_task_manager() {
         use lanlord_model::access::{Grants, Level};
-        let users = Grants::fallback(false);
-        assert!(Target::TaskManager.visible(&users));
-        assert!(!Target::TaskManager.writable(&users));
-        let admins = Grants::fallback(true);
-        assert!(Target::TaskManager.visible(&admins) && Target::TaskManager.writable(&admins));
+        assert!(Target::TaskManager.visible(&Grants::fallback(false)));
         assert_eq!(Target::TaskManager.opens_at(), Level::View);
     }
 
