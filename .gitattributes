@@ -1,3 +1,6 @@
 # the playbooks and the samba image files are embedded in the binary and run on
 # linux, so they must keep unix line endings even when checked out on windows
 ansible/** text eol=lf
+
+# the tui layout snapshots are compared byte for byte
+crates/tui/src/shell/snapshots/*.txt text eol=lf

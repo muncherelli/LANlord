@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+                ┌ Logon Information ──────────────────── _ □ × ┐
+                │ Type the name you use on the gateway and its │
+                │ hostname or address.                         │
+                │                                              │
+                │ Username:                                    │
+                │ Hostname:                                    │
+                │              [ OK ] [ Cancel ] [ Shut Down ] │
+                └──────────────────────────────────────────────┘
+
+
+
+
+
+
+
+

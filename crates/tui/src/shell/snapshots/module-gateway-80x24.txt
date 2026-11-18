@@ -1,0 +1,24 @@
+       ┌ ► Gateway ───────────────────────────────────────────────────── _ □ × ┐
+      ≡│ Gateway                                                               │
+  My Se│ Status: available                                                     │
+       │                                                                       │
+       │ Baseline for the gateway: its state record and message of the day.    │
+      □│ ───────────────────────────────────────────────────────────────────── │
+   Netw│ ┌ Settings (in your settings file) ─────────────────────────────────┐ │
+       │ │  gateway:                                                         │ │
+       │ │    motd: "welcome to the retronet\n"                              │ │
+      ►│ └───────────────────────────────────────────────────────────────────┘ │
+   Gate│                                                             [ Apply ] │
+       │ Host: demo@gateway                                                    │
+       └───────────────────────────────────────────────────────────────────────┘
+      ▦
+   Settings
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ] [ ► Gateway ]                                           12:00 PM

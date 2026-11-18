@@ -1,0 +1,45 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                    ┌ Create Administrator Account ───────────────── _ □ × ┐
+                                                    │ You are logged on as root. That is allowed, but root │
+                                                    │ should not be your everyday account. Create an       │
+                                                    │ administrator for yourself: a login that is in       │
+                                                    │ admins and can use sudo.                             │
+                                                    │                                                      │
+                                                    │ Username:                                            │
+                                                    │ Password:                                            │
+                                                    │ Confirm:                                             │
+                                                    │ ┌ SSH public key (the preferred way to sign in) ───┐ │
+                                                    │ │  ssh-ed25519 AAAA... paste your public key here  │ │
+                                                    │ │                                                  │ │
+                                                    │ │                                                  │ │
+                                                    │ └──────────────────────────────────────────────────┘ │
+                                                    │ [ ] Allow sudo without a password (dangerous)        │
+                                                    │                          [ Create ] [ Skip for now ] │
+                                                    └──────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+

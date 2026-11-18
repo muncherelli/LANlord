@@ -1,0 +1,24 @@
+
+      ≡           ▣
+  My Server     Hosts
+
+
+      □
+   Networks
+
+
+      ►             ┌ Reboot server ──────────────── _ □ × ┐
+   Gateway          │ Restart demo@gateway now?            │
+                    │                    [ OK ] [ Cancel ] │
+                    └──────────────────────────────────────┘
+      ▦
+   Settings
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ]                                                         12:00 PM

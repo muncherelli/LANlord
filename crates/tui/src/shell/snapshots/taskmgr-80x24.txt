@@ -1,0 +1,24 @@
+     ┌ ▃ Task Manager ────────────────────────────────────────────────── _ □ × ┐
+     │ Monitoring another server needs the bridge connection, which is not     │
+  My │ available yet.                                                          │
+     │ [    PID     ] [    CPU     ] [ Mem Usage  ] [ Image Name ]             │
+     │                                                                         │
+     │                                                                         │
+   Ne│                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+   Ga│                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+   Se│                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+   Co│                                                                         │
+     │                                                                         │
+     │                                                                         │
+     │                                                                         │
+     └─────────────────────────────────────────────────────────────────────────┘
+[ L LANlord ] [ ▃ Task Manager ]                                      12:00 PM

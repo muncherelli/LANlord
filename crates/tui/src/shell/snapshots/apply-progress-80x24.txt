@@ -1,0 +1,24 @@
+       ┌ ◆ Applying Settings ─────────────────────────────────────────── _ □ × ┐
+      ≡│ Starting...                                                           │
+  My Se│                                  0%                                   │
+       │ Elapsed: 0:00                                                         │
+       │                                                                       │
+      □│                                                                       │
+   Netw│                                                                       │
+       │                                                                       │
+       │                                                                       │
+      ►│                                                                       │
+   Gate│                                                                       │
+       │                                                                       │
+       │                                                                       │
+      ▦│                                                                       │
+   Sett│                                                                       │
+       │                                                                       │
+       │                                                                       │
+      >│                                                                       │
+   Cons│                                                                       │
+       │ [+] Details                                                           │
+       │                                                             [ Close ] │
+       │ Applying settings...                                                  │
+       └───────────────────────────────────────────────────────────────────────┘
+[ L LANlord ] [ ◆ Applying Settings ]                                 12:00 PM

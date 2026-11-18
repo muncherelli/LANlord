@@ -483,28 +483,34 @@ pub fn top_view(monitor: &Monitor, order: Order) -> Vec<crate::view::Node<TopMsg
         body.push(Node::Text(text));
     }
     body.push(Node::Gap(4.0));
-    body.push(Node::Buttons(
-        COLUMNS
+    // the sort buttons are the column headings: each sits over a cell as wide as a button, and
+    // the name takes the rest of the line
+    let shown = [Column::Pid, Column::Cpu, Column::Memory, Column::Name];
+    body.push(Node::Toolbar(
+        shown
             .iter()
-            .rev()
-            .filter(|(c, _)| *c != Column::User && *c != Column::Threads)
+            .filter_map(|c| COLUMNS.iter().find(|(column, _)| column == c))
             .map(|(c, label)| Button::new(label, order.column != *c, TopMsg::Sort(*c)))
             .collect(),
     ));
-    let mut lines = vec![format!(
-        "{:>7} {:<12} {:>5} {:>10} {:>4}  {}",
-        "PID", "USER", "CPU%", "MEM", "THR", "NAME"
-    )];
+    // a process cell is as wide as the widest heading button: its label and two cells each side
+    let cell = shown
+        .iter()
+        .filter_map(|c| COLUMNS.iter().find(|(column, _)| column == c))
+        .map(|(_, label)| label.chars().count() + 4)
+        .max()
+        .unwrap_or(0);
+    let mut lines = Vec::new();
     if let Some(procs) = &monitor.history.procs {
         for (row, cpu) in sorted(&procs.procs, &monitor.history.process_cpu, order) {
             lines.push(format!(
-                "{:>7} {:<12.12} {:>5.1} {:>10} {:>4}  {}",
+                "{:^w$} {:^w$} {:^w$} {} ({})",
                 row.pid,
-                row.user,
-                cpu,
+                format!("{cpu:.1}%"),
                 human_bytes(row.rss_bytes as f64),
-                row.threads,
-                row.name
+                row.name,
+                row.user,
+                w = cell
             ));
         }
     }
@@ -688,8 +694,8 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(lines.len(), 11, "a heading and the ten made-up processes");
-        assert!(lines[0].contains("NAME") && lines.iter().any(|l| l.contains("dockerd")));
+        assert_eq!(lines.len(), 10, "the ten made-up processes");
+        assert!(lines.iter().any(|l| l.contains("dockerd")));
     }
 
     #[test]

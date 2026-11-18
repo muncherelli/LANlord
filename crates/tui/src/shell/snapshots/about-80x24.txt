@@ -1,0 +1,24 @@
+
+      ≡           ▣
+  My Server     Hosts
+
+
+      □
+   Networks
+
+
+      ►            ┌ About LANlord ───────────────── _ □ × ┐
+   Gateway         │ LANlord                               │
+                   │ Retro networks, run from one desktop. │
+                   │                     [ OK ] [ Cancel ] │
+      ▦            └───────────────────────────────────────┘
+   Settings
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ]                                                         12:00 PM

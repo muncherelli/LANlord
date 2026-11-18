@@ -1,0 +1,24 @@
+     ┌ ◆ LANlord Components ──────────────────────────────────────────── _ □ × ┐
+     │  LANlord Components                                                 ▦   │
+  My │    You can add or remove components of LANlord.                         │
+     │ ─────────────────────────────────────────────────────────────────────── │
+     │ To add or remove a component, click the checkbox. A shaded box means    │
+     │ that only part of the component will be installed. To see what's        │
+   Ne│ included in a component, click Details.                                 │
+     │ Components:                                                             │
+     │  [x] ► Gateway                                           gateway only   │
+     │  [ ] ▓ Docker                                         ✓  gateway only   │
+   Ga│  [ ] ▌ NT4 Domain                               ✓  Docker, 1+ network   │
+     │  [ ] ◎ Web Proxy                                ✓  Docker, 1+ network   │
+     │  [ ] ▶ Remote Cmds                                  networks optional   │
+     │  [ ] ┬ DNS                                      ✓  Docker, 1+ network   │
+   Se│  [ ] ◆ Time Server (NTP)                        ?  Docker, 1+ network   │
+     │                                                                         │
+     │                                                                         │
+     │  Baseline for the gateway: its state record and message of the day.     │
+   Co│ [ Details... ]   [ Compatibility... ]                                   │
+     │                                        [ < Back ] [ Next > ] [ Cancel ] │
+     └─────────────────────────────────────────────────────────────────────────┘
+
+
+[ L LANlord ] [ ◆ LANlord Components ]                                12:00 PM

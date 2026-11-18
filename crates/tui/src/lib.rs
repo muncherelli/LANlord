@@ -1,6 +1,7 @@
 //! the terminal ui: the same desktop, windows, menus and boxes as the gui, drawn in character
 //! cells from the shared app layer, with the mouse.
 
+mod layout;
 pub mod paint;
 mod shell;
 mod view;

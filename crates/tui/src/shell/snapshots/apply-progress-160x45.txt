@@ -1,0 +1,45 @@
+              ┌ ◆ Applying Settings ─────────────────────────────────────────── _ □ × ┐
+      ≡       │ Starting...                                                           │
+  My Server   │                                  0%                                   │
+              │ Elapsed: 0:00                                                         │
+              │                                                                       │
+      □       │                                                                       │
+   Networks   │                                                                       │
+              │                                                                       │
+              │                                                                       │
+      ►       │                                                                       │
+   Gateway    │                                                                       │
+              │                                                                       │
+              │                                                                       │
+      ▦       │                                                                       │
+   Settings   │                                                                       │
+              │                                                                       │
+              │                                                                       │
+      >       │                                                                       │
+   Console    │                                                                       │
+              │                                                                       │
+              │ [+] Details                                                           │
+      ▣       │                                                             [ Close ] │
+    Hosts     │ Applying settings...                                                  │
+              └───────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ ◆ Applying Settings ]                                                                                                                 12:00 PM

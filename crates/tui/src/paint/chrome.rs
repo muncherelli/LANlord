@@ -1,26 +1,25 @@
-//! the window chrome: bevelled boxes, window frames with a title bar, the taskbar and menus.
+//! the window chrome: boxes drawn with plain line characters, window frames with the title on
+//! the top line, the taskbar and menus.
 //!
-//! a 1px gui edge is imitated with the one-eighth block glyphs (`▔ ▁ ▏ ▕`), which terminals
-//! draw hugging the side of the cell: a raised box gets a light line along its outer top and
-//! left and a dark one along its outer bottom and right; a sunken box puts its lines on the
-//! inner side, against the white field it surrounds, dark above and left, light below and right.
+//! a window or menu is a single-line box (`┌─┐│└┘`); a window's title and its minimise,
+//! maximise and close controls sit on the top line, which is navy while the window has focus.
+//! buttons are `[ label ]`, the pressed or focused one in navy. there is no 3d edge.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
 use super::glyphs::chip;
-use super::palette::{Palette, Rgb, BLACK, GRAY, NAVY, SHADOW, WHITE};
+use super::palette::{Palette, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use super::{bold, fill, put, style, text};
 
-/// a gray box with a 3d edge one cell wide.
-pub struct Bevel {
-    pub sunken: bool,
+/// a gray box with a single-line border one cell wide.
+pub struct Frame {
     pub palette: Palette,
 }
 
-impl Bevel {
-    /// the area inside the edge.
+impl Frame {
+    /// the area inside the border.
     pub fn inner(area: Rect) -> Rect {
         Rect::new(
             area.x.saturating_add(1),
@@ -31,38 +30,28 @@ impl Bevel {
     }
 }
 
-impl Widget for Bevel {
+impl Widget for Frame {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let area = area.intersection(buf.area);
         fill(buf, area, self.palette, GRAY);
         if area.width < 2 || area.height < 2 {
             return;
         }
-        let palette = self.palette;
+        let line = style(self.palette, BLACK, GRAY);
         let (left, right, top, bottom) =
             (area.left(), area.right() - 1, area.top(), area.bottom() - 1);
-        // (top, bottom, left, right) glyphs and their colours
-        let (glyphs, colours): ([&str; 4], [Rgb; 4]) = if self.sunken {
-            (["▁", "▔", "▕", "▏"], [SHADOW, WHITE, SHADOW, WHITE])
-        } else {
-            (["▔", "▁", "▏", "▕"], [WHITE, SHADOW, WHITE, SHADOW])
-        };
-        let edge = |rgb: Rgb| style(palette, rgb, GRAY);
         for x in left + 1..right {
-            put(buf, (x, top), glyphs[0], edge(colours[0]));
-            put(buf, (x, bottom), glyphs[1], edge(colours[1]));
+            put(buf, (x, top), "─", line);
+            put(buf, (x, bottom), "─", line);
         }
         for y in top + 1..bottom {
-            put(buf, (left, y), glyphs[2], edge(colours[2]));
-            put(buf, (right, y), glyphs[3], edge(colours[3]));
+            put(buf, (left, y), "│", line);
+            put(buf, (right, y), "│", line);
         }
-        if !self.sunken {
-            // the corners carry the line of the edge that owns them in the gui
-            put(buf, (left, top), "▔", edge(WHITE));
-            put(buf, (right, top), "▕", edge(SHADOW));
-            put(buf, (left, bottom), "▏", edge(WHITE));
-            put(buf, (right, bottom), "▁", edge(SHADOW));
-        }
+        put(buf, (left, top), "┌", line);
+        put(buf, (right, top), "┐", line);
+        put(buf, (left, bottom), "└", line);
+        put(buf, (right, bottom), "┘", line);
     }
 }
 
@@ -101,10 +90,11 @@ pub struct WindowFrame<'a> {
 }
 
 impl WindowFrame<'_> {
-    /// the title bar is the first row inside the edge, the body everything under it.
+    /// the title bar is the top line of the box between its corners, the body everything
+    /// inside the border.
     pub fn layout(area: Rect) -> WindowLayout {
-        let inner = Bevel::inner(area);
-        let title_bar = Rect::new(inner.x, inner.y, inner.width, inner.height.min(1));
+        let inner = Frame::inner(area);
+        let title_bar = Rect::new(inner.x, area.y, inner.width, area.height.min(1));
         let button = |from_right: u16| {
             Rect::new(
                 title_bar.right().saturating_sub(from_right),
@@ -115,15 +105,10 @@ impl WindowFrame<'_> {
         };
         WindowLayout {
             title_bar,
-            minimise: button(7),
-            maximise: button(5),
+            minimise: button(6),
+            maximise: button(4),
             close: button(2),
-            body: Rect::new(
-                inner.x,
-                inner.y.saturating_add(1),
-                inner.width,
-                inner.height.saturating_sub(1),
-            ),
+            body: inner,
         }
     }
 }
@@ -131,42 +116,40 @@ impl WindowFrame<'_> {
 impl Widget for WindowFrame<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
-        Bevel {
-            sunken: false,
-            palette,
-        }
-        .render(area, buf);
+        Frame { palette }.render(area, buf);
         let layout = WindowFrame::layout(area);
         let (bar, ink) = if self.active {
             (NAVY, WHITE)
         } else {
-            (SHADOW, GRAY)
+            (GRAY, BLACK)
         };
+        let line = style(palette, ink, bar);
         fill(buf, layout.title_bar, palette, bar);
-        let mut x = layout.title_bar.x + 1;
+        for x in layout.title_bar.left()..layout.title_bar.right() {
+            put(buf, (x, layout.title_bar.y), "─", line);
+        }
+        // " icon title " from the left, then " _ □ × " at the right, on the line
+        let bar_line = bold(line);
+        let mut x = layout.title_bar.x;
+        let title = format!(" {} ", self.title);
         if let Some(id) = self.icon {
-            chip(buf, x, layout.title_bar.y, id, palette);
+            put(buf, (x, layout.title_bar.y), " ", line);
+            chip(buf, x + 1, layout.title_bar.y, id, palette);
             x += 2;
         }
         let room = layout.minimise.x.saturating_sub(x + 1);
-        text(
-            buf,
-            x,
-            layout.title_bar.y,
-            room,
-            self.title,
-            bold(style(palette, ink, bar)),
-        );
-        let face = bold(style(palette, BLACK, GRAY));
-        for (rect, glyph) in [
-            (layout.minimise, "_"),
-            (layout.maximise, "□"),
-            (layout.close, "×"),
-        ] {
-            if rect.x > x && rect.width == 2 {
-                text(buf, rect.x, rect.y, 1, glyph, face);
-                // a dark right edge makes each title button read as raised
-                put(buf, (rect.x + 1, rect.y), "▕", style(palette, BLACK, GRAY));
+        text(buf, x, layout.title_bar.y, room, &title, bar_line);
+        let controls = layout.minimise.x.saturating_sub(1)..layout.close.right();
+        if controls.start > x && layout.close.width == 2 {
+            for at in controls {
+                put(buf, (at, layout.title_bar.y), " ", line);
+            }
+            for (rect, glyph) in [
+                (layout.minimise, "_"),
+                (layout.maximise, "□"),
+                (layout.close, "×"),
+            ] {
+                text(buf, rect.x, rect.y, 1, glyph, bar_line);
             }
         }
     }
@@ -189,8 +172,8 @@ pub struct TaskbarLayout {
     pub alert: Option<Rect>,
 }
 
-/// the taskbar: one gray row with the raised LANlord menu button, a button per open window
-/// and the sunken clock at the right.
+/// the taskbar: one gray row with the LANlord menu button, a button per open window and the
+/// clock at the right.
 pub struct Taskbar<'a> {
     pub menu_label: &'a str,
     pub menu_icon: Option<&'a str>,
@@ -203,7 +186,7 @@ pub struct Taskbar<'a> {
 }
 
 /// the widest a window button gets, like the gui's.
-const TASK_BUTTON: u16 = 22;
+const TASK_BUTTON: u16 = 30;
 
 /// the width of a one-row button: its edges, a space each side, the label and the icon.
 fn row_button_width(label: &str, icon: bool) -> u16 {
@@ -252,27 +235,8 @@ impl Taskbar<'_> {
     }
 }
 
-/// the edges of a one-row box: a thin line on its first and last cell, light then dark when
-/// raised, dark then light when sunken.
-fn row_edges(buf: &mut Buffer, rect: Rect, sunken: bool, palette: Palette) {
-    if rect.width < 2 {
-        return;
-    }
-    let (first, last) = if sunken {
-        (SHADOW, WHITE)
-    } else {
-        (WHITE, BLACK)
-    };
-    put(buf, (rect.x, rect.y), "▏", style(palette, first, GRAY));
-    put(
-        buf,
-        (rect.right() - 1, rect.y),
-        "▕",
-        style(palette, last, GRAY),
-    );
-}
-
-/// a one-row raised button (sunk when pressed) with an optional icon chip.
+/// a one-row button: `[ label ]`, in navy when it is pressed or has the focus, with an
+/// optional icon chip before the label.
 pub fn row_button(
     buf: &mut Buffer,
     rect: Rect,
@@ -284,8 +248,18 @@ pub fn row_button(
     if rect.width == 0 {
         return;
     }
-    fill(buf, rect, palette, GRAY);
-    row_edges(buf, rect, pressed, palette);
+    let (fg, bg) = if pressed {
+        (WHITE, NAVY)
+    } else {
+        (BLACK, GRAY)
+    };
+    fill(buf, rect, palette, bg);
+    if rect.width < 2 {
+        return;
+    }
+    let edge = style(palette, fg, bg);
+    put(buf, (rect.x, rect.y), "[", edge);
+    put(buf, (rect.right() - 1, rect.y), "]", edge);
     let mut x = rect.x + 2;
     if let Some(id) = icon {
         chip(buf, x, rect.y, id, palette);
@@ -297,7 +271,7 @@ pub fn row_button(
         rect.y,
         rect.right().saturating_sub(x + 2),
         label,
-        bold(style(palette, BLACK, GRAY)),
+        bold(edge),
     );
 }
 
@@ -338,7 +312,6 @@ impl Widget for Taskbar<'_> {
         }
         let clock = layout.clock;
         if clock.width > 2 {
-            row_edges(buf, clock, true, palette);
             text(
                 buf,
                 clock.x + 2,
@@ -401,7 +374,7 @@ impl Menu<'_> {
 
     /// the screen row of each menu row inside `area`.
     pub fn row_rects(&self, area: Rect) -> Vec<Rect> {
-        let inner = Bevel::inner(area);
+        let inner = Frame::inner(area);
         (0..self.rows.len() as u16)
             .map(|i| Rect::new(inner.x, inner.y + i, inner.width, 1))
             .filter(|r| r.y < inner.bottom())
@@ -412,11 +385,7 @@ impl Menu<'_> {
 impl Widget for Menu<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
-        Bevel {
-            sunken: false,
-            palette,
-        }
-        .render(area, buf);
+        Frame { palette }.render(area, buf);
         for (i, (row, rect)) in self.rows.iter().zip(self.row_rects(area)).enumerate() {
             match row {
                 MenuRow::Separator => {
@@ -527,40 +496,21 @@ mod tests {
             false,
             palette(),
         );
-        assert_eq!(buf[(6, 2)].symbol(), "▔", "the visible corner is drawn");
+        assert_eq!(buf[(6, 2)].symbol(), "┌", "the visible corner is drawn");
     }
 
     #[test]
-    fn a_raised_bevel_is_light_top_left_and_dark_bottom_right() {
+    fn a_frame_is_a_single_line_box() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 5, 3));
-        Bevel {
-            sunken: false,
-            palette: palette(),
-        }
-        .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▔▔▔▔▕", "▏   ▕", "▏▁▁▁▁"]);
-        assert_eq!(buf[(1, 0)].fg, Color::Rgb(255, 255, 255));
-        assert_eq!(buf[(0, 1)].fg, Color::Rgb(255, 255, 255));
-        assert_eq!(buf[(1, 2)].fg, Color::Rgb(128, 128, 128));
-        assert_eq!(buf[(4, 1)].fg, Color::Rgb(128, 128, 128));
+        Frame { palette: palette() }.render(buf.area, &mut buf);
+        assert_eq!(lines(&buf), ["┌───┐", "│   │", "└───┘"]);
+        assert_eq!(buf[(1, 0)].fg, Color::Rgb(0, 0, 0));
         assert_eq!(buf[(2, 1)].bg, Color::Rgb(192, 192, 192));
+        assert_eq!(Frame::inner(buf.area), Rect::new(1, 1, 3, 1));
     }
 
     #[test]
-    fn a_sunken_bevel_hugs_its_inside_dark_then_light() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 3));
-        Bevel {
-            sunken: true,
-            palette: palette(),
-        }
-        .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), [" ▁▁ ", "▕  ▏", " ▔▔ "]);
-        assert_eq!(buf[(1, 0)].fg, Color::Rgb(128, 128, 128));
-        assert_eq!(buf[(1, 2)].fg, Color::Rgb(255, 255, 255));
-    }
-
-    #[test]
-    fn a_window_has_a_navy_title_bar_with_its_buttons() {
+    fn a_window_has_its_title_and_buttons_on_a_navy_top_line() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 24, 4));
         WindowFrame {
             title: "My Server",
@@ -572,22 +522,26 @@ mod tests {
         assert_eq!(
             lines(&buf),
             [
-                "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕",
-                "▏ ≡ My Server   _▕□▕ ×▕▕",
-                "▏                      ▕",
-                "▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+                "┌ ≡ My Server ── _ □ × ┐",
+                "│                      │",
+                "│                      │",
+                "└──────────────────────┘",
             ]
         );
-        assert_eq!(buf[(5, 1)].bg, Color::Rgb(0, 0, 128));
-        assert_eq!(buf[(5, 1)].fg, Color::Rgb(255, 255, 255));
-        assert_eq!(buf[(21, 1)].bg, Color::Rgb(192, 192, 192), "close face");
+        assert_eq!(buf[(5, 0)].bg, Color::Rgb(0, 0, 128));
+        assert_eq!(buf[(5, 0)].fg, Color::Rgb(255, 255, 255));
+        assert_eq!(
+            buf[(21, 0)].bg,
+            Color::Rgb(0, 0, 128),
+            "close sits on the bar"
+        );
         let layout = WindowFrame::layout(buf.area);
-        assert_eq!(layout.close, Rect::new(21, 1, 2, 1));
-        assert_eq!(layout.body, Rect::new(1, 2, 22, 1));
+        assert_eq!(layout.close, Rect::new(21, 0, 2, 1));
+        assert_eq!(layout.body, Rect::new(1, 1, 22, 2));
     }
 
     #[test]
-    fn an_inactive_window_has_a_gray_title_bar_and_gray_text() {
+    fn an_inactive_window_has_a_gray_top_line() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 4));
         WindowFrame {
             title: "Console",
@@ -596,12 +550,12 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(buf[(3, 1)].bg, Color::Rgb(128, 128, 128));
-        assert_eq!(buf[(3, 1)].fg, Color::Rgb(192, 192, 192));
+        assert_eq!(buf[(3, 0)].bg, Color::Rgb(192, 192, 192));
+        assert_eq!(buf[(3, 0)].fg, Color::Rgb(0, 0, 0));
     }
 
     #[test]
-    fn the_taskbar_has_raised_buttons_and_a_sunken_clock() {
+    fn the_taskbar_has_bracketed_buttons_and_a_plain_clock() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 44, 1));
         let buttons = [TaskButton {
             icon: None,
@@ -621,15 +575,15 @@ mod tests {
         bar.render(buf.area, &mut buf);
         assert_eq!(
             lines(&buf),
-            ["▏ L LANlord ▕ ▏ Console ▕       ▏ 10:55 AM ▕"]
+            ["[ L LANlord ] [ Console ]         10:55 AM  "]
         );
         assert_eq!(layout.menu, Rect::new(0, 0, 13, 1));
         assert_eq!(layout.buttons, [Rect::new(14, 0, 11, 1)]);
         assert_eq!(layout.clock, Rect::new(32, 0, 12, 1));
-        // raised: light left edge; pressed and the clock: dark left edge
-        assert_eq!(buf[(0, 0)].fg, Color::Rgb(255, 255, 255));
-        assert_eq!(buf[(14, 0)].fg, Color::Rgb(128, 128, 128));
-        assert_eq!(buf[(32, 0)].fg, Color::Rgb(128, 128, 128));
+        // the open window's button is navy, the others gray
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(192, 192, 192));
+        assert_eq!(buf[(14, 0)].bg, Color::Rgb(0, 0, 128));
+        assert_eq!(buf[(14, 0)].fg, Color::Rgb(255, 255, 255));
         assert!(buf[(4, 0)].modifier.contains(Modifier::BOLD));
     }
 
@@ -671,12 +625,12 @@ mod tests {
         assert_eq!(
             lines(&buf),
             [
-                "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕",
-                "▏   Server: demo       ▕",
-                "▏ ──────────────────── ▕",
-                "▏ ✓ Automatic updates  ▕",
-                "▏   Developer        ▸ ▕",
-                "▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+                "┌──────────────────────┐",
+                "│   Server: demo       │",
+                "│ ──────────────────── │",
+                "│ ✓ Automatic updates  │",
+                "│   Developer        ▸ │",
+                "└──────────────────────┘",
             ]
         );
         assert_eq!(buf[(5, 4)].bg, Color::Rgb(0, 0, 128));
