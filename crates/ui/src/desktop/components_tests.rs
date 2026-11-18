@@ -86,6 +86,7 @@ fn the_wizard_adds_a_component_and_its_icon_appears() {
         .components
         .update(Msg::Toggle(row), &desktop.services, "me@gw");
     assert!(press(&mut desktop, &ctx, "Next >"), "to the networks page");
+    frames(&mut desktop, &ctx, 4);
     assert!(press(&mut desktop, &ctx, "Next >"), "to the summary");
     assert!(press(&mut desktop, &ctx, "Finish"));
     until(&mut desktop, &ctx, |d| {

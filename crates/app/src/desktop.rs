@@ -20,6 +20,8 @@ pub enum Target {
     Components,
     /// the Welcome window, shown after logon and from the menu; it has no desktop icon.
     Welcome,
+    /// the changelog, read only; opened from the Welcome window and the menu's help rows.
+    Changelog,
     /// the signed-in person's own account, for everyone; opened from the menu.
     MyAccount,
     /// users, roles and what each role may do; opened from the menu.
@@ -29,6 +31,13 @@ pub enum Target {
     /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
     TaskManager,
 }
+
+/// the console opens as 80 columns by 24 rows of text, the size of a terminal.
+pub const CONSOLE_COLS: f32 = 80.0;
+pub const CONSOLE_ROWS: f32 = 24.0;
+/// a text cell in layout units, for the front ends that have no font to measure; the window
+/// front end measures its own.
+const CELL: (f32, f32) = (8.0, 16.0);
 
 impl Target {
     /// the id of the window's icon, and of the module for a module window.
@@ -43,6 +52,7 @@ impl Target {
             Self::DateTime => "datetime",
             Self::Components => "components",
             Self::Welcome => "welcome",
+            Self::Changelog => "changelog",
             Self::MyAccount => "my-account",
             Self::Permissions => "permissions",
             Self::Progress => "apply-progress",
@@ -61,6 +71,7 @@ impl Target {
             Self::DateTime => "Date/Time Properties",
             Self::Components => "LANlord Components",
             Self::Welcome => "Welcome",
+            Self::Changelog => "Changelog",
             Self::MyAccount => "My Account",
             Self::Permissions => "Users and Permissions",
             Self::Progress => "Applying Settings",
@@ -68,8 +79,36 @@ impl Target {
         }
     }
 
+    /// the contents can grow (a console, a list, a text): the user may resize the window and the
+    /// growable part fills it. the rest are forms, as big as their controls.
+    pub fn growable(self) -> bool {
+        match self {
+            Self::Console
+            | Self::Hosts
+            | Self::Changelog
+            | Self::MyServer
+            | Self::Networks
+            | Self::Settings
+            | Self::Permissions
+            | Self::Progress
+            | Self::TaskManager => true,
+            // the modules with a list of logins, hosts or commands; the rest are plain forms
+            Self::Module(i) => matches!(MODULES[i].id, "nt4-domain" | "dns" | "remote-commands"),
+            _ => false,
+        }
+    }
+
+    /// the least height a growable window opens at, for contents that are near empty: the hosts
+    /// list, the apply log and the process list are not a strip. 0 for the rest, which are as tall as their contents.
+    pub fn floor(self) -> f32 {
+        match self {
+            Self::Hosts | Self::Progress | Self::TaskManager => self.size().1,
+            _ => 0.0,
+        }
+    }
+
     /// the area whose data the window shows, `None` for a window that shows nothing of the
-    /// server's (Hosts, Welcome, My Account).
+    /// server's (Hosts, Welcome, Changelog, My Account).
     pub fn area(self) -> Option<Area> {
         match self {
             Self::Module(i) => Some(match MODULES[i].id {
@@ -86,7 +125,9 @@ impl Target {
             Self::DateTime => Some(Area::Clock),
             Self::Permissions => Some(Area::Users),
             // the progress of an apply opens by itself for whoever ran it; the apply op is what is checked
-            Self::Hosts | Self::Welcome | Self::MyAccount | Self::Progress => None,
+            Self::Hosts | Self::Welcome | Self::Changelog | Self::MyAccount | Self::Progress => {
+                None
+            }
         }
     }
 
@@ -118,13 +159,17 @@ impl Target {
             .is_none_or(|area| grants.level(area) >= Level::Manage)
     }
 
-    /// a dialog: fixed in size, as wide as `size` says and as tall as its contents, with no
-    /// resizing and no scrolling, like the NT4 property sheets.
-    pub fn fixed(self) -> bool {
-        self == Self::MyAccount
+    /// a dialog has only a close button, cannot be resized and is as tall as its contents.
+    pub fn is_dialog(self) -> bool {
+        matches!(
+            self,
+            Self::Welcome | Self::DateTime | Self::Components | Self::MyAccount
+        )
     }
 
-    /// how big the window opens, in layout units, before it is cut down to fit the desktop.
+    /// how big the window opens in the text view, in layout units. the gui measures its own: a
+    /// window is as tall as its contents, a console as many cells as `CONSOLE_COLS` by
+    /// `CONSOLE_ROWS`.
     pub fn size(self) -> (f32, f32) {
         match self {
             Self::Module(i) => match MODULES[i].id {
@@ -135,12 +180,16 @@ impl Target {
             },
             Self::MyServer => (440.0, 480.0),
             Self::Networks => (560.0, 440.0),
-            Self::Console => (600.0, 300.0),
+            Self::Console => (CONSOLE_COLS * CELL.0, CONSOLE_ROWS * CELL.1),
             Self::Hosts => (380.0, 280.0),
             Self::Settings => (600.0, 520.0),
             Self::DateTime => (430.0, 420.0),
             Self::Components => (500.0, 470.0),
-            Self::Welcome => (580.0, 380.0),
+            Self::Welcome => (
+                crate::welcome::PANEL + crate::welcome::TOPIC_BUTTON + 8.0,
+                380.0,
+            ),
+            Self::Changelog => (520.0, 400.0),
             Self::MyAccount => (400.0, 0.0),
             Self::Permissions => (640.0, 520.0),
             Self::Progress => (480.0, 360.0),

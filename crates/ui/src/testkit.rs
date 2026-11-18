@@ -6,8 +6,13 @@ pub const SCREEN: Vec2 = Vec2::new(960.0, 640.0);
 
 /// run one frame with `events`, dropping the texture updates nothing uploads.
 pub fn run(ctx: &egui::Context, events: Vec<Event>, draw: impl FnMut(&mut Ui)) {
+    run_on(ctx, SCREEN, events, draw);
+}
+
+/// like `run`, on a screen of `size`.
+pub fn run_on(ctx: &egui::Context, size: Vec2, events: Vec<Event>, draw: impl FnMut(&mut Ui)) {
     let input = RawInput {
-        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
         events,
         ..Default::default()
     };

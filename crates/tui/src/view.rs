@@ -469,6 +469,7 @@ impl<'a> Painter<'a> {
         let inner = |body: &[Node<M>], width: u16| self.height_at(body, width, None, path);
         match node {
             Node::Text(text) => wrap(text, width).len() as u16,
+            Node::Bullet(text) => wrap(text, width.saturating_sub(BULLET)).len() as u16,
             Node::Gap(height) => rows(*height),
             Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(4)),
             Node::Table(table) => rows(table.height).max(3) + 2,
@@ -583,6 +584,25 @@ impl<'a> Painter<'a> {
                     t,
                     bold(self.st(BLACK, GRAY)),
                 );
+            }
+            Node::Bullet(t) => {
+                // the bullet stands in its own column, so wrapped lines hang under the text
+                let st = self.st(BLACK, GRAY);
+                text(buf, area.x, area.y, area.width, "  \u{2022}", st);
+                let indent = BULLET.min(area.width);
+                for (n, line) in wrap(t, area.width.saturating_sub(indent))
+                    .iter()
+                    .enumerate()
+                {
+                    text(
+                        buf,
+                        area.x + indent,
+                        area.y + n as u16,
+                        area.width - indent,
+                        line,
+                        st,
+                    );
+                }
             }
             Node::Warning(t) => {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
@@ -1638,6 +1658,9 @@ fn text_at(buf: &mut Buffer, x: u16, y: u16, width: u16, s: &str, st: Style) {
     text(buf, x, y, width, s, st);
 }
 
+/// the columns a bullet takes before its text.
+const BULLET: u16 = 4;
+
 /// the width of the label column in a form row, like the gui's.
 const LABEL: u16 = 18;
 
@@ -2094,6 +2117,26 @@ mod tests {
         let mut painter = Painter::new(Palette::default(), &state, true);
         painter.draw(nodes, area, &mut buf, &[]);
         (lines(&buf).join("\n"), painter.regions)
+    }
+
+    #[test]
+    fn a_long_bullet_wraps_under_its_text_not_under_the_bullet() {
+        let nodes: Vec<Node<()>> = vec![Node::Bullet(
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+                .into(),
+        )];
+        let (text, _) = painted(&nodes);
+        let rows: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert!(rows.len() >= 2, "{text}");
+        assert!(rows[0].trim_start().starts_with('\u{2022}'), "{text}");
+        let first = rows[0].chars().take_while(|c| *c != 'o').count();
+        assert!(
+            rows[1..]
+                .iter()
+                .all(|r| r.chars().take_while(|c| *c == ' ').count() == first),
+            "{text}"
+        );
+        assert!(rows.iter().all(|r| r.chars().count() <= 60));
     }
 
     #[test]

@@ -47,12 +47,32 @@ pub fn bevel(painter: &Painter, rect: Rect, raised: bool) {
 
 /// a push button; `pressed` keeps it looking down, like the active window's taskbar button.
 pub fn button(ui: &mut Ui, text: &str, pressed: bool) -> Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font(), BLACK);
-    let size = Vec2::new((galley.size().x + 22.0).max(75.0), 23.0);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    sized_button(ui, text, pressed, true, None)
+}
+
+/// a push button of a given width, so a stack of them lines up.
+pub fn sized_button(
+    ui: &mut Ui,
+    text: &str,
+    pressed: bool,
+    enabled: bool,
+    width: Option<f32>,
+) -> Response {
+    let ink = if enabled { BLACK } else { SHADOW };
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font(), ink);
+    let size = Vec2::new(
+        width.unwrap_or_else(|| (galley.size().x + 22.0).max(75.0)),
+        23.0,
+    );
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
     #[cfg(test)]
-    probe::record(ui, text, rect, true);
-    let down = pressed || response.is_pointer_button_down_on();
+    probe::record(ui, text, rect, enabled);
+    let down = pressed || (enabled && response.is_pointer_button_down_on());
     ui.painter().rect_filled(rect, 0.0, GRAY);
     bevel(ui.painter(), rect, !down);
     let nudge = if down {
@@ -61,7 +81,7 @@ pub fn button(ui: &mut Ui, text: &str, pressed: bool) -> Response {
         Vec2::ZERO
     };
     ui.painter()
-        .galley(rect.center() - galley.size() / 2.0 + nudge, galley, BLACK);
+        .galley(rect.center() - galley.size() / 2.0 + nudge, galley, ink);
     response
 }
 
@@ -84,11 +104,14 @@ pub fn action(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     response
 }
 
+/// the margin inside a sunken box's bevel.
+pub const SUNKEN: f32 = 3.0;
+
 /// a white, sunken area for lists and text, like an edit box.
 pub fn sunken<R>(ui: &mut Ui, fill: Color32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let framed = Frame::new()
         .fill(fill)
-        .inner_margin(Margin::same(3))
+        .inner_margin(Margin::same(SUNKEN as i8))
         .show(ui, add_contents);
     bevel(ui.painter(), framed.response.rect, false);
     framed.inner

@@ -25,6 +25,25 @@ pub enum Msg {
     Toggle,
 }
 
+/// the width of the topic buttons, wide enough for the longest label (the window front end
+/// tests that it is, with its own font).
+pub const TOPIC_BUTTON: f32 = 100.0;
+/// the width of the text panel: the paragraphs wrap to it.
+pub const PANEL: f32 = 400.0;
+
+/// the paragraphs of a topic, each its own wrapping text with a blank line between them; the
+/// front end wraps them to the panel's width.
+fn paragraphs(text: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (n, paragraph) in text.iter().enumerate() {
+        if n > 0 {
+            out.push(String::new());
+        }
+        out.push(paragraph.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    out
+}
+
 struct Topic {
     button: &'static str,
     title: &'static str,
@@ -75,6 +94,13 @@ const TOPICS: &[Topic] = &[
         ],
         open: "Open Components",
         target: "components",
+    },
+    Topic {
+        button: "Changelog",
+        title: "Changelog",
+        text: &["What changed in each version of LANlord, newest first."],
+        open: "Open Changelog",
+        target: "changelog",
     },
 ];
 
@@ -156,8 +182,10 @@ impl Welcome {
     }
 
     fn target(&self, id: &str, icons: &[Target]) -> Option<Target> {
-        if id == "components" {
-            return Some(Target::Components);
+        match id {
+            "components" => return Some(Target::Components),
+            "changelog" => return Some(Target::Changelog),
+            _ => {}
         }
         icons.iter().copied().find(|t| t.id() == id)
     }
@@ -165,14 +193,38 @@ impl Welcome {
     /// the window's tree; `icons` are the windows the desktop has, so a topic only opens one
     /// that exists.
     pub fn view(&self, icons: &[Target]) -> Vec<Node<Msg>> {
-        let topic = &TOPICS[self.topic];
+        self.view_of(self.topic, icons, 0.0)
+    }
+
+    /// how many topics there are.
+    pub fn topics() -> usize {
+        TOPICS.len()
+    }
+
+    pub fn topic(&self) -> usize {
+        self.topic
+    }
+
+    /// the window for `topic`, with `slack` more room above the topic's button: a front end
+    /// measures every topic and passes what makes the shorter ones as tall as the tallest.
+    pub fn view_of(&self, topic: usize, icons: &[Target], slack: f32) -> Vec<Node<Msg>> {
+        let topic = &TOPICS[topic.min(TOPICS.len() - 1)];
+        // the chosen topic is drawn pressed (a front end without that look greys it)
         let buttons = TOPICS
             .iter()
             .enumerate()
-            .map(|(i, t)| Node::Button(Button::new(t.button, i != self.topic, Msg::Topic(i))))
+            .map(|(i, t)| {
+                let chosen = i == self.topic;
+                Node::Button(
+                    Button::new(t.button, !chosen, Msg::Topic(i))
+                        .selected(chosen)
+                        .width(TOPIC_BUTTON),
+                )
+            })
             .collect();
-        let mut text: Vec<Node<Msg>> = topic.text.iter().map(|l| Node::Text((*l).into())).collect();
-        text.push(Node::Gap(8.0));
+        let mut text: Vec<Node<Msg>> = paragraphs(topic.text).into_iter().map(Node::Text).collect();
+        // the room the window front end adds so the box is as tall for every topic
+        text.push(Node::Gap(8.0 + slack));
         let mut buttons_row = vec![Node::Button(Button::new(
             topic.open,
             self.target(topic.target, icons).is_some(),
@@ -190,29 +242,32 @@ impl Welcome {
         vec![
             Node::Header {
                 icon: "my-server",
-                title: "Welcome to LANlord".into(),
+                title: format!("Welcome to LANlord v{}", env!("CARGO_PKG_VERSION")),
                 lines: vec!["Retro networks, run from one desktop.".into()],
             },
             Node::Gap(8.0),
             Node::Columns(vec![
                 (
-                    Some(400.0),
+                    Some(PANEL),
                     vec![Node::Group {
                         title: topic.title.into(),
                         body: text,
                     }],
                 ),
-                (Some(120.0), buttons),
+                (Some(TOPIC_BUTTON), buttons),
             ]),
             Node::Gap(8.0),
-            Node::Check {
-                label: SHOW_EACH_TIME.into(),
-                checked: self.show,
-                enabled: true,
-                toggle: Msg::Toggle,
-            },
             Node::Separator,
-            Node::Buttons(vec![Button::new("Close", true, Msg::Close)]),
+            // the tick box and Close share the bottom row, as in the NT4 Welcome
+            Node::Row(vec![
+                Node::Check {
+                    label: SHOW_EACH_TIME.into(),
+                    checked: self.show,
+                    enabled: true,
+                    toggle: Msg::Toggle,
+                },
+                Node::Buttons(vec![Button::new("Close", true, Msg::Close)]),
+            ]),
         ]
     }
 
@@ -237,6 +292,17 @@ impl Welcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_paragraph_is_one_text_the_front_end_wraps_with_a_blank_line_between() {
+        for topic in TOPICS {
+            let paragraphs = paragraphs(topic.text);
+            assert_eq!(paragraphs.len(), 2 * topic.text.len() - 1);
+            assert!(paragraphs
+                .iter()
+                .all(|p| !p.contains('\n') && !p.contains("  ")));
+        }
+    }
 
     fn texts(nodes: &[Node<Msg>]) -> String {
         let mut out = String::new();
@@ -278,10 +344,15 @@ mod tests {
         assert!(text.contains("no internet unless"));
         assert!(text.contains(SHOW_EACH_TIME));
         assert!(text.contains("Close"));
-        assert!(w
-            .view(&icons())
-            .iter()
-            .any(|n| matches!(n, Node::Check { checked: true, .. })));
+        // the tick box and Close share the row under the separator, tick box first
+        let view = w.view(&icons());
+        let n = view.len();
+        assert!(matches!(view[n - 2], Node::Separator));
+        let Node::Row(bottom) = &view[n - 1] else {
+            panic!("the bottom row")
+        };
+        assert!(matches!(bottom[0], Node::Check { checked: true, .. }));
+        assert!(matches!(bottom[1], Node::Buttons(_)));
     }
 
     #[test]
@@ -312,6 +383,25 @@ mod tests {
         assert_eq!(w.take_open(), Some(Target::Components));
         w.update(Msg::Close, &icons());
         assert!(w.take_done());
+    }
+
+    #[test]
+    fn the_heading_has_the_version_and_the_changelog_topic_opens_its_window() {
+        let mut w = Welcome::new(None);
+        let heading = w.view(&icons()).into_iter().find_map(|n| match n {
+            Node::Header { title, .. } => Some(title),
+            _ => None,
+        });
+        assert_eq!(
+            heading.unwrap(),
+            format!("Welcome to LANlord v{}", env!("CARGO_PKG_VERSION"))
+        );
+        let last = Welcome::topics() - 1;
+        w.update(Msg::Topic(last), &icons());
+        let text = texts(&w.view(&icons()));
+        assert!(text.contains("Changelog") && text.contains("Open Changelog"));
+        w.update(Msg::Open, &icons());
+        assert_eq!(w.take_open(), Some(Target::Changelog));
     }
 
     #[cfg(feature = "native")]

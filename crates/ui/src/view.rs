@@ -102,6 +102,27 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.label(RichText::new(text.as_str()).strong());
             None
         }
+        Node::Bullet(text) => {
+            // the bullet stands in its own column so wrapped lines hang under the text
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(8.0);
+                ui.label("\u{2022}");
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(text.as_str()).wrap());
+            });
+            None
+        }
+        Node::Button(button) if button.selected => {
+            // the chosen one is pressed in, not greyed
+            theme::sized_button(ui, &button.label, true, true, button.width);
+            None
+        }
+        Node::Button(button) if button.width.is_some() => {
+            theme::sized_button(ui, &button.label, false, button.enabled, button.width)
+                .clicked()
+                .then(|| button.press.clone())
+        }
         Node::Button(button) => theme::action(ui, &button.label, button.enabled)
             .clicked()
             .then(|| button.press.clone()),
@@ -168,14 +189,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             }
         }
         Node::Lines { id, lines, height } => {
+            let height = controls::grow(ui, *height);
             theme::sunken(ui, WHITE, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt(*id)
-                    .max_height(*height)
+                    .max_height(height)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.set_min_height(*height);
+                        ui.set_min_height(height);
                         for line in lines {
                             ui.label(RichText::new(line.as_str()).monospace().size(11.0));
                         }
@@ -186,8 +208,9 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         Node::Log { id, lines, height } => {
             let (max, min) = match height {
                 Some(height) => (*height, height - 20.0),
+                // a log that fills: this tall on its own, and the room a window has to spare
                 None => {
-                    let fill = controls::fill_height(ui);
+                    let fill = controls::grow(ui, LOG_ROWS);
                     (fill, fill)
                 }
             };
@@ -219,10 +242,11 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             select,
         } => {
             let mut picked = None;
+            let min_height = controls::grow(ui, *min_height);
             ui.push_id(*id, |ui| {
                 theme::sunken(ui, WHITE, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_min_height(*min_height);
+                    ui.set_min_height(min_height);
                     if items.is_empty() {
                         ui.label(empty.as_str());
                     }
@@ -304,14 +328,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             edit,
         } => {
             let mut text = value.clone();
+            let height = controls::grow(ui, *height);
             theme::sunken(ui, WHITE, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt(*id)
-                    .max_height(*height)
+                    .max_height(height)
                     .show(ui, |ui| {
                         ui.add_sized(
-                            [ui.available_width(), *height],
+                            [ui.available_width(), height],
                             TextEdit::multiline(&mut text)
                                 .hint_text(hint.as_str())
                                 .font(egui::TextStyle::Monospace)
@@ -424,16 +449,28 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             id,
             max_height,
             body,
-        } => theme::sunken(ui, WHITE, |ui| {
-            ui.set_width(ui.available_width());
-            ScrollArea::vertical()
-                .id_salt(*id)
-                .max_height(*max_height)
-                .show(ui, |ui| show(ui, body))
-                .inner
-        }),
+        } => {
+            let natural = *max_height;
+            let max_height = controls::grow(ui, natural);
+            theme::sunken(ui, WHITE, |ui| {
+                ui.set_width(ui.available_width());
+                ScrollArea::vertical()
+                    .id_salt(*id)
+                    .max_height(max_height)
+                    .show(ui, |ui| {
+                        if max_height > natural {
+                            ui.set_min_height(max_height);
+                        }
+                        show(ui, body)
+                    })
+                    .inner
+            })
+        }
     }
 }
+
+/// the height of a log that fills its window, before the window gives it room.
+const LOG_ROWS: f32 = 160.0;
 
 /// the yellow warning triangle of a message box.
 fn warning_sign(ui: &egui::Ui, rect: egui::Rect) {
@@ -658,4 +695,42 @@ fn calendar(
         );
     }
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testkit;
+    use lanlord_app::view::Button;
+
+    #[test]
+    fn a_disabled_fixed_width_button_is_grey_and_reports_no_click() {
+        let ctx = egui::Context::default();
+        let nodes = vec![
+            Node::Button(Button::new("Open", false, 7).width(100.0)),
+            Node::Button(Button::new("Go", true, 8).width(100.0)),
+        ];
+        let mut sent = Vec::new();
+        testkit::run(&ctx, vec![], |ui| {
+            sent.extend(show(ui, &nodes));
+        });
+        let (_, off) = crate::theme::probe::find(&ctx, "Open").expect("drawn");
+        assert!(!off, "reported as disabled");
+        let at = crate::theme::probe::find(&ctx, "Open").unwrap().0.center();
+        for _ in 0..2 {
+            sent.clear();
+            testkit::run(&ctx, testkit::click(at), |ui| {
+                sent.extend(show(ui, &nodes));
+            });
+            assert!(sent.is_empty(), "{sent:?}");
+        }
+        let go = crate::theme::probe::find(&ctx, "Go").unwrap().0.center();
+        testkit::run(&ctx, testkit::click(go), |ui| {
+            sent.extend(show(ui, &nodes));
+        });
+        testkit::run(&ctx, vec![], |ui| {
+            sent.extend(show(ui, &nodes));
+        });
+        assert_eq!(sent, [8]);
+    }
 }

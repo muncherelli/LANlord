@@ -7,8 +7,10 @@ use eframe::egui;
 use lanlord_model::leases::Lease;
 use lanlord_model::network::Internal;
 
-use super::harness::{desktop, enabled, frames, idle, press, until, with_host};
-use super::{Desktop, Target, MODULES};
+use super::harness::{
+    desktop, enabled, frame_on, frames, frames_on, idle, press, until, with_host,
+};
+use super::{window_size, Desktop, Target, MODULES};
 use crate::nt4_window::Tab;
 use lanlord_app::gateway::Fake;
 
@@ -579,4 +581,316 @@ fn a_failing_gateway_is_reported_in_the_logon_tab() {
         desktop.nt4.logon.note(),
         Some(&(true, "sudo said no".to_string()))
     );
+}
+
+#[test]
+fn the_console_opens_at_a_working_size_can_be_resized_and_keeps_the_size_the_user_gave_it() {
+    use eframe::egui::{Event, PointerButton, Pos2, Vec2};
+    use lanlord_app::log::{emit, Kind};
+    let size = Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    desktop.open(Target::Console);
+    frames_on(&mut desktop, &ctx, size, 6);
+    let rect = |d: &Desktop| {
+        d.measured
+            .iter()
+            .find(|m| m.0 == Target::Console)
+            .unwrap()
+            .1
+    };
+    let opened = rect(&desktop);
+    // an empty console does not collapse to its contents
+    assert!(
+        opened.height() >= 300.0 && opened.width() >= 600.0,
+        "{opened:?}"
+    );
+    // drag the bottom right corner in, then out
+    let drag = |desktop: &mut Desktop, ctx: &egui::Context, from: Pos2, to: Pos2| {
+        let button = |pressed| Event::PointerButton {
+            pos: to,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frames_on(desktop, ctx, size, 1);
+        frame_on(desktop, ctx, size, vec![Event::PointerMoved(from)]);
+        frame_on(
+            desktop,
+            ctx,
+            size,
+            vec![Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for i in 1..=4 {
+            let at = from + (to - from) * (i as f32 / 4.0);
+            frame_on(desktop, ctx, size, vec![Event::PointerMoved(at)]);
+        }
+        frame_on(desktop, ctx, size, vec![button(false)]);
+        frames_on(desktop, ctx, size, 3);
+    };
+    let corner = opened.right_bottom() - Vec2::splat(2.0);
+    drag(&mut desktop, &ctx, corner, corner - Vec2::new(150.0, 120.0));
+    let smaller = rect(&desktop);
+    assert!(
+        smaller.width() < opened.width() - 100.0 && smaller.height() < opened.height() - 80.0,
+        "{opened:?} -> {smaller:?}"
+    );
+    let corner = smaller.right_bottom() - Vec2::splat(2.0);
+    drag(&mut desktop, &ctx, corner, corner + Vec2::new(90.0, 70.0));
+    let user = rect(&desktop);
+    assert!(user.width() > smaller.width() + 60.0 && user.height() > smaller.height() + 40.0);
+    // new output does not snap it back
+    for n in 0..60 {
+        emit(Kind::Out, format!("line {n}"));
+    }
+    frames_on(&mut desktop, &ctx, size, 8);
+    let after = rect(&desktop);
+    assert!(
+        (after.size() - user.size()).abs().max_elem() < 1.5,
+        "{user:?} -> {after:?}"
+    );
+}
+
+/// drag the bottom right corner of `target`'s window by `by`, on a screen of `size`.
+fn drag_corner(
+    desktop: &mut Desktop,
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    target: Target,
+    by: egui::Vec2,
+) {
+    use eframe::egui::{Event, PointerButton};
+    let rect = |d: &Desktop| d.measured.iter().find(|m| m.0 == target).unwrap().1;
+    let from = rect(desktop).right_bottom() - egui::Vec2::splat(2.0);
+    let button = |at, pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame_on(desktop, ctx, size, vec![Event::PointerMoved(from)]);
+    frame_on(desktop, ctx, size, vec![button(from, true)]);
+    for i in 1..=4 {
+        let at = from + by * (i as f32 / 4.0);
+        frame_on(desktop, ctx, size, vec![Event::PointerMoved(at)]);
+    }
+    frame_on(desktop, ctx, size, vec![button(from + by, false)]);
+    frames_on(desktop, ctx, size, 3);
+}
+
+#[test]
+fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least() {
+    use eframe::egui::Vec2;
+    let size = Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::Networks);
+    let rect = |d: &Desktop| {
+        d.measured
+            .iter()
+            .find(|m| m.0 == Target::Networks)
+            .map(|m| m.1)
+            .unwrap_or(egui::Rect::ZERO)
+    };
+    // the contents arrive when they arrive, which depends on the machine: wait until the window
+    // has kept its size for a while
+    let (mut last, mut steady) = (egui::Rect::ZERO, 0);
+    for _ in 0..400 {
+        frames_on(&mut desktop, &ctx, size, 1);
+        let now = rect(&desktop);
+        steady = if now == last && now != egui::Rect::ZERO {
+            steady + 1
+        } else {
+            0
+        };
+        last = now;
+        if steady >= 10 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(steady >= 10, "never settled: {last:?}");
+    let opened = rect(&desktop);
+    // taller, then kept over many frames
+    drag_corner(
+        &mut desktop,
+        &ctx,
+        size,
+        Target::Networks,
+        Vec2::new(0.0, 120.0),
+    );
+    let taller = rect(&desktop);
+    assert!(
+        taller.height() > opened.height() + 80.0,
+        "{opened:?} {taller:?}"
+    );
+    frames_on(&mut desktop, &ctx, size, 10);
+    assert!(
+        (rect(&desktop).height() - taller.height()).abs() < 1.5,
+        "snapped back"
+    );
+    // and smaller again, down to what its parts that cannot shrink need
+    drag_corner(
+        &mut desktop,
+        &ctx,
+        size,
+        Target::Networks,
+        Vec2::new(-200.0, -400.0),
+    );
+    let smaller = rect(&desktop);
+    assert!(
+        smaller.height() < taller.height() - 80.0,
+        "{taller:?} {smaller:?}"
+    );
+    // and down to the least it can be, no further
+    drag_corner(
+        &mut desktop,
+        &ctx,
+        size,
+        Target::Networks,
+        Vec2::new(-2000.0, -2000.0),
+    );
+    let least = crate::windows::least_size(&ctx, "Networks", crate::controls::FILL_MIN);
+    let tiny = rect(&desktop);
+    assert!(
+        tiny.width() >= least.x - 1.0 && tiny.height() >= least.y - 1.0,
+        "{tiny:?} {least:?}"
+    );
+    // the list shrinks to its least and the rest of the window stays
+    assert!(
+        tiny.height() < taller.height() - 80.0,
+        "{tiny:?} {taller:?}"
+    );
+}
+
+#[test]
+fn a_form_window_has_a_fixed_size_and_ignores_a_drag_on_its_corner() {
+    use eframe::egui::Vec2;
+    let size = Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    let form = module("web-proxy");
+    desktop.open(form);
+    frames_on(&mut desktop, &ctx, size, 6);
+    let rect = |d: &Desktop| d.measured.iter().find(|m| m.0 == form).unwrap().1;
+    let opened = rect(&desktop);
+    drag_corner(&mut desktop, &ctx, size, form, Vec2::new(-100.0, -100.0));
+    assert!((rect(&desktop).size() - opened.size()).abs().max_elem() < 1.5);
+}
+
+#[test]
+fn the_console_opens_eighty_columns_by_twenty_four_rows_of_its_own_font() {
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    desktop.open(Target::Console);
+    frames_on(&mut desktop, &ctx, size, 6);
+    let rect = desktop
+        .measured
+        .iter()
+        .find(|m| m.0 == Target::Console)
+        .unwrap()
+        .1;
+    let wanted = window_size(&ctx, Target::Console);
+    assert!(
+        (rect.size() - wanted).abs().max_elem() < 1.5,
+        "{rect:?} {wanted:?}"
+    );
+    let font = egui::TextStyle::Monospace.resolve(&ctx.global_style());
+    let cell = ctx.fonts_mut(|f| {
+        f.layout_no_wrap("M".into(), font.clone(), egui::Color32::BLACK)
+            .size()
+            .x
+    });
+    assert!(
+        wanted.x >= 80.0 * cell && wanted.x < 80.0 * cell + 60.0,
+        "{wanted:?}"
+    );
+}
+
+#[test]
+fn the_welcome_topics_are_measured_once_for_a_width() {
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    desktop.open(Target::Welcome);
+    frames_on(&mut desktop, &ctx, size, 4);
+    let first = desktop.welcome_heights.clone().expect("measured");
+    frames_on(&mut desktop, &ctx, size, 3);
+    assert_eq!(desktop.welcome_heights, Some(first));
+}
+
+#[test]
+fn no_welcome_topic_label_is_wider_than_its_button_and_no_paragraph_leaves_the_panel() {
+    let (mut desktop, ctx, _) = desktop();
+    frames(&mut desktop, &ctx, 1);
+    let font = crate::theme::font();
+    for t in 0..lanlord_app::welcome::Welcome::topics() {
+        let w = lanlord_app::welcome::Welcome::new(None);
+        for node in w.view_of(t, &[], 0.0) {
+            if let lanlord_app::view::Node::Columns(cols) = node {
+                let (panel, _) = &cols[0];
+                let (width, buttons) = &cols[1];
+                assert_eq!(*panel, Some(lanlord_app::welcome::PANEL));
+                for b in buttons {
+                    if let lanlord_app::view::Node::Button(b) = b {
+                        let wide = ctx.fonts_mut(|f| {
+                            f.layout_no_wrap(b.label.clone(), font.clone(), egui::Color32::BLACK)
+                                .size()
+                                .x
+                        });
+                        assert!(wide + 22.0 <= width.unwrap(), "{}", b.label);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_growable_window_opens_as_tall_as_its_contents_up_to_the_desktop() {
+    use eframe::egui::Vec2;
+    for size in [Vec2::new(1280.0, 720.0), Vec2::new(800.0, 500.0)] {
+        let (mut desktop, ctx, _) = desktop();
+        for target in [Target::Changelog, Target::Hosts] {
+            desktop.open(target);
+        }
+        frames_on(&mut desktop, &ctx, size, 8);
+        let area = super::desktop_area(&ctx);
+        let height = |d: &Desktop, t| d.measured.iter().find(|m| m.0 == t).unwrap().1.height();
+        // the changelog is long: it fills the desktop, no more
+        let log = height(&desktop, Target::Changelog);
+        assert!(log <= area.height() + 1.0, "{size:?}: {log}");
+        assert!(log >= area.height().min(400.0) - 1.0, "{size:?}: {log}");
+        // the hosts list has few entries: it opens at its usual 280, not as a one line strip
+        let hosts = height(&desktop, Target::Hosts);
+        assert!((hosts - 280.0).abs() <= 1.0, "{size:?}: {hosts}");
+    }
+}
+
+#[test]
+fn the_users_progress_and_task_windows_are_resizable_and_their_lists_fill() {
+    use eframe::egui::Vec2;
+    let size = Vec2::new(1280.0, 720.0);
+    for target in [Target::Permissions, Target::Progress, Target::TaskManager] {
+        assert!(target.growable(), "{target:?}");
+        let (mut desktop, ctx, _) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(target);
+        frames_on(&mut desktop, &ctx, size, 12);
+        let measured = |d: &Desktop| *d.measured.iter().find(|m| m.0 == target).unwrap();
+        let (_, opened, content) = measured(&desktop);
+        drag_corner(&mut desktop, &ctx, size, target, Vec2::new(0.0, 100.0));
+        frames_on(&mut desktop, &ctx, size, 6);
+        let (_, taller, filled) = measured(&desktop);
+        assert!(
+            taller.height() > opened.height() + 60.0,
+            "{target:?}: {opened:?} {taller:?}"
+        );
+        // the apply log has nothing else that grows, so it takes all of the extra room
+        if target == Target::Progress {
+            assert!(filled > content + 60.0, "{content} {filled}");
+        }
+    }
 }
