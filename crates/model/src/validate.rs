@@ -858,6 +858,14 @@ fn parse_document(text: &str) -> Result<Value, Invalid> {
     if text.len() > 128 * 1024 {
         return Err(Invalid::new("settings", "is too large"));
     }
+    // yaml 1.1 (the parser that builds the values) breaks lines at these, yaml 1.2 (the one that
+    // looks for anchors) does not, so a comment could hide lines from the check
+    if text.contains(['\u{85}', '\u{2028}', '\u{2029}']) {
+        return Err(Invalid::new(
+            "settings",
+            "must not hold the line separators U+0085, U+2028 or U+2029",
+        ));
+    }
     match has_anchor_or_alias(text) {
         Ok(false) => {}
         Ok(true) => {
@@ -1715,6 +1723,23 @@ web-proxy:
                 "{text:?}: {message}"
             );
             assert!(settings_document(text).is_err());
+        }
+        // other line separators hide lines from one parser and not the other
+        for separator in ['\u{85}', '\u{2028}', '\u{2029}'] {
+            let hidden = format!("k: 1 # c{separator}j: &a [x, x]{separator}y: [*a, *a]\n");
+            let message = refused(&hidden);
+            assert!(message.contains("U+0085"), "{message}");
+            let mut flat =
+                format!("k: 1 # c{separator}a0: &a0 [x, x, x, x, x, x, x, x, x, x]{separator}");
+            for step in 1..2000 {
+                flat.push_str(&format!(
+                    "a{step}: [*a0, *a0, *a0, *a0, *a0, *a0, *a0, *a0, *a0, *a0]{separator}"
+                ));
+            }
+            assert!(flat.len() < 128 * 1024);
+            let started = std::time::Instant::now();
+            assert!(refused(&flat).contains("U+0085"));
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
         }
         // plain text with & or * in it is not an anchor
         for text in [
