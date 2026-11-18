@@ -98,7 +98,8 @@ pub enum Op {
     LoadAccess,
     /// store the roles and who has them.
     SaveAccess { access: Access },
-    /// keep sending samples of `topic` (live monitoring). reserved: no server answers it yet.
+    /// keep sending the events of `topic` (see [`topic`]). the web ui serves it as a stream on
+    /// its own route, not as a reply; the other backends refuse it.
     Subscribe { topic: String },
 }
 
@@ -133,9 +134,21 @@ impl Op {
             }
             Op::ResetPassword { .. } | Op::SaveAccess { .. } => Need::manage(Area::Users),
             Op::LoadAccess => Need::view(Area::Users),
+            // apply progress carries the output of the tasks, so it needs what applying shows
+            Op::Subscribe { topic } if topic == topic::APPLY => Need::view(Area::Services),
             Op::Subscribe { .. } => Need::view(Area::Status),
         }
     }
+}
+
+/// the topics a stream can be subscribed to.
+pub mod topic {
+    /// monitor samples without the process list.
+    pub const MONITOR: &str = "monitor";
+    /// monitor samples with the process list.
+    pub const PROCS: &str = "monitor:procs";
+    /// the events of an apply, as `lanlord_model::apply::ApplyEvent` json.
+    pub const APPLY: &str = "apply";
 }
 
 impl Op {
@@ -426,6 +439,17 @@ mod tests {
             Need::Area(Area::Updates, Level::Manage)
         );
         assert_eq!(Op::AccountInfo.requires(), Need::SelfOnly);
+        let subscription = |t: &str| Op::Subscribe { topic: t.into() }.requires();
+        assert_eq!(subscription(topic::MONITOR), Need::view(Area::Status));
+        assert_eq!(subscription(topic::PROCS), Need::view(Area::Status));
+        assert_eq!(subscription(topic::APPLY), Need::view(Area::Services));
+        // no op needs `Hidden`, which every account has
+        for op in every_op() {
+            assert!(
+                !matches!(op.requires(), Need::Area(_, Level::Hidden)),
+                "{op:?}"
+            );
+        }
         // nothing that changes something needs less than Manage
         for op in every_op() {
             if matches!(op, Op::Apply { .. } | Op::Power { .. } | Op::Run { .. }) {

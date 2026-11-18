@@ -16,6 +16,9 @@ pub struct Console {
     pub apply: ApplyProgress,
     lines: Vec<Line>,
     incoming: Receiver<Line>,
+    /// the browser's stream of the server's apply events.
+    #[cfg(target_arch = "wasm32")]
+    feed: Option<crate::gateway::stream::Stream>,
 }
 
 impl Console {
@@ -36,6 +39,8 @@ impl Console {
             apply: ApplyProgress::default(),
             lines: Vec::new(),
             incoming,
+            #[cfg(target_arch = "wasm32")]
+            feed: None,
         }
     }
 
@@ -47,7 +52,57 @@ impl Console {
             apply: ApplyProgress::default(),
             lines: Vec::new(),
             incoming: log::subscribe(),
+            feed: None,
         }
+    }
+
+    /// in the browser, follow the server's apply events while `on` (signed in to a gateway whose
+    /// account may see them; the server refuses the stream otherwise) and
+    /// feed them to the log as an apply on this machine would, so the progress dialog and the
+    /// console show them. a lost connection is noted in the console, once each way.
+    pub fn follow_server(&mut self, on: bool, wake: &Wake) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use crate::gateway::stream::{Item, Stream, Update};
+            use lanlord_model::apply::ApplyEvent;
+            if !on {
+                self.feed = None;
+            } else if self.feed.is_none() {
+                let wake = wake.clone();
+                let down = std::cell::Cell::new(false);
+                let handler = move |update: Update| {
+                    match update {
+                        Update::Item(Item::Apply(event)) => {
+                            if let Ok(text) = serde_json::to_string(&event) {
+                                log::emit(Kind::Event, text);
+                            }
+                            if let ApplyEvent::Log { text } = event {
+                                log::emit(Kind::Out, text);
+                            }
+                        }
+                        Update::Item(Item::Sample(_)) | Update::SignedOut => {}
+                        Update::Refused(why) => log::emit(Kind::Info, why),
+                        Update::Up => {
+                            if down.replace(false) {
+                                log::emit(Kind::Info, "The live feed from the server is back.");
+                            }
+                        }
+                        Update::Down(_) => {
+                            if !down.replace(true) {
+                                log::emit(Kind::Info, "Lost the live feed from the server.");
+                            }
+                        }
+                    }
+                    wake.wake();
+                };
+                self.feed = Some(Stream::open(
+                    lanlord_model::ops::topic::APPLY,
+                    std::rc::Rc::new(handler),
+                ));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (on, wake);
     }
 
     /// move what arrived since the last frame into the list.

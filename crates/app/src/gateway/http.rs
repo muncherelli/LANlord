@@ -191,20 +191,11 @@ async fn session_now() -> Result<Option<Identity>> {
             .get("admin")
             .and_then(|v| v.as_bool())
             .ok_or_else(|| field("admin"))?,
-        grants: None,
+        // the server reads the account's roles now; an answer without them leaves the fallback
+        grants: value
+            .get("grants")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     }))
-}
-
-/// one sample of the gateway, with the process list when `procs`. any signed-in user may ask.
-pub async fn monitor_sample(procs: bool) -> Result<lanlord_model::monitor::Sample> {
-    let url = if procs {
-        "/api/monitor?procs=1"
-    } else {
-        "/api/monitor"
-    };
-    let (status, text) = fetch("GET", url, None).await?;
-    monitor_status(status, &text)?;
-    Ok(serde_json::from_str(&text)?)
 }
 
 /// end a process on the gateway; the server only lets administrators.

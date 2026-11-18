@@ -218,7 +218,7 @@ impl Grants {
     pub fn allows(&self, need: Need) -> bool {
         match need {
             Need::SelfOnly => true,
-            Need::Area(area, level) => level == Level::Hidden || self.level(area) >= level,
+            Need::Area(area, level) => self.level(area) >= level,
         }
     }
 

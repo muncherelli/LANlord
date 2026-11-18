@@ -14,6 +14,7 @@ devtools = ["gui", "lanlord-ui/devtools"]
 webui = [
     "dep:axum",
     "dep:base64",
+    "dep:futures-core",
     "dep:percent-encoding",
     "dep:sha2",
     "dep:tokio",
@@ -26,7 +27,9 @@ anyhow.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
 base64 = { version = "0.22", optional = true }
 clap.workspace = true
+futures-core = { version = "0.3", optional = true }
 lanlord-core = { path = "../core" }
+lanlord-model.workspace = true
 lanlord-tui = { path = "../tui" }
 lanlord-ui = { path = "../ui", optional = true }
 percent-encoding = { version = "2", optional = true }

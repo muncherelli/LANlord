@@ -4,6 +4,8 @@
 
 mod auth;
 mod monitor;
+mod roster;
+mod stream;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -85,16 +87,23 @@ fn router(static_dir: Option<&Path>) -> Router {
 
 /// the same, sending operations to the service on `operations_socket`.
 pub fn router_at(static_dir: Option<&Path>, operations_socket: &Path) -> Router {
+    let auth = auth::Auth::system();
     router_with(
         static_dir,
-        auth::Auth::system(),
+        auth.clone(),
+        roster::Roster::new(auth),
         service_runner(operations_socket.to_path_buf()),
     )
 }
 
-/// the same, with the logins checked and the sessions kept by `auth` and the operations run by
-/// `run`.
-fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>, run: Runner) -> Router {
+/// the same, with the logins checked and the sessions kept by `auth`, the rights read by
+/// `roster` and the operations run by `run`.
+fn router_with(
+    static_dir: Option<&Path>,
+    auth: Arc<auth::Auth>,
+    roster: Arc<roster::Roster>,
+    run: Runner,
+) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
     let quick = Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -103,9 +112,9 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>, run: Runner) ->
             post(auth::login).layer(DefaultBodyLimit::max(auth::LOGIN_LIMIT)),
         )
         .route("/api/logout", post(auth::logout))
-        .route("/api/session", get(auth::session))
-        .route("/api/monitor", get(monitor::sample))
+        .route("/api/session", roster::route(roster.clone()))
         .route("/api/monitor/end", post(monitor::end))
+        .route("/api/events", stream::route(roster))
         .fallback(move |request: Request| web(dir.clone(), request))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -272,10 +281,9 @@ fn service_runner(socket: PathBuf) -> Runner {
     Arc::new(move |account, op, events| operations_service::ask(&socket, account, op, events))
 }
 
-/// where the apply events of an operation go. the progress stream (`publish_apply`) connects
-/// here once it is merged; until then they are dropped.
+/// where the apply events of an operation go: to the browsers following applies.
 fn apply_events() -> operations_service::Events {
-    Arc::new(|_event| {})
+    Arc::new(|event| stream::publish_apply(&event))
 }
 
 /// what the handlers share: the logins and the way operations are run.

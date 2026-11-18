@@ -56,7 +56,7 @@ pub enum Standing {
     Failed,
 }
 
-type Lookup = Pin<Box<dyn Future<Output = Standing> + Send>>;
+pub type Lookup = Pin<Box<dyn Future<Output = Standing> + Send>>;
 
 /// asks something to check a login.
 pub trait Verifier: Send + Sync {
@@ -424,6 +424,11 @@ impl Auth {
         Current::Now(user, admin)
     }
 
+    /// whether `user` is an administrator now, asked of the system.
+    pub async fn standing(&self, user: &str) -> Standing {
+        self.verifier.admin(user).await
+    }
+
     /// the user of the session a request's cookie names.
     pub fn session(&self, headers: &HeaderMap) -> Option<(String, bool)> {
         self.user_of(&cookie_token(headers)?)
@@ -516,15 +521,7 @@ pub fn same_origin_json(headers: &HeaderMap) -> Result<(), Response> {
     Ok(())
 }
 
-/// a request that needs a login: the user and whether it is an admin (as of login), or the 401
-/// to send.
-#[allow(clippy::result_large_err)]
-pub fn require(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
-    auth.session(headers)
-        .ok_or_else(|| json(StatusCode::UNAUTHORIZED, r#"{"error":"login required"}"#))
-}
-
-/// as `require`, with the admin state read from the account now. the 401 says `session`, which
+/// a request that needs a login: the user and the admin state read from the account now. the 401 says `session`, which
 /// is what the page takes to mean "sign in again"; an account that cannot be looked up is a 503.
 #[allow(clippy::result_large_err)]
 pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
@@ -538,7 +535,7 @@ pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String
     }
 }
 
-/// as `require`, for a request the page makes on its own (a live meter): the session must be
+/// as `require_current`, without a lookup, for a request the page makes on its own (a live meter): the session must be
 /// valid, but the request does not count as activity, so the idle logout still fires.
 #[allow(clippy::result_large_err)]
 pub fn require_peek(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
@@ -673,22 +670,6 @@ pub async fn logout(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Respon
     response
 }
 
-/// GET /api/session: who is logged in, and whether they are an admin.
-pub async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
-    match require(&auth, &headers) {
-        Ok((user, admin)) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            serde_json::json!({ "user": user, "admin": admin }).to_string(),
-        )
-            .into_response(),
-        Err(unauthorized) => unauthorized,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -732,7 +713,7 @@ mod tests {
     fn runner(ran: Ran, roles: Roles, faults: Faults) -> super::super::Runner {
         use lanlord_core::access::{authorize, Grants};
         use lanlord_core::ops::{Op, Reply, Response, UserChange};
-        Arc::new(move |account, op, _events| {
+        Arc::new(move |account, op, events| {
             let (ran, roles, faults) = (ran.clone(), roles.clone(), faults.clone());
             Box::pin(async move {
                 if faults.service.load(Ordering::SeqCst) {
@@ -752,6 +733,11 @@ mod tests {
                     return Ok(Response::Denied(denied.to_string()));
                 }
                 ran.lock().unwrap().push((account.clone(), op.clone()));
+                if matches!(op, lanlord_core::ops::Op::Apply { .. }) {
+                    use lanlord_core::apply::ApplyEvent;
+                    events(ApplyEvent::Started);
+                    events(ApplyEvent::Total { n: 2 });
+                }
                 let broken = matches!(&op, Op::ChangeUsers { changes } if changes.iter().any(
                     |c| matches!(c, UserChange::SetPassword { name, .. } if name == "broken")));
                 if broken {
@@ -837,6 +823,7 @@ mod tests {
             app: super::super::router_with(
                 None,
                 auth.clone(),
+                no_assignments(&auth),
                 runner(ran.clone(), roles.clone(), faults.clone()),
             ),
             auth,
@@ -847,6 +834,12 @@ mod tests {
             faults,
             revoke_during,
         }
+    }
+
+    /// a roster over a settings file that does not exist, so no test reads the host's.
+    fn no_assignments(auth: &Arc<Auth>) -> Arc<super::super::roster::Roster> {
+        let settings = std::env::temp_dir().join("lanlord-auth-tests-none/settings.yml");
+        super::super::roster::Roster::at(settings, auth.clone())
     }
 
     fn rig() -> Rig {
@@ -930,14 +923,6 @@ mod tests {
     const FACTS: &str = r#"{"op":{"op":"server_facts"}}"#;
     const RESET: &str = r#"{"op":{"op":"reset_password","user":"dave","new":"x"}}"#;
 
-    async fn get_monitor(rig: &Rig, cookie: Option<&str>) -> StatusCode {
-        let mut builder = Request::builder().uri("/api/monitor");
-        if let Some(cookie) = cookie {
-            builder = builder.header(header::COOKIE, cookie);
-        }
-        send(rig, builder.body(Body::empty()).unwrap()).await.0
-    }
-
     async fn post_end(rig: &Rig, cookie: &str, body: &str) -> StatusCode {
         let request = page("POST", "/api/monitor/end", body)
             .header(header::COOKIE, cookie)
@@ -947,20 +932,11 @@ mod tests {
     }
 
     #[test]
-    fn any_signed_in_user_may_watch_but_only_an_admin_may_end_a_process() {
+    fn only_an_admin_may_end_a_process() {
         runtime().block_on(async {
             let rig = rig();
-            assert_eq!(get_monitor(&rig, None).await, StatusCode::UNAUTHORIZED);
             let user = session_for(&rig, "carol").await;
             let admin = session_for(&rig, "admin").await;
-            for cookie in [&user, &admin] {
-                let status = get_monitor(&rig, Some(cookie)).await;
-                // a host without /proc says so; one with it answers
-                assert!(
-                    status == StatusCode::OK || status == StatusCode::SERVICE_UNAVAILABLE,
-                    "{status}"
-                );
-            }
             // refused for an ordinary user before the pid is even read
             assert_eq!(
                 post_end(&rig, &user, r#"{"pid":1}"#).await,
@@ -1014,10 +990,20 @@ mod tests {
             let carol = session_for(&rig, "carol").await;
             let (status, body) = get_session(&rig, &admin).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, r#"{"admin":true,"user":"admin"}"#);
+            let told: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                (told["user"].as_str(), told["admin"].as_bool()),
+                (Some("admin"), Some(true))
+            );
             let (status, body) = get_session(&rig, &carol).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, r#"{"admin":false,"user":"carol"}"#);
+            let told: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                (told["user"].as_str(), told["admin"].as_bool()),
+                (Some("carol"), Some(false))
+            );
+            // what they may do comes with it
+            assert!(told["grants"].is_object());
         });
     }
 
@@ -1064,6 +1050,7 @@ mod tests {
                 app: super::super::router_with(
                     None,
                     auth.clone(),
+                    no_assignments(&auth),
                     runner(Ran::default(), roles.clone(), Faults::default()),
                 ),
                 auth,
@@ -1209,6 +1196,45 @@ mod tests {
         });
         assert_eq!(super::super::REQUEST_TIMEOUT, Duration::from_secs(30));
         assert!(super::super::OPERATIONS_TIMEOUT > super::super::operations_service::RUN_TIMEOUT);
+    }
+
+    #[test]
+    fn apply_progress_reaches_a_browser_following_applies() {
+        use axum::body::HttpBody;
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "admin").await;
+            let stream = Request::builder()
+                .uri("/api/events?topic=apply")
+                .header("host", HOST)
+                .header("sec-fetch-site", "same-origin")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap();
+            let response = rig.app.clone().oneshot(stream).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut body = response.into_body();
+            let apply = r#"{"op":{"op":"apply","modules":[]}}"#;
+            let (status, text) = post_body(&rig, &cookie, apply).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            let mut seen = String::new();
+            while !seen.contains(r#""event":"total""#) {
+                let frame = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)),
+                )
+                .await
+                .expect("no progress arrived")
+                .expect("the stream ended")
+                .unwrap();
+                if let Ok(data) = frame.into_data() {
+                    seen.push_str(&String::from_utf8_lossy(&data));
+                }
+            }
+            // in the order they happened
+            let started = seen.find(r#""event":"started""#).expect(&seen);
+            assert!(started < seen.find(r#""event":"total""#).unwrap(), "{seen}");
+        });
     }
 
     #[test]
@@ -1454,27 +1480,6 @@ mod tests {
                 assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::OK);
             }
             rig.offset.fetch_add(15 * 60, Ordering::SeqCst);
-            assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
-        });
-    }
-
-    #[test]
-    fn monitor_polls_do_not_keep_an_idle_session_alive() {
-        runtime().block_on(async {
-            let rig = rig();
-            let cookie = session_for(&rig, "admin").await;
-            rig.offset.fetch_add(10 * 60, Ordering::SeqCst);
-            // the meter polls, but the person has done nothing
-            assert_ne!(
-                get_monitor(&rig, Some(&cookie)).await,
-                StatusCode::UNAUTHORIZED
-            );
-            // twenty minutes after the last real use the poll finds the session gone
-            rig.offset.fetch_add(10 * 60, Ordering::SeqCst);
-            assert_eq!(
-                get_monitor(&rig, Some(&cookie)).await,
-                StatusCode::UNAUTHORIZED
-            );
             assert_eq!(get_session(&rig, &cookie).await.0, StatusCode::UNAUTHORIZED);
         });
     }
