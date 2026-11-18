@@ -1,40 +1,27 @@
 
-    ▔▔▔▔▔▕
-    ▏ ≡≡ ▕
-    ▏▁▁▁▁▁
+      ≡
   My Server
 
 
-    ▔▔▔▔▔▕
-    ▏□─□ ▕
-    ▏▁▁▁▁▁
+      □
    Networks
 
 
-    ▔▔▔▔▔▕
-    ▏ ◄► ▕
-    ▏▁▁▁▁▁
+      ►
    Gateway
 
-                                                           ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▔▔▕                                                 ▏ About LANlord                  _▕□▕ ×▕▕
-    ▏ ▦▦ ▕                                                 ▏                                       ▕
-    ▏▁▁▁▁▁                                                 ▏ LANlord                               ▕
-   Settings                                                ▏ Retro networks, run from one desktop. ▕
-                                                           ▏                 ▏   OK   ▕ ▏ Cancel ▕ ▕
-                                                           ▏                                       ▕
-    ▔▔▔▔▔▕                                                 ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-    ▏ >_ ▕
-    ▏▁▁▁▁▁
+
+      ▦
+   Settings
+
+
+      >
    Console
-
-
-    ▔▔▔▔▔▕
-    ▏ ▣▣ ▕
-    ▏▁▁▁▁▁
-    Hosts
-
-
+                                                            ┌ About LANlord ──────────────── _ □ × ┐
+                                                            │LANlord                               │
+      ▣                                                     │Retro networks, run from one desktop. │
+    Hosts                                                   │                 [   OK   ] [ Cancel ]│
+                                                            └──────────────────────────────────────┘
 
 
 
@@ -42,4 +29,17 @@
 
 
 
-▏ L LANlord ▕                                                                                                                                       ▏ 12:00 PM ▕
+
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ]                                                                                                                                         12:00 PM

@@ -1,24 +1,24 @@
-▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-▏ ▌ NT4 Domain                                                          _▕□▕ ×▕▕
-▏                                                                              ▕
-▏ ▔▔▔▔▔▕  NT4 Domain                                                           ▕
-▏ ▏ ▐▌ ▕  Status: available                                                    ▕
-▏ ▏▁▁▁▁▁                                                                       ▕
-▏                                                                              ▕
-▏ A Samba server in Docker for old Windows clients, on the internal network    ▕
-▏ only: an NT4-style domain controller or a plain workgroup, with a basic set  ▕
-▏ of logins.                                                                   ▕
-▏ ──────────────────────────────────────────────────────────────────────────── ▕
-▏ ▏ Settings ▕▏ Logins ▕▏ Logon scripts ▕                                      ▕
-▏ ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕ ▕
-▏ ▏ Every domain logon runs these after S: is mapped: logon.bat for          ▕ ▕
-▏ ▏ everyone, then <login>.bat for one login.                                ▕ ▕
-▏ ▏ ┌ Scripts ─────────────────────────────────────────────────────────────┐ ▕ ▕
-▏ ▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕ ▕
-▏ ▏ │ ▕ Script                 Runs for                                  ▏ │ ▕ ▕
-▏ ▏ │ ▕ logon.bat              everyone (not saved yet)                  ▏ │ ▕ ▕
-▏ ▏ │ ▕                                                                  ▏ │ ▕ ▕
-▏ ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▕
-▏                                                                              ▕
-▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-▏ L LANlord ▕ ▏ ▌ NT4 Domain ▕                                      ▏ 12:00 PM ▕
+┌ ▌ NT4 Domain ───────────────────────────────────────────────────────── _ □ × ┐
+│ ▌  NT4 Domain                                                                │
+│    Status: available                                                         │
+│                                                                              │
+│A Samba server in Docker for old Windows clients, on the internal network     │
+│only: an NT4-style domain controller or a plain workgroup, with a basic set of│
+│logins.                                                                       │
+│──────────────────────────────────────────────────────────────────────────────│
+│[ Settings ][ Logins ][ Logon scripts ]                                       │
+│┌────────────────────────────────────────────────────────────────────────────┐│
+││Every domain logon runs these after S: is mapped: logon.bat for everyone,   ││
+││then <login>.bat for one login.                                             ││
+││┌ Scripts ─────────────────────────────────────────────────────────────────┐││
+│││  Script                 Runs for                                         │││
+│││  logon.bat              everyone (not saved yet)                         │││
+│││                                                                          │││
+│││                                                                          │││
+│││                                                                          │││
+│││ [ New script...  ] [ Reload scripts ]                                    │││
+││└──────────────────────────────────────────────────────────────────────────┘││
+││┌ logon.bat ───────────────────────────────────────────────────────────────┐││
+│└────────────────────────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────────────────────┘
+[ L LANlord ] [ ▌ NT4 Domain ]                                        12:00 PM

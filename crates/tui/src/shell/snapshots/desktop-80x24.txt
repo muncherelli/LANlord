@@ -1,24 +1,24 @@
 
-    ▔▔▔▔▔▕      ▔▔▔▔▔▕
-    ▏ ≡≡ ▕      ▏ ▦▦ ▕
-    ▏▁▁▁▁▁      ▏▁▁▁▁▁
-  My Server    Settings
+      ≡           ▣
+  My Server     Hosts
 
 
-    ▔▔▔▔▔▕      ▔▔▔▔▔▕
-    ▏□─□ ▕      ▏ >_ ▕
-    ▏▁▁▁▁▁      ▏▁▁▁▁▁
-   Networks    Console
+      □
+   Networks
 
 
-    ▔▔▔▔▔▕      ▔▔▔▔▔▕
-    ▏ ◄► ▕      ▏ ▣▣ ▕
-    ▏▁▁▁▁▁      ▏▁▁▁▁▁
-   Gateway      Hosts
+      ►
+   Gateway
+
+
+      ▦
+   Settings
+
+
+      >
+   Console
 
 
 
 
-
-
-▏ L LANlord ▕                                                       ▏ 12:00 PM ▕
+[ L LANlord ]                                                         12:00 PM

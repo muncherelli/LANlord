@@ -1,13 +1,12 @@
-//! the common controls inside a window: push button, text field, checkbox and list. a control
-//! one row tall gets thin edges on its first and last cell; three rows or more get the full
-//! bevel like the gui.
+//! the common controls inside a window: push button, text field, checkbox and list. a button is
+//! `[ label ]`; a field or list is a lighter patch with no frame.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::widgets::Widget;
 
-use super::chrome::{row_button, Bevel};
+use super::chrome::{row_button, Frame};
 use super::palette::{Palette, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use super::{bold, fill, put, style, text};
 
@@ -26,8 +25,12 @@ impl Widget for Button<'_> {
         if area.height < 3 {
             // one row: thin edges, the label centred like the gui's push buttons
             row_button(buf, area, None, "", self.pressed, palette);
-            let fg = if self.enabled { BLACK } else { SHADOW };
-            let mut label = style(palette, fg, GRAY);
+            let (fg, bg) = match (self.enabled, self.pressed) {
+                (false, _) => (SHADOW, GRAY),
+                (true, true) => (WHITE, NAVY),
+                (true, false) => (BLACK, GRAY),
+            };
+            let mut label = style(palette, fg, bg);
             if self.default {
                 label = bold(label);
             }
@@ -43,27 +46,26 @@ impl Widget for Button<'_> {
             );
             return;
         }
-        Bevel {
-            sunken: self.pressed,
-            palette,
-        }
-        .render(area, buf);
-        let face = Bevel::inner(area);
-        let fg = if self.enabled { BLACK } else { SHADOW };
-        let mut label = style(palette, fg, GRAY);
+        Frame { palette }.render(area, buf);
+        let face = Frame::inner(area);
+        let (fg, bg) = match (self.enabled, self.pressed) {
+            (false, _) => (SHADOW, GRAY),
+            (true, true) => (WHITE, NAVY),
+            (true, false) => (BLACK, GRAY),
+        };
+        fill(buf, face, palette, bg);
+        let mut label = style(palette, fg, bg);
         if self.default {
             label = bold(label);
         }
         let width = self.label.chars().count() as u16;
-        // a pressed button's label moves down and right, like the gui's
-        let nudge = u16::from(self.pressed);
-        let x = face.x + face.width.saturating_sub(width) / 2 + nudge;
+        let x = face.x + face.width.saturating_sub(width) / 2;
         let y = face.y + face.height / 2;
         text(buf, x, y, face.right().saturating_sub(x), self.label, label);
     }
 }
 
-/// a sunken white field; a password shows dots, focus shows the cursor block at the end.
+/// a white field with no frame; a password shows dots, focus shows the cursor block at the end.
 pub struct TextField<'a> {
     pub text: &'a str,
     pub password: bool,
@@ -72,45 +74,20 @@ pub struct TextField<'a> {
 }
 
 impl TextField<'_> {
-    /// the white part of a field drawn in `area`.
+    /// the white part of a field drawn in `area`: its middle row.
     pub fn field(area: Rect) -> Rect {
-        if area.height >= 3 {
-            let inner = Bevel::inner(area);
-            Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1)
-        } else {
-            Rect::new(
-                area.x.saturating_add(1),
-                area.y,
-                area.width.saturating_sub(2),
-                area.height.min(1),
-            )
-        }
-    }
-}
-
-/// the sunken edge of a one-row field or a tall one.
-fn sunken_edge(buf: &mut Buffer, area: Rect, palette: Palette) {
-    if area.height >= 3 {
-        Bevel {
-            sunken: true,
-            palette,
-        }
-        .render(area, buf);
-    } else if area.width >= 2 && area.height >= 1 {
-        put(buf, (area.x, area.y), "▕", style(palette, SHADOW, GRAY));
-        put(
-            buf,
-            (area.right() - 1, area.y),
-            "▏",
-            style(palette, WHITE, GRAY),
-        );
+        Rect::new(
+            area.x,
+            area.y.saturating_add(area.height.saturating_sub(1) / 2),
+            area.width,
+            area.height.min(1),
+        )
     }
 }
 
 impl Widget for TextField<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
-        sunken_edge(buf, area, palette);
         let field = TextField::field(area);
         fill(buf, field, palette, WHITE);
         let shown: String = if self.password {
@@ -119,7 +96,7 @@ impl Widget for TextField<'_> {
             self.text.to_string()
         };
         // keep the end of a long value in view, like a field scrolled to the cursor
-        let room = field.width.saturating_sub(u16::from(self.focused) + 1) as usize;
+        let room = field.width.saturating_sub(u16::from(self.focused) + 2) as usize;
         let skip = shown.chars().count().saturating_sub(room);
         let visible: String = shown.chars().skip(skip).collect();
         let face = style(palette, BLACK, WHITE);
@@ -127,20 +104,20 @@ impl Widget for TextField<'_> {
             buf,
             field.x + 1,
             field.y,
-            field.width.saturating_sub(1),
+            field.width.saturating_sub(2),
             &visible,
             face,
         );
         if self.focused {
             let x = field.x + 1 + visible.chars().count() as u16;
             if x < field.right() {
-                put(buf, (x, field.y), "▏", face);
+                put(buf, (x, field.y), " ", style(palette, WHITE, BLACK));
             }
         }
     }
 }
 
-/// a white box with a tick when checked, then the label.
+/// `[✓]` or `[ ]`, then the label.
 pub struct Checkbox<'a> {
     pub label: &'a str,
     pub checked: bool,
@@ -154,13 +131,14 @@ impl Widget for Checkbox<'_> {
             return;
         }
         let palette = self.palette;
-        put(buf, (area.x, area.y), "▕", style(palette, SHADOW, GRAY));
-        let mark = if self.checked { "✓" } else { " " };
-        put(
+        let mark = if self.checked { "[✓]" } else { "[ ]" };
+        text(
             buf,
-            (area.x + 1, area.y),
+            area.x,
+            area.y,
+            3,
             mark,
-            bold(style(palette, BLACK, WHITE)),
+            bold(style(palette, BLACK, GRAY)),
         );
         let mut label = style(palette, BLACK, GRAY);
         if self.focused {
@@ -168,16 +146,16 @@ impl Widget for Checkbox<'_> {
         }
         text(
             buf,
-            area.x + 3,
+            area.x + 4,
             area.y,
-            area.width.saturating_sub(3),
+            area.width.saturating_sub(4),
             self.label,
             label,
         );
     }
 }
 
-/// a white sunken list; the selected row in navy, scrolled so the selection is visible.
+/// a white list with no frame; the selected row in navy, scrolled so the selection is visible.
 pub struct List<'a> {
     pub rows: &'a [&'a str],
     pub selected: Option<usize>,
@@ -191,20 +169,15 @@ impl List<'_> {
         selected.map_or(0, |s| (s + 1).saturating_sub(height))
     }
 
-    /// the rows area inside the edge.
+    /// the rows area: all of it, the list has no frame.
     pub fn inner(area: Rect) -> Rect {
-        Bevel::inner(area)
+        area
     }
 }
 
 impl Widget for List<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
-        Bevel {
-            sunken: true,
-            palette,
-        }
-        .render(area, buf);
         let inner = List::inner(area);
         fill(buf, inner, palette, WHITE);
         let offset = List::offset(self.selected, inner.height);
@@ -288,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tall_button_is_bevelled_and_centred() {
+    fn a_tall_button_is_boxed_and_centred() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
         Button {
             label: "OK",
@@ -298,12 +271,12 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▔▔▔▔▔▔▔▕", "▏  OK  ▕", "▏▁▁▁▁▁▁▁"]);
+        assert_eq!(lines(&buf), ["┌──────┐", "│  OK  │", "└──────┘"]);
         assert!(buf[(3, 1)].modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn a_pressed_button_sinks_and_nudges_its_label() {
+    fn a_pressed_button_is_navy() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
         Button {
             label: "OK",
@@ -313,11 +286,12 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), [" ▁▁▁▁▁▁ ", "▕   OK ▏", " ▔▔▔▔▔▔ "]);
+        assert_eq!(lines(&buf), ["┌──────┐", "│  OK  │", "└──────┘"]);
+        assert_eq!(buf[(3, 1)].bg, Color::Rgb(0, 0, 128));
     }
 
     #[test]
-    fn a_one_row_button_has_thin_edges() {
+    fn a_one_row_button_has_brackets() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         Button {
             label: "Cancel",
@@ -327,7 +301,7 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▏ Cancel ▕"]);
+        assert_eq!(lines(&buf), ["[ Cancel ]"]);
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
         Button {
             label: "OK",
@@ -337,8 +311,8 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▏   OK   ▕"]);
-        assert_eq!(buf[(0, 0)].fg, Color::Rgb(255, 255, 255));
+        assert_eq!(lines(&buf), ["[   OK   ]"]);
+        assert_eq!(buf[(0, 0)].fg, Color::Rgb(0, 0, 0));
     }
 
     #[test]
@@ -351,13 +325,13 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▕ •••▏  ▏"]);
+        assert_eq!(lines(&buf), [" •••     "]);
         assert_eq!(buf[(2, 0)].bg, Color::Rgb(255, 255, 255));
-        assert_eq!(buf[(0, 0)].fg, Color::Rgb(128, 128, 128));
+        assert_eq!(buf[(4, 0)].bg, Color::Rgb(0, 0, 0), "the cursor is a block");
     }
 
     #[test]
-    fn a_tall_field_is_sunken_around_its_white_line() {
+    fn a_tall_field_is_its_white_middle_line() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
         TextField {
             text: "abc",
@@ -366,7 +340,7 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), [" ▁▁▁▁▁▁ ", "▕ abc  ▏", " ▔▔▔▔▔▔ "]);
+        assert_eq!(lines(&buf), ["        ", " abc    ", "        "]);
         assert_eq!(buf[(1, 1)].bg, Color::Rgb(255, 255, 255));
     }
 
@@ -380,7 +354,7 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▕ ample▏"]);
+        assert_eq!(lines(&buf), [" xample "]);
     }
 
     #[test]
@@ -393,25 +367,23 @@ mod tests {
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(lines(&buf), ["▕✓ Enabled  "]);
-        assert_eq!(buf[(1, 0)].bg, Color::Rgb(255, 255, 255));
+        assert_eq!(lines(&buf), ["[✓] Enabled "]);
+        assert_eq!(buf[(1, 0)].fg, Color::Rgb(0, 0, 0));
+        assert!(buf[(1, 0)].modifier.contains(Modifier::BOLD));
     }
 
     #[test]
     fn a_list_scrolls_to_the_selection() {
         let rows = ["alpha", "bravo", "charlie", "delta"];
-        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 4));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 2));
         List {
             rows: &rows,
             selected: Some(3),
             palette: palette(),
         }
         .render(buf.area, &mut buf);
-        assert_eq!(
-            lines(&buf),
-            [" ▁▁▁▁▁▁▁▁ ", "▕ charlie▏", "▕ delta  ▏", " ▔▔▔▔▔▔▔▔ "]
-        );
-        assert_eq!(buf[(2, 2)].bg, Color::Rgb(0, 0, 128));
+        assert_eq!(lines(&buf), [" charlie  ", " delta    "]);
+        assert_eq!(buf[(2, 1)].bg, Color::Rgb(0, 0, 128));
         assert_eq!(List::offset(None, 2), 0);
         assert_eq!(List::offset(Some(1), 2), 0);
     }

@@ -1,24 +1,24 @@
-       ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▏ ▓ Docker                                                       _▕□▕ ×▕▕
-    ▏ ≡▏                                                                       ▕
-    ▏▁▁▏ ▔▔▔▔▔▕  Docker                                                        ▕
-  My Se▏ ▏ ▓▓ ▕  Status: available                                             ▕
-       ▏ ▏▁▁▁▁▁                                                                ▕
-       ▏                                                                       ▕
-    ▔▔▔▏ Installs Docker and drops NetBIOS and SMB on the host network. Finds  ▕
-    ▏□─▏ the host and internal interfaces itself and works on lxc, vms and     ▕
-    ▏▁▁▏ bare metal.                                                           ▕
-   Netw▏ ───────────────────────────────────────────────────────────────────── ▕
-       ▏ ┌ Settings (in your settings file) ─────────────────────────────────┐ ▕
-       ▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕
-    ▔▔▔▏ │ ▕ docker: {}                                                    ▏ │ ▕
-    ▏ ◄▏ │ ▕                                                               ▏ │ ▕
-    ▏▁▁▏ │ ▕ # optional, found automatically:                              ▏ │ ▕
-   Gate▏ │ ▕ network:                                                      ▏ │ ▕
-       ▏ │ ▕   host_interface: eth0                                        ▏ │ ▕
-       ▏ │ ▕   internal_interface: eth1                                    ▏ │ ▕
-       ▏ │  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔  │ ▕
-       ▏ └───────────────────────────────────────────────────────────────────┘ ▕
-       ▏                                                                       ▕
-       ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-▏ L LANlord ▕ ▏ ▓ Docker ▕                                          ▏ 12:00 PM ▕
+         ┌ ▓ Docker ──────────────────────────────────────────────────── _ □ × ┐
+      ≡  │ ▓  Docker                                                           │
+  My Serv│    Status: available                                                │
+         │                                                                     │
+         │Installs Docker and drops NetBIOS and SMB on the host network. Finds │
+      □  │the host and internal interfaces itself and works on lxc, vms and    │
+   Networ│bare metal.                                                          │
+         │─────────────────────────────────────────────────────────────────────│
+         │┌ Settings (in your settings file) ─────────────────────────────────┐│
+      ►  ││  docker: {}                                                       ││
+   Gatewa││                                                                   ││
+         ││  # optional, found automatically:                                 ││
+         ││  network:                                                         ││
+      ▦  ││    host_interface: eth0                                           ││
+   Settin││    internal_interface: eth1                                       ││
+         │└───────────────────────────────────────────────────────────────────┘│
+         │                                                            [ Apply ]│
+      >  │Host: demo@gateway                                                   │
+   Consol└─────────────────────────────────────────────────────────────────────┘
+
+
+
+
+[ L LANlord ] [ ▓ Docker ]                                            12:00 PM

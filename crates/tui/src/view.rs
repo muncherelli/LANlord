@@ -13,8 +13,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 use zeroize::Zeroizing;
 
-use crate::layout::{BUTTON_MIN, LABEL, PAD_X};
-use crate::paint::chrome::{row_button, Bevel};
+use crate::layout::{BOX_INSET, BUTTON_MIN, LABEL, PAD_X};
+use crate::paint::chrome::{row_button, Frame};
 use crate::paint::controls::{self, Checkbox, TextField};
 use crate::paint::desktop::GlyphTile;
 use crate::paint::glyphs::chip;
@@ -475,7 +475,7 @@ impl<'a> Painter<'a> {
                 body.iter().map(|n| self.node_width(n)).sum::<u16>()
                     + body.len().saturating_sub(1) as u16
             }
-            Node::Description(t) | Node::Code(t) => longest(t) + 2 + 2 * PAD_X,
+            Node::Description(t) | Node::Code(t) => longest(t) + 2 * BOX_INSET,
             Node::Disabled(body) => self.natural_width(body),
             _ => 0,
         }
@@ -537,24 +537,24 @@ impl<'a> Painter<'a> {
             Node::Text(text) => wrap(text, width).len() as u16,
             Node::Bullet(text) => wrap(text, width.saturating_sub(BULLET)).len() as u16,
             Node::Gap(height) => rows(*height),
-            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(4)),
-            Node::Table(table) => rows(table.height).max(3) + 2,
-            Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(4)),
-            Node::Danger(body) => 2 + inner(body, width.saturating_sub(4)),
-            Node::Lines { height, .. } => rows(*height).max(2) + 2,
-            Node::Log { height, .. } => height.map_or(8, |h| rows(h).max(3) + 2),
+            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(2 + 2 * PAD_X)),
+            Node::Table(table) => rows(table.height).max(3),
+            Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(2)),
+            Node::Danger(body) => 2 + inner(body, width.saturating_sub(2 + 2 * PAD_X)),
+            Node::Lines { height, .. } => rows(*height).max(2),
+            Node::Log { height, .. } => height.map_or(6, |h| rows(h).max(3)),
             Node::List {
                 items, min_height, ..
             } => {
                 let least = rows(*min_height).max(2);
-                (items.len() as u16).clamp(least, least.max(8)) + 2
+                (items.len() as u16).clamp(least, least.max(8))
             }
             Node::Header { lines, .. } => {
                 let room = width.saturating_sub(HEADER_TEXT);
                 let wrapped: usize = lines.iter().map(|l| wrap(l, room).len()).sum();
-                (1 + wrapped as u16).max(3) + 1
+                1 + wrapped as u16 + 1
             }
-            Node::Code(text) => text.lines().count() as u16 + 2,
+            Node::Code(text) => text.lines().count() as u16,
             Node::Row(body) => self
                 .row_lines(body, width)
                 .iter()
@@ -565,10 +565,10 @@ impl<'a> Painter<'a> {
                         .unwrap_or(0)
                 })
                 .sum(),
-            Node::TextArea { height, .. } => rows(*height).max(3) + 2,
+            Node::TextArea { height, .. } => rows(*height).max(2),
             Node::Scroll {
                 max_height, body, ..
-            } => inner(body, width.saturating_sub(2)).min(rows(*max_height).max(3)) + 2,
+            } => inner(body, width).min(rows(*max_height).max(2)),
             Node::Fold { body, .. } => {
                 if self.state.open.contains(&fold_key(path)) {
                     1 + inner(body, width.saturating_sub(2))
@@ -588,11 +588,10 @@ impl<'a> Painter<'a> {
             Node::ClockFace { .. } => 1,
             Node::KeyedInput(_) => 1,
             Node::Banner(_) => 3,
-            Node::CheckList(list) => rows(list.height).max(3) + 2,
-            Node::Description(text) => {
-                wrap(text, width.saturating_sub(2 + 2 * PAD_X)).len() as u16 + 2
-            }
-            Node::Calendar { .. } => 9,
+            Node::CheckList(list) => rows(list.height).max(2),
+            Node::Description(text) => wrap(text, width.saturating_sub(2 * BOX_INSET)).len() as u16,
+            Node::Status { text, .. } => u16::from(!text.is_empty()),
+            Node::Calendar { .. } => 7,
             Node::Columns(columns) => {
                 let widths = self.column_widths(columns, width);
                 columns
@@ -691,16 +690,7 @@ impl<'a> Painter<'a> {
             }
             Node::Status { text: t, error } => {
                 let fg = if *error { RED } else { BLACK };
-                fill(buf, area, p, GRAY);
-                edges(buf, area, p);
-                text(
-                    buf,
-                    area.x + 1 + PAD_X,
-                    area.y,
-                    area.width.saturating_sub(2 + 2 * PAD_X),
-                    t,
-                    self.st(fg, GRAY),
-                );
+                text(buf, area.x, area.y, area.width, t, self.st(fg, GRAY));
             }
             Node::Bar { fraction, text: t } => {
                 fill(buf, area, p, WHITE);
@@ -895,23 +885,23 @@ impl<'a> Painter<'a> {
                 ..
             } => {
                 // a day is as wide as the room allows, from 5 cells down to 3
-                let cell_w = (area.width.saturating_sub(2) / 7).clamp(3, CELL_W);
+                let cell_w = (area.width / 7).clamp(3, CELL_W);
                 let grid = Rect::new(
                     area.x,
                     area.y,
-                    (7 * cell_w + 2).min(area.width),
-                    9.min(area.height),
+                    (7 * cell_w).min(area.width),
+                    7.min(area.height),
                 );
                 self.sunken(grid, buf, WHITE);
-                let top = grid.y + 1;
+                let top = grid.y;
                 for (i, name) in lanlord_app::clock_window::WEEKDAYS.iter().enumerate() {
-                    let x = grid.x + 1 + i as u16 * cell_w;
+                    let x = grid.x + i as u16 * cell_w;
                     text_at(buf, x + cell_w / 2, top, 1, name, self.st(SHADOW, WHITE));
                 }
                 for (i, day) in month_days(*year, *month).into_iter().enumerate() {
-                    let x = grid.x + 1 + (i % 7) as u16 * cell_w;
+                    let x = grid.x + (i % 7) as u16 * cell_w;
                     let y = top + 1 + (i / 7) as u16;
-                    if y >= grid.bottom().saturating_sub(1) {
+                    if y >= grid.bottom() {
                         break;
                     }
                     let cell = Rect::new(x, y, cell_w, 1).intersection(buf.area);
@@ -1144,9 +1134,9 @@ impl<'a> Painter<'a> {
                         (title.chars().count() as u16 + 4).min(area.right().saturating_sub(x));
                     let rect = Rect::new(x, area.y, width, 1).intersection(buf.area);
                     if !rect.is_empty() {
-                        row_button(buf, rect, None, title, n != *current, p);
-                        if n == *current {
-                            recolour_text(buf, rect, if bar_focus { NAVY } else { BLACK }, p, true);
+                        row_button(buf, rect, None, title, n == *current, p);
+                        if bar_focus && n == *current {
+                            underline(buf, rect);
                         }
                         self.push(rect, path, Part::Tab(n), false);
                     }
@@ -1160,18 +1150,9 @@ impl<'a> Painter<'a> {
                 );
                 let page = page.intersection(buf.area);
                 if page.height >= 2 {
-                    Bevel {
-                        sunken: false,
-                        palette: p,
-                    }
-                    .render(page, buf);
+                    Frame { palette: p }.render(page, buf);
                 }
-                let inner = Rect::new(
-                    area.x + 2,
-                    area.y + 2,
-                    area.width.saturating_sub(4),
-                    area.height.saturating_sub(3),
-                );
+                let inner = Frame::inner(page);
                 self.draw(body, inner, buf, path);
             }
             Node::Table(table) => {
@@ -1364,20 +1345,14 @@ impl<'a> Painter<'a> {
                 if focused {
                     let last = lines.last().map_or(0, |l| l.chars().count()) as u16;
                     let y = inner.y + (lines.len() - 1 - first) as u16;
-                    text(
-                        buf,
-                        inner.x + last.min(inner.width.saturating_sub(1)),
-                        y,
-                        1,
-                        "▏",
-                        self.st(BLACK, WHITE),
-                    );
+                    let at = inner.x + last.min(inner.width.saturating_sub(1));
+                    text(buf, at, y, 1, " ", self.st(WHITE, BLACK));
                 }
                 self.push(inner, path, Part::Field, true);
             }
             Node::Header { icon, title, lines } => {
-                // the window's own icon as a desktop tile, its label left out
-                let tile = Rect::new(area.x, area.y, 6, 3).intersection(buf.area);
+                // the window's own icon as a desktop chip, its label left out
+                let tile = Rect::new(area.x, area.y, 3, 1).intersection(buf.area);
                 if !tile.is_empty() {
                     GlyphTile {
                         id: icon,
@@ -1613,10 +1588,11 @@ impl<'a> Painter<'a> {
         if rect.is_empty() {
             return;
         }
+        let focused = self.focused(path, Part::Press(n));
         controls::Button {
             label: &button.label,
-            pressed: button.selected,
-            default: self.focused(path, Part::Press(n)),
+            pressed: button.selected || focused,
+            default: focused,
             enabled: button.enabled,
             palette: self.palette,
         }
@@ -1641,20 +1617,12 @@ impl<'a> Painter<'a> {
         self.push(rect, path, Part::Field, true);
     }
 
-    /// a sunken box filled with `bg`; the area inside its edge.
+    /// a box filled with `bg`, the lighter patch that marks a list, log or field: no frame, so
+    /// the area it fills is the area it returns.
     fn sunken(&self, area: Rect, buf: &mut Buffer, bg: Rgb) -> Rect {
         let area = area.intersection(buf.area);
-        if area.width < 3 || area.height < 3 {
-            return Rect::default();
-        }
-        Bevel {
-            sunken: true,
-            palette: self.palette,
-        }
-        .render(area, buf);
-        let inner = Bevel::inner(area);
-        fill(buf, inner, self.palette, bg);
-        inner
+        fill(buf, area, self.palette, bg);
+        area
     }
 
     /// lines in a box, scrolled by the wheel; `follow` keeps the newest line in view unless the
@@ -1731,7 +1699,7 @@ fn text_at(buf: &mut Buffer, x: u16, y: u16, width: u16, s: &str, st: Style) {
 }
 
 /// the columns a header's icon tile takes before its text.
-const HEADER_TEXT: u16 = 8;
+const HEADER_TEXT: u16 = 4;
 
 /// the columns a bullet takes before its text.
 const BULLET: u16 = 4;
@@ -1786,12 +1754,12 @@ fn buttons_width<M>(buttons: &[Button<M>]) -> u16 {
     equal_width(buttons) * count + count.saturating_sub(1)
 }
 
-/// the inside of a sunken box less the padding its text keeps from the edge.
+/// the inside of a light box less the inset its text keeps from the edge.
 fn padded(inner: Rect) -> Rect {
     Rect::new(
-        inner.x.saturating_add(PAD_X),
+        inner.x.saturating_add(BOX_INSET),
         inner.y,
-        inner.width.saturating_sub(2 * PAD_X),
+        inner.width.saturating_sub(2 * BOX_INSET),
         inner.height,
     )
 }
@@ -1804,20 +1772,6 @@ fn log_colour(kind: Kind) -> Rgb {
         Kind::Info => (85, 255, 255),
         Kind::Debug | Kind::Event => SHADOW,
     }
-}
-
-/// the thin sunken edges of a one-row box.
-fn edges(buf: &mut Buffer, area: Rect, palette: Palette) {
-    let area = area.intersection(buf.area);
-    if area.width < 2 {
-        return;
-    }
-    buf[(area.x, area.y)]
-        .set_symbol("▕")
-        .set_style(style(palette, SHADOW, GRAY));
-    buf[(area.right() - 1, area.y)]
-        .set_symbol("▏")
-        .set_style(style(palette, WHITE, GRAY));
 }
 
 /// an etched frame (a group box) or a coloured one, with an optional caption on its top edge.
@@ -1862,14 +1816,11 @@ fn recolour(buf: &mut Buffer, rect: Rect, s: Style) {
     }
 }
 
-/// make the label of a tab stand out: the current tab's text bold in `fg`.
-fn recolour_text(buf: &mut Buffer, rect: Rect, fg: Rgb, palette: Palette, strong: bool) {
-    let mut s = style(palette, fg, GRAY);
-    if strong {
-        s = bold(s);
-    }
+/// underline the cells of `rect`, the mark of the tab the keyboard is on.
+fn underline(buf: &mut Buffer, rect: Rect) {
     for x in rect.left() + 1..rect.right().saturating_sub(1) {
-        buf[(x, rect.y)].set_style(s);
+        let cell = &mut buf[(x, rect.y)];
+        cell.set_style(cell.style().add_modifier(Modifier::UNDERLINED));
     }
 }
 

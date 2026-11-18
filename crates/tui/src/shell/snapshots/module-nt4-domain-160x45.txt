@@ -1,45 +1,45 @@
-              ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▔▔▕    ▏ ▌ NT4 Domain                                                                    _▕□▕ ×▕▕
-    ▏ ≡≡ ▕    ▏                                                                                        ▕
-    ▏▁▁▁▁▁    ▏ ▔▔▔▔▔▕  NT4 Domain                                                                     ▕
-  My Server   ▏ ▏ ▐▌ ▕  Status: available                                                              ▕
-              ▏ ▏▁▁▁▁▁                                                                                 ▕
-              ▏                                                                                        ▕
-    ▔▔▔▔▔▕    ▏ A Samba server in Docker for old Windows clients, on the internal network only: an     ▕
-    ▏□─□ ▕    ▏ NT4-style domain controller or a plain workgroup, with a basic set of logins.          ▕
-    ▏▁▁▁▁▁    ▏ ────────────────────────────────────────────────────────────────────────────────────── ▕
-   Networks   ▏ ▏ Settings ▕▏ Logins ▕▏ Logon scripts ▕                                                ▕
-              ▏ ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕ ▕
-              ▏ ▏ ┌ Domain ────────────────────────────────────────────────────────────────────────┐ ▕ ▕
-    ▔▔▔▔▔▕    ▏ ▏ │ Domain name       ▕ RETRONET             ▏                                     │ ▕ ▕
-    ▏ ◄► ▕    ▏ ▏ │ Server name       ▕                      ▏                                     │ ▕ ▕
-    ▏▁▁▁▁▁    ▏ ▏ │                   blank: the gateway's hostname                                │ ▕ ▕
-   Gateway    ▏ ▏ │ Mode               domain        ▼                                             │ ▕ ▕
-              ▏ ▏ │ Options           ▕  Roaming profiles                                          │ ▕ ▕
-              ▏ ▏ │                   ▕  Software share (S:)                                       │ ▕ ▕
-    ▔▔▔▔▔▕    ▏ ▏ │ Administrator     password: not set                                            │ ▕ ▕
-    ▏ ▦▦ ▕    ▏ ▏ │                   ▏ Set password... ▕                                          │ ▕ ▕
-    ▏▁▁▁▁▁    ▏ ▏ │ a domain needs an administrator password                                       │ ▕ ▕
-   Settings   ▏ ▏ └────────────────────────────────────────────────────────────────────────────────┘ ▕ ▕
-              ▏ ▏ ┌ Machines to prepare accounts for ──────────────────────────────────────────────┐ ▕ ▕
-              ▏ ▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕ ▕
-    ▔▔▔▔▔▕    ▏ ▏ │ ▕ Machine                                                                    ▏ │ ▕ ▕
-    ▏ >_ ▕    ▏ ▏ │ ▕                                                                            ▏ │ ▕ ▕
-    ▏▁▁▁▁▁    ▏ ▏ │ ▕                                                                            ▏ │ ▕ ▕
-   Console    ▏ ▏ │ ▕                                                                            ▏ │ ▕ ▕
-              ▏ ▏ │ ▕                                                                            ▏ │ ▕ ▕
-              ▏ ▏ │  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔  │ ▕ ▕
-    ▔▔▔▔▔▕    ▏ ▏ │ ▏  Add machine...  ▕ ▏  Remove machine  ▕ ▏ Reset account... ▕                 │ ▕ ▕
-    ▏ ▣▣ ▕    ▏ ▏ └────────────────────────────────────────────────────────────────────────────────┘ ▕ ▕
-    ▏▁▁▁▁▁    ▏ ▏                        ▏  Save settings  ▕ ▏  Save & apply   ▕ ▏ Reload settings ▕ ▕ ▕
-    Hosts     ▏ ▏ ▕ loaded the settings                                                            ▏ ▕ ▕
-              ▏ ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▕
-              ▏                                                                                        ▕
-              ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+              ┌ ▌ NT4 Domain ───────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ ▌  NT4 Domain                                                                        │
+  My Server   │    Status: available                                                                 │
+              │                                                                                      │
+              │A Samba server in Docker for old Windows clients, on the internal network only: an    │
+      □       │NT4-style domain controller or a plain workgroup, with a basic set of logins.         │
+   Networks   │──────────────────────────────────────────────────────────────────────────────────────│
+              │[ Settings ][ Logins ][ Logon scripts ]                                               │
+              │┌────────────────────────────────────────────────────────────────────────────────────┐│
+      ►       ││┌ Domain ──────────────────────────────────────────────────────────────────────────┐││
+   Gateway    │││ Domain name        RETRONET                                                      │││
+              │││ Server name                                                                      │││
+              │││                   blank: the gateway's hostname                                  │││
+      ▦       │││ Mode               domain        ▼                                               │││
+   Settings   │││ Options           [ ] Roaming profiles                                           │││
+              │││                   [ ] Software share (S:)                                        │││
+              │││ Administrator     password: not set                                              │││
+      >       │││                   [ Set password... ]                                            │││
+   Console    │││ a domain needs an administrator password                                         │││
+              ││└──────────────────────────────────────────────────────────────────────────────────┘││
+              ││┌ Machines to prepare accounts for ────────────────────────────────────────────────┐││
+      ▣       │││  Machine                                                                         │││
+    Hosts     │││                                                                                  │││
+              │││                                                                                  │││
+              │││                                                                                  │││
+              │││                                                                                  │││
+              │││ [  Add machine...  ] [  Remove machine  ] [ Reset account... ]                   │││
+              ││└──────────────────────────────────────────────────────────────────────────────────┘││
+              ││                         [  Save settings  ] [  Save & apply   ] [ Reload settings ]││
+              ││loaded the settings                                                                 ││
+              │└────────────────────────────────────────────────────────────────────────────────────┘│
+              └──────────────────────────────────────────────────────────────────────────────────────┘
 
 
 
 
 
 
-▏ L LANlord ▕ ▏ ▌ NT4 Domain ▕                                                                                                                      ▏ 12:00 PM ▕
+
+
+
+
+
+
+[ L LANlord ] [ ▌ NT4 Domain ]                                                                                                                        12:00 PM

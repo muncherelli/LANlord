@@ -957,18 +957,9 @@ impl Shell {
                 let page = Rect::new(area.x, area.y + strip, area.width, area.height - strip);
                 let face = page.intersection(buf.area);
                 if face.height >= 3 {
-                    crate::paint::chrome::Bevel {
-                        sunken: false,
-                        palette,
-                    }
-                    .render(face, buf);
+                    crate::paint::chrome::Frame { palette }.render(face, buf);
                 }
-                let inner = Rect::new(
-                    page.x + 2,
-                    page.y + 1,
-                    page.width.saturating_sub(4),
-                    page.height.saturating_sub(2),
-                );
+                let inner = crate::paint::chrome::Frame::inner(page);
                 let top_area = Rect::new(area.x, area.y, area.width, strip);
                 let active = *active;
                 // two draws into one buffer, one after the other
@@ -1015,17 +1006,17 @@ impl Shell {
             ),
         };
         if let Pass::Measure { width } = &pass {
-            // the header and strip, then the page in its bevel
+            // the header and strip, then the page in its frame
             let width = *width;
             let strip =
                 Painter::new(palette, state, false).height(&top[..top.len() - 1], width, None) + 1;
             let mut inner = Pass::Measure {
-                width: width.saturating_sub(4),
+                width: width.saturating_sub(2),
             };
             let page = self.nt4_page(&mut inner, state, host.as_deref(), &[PAGE]);
             return Answer {
                 height: strip + page.height + 2,
-                width: page.width + 4,
+                width: page.width + 2,
                 ..Answer::default()
             };
         }

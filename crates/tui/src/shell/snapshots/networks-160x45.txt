@@ -1,37 +1,25 @@
-              ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▔▔▕    ▏ □ Networks                                                                _▕□▕ ×▕▕
-    ▏ ≡≡ ▕    ▏                                                                                  ▕
-    ▏▁▁▁▁▁    ▏ This window is not available in the text view yet. Open it in the LANlord window ▕
-  My Server   ▏ or the web UI.                                                                   ▕
-              ▏                                                                                  ▕
-              ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-    ▔▔▔▔▔▕
-    ▏□─□ ▕
-    ▏▁▁▁▁▁
+              ┌ □ Networks ───────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │This window is not available in the text view yet. Open it in the LANlord window│
+  My Server   │or the web UI.                                                                  │
+              └────────────────────────────────────────────────────────────────────────────────┘
+
+      □
    Networks
 
 
-    ▔▔▔▔▔▕
-    ▏ ◄► ▕
-    ▏▁▁▁▁▁
+      ►
    Gateway
 
 
-    ▔▔▔▔▔▕
-    ▏ ▦▦ ▕
-    ▏▁▁▁▁▁
+      ▦
    Settings
 
 
-    ▔▔▔▔▔▕
-    ▏ >_ ▕
-    ▏▁▁▁▁▁
+      >
    Console
 
 
-    ▔▔▔▔▔▕
-    ▏ ▣▣ ▕
-    ▏▁▁▁▁▁
+      ▣
     Hosts
 
 
@@ -42,4 +30,16 @@
 
 
 
-▏ L LANlord ▕ ▏ □ Networks ▕                                                                                                                        ▏ 12:00 PM ▕
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ □ Networks ]                                                                                                                          12:00 PM

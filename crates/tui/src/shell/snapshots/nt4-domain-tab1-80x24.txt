@@ -1,24 +1,24 @@
-▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-▏ ▌ NT4 Domain                                                          _▕□▕ ×▕▕
-▏                                                                              ▕
-▏ ▔▔▔▔▔▕  NT4 Domain                                                           ▕
-▏ ▏ ▐▌ ▕  Status: available                                                    ▕
-▏ ▏▁▁▁▁▁                                                                       ▕
-▏                                                                              ▕
-▏ A Samba server in Docker for old Windows clients, on the internal network    ▕
-▏ only: an NT4-style domain controller or a plain workgroup, with a basic set  ▕
-▏ of logins.                                                                   ▕
-▏ ──────────────────────────────────────────────────────────────────────────── ▕
-▏ ▏ Settings ▕▏ Logins ▕▏ Logon scripts ▕                                      ▕
-▏ ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕ ▕
-▏ ▏  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  ▕ ▕
-▏ ▏ ▕ Login                Domain admin  Software admin  Password          ▏ ▕ ▕
-▏ ▏ ▕                                                                      ▏ ▕ ▕
-▏ ▏ ▕                                                                      ▏ ▕ ▕
-▏ ▏ ▕                                                                      ▏ ▕ ▕
-▏ ▏ ▕                                                                      ▏ ▕ ▕
-▏ ▏ ▕                                                                      ▏ ▕ ▕
-▏ ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▕
-▏                                                                              ▕
-▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-▏ L LANlord ▕ ▏ ▌ NT4 Domain ▕                                      ▏ 12:00 PM ▕
+┌ ▌ NT4 Domain ───────────────────────────────────────────────────────── _ □ × ┐
+│ ▌  NT4 Domain                                                                │
+│    Status: available                                                         │
+│                                                                              │
+│A Samba server in Docker for old Windows clients, on the internal network     │
+│only: an NT4-style domain controller or a plain workgroup, with a basic set of│
+│logins.                                                                       │
+│──────────────────────────────────────────────────────────────────────────────│
+│[ Settings ][ Logins ][ Logon scripts ]                                       │
+│┌────────────────────────────────────────────────────────────────────────────┐│
+││ Login                Domain admin  Software admin  Password                ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+│└────────────────────────────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────────────────────┘
+[ L LANlord ] [ ▌ NT4 Domain ]                                        12:00 PM

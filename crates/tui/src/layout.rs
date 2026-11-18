@@ -3,9 +3,8 @@
 //! from here, so the screens agree.
 //!
 //! the rules:
-//! - inside the edge of a window or dialog the content keeps `PAD_X` columns on each side and
-//!   `PAD_Y` rows above and below. a group box or a tab page keeps `PAD_X` columns inside its
-//!   border; its border line is the vertical gap.
+//! - a terminal has no room to spare: the content of a window or dialog starts right inside
+//!   the border, with no margin columns or rows. one blank row separates groups where it helps.
 //! - a window is as big as its content, cut down to the desktop; a body that still does not
 //!   fit scrolls with the wheel. lists, logs and consoles take whatever room they are given.
 //! - labels share one column, buttons in a row share one width and sit at the right.
@@ -14,10 +13,13 @@ use ratatui::layout::Rect;
 
 use crate::paint::chrome::WindowFrame;
 
-/// columns of padding inside the edge, on each side.
-pub const PAD_X: u16 = 1;
+/// columns of padding inside the border, on each side.
+pub const PAD_X: u16 = 0;
 /// rows of padding above and below the content of a window or dialog.
-pub const PAD_Y: u16 = 1;
+pub const PAD_Y: u16 = 0;
+/// columns a light box (a list, a log, a field) keeps between its edge and its text, so a
+/// selected row does not touch the letters.
+pub const BOX_INSET: u16 = 1;
 /// the width of the label column in a form row, like the gui's.
 pub const LABEL: u16 = 18;
 /// the least width of a push button, so `OK` is not a sliver.
@@ -29,10 +31,10 @@ pub const DIALOG_WIDE: u16 = 72;
 pub const DIALOG_MIN: u16 = 40;
 /// columns the frame takes beside a title bar: the icon, the three title buttons and room.
 pub const TITLE_ROOM: u16 = 16;
-/// the cells a window's frame takes: the edge on both sides, and the top edge, the title bar
-/// and the bottom edge.
+/// the cells a window's frame takes: the border on both sides, and the top line that carries
+/// the title, and the bottom line.
 const FRAME_COLS: u16 = 2;
-const FRAME_ROWS: u16 = 3;
+const FRAME_ROWS: u16 = 2;
 
 /// `area` less the padding on every side.
 pub fn inset(area: Rect) -> Rect {

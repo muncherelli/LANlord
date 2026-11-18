@@ -247,17 +247,17 @@ fn broken_frame(buf: &Buffer, rect: Rect, above: &[Rect]) -> Vec<String> {
     };
     let (left, right, top, bottom) = (rect.left(), rect.right() - 1, rect.top(), rect.bottom() - 1);
     for x in left + 1..right {
-        expect(x, top, "▔");
-        expect(x, bottom, "▁");
+        expect(x, bottom, "─");
     }
     for y in top + 1..bottom {
-        expect(left, y, "▏");
-        expect(right, y, "▕");
+        expect(left, y, "│");
+        expect(right, y, "│");
     }
-    expect(left, top, "▔");
-    expect(right, top, "▕");
-    expect(left, bottom, "▏");
-    expect(right, bottom, "▁");
+    // the top line carries the title and the controls, so only its corners are checked
+    expect(left, top, "┌");
+    expect(right, top, "┐");
+    expect(left, bottom, "└");
+    expect(right, bottom, "┘");
     broken
 }
 

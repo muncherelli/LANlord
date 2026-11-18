@@ -1,24 +1,24 @@
 
-    ▔▔▔▔▔▕      ▔▔▔▔▔▕
-    ▏ ≡≡ ▕      ▏ ▦▦ ▕
-    ▏▁▁▁▁▁      ▏▁▁▁▁▁
-  My Server    Settings
+      ≡           ▣
+  My Server     Hosts
 
 
-    ▔▔▔▔▔▕      ▔▔▔▔▔▕
-    ▏□─□ ▕      ▏ >_▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▏▁▁▁▁▁      ▏▁▁▁▏ Reboot server                 _▕□▕ ×▕▕
-   Networks    Conso▏                                      ▕
-                    ▏ Restart demo@gateway now?            ▕
-                    ▏                ▏   OK   ▕ ▏ Cancel ▕ ▕
-    ▔▔▔▔▔▕      ▔▔▔▔▏                                      ▕
-    ▏ ◄► ▕      ▏ ▣▣▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-    ▏▁▁▁▁▁      ▏▁▁▁▁▁
-   Gateway      Hosts
+      □
+   Networks
+
+
+      ►             ┌ Reboot server ──────────────── _ □ × ┐
+   Gateway          │Restart demo@gateway now?             │
+                    │                 [   OK   ] [ Cancel ]│
+                    └──────────────────────────────────────┘
+      ▦
+   Settings
+
+
+      >
+   Console
 
 
 
 
-
-
-▏ L LANlord ▕                                                       ▏ 12:00 PM ▕
+[ L LANlord ]                                                         12:00 PM

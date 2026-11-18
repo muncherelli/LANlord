@@ -1,37 +1,25 @@
-              ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▔▔▕    ▏ ▓ Docker                                                       _▕□▕ ×▕▕
-    ▏ ≡≡ ▕    ▏                                                                       ▕
-    ▏▁▁▁▁▁    ▏ ▔▔▔▔▔▕  Docker                                                        ▕
-  My Server   ▏ ▏ ▓▓ ▕  Status: available                                             ▕
-              ▏ ▏▁▁▁▁▁                                                                ▕
-              ▏                                                                       ▕
-    ▔▔▔▔▔▕    ▏ Installs Docker and drops NetBIOS and SMB on the host network. Finds  ▕
-    ▏□─□ ▕    ▏ the host and internal interfaces itself and works on lxc, vms and     ▕
-    ▏▁▁▁▁▁    ▏ bare metal.                                                           ▕
-   Networks   ▏ ───────────────────────────────────────────────────────────────────── ▕
-              ▏ ┌ Settings (in your settings file) ─────────────────────────────────┐ ▕
-              ▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕
-    ▔▔▔▔▔▕    ▏ │ ▕ docker: {}                                                    ▏ │ ▕
-    ▏ ◄► ▕    ▏ │ ▕                                                               ▏ │ ▕
-    ▏▁▁▁▁▁    ▏ │ ▕ # optional, found automatically:                              ▏ │ ▕
-   Gateway    ▏ │ ▕ network:                                                      ▏ │ ▕
-              ▏ │ ▕   host_interface: eth0                                        ▏ │ ▕
-              ▏ │ ▕   internal_interface: eth1                                    ▏ │ ▕
-    ▔▔▔▔▔▕    ▏ │  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔  │ ▕
-    ▏ ▦▦ ▕    ▏ └───────────────────────────────────────────────────────────────────┘ ▕
-    ▏▁▁▁▁▁    ▏                                                             ▏ Apply ▕ ▕
-   Settings   ▏ ▕ Host: demo@gateway                                                ▏ ▕
-              ▏                                                                       ▕
-              ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-    ▔▔▔▔▔▕
-    ▏ >_ ▕
-    ▏▁▁▁▁▁
-   Console
+              ┌ ▓ Docker ──────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ ▓  Docker                                                           │
+  My Server   │    Status: available                                                │
+              │                                                                     │
+              │Installs Docker and drops NetBIOS and SMB on the host network. Finds │
+      □       │the host and internal interfaces itself and works on lxc, vms and    │
+   Networks   │bare metal.                                                          │
+              │─────────────────────────────────────────────────────────────────────│
+              │┌ Settings (in your settings file) ─────────────────────────────────┐│
+      ►       ││  docker: {}                                                       ││
+   Gateway    ││                                                                   ││
+              ││  # optional, found automatically:                                 ││
+              ││  network:                                                         ││
+      ▦       ││    host_interface: eth0                                           ││
+   Settings   ││    internal_interface: eth1                                       ││
+              │└───────────────────────────────────────────────────────────────────┘│
+              │                                                            [ Apply ]│
+      >       │Host: demo@gateway                                                   │
+   Console    └─────────────────────────────────────────────────────────────────────┘
 
 
-    ▔▔▔▔▔▕
-    ▏ ▣▣ ▕
-    ▏▁▁▁▁▁
+      ▣
     Hosts
 
 
@@ -42,4 +30,16 @@
 
 
 
-▏ L LANlord ▕ ▏ ▓ Docker ▕                                                                                                                          ▏ 12:00 PM ▕
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ ▓ Docker ]                                                                                                                            12:00 PM

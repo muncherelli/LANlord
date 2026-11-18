@@ -1,24 +1,24 @@
-       ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▏ ◆ Time Server (NTP)                                            _▕□▕ ×▕▕
-    ▏ ≡▏                                                                       ▕
-    ▏▁▁▏ ▔▔▔▔▔▕  Time Server (NTP)                                             ▕
-  My Se▏ ▏ ◆  ▕  Status: available                                             ▕
-       ▏ ▏▁▁▁▁▁                                                                ▕
-       ▏                                                                       ▕
-    ▔▔▔▏ chrony in Docker: serves the time to the networks you pick, taking it ▕
-    ▏□─▏ from public pools. It never sets the server's own clock, and dnsmasq  ▕
-    ▏▁▁▏ hands its address out as DHCP option 42 (set from the settings,       ▕
-   Netw▏ whether or not it is running).                                        ▕
-       ▏ ───────────────────────────────────────────────────────────────────── ▕
-       ▏ ┌ Settings (in your settings file) ─────────────────────────────────┐ ▕
-    ▔▔▔▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕
-    ▏ ◄▏ │ ▕ time-server:                                                  ▏ │ ▕
-    ▏▁▁▏ │ ▕   pools: [pool.ntp.org]                                       ▏ │ ▕
-   Gate▏ │ ▕   servers: [192.0.2.123]                                      ▏ │ ▕
-       ▏ │  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔  │ ▕
-       ▏ └───────────────────────────────────────────────────────────────────┘ ▕
-       ▏                                                             ▏ Apply ▕ ▕
-       ▏ ▕ Host: demo@gateway                                                ▏ ▕
-       ▏                                                                       ▕
-       ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-▏ L LANlord ▕ ▏ ◆ Time Server (NTP) ▕                               ▏ 12:00 PM ▕
+         ┌ ◆ Time Server (NTP) ───────────────────────────────────────── _ □ × ┐
+      ≡  │ ◆  Time Server (NTP)                                                │
+  My Serv│    Status: available                                                │
+         │                                                                     │
+         │chrony in Docker: serves the time to the networks you pick, taking it│
+      □  │from public pools. It never sets the server's own clock, and dnsmasq │
+   Networ│hands its address out as DHCP option 42 (set from the settings,      │
+         │whether or not it is running).                                       │
+         │─────────────────────────────────────────────────────────────────────│
+      ►  │┌ Settings (in your settings file) ─────────────────────────────────┐│
+   Gatewa││  time-server:                                                     ││
+         ││    pools: [pool.ntp.org]                                          ││
+         ││    servers: [192.0.2.123]                                         ││
+      ▦  │└───────────────────────────────────────────────────────────────────┘│
+   Settin│                                                            [ Apply ]│
+         │Host: demo@gateway                                                   │
+         └─────────────────────────────────────────────────────────────────────┘
+      >
+   Console
+
+
+
+
+[ L LANlord ] [ ◆ Time Server (NTP) ]                                 12:00 PM

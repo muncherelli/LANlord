@@ -1,37 +1,25 @@
-              ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▔▔▕    ▏ ◆ Users and Permissions                                                              _▕□▕ ×▕▕
-    ▏ ≡≡ ▕    ▏                                                                                             ▕
-    ▏▁▁▁▁▁    ▏ This window is not available in the text view yet. Open it in the LANlord window or the web ▕
-  My Server   ▏ UI.                                                                                         ▕
-              ▏                                                                                             ▕
-              ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-    ▔▔▔▔▔▕
-    ▏□─□ ▕
-    ▏▁▁▁▁▁
+              ┌ ◆ Users and Permissions ─────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │This window is not available in the text view yet. Open it in the LANlord window or the web│
+  My Server   │UI.                                                                                        │
+              └───────────────────────────────────────────────────────────────────────────────────────────┘
+
+      □
    Networks
 
 
-    ▔▔▔▔▔▕
-    ▏ ◄► ▕
-    ▏▁▁▁▁▁
+      ►
    Gateway
 
 
-    ▔▔▔▔▔▕
-    ▏ ▦▦ ▕
-    ▏▁▁▁▁▁
+      ▦
    Settings
 
 
-    ▔▔▔▔▔▕
-    ▏ >_ ▕
-    ▏▁▁▁▁▁
+      >
    Console
 
 
-    ▔▔▔▔▔▕
-    ▏ ▣▣ ▕
-    ▏▁▁▁▁▁
+      ▣
     Hosts
 
 
@@ -42,4 +30,16 @@
 
 
 
-▏ L LANlord ▕ ▏ ◆ Users and Permissions ▕                                                                                                           ▏ 12:00 PM ▕
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ ◆ Users and Permissions ]                                                                                                             12:00 PM

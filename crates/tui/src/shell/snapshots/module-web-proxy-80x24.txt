@@ -1,24 +1,24 @@
-       ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
-    ▔▔▔▏ ◎ Web Proxy                                                    _▕□▕ ×▕▕
-    ▏ ≡▏                                                                       ▕
-    ▏▁▁▏ ▔▔▔▔▔▕  Web Proxy                                                     ▕
-  My Se▏ ▏ ◎  ▕  Status: available                                             ▕
-       ▏ ▏▁▁▁▁▁                                                                ▕
-       ▏                                                                       ▕
-    ▔▔▔▏ Caddy in Docker, proxying web requests to sites on the internal       ▕
-    ▏□─▏ network and to the lanlord web interface.                             ▕
-    ▏▁▁▏ ───────────────────────────────────────────────────────────────────── ▕
-   Netw▏ ┌ Settings (in your settings file) ─────────────────────────────────┐ ▕
-       ▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕
-       ▏ │ ▕ web-proxy:                                                    ▏ │ ▕
-    ▔▔▔▏ │ ▕   sites:                                                      ▏ │ ▕
-    ▏ ◄▏ │ ▕     - host: nostalgia.lan                                     ▏ │ ▕
-    ▏▁▁▏ │ ▕       upstream: 172.16.120.20:80                              ▏ │ ▕
-   Gate▏ │  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔  │ ▕
-       ▏ └───────────────────────────────────────────────────────────────────┘ ▕
-       ▏                                                             ▏ Apply ▕ ▕
-       ▏ ▕ Host: demo@gateway                                                ▏ ▕
-       ▏                                                                       ▕
-       ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+         ┌ ◎ Web Proxy ───────────────────────────────────────────────── _ □ × ┐
+      ≡  │ ◎  Web Proxy                                                        │
+  My Serv│    Status: available                                                │
+         │                                                                     │
+         │Caddy in Docker, proxying web requests to sites on the internal      │
+      □  │network and to the lanlord web interface.                            │
+   Networ│─────────────────────────────────────────────────────────────────────│
+         │┌ Settings (in your settings file) ─────────────────────────────────┐│
+         ││  web-proxy:                                                       ││
+      ►  ││    sites:                                                         ││
+   Gatewa││      - host: nostalgia.lan                                        ││
+         ││        upstream: 172.16.120.20:80                                 ││
+         │└───────────────────────────────────────────────────────────────────┘│
+      ▦  │                                                            [ Apply ]│
+   Settin│Host: demo@gateway                                                   │
+         └─────────────────────────────────────────────────────────────────────┘
 
-▏ L LANlord ▕ ▏ ◎ Web Proxy ▕                                       ▏ 12:00 PM ▕
+      >
+   Console
+
+
+
+
+[ L LANlord ] [ ◎ Web Proxy ]                                         12:00 PM
