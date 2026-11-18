@@ -86,7 +86,6 @@ impl Target {
             Self::Console
             | Self::Hosts
             | Self::Changelog
-            | Self::MyServer
             | Self::Networks
             | Self::Settings
             | Self::Permissions
@@ -96,6 +95,12 @@ impl Target {
             Self::Module(i) => matches!(MODULES[i].id, "nt4-domain" | "dns" | "remote-commands"),
             _ => false,
         }
+    }
+
+    /// a fixed dialog, like System Properties: it has a minimise and a close button, no maximise,
+    /// cannot be resized, and is the one size in `size` whatever its tab shows.
+    pub fn fixed(self) -> bool {
+        matches!(self, Self::MyServer)
     }
 
     /// the least height a growable window opens at, for contents that are near empty: the hosts
@@ -179,7 +184,7 @@ impl Target {
                 "remote-commands" => (580.0, 580.0),
                 _ => (480.0, 320.0),
             },
-            Self::MyServer => (440.0, 480.0),
+            Self::MyServer => (440.0, 400.0),
             Self::Networks => (560.0, 440.0),
             Self::Console => (CONSOLE_COLS * CELL.0, CONSOLE_ROWS * CELL.1),
             Self::Hosts => (380.0, 280.0),

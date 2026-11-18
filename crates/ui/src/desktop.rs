@@ -1332,8 +1332,9 @@ impl Desktop {
             // only the width is chosen; the height is whatever the contents need
             let size = window_size(ctx, target);
             let width = size.x.min(area.width() - ICON_COLUMN - ICON_MARGIN);
-            // only the console has a height of its own; the rest are as tall as their contents
-            let height = (target == Target::Console).then_some(size.y);
+            // only the console and the fixed dialogs have a height of their own; the rest are as
+            // tall as their contents
+            let height = (target == Target::Console || target.fixed()).then_some(size.y);
             let start = if target.is_dialog() {
                 area.center()
             } else {
@@ -1349,6 +1350,7 @@ impl Desktop {
                 width,
                 area,
                 growable: target.growable(),
+                fixed: target.fixed(),
                 height,
                 // an empty list would open as a strip: the hosts list opens at its usual height
                 floor: target.floor(),
@@ -1730,7 +1732,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{} was not drawn", target.title()));
                 let name = target.title();
                 // a 20 pixel title bar and a 3 pixel border all round, around the contents
-                let wanted = if target == Target::Console {
+                let wanted = if target == Target::Console || target.fixed() {
                     window_size(&ctx, target).y.min(area.height())
                 } else {
                     content + windows::CHROME
