@@ -24,6 +24,7 @@ pub mod logon;
 mod save_guard;
 mod self_service;
 pub use lanlord_model::modules;
+pub mod monitor;
 pub mod netstatus;
 pub mod network;
 pub use lanlord_model::networks;

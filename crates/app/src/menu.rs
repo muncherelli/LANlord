@@ -159,6 +159,7 @@ pub fn rows(state: &State) -> Vec<Row> {
         Target::Networks,
         Target::Settings,
         Target::Console,
+        Target::TaskManager,
     ]
     .into_iter()
     .filter(|t| t.visible(&state.grants))

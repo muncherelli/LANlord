@@ -3,6 +3,7 @@
 //! so it also builds for the browser.
 
 pub mod access;
+pub mod apply;
 pub mod bridge;
 pub mod clock;
 pub mod compat;
@@ -14,6 +15,7 @@ pub mod leases;
 pub mod log;
 pub mod logon;
 pub mod modules;
+pub mod monitor;
 pub mod netstatus;
 pub mod network;
 pub mod networks;

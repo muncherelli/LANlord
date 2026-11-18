@@ -5,6 +5,7 @@
 
 pub mod account_window;
 pub mod admin_setup;
+pub mod apply_progress;
 pub mod ask;
 #[cfg(target_arch = "wasm32")]
 pub mod browser;
@@ -14,6 +15,7 @@ pub mod compat;
 pub mod components;
 pub mod console;
 pub mod demo_clock;
+pub mod demo_monitor;
 pub mod desktop;
 pub mod dns_panel;
 pub mod form;
@@ -26,6 +28,7 @@ pub mod logon_panel;
 pub mod menu;
 pub mod message;
 pub mod module_window;
+pub mod monitor;
 pub mod my_server;
 pub mod nt4_panel;
 pub mod permissions_window;

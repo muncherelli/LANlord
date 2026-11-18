@@ -24,6 +24,10 @@ pub enum Target {
     MyAccount,
     /// users, roles and what each role may do; opened from the menu.
     Permissions,
+    /// the progress of an apply; it opens by itself when one starts and has no desktop icon.
+    Progress,
+    /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
+    TaskManager,
 }
 
 impl Target {
@@ -41,6 +45,8 @@ impl Target {
             Self::Welcome => "welcome",
             Self::MyAccount => "my-account",
             Self::Permissions => "permissions",
+            Self::Progress => "apply-progress",
+            Self::TaskManager => "taskmgr",
         }
     }
 
@@ -57,6 +63,8 @@ impl Target {
             Self::Welcome => "Welcome",
             Self::MyAccount => "My Account",
             Self::Permissions => "Users and Permissions",
+            Self::Progress => "Applying Settings",
+            Self::TaskManager => "Task Manager",
         }
     }
 
@@ -70,20 +78,22 @@ impl Target {
                 "remote-commands" => Area::Commands,
                 _ => Area::Services,
             }),
-            Self::MyServer => Some(Area::Status),
+            // anyone may watch the Task Manager; ending a process needs Manage on the same area
+            Self::MyServer | Self::TaskManager => Some(Area::Status),
             Self::Networks => Some(Area::Network),
             Self::Console => Some(Area::Commands),
             Self::Settings | Self::Components => Some(Area::Services),
             Self::DateTime => Some(Area::Clock),
             Self::Permissions => Some(Area::Users),
-            Self::Hosts | Self::Welcome | Self::MyAccount => None,
+            // the progress of an apply opens by itself for whoever ran it; the apply op is what is checked
+            Self::Hosts | Self::Welcome | Self::MyAccount | Self::Progress => None,
         }
     }
 
     /// the windows that can show their data read-only; every other one only opens for someone
     /// who may change it.
     fn reads_only(self) -> bool {
-        matches!(self, Self::MyServer | Self::Permissions)
+        matches!(self, Self::MyServer | Self::Permissions | Self::TaskManager)
     }
 
     /// the level of the window's area needed to open it: View for the windows that can be
@@ -133,6 +143,8 @@ impl Target {
             Self::Welcome => (580.0, 380.0),
             Self::MyAccount => (400.0, 0.0),
             Self::Permissions => (640.0, 520.0),
+            Self::Progress => (480.0, 360.0),
+            Self::TaskManager => (500.0, 490.0),
         }
     }
 }
@@ -263,5 +275,27 @@ mod tests {
                 "hosts"
             ]
         );
+    }
+
+    #[test]
+    fn anyone_may_watch_the_task_manager_but_only_a_manager_of_status_may_end_a_process() {
+        use lanlord_model::access::{Grants, Level};
+        let users = Grants::fallback(false);
+        assert!(Target::TaskManager.visible(&users));
+        assert!(!Target::TaskManager.writable(&users));
+        let admins = Grants::fallback(true);
+        assert!(Target::TaskManager.visible(&admins) && Target::TaskManager.writable(&admins));
+        assert_eq!(Target::TaskManager.opens_at(), Level::View);
+    }
+
+    #[test]
+    fn the_progress_window_has_no_icon_and_names_itself() {
+        assert_eq!(Target::Progress.id(), "apply-progress");
+        assert_eq!(Target::Progress.title(), "Applying Settings");
+        // it opens by itself for whoever ran the apply, which is what the server checks
+        assert_eq!(Target::Progress.area(), None);
+        assert!(Target::Progress.size().0 > 0.0);
+        assert!(!icons(None).contains(&Target::Progress));
+        assert!(!windows(&icons(None)).contains(&Target::Progress));
     }
 }
