@@ -67,7 +67,20 @@ fn nodes_ui<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
 /// how far a status bar at node `index` has slid in: 0 when hidden, 1 when fully shown.
 fn slide_amount(ui: &Ui, index: usize, shown: bool) -> f32 {
     let id = ui.scope_id().with(("status-slide", index));
-    ui.ctx().animate_bool_with_time(id, shown, SLIDE_SECS)
+    slide(ui.ctx(), id, shown, reduce_motion())
+}
+
+/// whether moving pictures are off (LANLORD_REDUCE_MOTION).
+pub fn reduce_motion() -> bool {
+    std::env::var_os("LANLORD_REDUCE_MOTION").is_some()
+}
+
+/// the slide at `id`; with `reduce` it jumps straight to fully shown or hidden.
+fn slide(ctx: &egui::Context, id: egui::Id, shown: bool, reduce: bool) -> f32 {
+    if reduce {
+        return f32::from(u8::from(shown));
+    }
+    ctx.animate_bool_with_time(id, shown, SLIDE_SECS)
 }
 
 /// the gap before a status bar, scaled by how far the bar has slid in.
@@ -97,7 +110,6 @@ fn slide_status(ui: &mut Ui, index: usize, text: &str, error: bool) {
     );
     inner.set_clip_rect(rect.intersect(ui.clip_rect()));
     controls::status_bar(&mut inner, text, error);
-    ui.ctx().request_repaint();
 }
 
 fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
@@ -145,12 +157,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             controls::row(ui, label, |ui| ui.label(value.as_str()));
             None
         }
-        Node::Status { text, error } => {
-            if !text.is_empty() {
-                controls::status_bar(ui, text, *error);
-            }
-            None
-        }
+        Node::Status { .. } => None,
         Node::Heading(text) => {
             ui.label(RichText::new(text.as_str()).strong());
             None
@@ -838,6 +845,16 @@ mod tests {
             gone = height(&ctx, &with_status(""));
         }
         assert!((gone - empty).abs() < 0.01, "{gone} vs {empty}");
+    }
+
+    #[test]
+    fn reduced_motion_shows_and_hides_the_bar_at_once() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::NULL.with("slide");
+        assert_eq!(slide(&ctx, id, true, true), 1.0);
+        assert_eq!(slide(&ctx, id, false, true), 0.0);
+        slide(&ctx, id, false, false);
+        assert!(slide(&ctx, id, true, false) < 1.0, "animates otherwise");
     }
 
     #[test]
