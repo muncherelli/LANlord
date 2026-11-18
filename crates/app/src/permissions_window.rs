@@ -91,7 +91,7 @@ impl PermissionsWindow {
         let mut body = vec![Node::Table(Table {
             id: "permission-users",
             headings: vec!["User", "Roles"],
-            widths: vec![100.0],
+            widths: vec![140.0],
             rows: self.user_rows(),
             selected: self.user,
             bad: Vec::new(),
@@ -186,15 +186,22 @@ impl PermissionsWindow {
             self.reload(services, host);
         }
         let idle = !services.busy(host) && !self.remote.busy();
+        // a save or reload in flight replaces the draft when it ends, so nothing is edited meanwhile
+        let writable = writable && !self.remote.busy();
         vec![
             Node::Columns(vec![
                 (None, vec![self.user_group(writable)]),
                 (None, vec![self.role_group(writable)]),
             ]),
             Node::Gap(4.0),
-            Node::Toolbar(vec![
-                Button::new("Save", writable && idle && self.dirty(), Msg::Save),
-                Button::new("Reload", idle && !self.dirty(), Msg::Reload),
+            // single buttons in a row, so each keeps its natural width in the text view
+            Node::Row(vec![
+                Node::Button(Button::new(
+                    "Save",
+                    writable && idle && self.dirty(),
+                    Msg::Save,
+                )),
+                Node::Button(Button::new("Reload", idle && !self.dirty(), Msg::Reload)),
             ]),
             view::status(&self.remote),
         ]
@@ -205,8 +212,8 @@ impl PermissionsWindow {
         match msg {
             Msg::PickUser(i) => self.user = Some(i),
             Msg::PickRole(i) => self.role = i,
-            Msg::Reload if !self.dirty() => self.reload(services, host),
-            _ if !writable => {}
+            Msg::Reload if !self.dirty() && !self.remote.busy() => self.reload(services, host),
+            _ if !writable || self.remote.busy() => {}
             Msg::Save if self.dirty() => self.save(services, host),
             other => self.edit(other),
         }
@@ -293,6 +300,9 @@ impl PermissionsWindow {
     fn add(&mut self, kind: Add, name: &str) -> Result<(), String> {
         if name.is_empty() {
             return Err("Type a name.".into());
+        }
+        if self.remote.busy() {
+            return Err("Wait for the save to finish.".into());
         }
         match kind {
             Add::User => {
@@ -460,5 +470,29 @@ mod tests {
         assert!(window.form.as_ref().unwrap().1.error.is_some());
         window.update_dialog(FormMsg::Cancel);
         assert!(window.form.is_none());
+    }
+
+    #[test]
+    fn nothing_is_edited_while_a_load_or_save_is_in_flight() {
+        let (mut window, services, _) = setup();
+        let _ = window.view(&services, Some("gw"), true);
+        assert!(window.remote.busy());
+        window.update(Msg::AddUser, &services, "gw", true);
+        window.update(Msg::NewRole, &services, "gw", true);
+        window.update(Msg::Reload, &services, "gw", true);
+        assert!(window.form.is_none());
+        // the controls are drawn disabled meanwhile
+        let nodes = window.view(&services, Some("gw"), true);
+        let Node::Columns(columns) = &nodes[0] else {
+            panic!("no columns");
+        };
+        let Node::Group { body, .. } = &columns[0].1[0] else {
+            panic!("no users group");
+        };
+        assert!(matches!(body.last(), Some(Node::Toolbar(b)) if !b[0].enabled));
+        // a box that was open when the work began cannot add either
+        assert!(window.add(Add::User, "dana").is_err());
+        settle(&mut window, &services);
+        assert!(window.add(Add::User, "dana").is_ok());
     }
 }

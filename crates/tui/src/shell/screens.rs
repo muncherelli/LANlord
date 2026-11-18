@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use lanlord_app::gateway::Fake;
 use lanlord_app::login::fake::FakeAuth;
+use lanlord_app::networks_window::{self, NetworksWindow};
 
 use super::{
     AdminSetup, Arc, Buffer, Form, HostList, Modal, Palette, Power, Rect, Shell, Target, MODULES,
@@ -22,13 +23,16 @@ const SIZES: [(u16, u16); 3] = [SMALL, (100, 30), LARGE];
 
 /// a demo desktop with a fixed clock, its first frame drawn at `size`.
 fn desktop(size: (u16, u16)) -> Shell {
-    let mut shell = Shell::new(
-        Arc::new(Fake::new()),
-        HostList::new(None),
-        Palette::default(),
-    );
+    desktop_with(size, Fake::new())
+}
+
+/// a demo desktop over `fake`. lease times are written in UTC, so a snapshot reads the same
+/// in every time zone.
+fn desktop_with(size: (u16, u16), fake: Fake) -> Shell {
+    let mut shell = Shell::new(Arc::new(fake), HostList::new(None), Palette::default());
     shell.clock = Some("12:00 PM".into());
     shell.use_demo_server();
+    shell.networks = NetworksWindow::default().with_time(networks_window::utc_time);
     draw(&mut shell, size);
     shell
 }
@@ -194,6 +198,17 @@ fn window_boxes() -> Vec<Scene> {
     use lanlord_app::permissions_window::Msg as PermissionsMsg;
     const HOST: &str = "demo@gateway";
     vec![
+        scene("networks-lanlord", |size| {
+            let fake = Fake::new();
+            *fake.stored.lock().unwrap() = super::window_tests::NETWORKS.into();
+            let mut shell = desktop_with(size, fake);
+            shell.open(Target::Networks);
+            draw(&mut shell, size);
+            shell
+                .networks
+                .update(Networks::Tab(1), &shell.services, HOST, 0.0);
+            shell
+        }),
         scene("networks-properties", |size| {
             let mut shell = window(size, Target::Networks);
             draw(&mut shell, size);

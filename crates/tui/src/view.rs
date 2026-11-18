@@ -1202,7 +1202,7 @@ impl<'a> Painter<'a> {
                     return;
                 }
                 let body = padded(inner);
-                let widths: Vec<u16> = table.widths.iter().map(|w| cols(*w)).collect();
+                let widths = column_widths(table, body.width);
                 let header = self.st(BLACK, GRAY);
                 fill(buf, Rect::new(inner.x, inner.y, inner.width, 1), p, GRAY);
                 let mut x = body.x;
@@ -1804,6 +1804,29 @@ fn boxed(area: Rect) -> Rect {
 
 /// the columns a table asks for: its fixed columns, the longest text of the last one and the
 /// inset on both sides.
+/// the columns each column of `table` gets in `room`: the widths it asks for, less what the
+/// last column needs to show its longest text whole, so a narrow window keeps the text in view.
+fn column_widths<M>(table: &lanlord_app::view::Table<M>, room: u16) -> Vec<u16> {
+    let mut widths: Vec<u16> = table.widths.iter().map(|w| cols(*w)).collect();
+    let last = table.headings.len().saturating_sub(1);
+    let longest = table
+        .rows
+        .iter()
+        .filter_map(|row| row.get(last))
+        .map(|cell| cell.chars().count())
+        .chain(table.headings.get(last).map(|h| h.chars().count()))
+        .max()
+        .unwrap_or(0) as u16;
+    let fixed: u16 = widths.iter().take(last).sum();
+    let mut over = fixed.saturating_sub(room.saturating_sub(longest));
+    for width in widths.iter_mut().take(last).rev() {
+        let cut = over.min(width.saturating_sub(4));
+        *width -= cut;
+        over -= cut;
+    }
+    widths
+}
+
 fn table_width<M>(table: &lanlord_app::view::Table<M>) -> u16 {
     let last = table.headings.len().saturating_sub(1);
     let fixed: u16 = table.widths.iter().take(last).map(|w| cols(*w)).sum();

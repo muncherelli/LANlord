@@ -1,8 +1,8 @@
               ┌ ◆ Users and Permissions ───────────────────────────────────────────────────────────── _ □ × ┐
       ≡       │ ┌ Users ────────────────────────────────────┐ ┌ Roles ────────────────────────────────────┐ │
-  My Server   │ │  User          Roles                      │ │  Administrators                           │ │
-              │ │  alice         Administrators             │ │  Operators                                │ │
-              │ │  ben           Users                      │ │  Users                                    │ │
+  My Server   │ │  User                Roles                │ │  Administrators                           │ │
+              │ │  alice               Administrators       │ │  Operators                                │ │
+              │ │  ben                 Users                │ │  Users                                    │ │
       □       │ │                                           │ │ Server status            Manage           │ │
    Networks   │ │                                           │ │ Network and DHCP         Manage           │ │
               │ │ [ Add user... ]                           │ │ DNS                      Manage           │ │
@@ -18,7 +18,7 @@
       >       │                                               │ Users and permissions    Manage           │ │
    Console    │                                               │ [ New role... ] [ Remove role ]           │ │
               │                                             ┌ Add user ───────────────────── _ □ × ┐──────┘ │
-              │ [  Save  ] [ Reload ]                       │ Name                                 │        │
+              │ [ Save ] [ Reload ]                         │ Name                                 │        │
       ▣       │ loaded the permissions                      │                                      │        │
     Hosts     └─────────────────────────────────────────────│                    [ OK ] [ Cancel ] │────────┘
                                                             └──────────────────────────────────────┘

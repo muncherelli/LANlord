@@ -742,6 +742,77 @@ impl Shell {
 
 // each window's tree, run through one pass
 impl Shell {
+    fn networks_body(&mut self, host: Option<&str>, pass: &mut Pass, state: &ViewState) -> Answer {
+        let now = self.epoch.elapsed().as_secs_f64();
+        let nodes = self.networks.view(&self.services, host, now);
+        let (answer, msg) = drive(&nodes, pass, state, self.palette);
+        if let (Some(msg), Some(host)) = (msg, host) {
+            let ask = self.networks.update(msg, &self.services, host, now);
+            if ask == Some(networks_window::Ask::Dns) {
+                if let Some(dns) = MODULES.iter().position(|m| m.id == "dns") {
+                    self.open_next.push(Target::Module(dns));
+                }
+            }
+        }
+        answer
+    }
+
+    fn account_body(&mut self, host: Option<&str>, pass: &mut Pass, state: &ViewState) -> Answer {
+        let nodes = self.account.view(&self.services, host);
+        let (answer, msg) = drive(&nodes, pass, state, self.palette);
+        if let (Some(msg), Some(host)) = (msg, host) {
+            self.account.update(msg, &self.services, host);
+        }
+        answer
+    }
+
+    fn permissions_body(
+        &mut self,
+        host: Option<&str>,
+        pass: &mut Pass,
+        state: &ViewState,
+    ) -> Answer {
+        let writable = Target::Permissions.writable(&self.grants());
+        let nodes = self.permissions.view(&self.services, host, writable);
+        let (answer, msg) = drive(&nodes, pass, state, self.palette);
+        if let (Some(msg), Some(host)) = (msg, host) {
+            self.permissions.update(msg, &self.services, host, writable);
+        }
+        answer
+    }
+
+    /// the open box of the Networks, My Account or Permissions window, drawn and answered.
+    fn window_dialog(
+        &mut self,
+        pass: &mut Pass,
+        state: &ViewState,
+        escape: bool,
+    ) -> Option<(String, Answer)> {
+        let palette = self.palette;
+        let host = self.host();
+        if let Some(dialog) = self.networks.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, pass, state, palette, escape);
+            if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                let now = self.epoch.elapsed().as_secs_f64();
+                self.networks.update(msg, &self.services, host, now);
+            }
+            return Some((dialog.title, answer));
+        }
+        if let Some(dialog) = self.account.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, pass, state, palette, escape);
+            if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                self.account.update_dialog(msg, &self.services, host);
+            }
+            return Some((dialog.title, answer));
+        }
+        let dialog = self.permissions.dialog()?;
+        let (answer, msg) = drive_dialog(&dialog, pass, state, palette, escape);
+        if let Some(msg) = msg {
+            self.permissions.update_dialog(msg);
+        }
+        Some((dialog.title, answer))
+    }
+
     fn run_window(&mut self, target: Target, mut pass: Pass) -> Answer {
         let key = target.id();
         let mut state = self.views.remove(key).unwrap_or_default();
@@ -894,39 +965,9 @@ impl Shell {
                     drive(&nodes, &mut pass, &state, palette).0
                 }
             },
-            Target::Networks => {
-                let now = self.epoch.elapsed().as_secs_f64();
-                let nodes = self.networks.view(&self.services, host.as_deref(), now);
-                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
-                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
-                    let ask = self.networks.update(msg, &self.services, host, now);
-                    if ask == Some(networks_window::Ask::Dns) {
-                        if let Some(dns) = MODULES.iter().position(|m| m.id == "dns") {
-                            self.open_next.push(Target::Module(dns));
-                        }
-                    }
-                }
-                answer
-            }
-            Target::MyAccount => {
-                let nodes = self.account.view(&self.services, host.as_deref());
-                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
-                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
-                    self.account.update(msg, &self.services, host);
-                }
-                answer
-            }
-            Target::Permissions => {
-                let writable = Target::Permissions.writable(&self.grants());
-                let nodes = self
-                    .permissions
-                    .view(&self.services, host.as_deref(), writable);
-                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
-                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
-                    self.permissions.update(msg, &self.services, host, writable);
-                }
-                answer
-            }
+            Target::Networks => self.networks_body(host.as_deref(), &mut pass, &state),
+            Target::MyAccount => self.account_body(host.as_deref(), &mut pass, &state),
+            Target::Permissions => self.permissions_body(host.as_deref(), &mut pass, &state),
             Target::Progress => {
                 let nodes = self.console.apply.view();
                 let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
@@ -1237,28 +1278,8 @@ impl Shell {
                     .update_dialog(msg, &self.services, host.as_deref());
             }
             (title, answer)
-        } else if let Some(dialog) = self.networks.dialog() {
-            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
-            let title = dialog.title.clone();
-            if let (Some(msg), Some(host)) = (msg, self.host()) {
-                let now = self.epoch.elapsed().as_secs_f64();
-                self.networks.update(msg, &self.services, &host, now);
-            }
-            (title, answer)
-        } else if let Some(dialog) = self.account.dialog() {
-            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
-            let title = dialog.title.clone();
-            if let (Some(msg), Some(host)) = (msg, self.host()) {
-                self.account.update_dialog(msg, &self.services, &host);
-            }
-            (title, answer)
-        } else if let Some(dialog) = self.permissions.dialog() {
-            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
-            let title = dialog.title.clone();
-            if let Some(msg) = msg {
-                self.permissions.update_dialog(msg);
-            }
-            (title, answer)
+        } else if let Some(found) = self.window_dialog(&mut pass, &state, escape) {
+            found
         } else if let Some(dialog) = self.nt4.dialog() {
             let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
             let title = dialog.title.clone();

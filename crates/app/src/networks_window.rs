@@ -51,9 +51,18 @@ pub struct NetworksWindow {
     connection: Option<InterfaceStatus>,
     /// when the status was last asked for, in seconds on the caller's clock.
     status_at: f64,
+    /// writes a unix time for the lease lines; this computer's time zone when `None`.
+    time: Option<fn(i64) -> String>,
 }
 
 impl NetworksWindow {
+    /// write lease times with `time` rather than in this computer's time zone, so a test or a
+    /// scene shows the same text everywhere.
+    pub fn with_time(mut self, time: fn(i64) -> String) -> Self {
+        self.time = Some(time);
+        self
+    }
+
     pub fn rows(&self) -> &Remote<Vec<NetworkRow>> {
         &self.rows
     }
@@ -210,7 +219,7 @@ impl NetworksWindow {
     /// the read-only properties box and the Network Connection Details list.
     pub fn dialog(&self) -> Option<Dialog<Msg>> {
         if let Some(status) = &self.connection {
-            return Some(connection_dialog(status));
+            return Some(connection_dialog(status, self.time.unwrap_or(local_time)));
         }
         self.details.as_ref().map(properties_dialog)
     }
@@ -236,9 +245,9 @@ fn properties_dialog(row: &NetworkRow) -> Dialog<Msg> {
     }
 }
 
-fn connection_dialog(status: &InterfaceStatus) -> Dialog<Msg> {
+fn connection_dialog(status: &InterfaceStatus, time: fn(i64) -> String) -> Dialog<Msg> {
     let rows = status
-        .details(local_time)
+        .details(time)
         .into_iter()
         .map(|(key, value)| vec![key, value])
         .collect();
@@ -251,7 +260,7 @@ fn connection_dialog(status: &InterfaceStatus) -> Dialog<Msg> {
             Node::Table(Table {
                 id: "network-details-list",
                 headings: vec!["Property", "Value"],
-                widths: vec![150.0],
+                widths: vec![150.0, 230.0],
                 rows,
                 selected: None,
                 bad: Vec::new(),
@@ -351,6 +360,13 @@ fn grouped(n: u64) -> String {
     out
 }
 
+/// a unix time in UTC, in the same shape as `local_time`.
+pub fn utc_time(secs: i64) -> String {
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|t| t.format("%-m/%-d/%Y %-I:%M:%S %p").to_string())
+        .unwrap_or_default()
+}
+
 /// a unix time in this computer's time zone, like `11/16/2026 4:05:09 PM`.
 fn local_time(secs: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0)
@@ -410,6 +426,51 @@ mod tests {
         assert!(window.dialog().is_none());
         window.update(Msg::Properties, &services, "h", 0.0);
         window.update(Msg::CloseProperties, &services, "h", 0.0);
+        assert!(window.dialog().is_none());
+    }
+
+    #[test]
+    fn the_status_is_read_again_every_few_seconds_while_the_window_is_open() {
+        let fake = std::sync::Arc::new(crate::gateway::Fake::new());
+        let services = Services::new(fake.clone(), crate::wake::Wake::none());
+        let mut window = NetworksWindow::default();
+        let reads = |fake: &crate::gateway::Fake| {
+            fake.calls()
+                .iter()
+                .filter(|c| c.starts_with("network-status"))
+                .count()
+        };
+        let settle = |window: &mut NetworksWindow| {
+            let start = std::time::Instant::now();
+            while window.reading() || services.busy("gw") {
+                window.poll();
+                assert!(start.elapsed() < std::time::Duration::from_secs(5), "stuck");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            window.poll();
+        };
+        let _ = window.view(&services, Some("gw"), 100.0);
+        settle(&mut window);
+        assert_eq!(reads(&fake), 1);
+        let _ = window.view(&services, Some("gw"), 100.0 + STATUS_EVERY - 0.5);
+        settle(&mut window);
+        assert_eq!(reads(&fake), 1, "too soon");
+        let _ = window.view(&services, Some("gw"), 100.0 + STATUS_EVERY);
+        settle(&mut window);
+        assert_eq!(reads(&fake), 2);
+        // a failure is not retried on the timer; Refresh does
+        *fake.network_error.lock().unwrap() = Some("down".into());
+        window.update(Msg::Refresh, &services, "gw", 200.0);
+        settle(&mut window);
+        let _ = window.view(&services, Some("gw"), 300.0);
+        settle(&mut window);
+        assert_eq!(reads(&fake), 3);
+    }
+
+    #[test]
+    fn a_pinned_time_format_writes_the_lease_lines() {
+        let window = NetworksWindow::default().with_time(utc_time);
+        assert_eq!(utc_time(0), "1/1/1970 12:00:00 AM");
         assert!(window.dialog().is_none());
     }
 }

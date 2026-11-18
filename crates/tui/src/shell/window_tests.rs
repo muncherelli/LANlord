@@ -1,14 +1,23 @@
 //! the Networks, My Account and Permissions windows driven through the text view: what each
 //! shows and what its buttons, tabs, fields and boxes do, with a fake gateway behind them.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use lanlord_app::gateway::Fake;
+use lanlord_app::login::fake::FakeAuth;
+use lanlord_app::login::SignedIn;
+use lanlord_model::access::{Grants, Level};
+use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::KeyModifiers;
+use ratatui::crossterm::event::{Event, KeyCode, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
 
 use super::tests::{click, frame, key, module, type_text};
-use super::*;
+use super::{HostList, Palette, Shell, Target};
+use crate::paint::lines;
 
-const NETWORKS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
+pub(super) const NETWORKS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\n";
 
 /// a signed-in shell on the demo server whose gateway is `fake`, which the test keeps to look at.
 fn server(fake: &Arc<Fake>) -> Shell {
@@ -385,10 +394,9 @@ fn a_users_roles_are_ticked_and_saved() {
     assert!(text.contains("[✓] Users"), "{text}");
     let text = press(&mut shell, "[ ] Operators");
     assert!(text.contains("[✓] Operators"), "{text}");
-    assert!(
-        text.contains("Users, Operators") || text.contains("Operators"),
-        "{text}"
-    );
+    // the users list shows the change before it is saved
+    let ben = text.lines().find(|l| l.contains("ben")).unwrap();
+    assert!(ben.contains("Users, Operators"), "{ben}");
     press(&mut shell, "Save");
     until(&mut shell, "saved");
     let members = fake.access.lock().unwrap().members.clone();
@@ -428,8 +436,12 @@ fn a_new_role_gets_levels_and_is_removed_again() {
     open(&mut shell, Target::Permissions);
     until(&mut shell, "alice");
     // built-in roles cannot be removed
-    let remove = press(&mut shell, "Remove role");
-    assert!(remove.contains("Administrators"), "{remove}");
+    let before = frame(&mut shell);
+    let after = press(&mut shell, "Remove role");
+    assert_eq!(before, after, "Remove role is disabled on a built-in role");
+    for built_in in ["Administrators", "Operators", "Users"] {
+        assert!(after.contains(built_in), "{after}");
+    }
     press(&mut shell, "New role...");
     type_text(&mut shell, "Auditors");
     key(&mut shell, KeyCode::Enter);
@@ -468,17 +480,99 @@ fn a_new_role_gets_levels_and_is_removed_again() {
     assert!(fake.access.lock().unwrap().roles.is_empty());
 }
 
+fn signed_in(grants: Option<Grants>, admin: bool) -> SignedIn {
+    SignedIn {
+        target: "alice@gateway.example".into(),
+        identity: lanlord_model::signin::Identity {
+            user: "alice".into(),
+            uid: 1000,
+            admin,
+            grants,
+        },
+    }
+}
+
 #[test]
-fn reload_forgets_nothing_it_was_not_asked_to_and_a_new_account_starts_clean() {
+fn reload_reads_again_and_signing_off_and_on_starts_the_windows_clean() {
     let fake = Arc::new(Fake::new());
     let mut shell = server(&fake);
+    shell.auth = Some(Arc::new(FakeAuth::default()));
     open(&mut shell, Target::Permissions);
     until(&mut shell, "alice");
     press(&mut shell, "Reload");
     until(&mut shell, "loaded the permissions");
     assert_eq!(count(&fake, "load-access demo@gateway"), 2);
+    // an unsaved user and an open box do not survive a sign-off and a new sign-in
+    press(&mut shell, "Add user...");
+    let at = find(&frame(&mut shell), "Name");
+    click(&mut shell, Position::new(at.x + 8, at.y + 1));
+    type_text(&mut shell, "cara");
+    key(&mut shell, KeyCode::Enter);
     press(&mut shell, "Add user...");
     assert!(shell.permissions.dialog().is_some());
-    shell.reset_windows();
+    shell.log_off();
+    assert!(shell.login.is_some());
     assert!(shell.permissions.dialog().is_none());
+    shell.finish_login(signed_in(None, true));
+    open(&mut shell, Target::Permissions);
+    let text = until(&mut shell, "alice");
+    assert!(!text.contains("cara"), "{text}");
+    assert!(shell.permissions.dialog().is_none());
+}
+
+#[test]
+fn a_read_only_account_sees_permissions_but_changes_nothing() {
+    let fake = Arc::new(Fake::new());
+    let mut shell = server(&fake);
+    shell.finish_login(signed_in(Some(Grants::all(Level::View)), false));
+    open(&mut shell, Target::Permissions);
+    until(&mut shell, "alice");
+    let before = press(&mut shell, "ben");
+    assert!(before.contains("[ ] Operators"), "{before}");
+    // nothing can be ticked, added or removed, and there is nothing to save
+    let after = press(&mut shell, "[ ] Operators");
+    assert_eq!(before, after);
+    for button in ["Add user...", "New role...", "Remove role"] {
+        press(&mut shell, button);
+        assert!(shell.permissions.dialog().is_none(), "{button}");
+    }
+    press(&mut shell, "Save");
+    assert_eq!(count(&fake, "save-access gateway.example"), 0);
+    let text = frame(&mut shell);
+    let ben = text.lines().find(|l| l.contains("ben")).unwrap();
+    assert!(ben.contains("Users") && !ben.contains("Operators"), "{ben}");
+}
+
+fn small(shell: &mut Shell) -> String {
+    shell.poll();
+    let area = Rect::new(0, 0, 80, 24);
+    let mut buf = Buffer::empty(area);
+    shell.render(area, &mut buf);
+    lines(&buf).join("\n")
+}
+
+#[test]
+fn a_networks_page_taller_than_a_small_screen_scrolls_to_its_status_bar() {
+    let fake = Arc::new(Fake::new());
+    settings(&fake);
+    let mut shell = server(&fake);
+    open(&mut shell, Target::Networks);
+    until(&mut shell, "Activity");
+    let mut text = small(&mut shell);
+    let at = find(&text, "retronet");
+    click(&mut shell, at);
+    text = small(&mut shell);
+    assert!(text.contains("LANlord network"), "{text}");
+    assert!(text.contains("[ Refresh ]"), "{text}");
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 40,
+        row: 8,
+        modifiers: KeyModifiers::NONE,
+    };
+    for _ in 0..3 {
+        shell.on_event(Event::Mouse(wheel), Instant::now());
+        small(&mut shell);
+    }
+    assert!(small(&mut shell).contains("up to date"));
 }

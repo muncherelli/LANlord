@@ -1,8 +1,8 @@
 ┌ ◆ Users and Permissions ────────────────────────────────────────────── _ □ × ┐
 │ ┌ Users ────────────────────────────┐ ┌ Roles ────────────────────────────┐  │
-│ │  User          Roles              │ │  Administrators                   │  │
-│ │  alice         Administrators     │ │  Operators                        │  │
-│ │  ben           Users              │ │  Users                            │  │
+│ │  User             Roles           │ │  Administrators                   │  │
+│ │  alice            Administrators  │ │  Operators                        │  │
+│ │  ben              Users           │ │  Users                            │  │
 │ │                                   │ │ Server status            Manage   │  │
 │ │                                   │ │ Network and DHCP         Manage   │  │
 │ │ [ Add user... ]                   │ │ DNS                      Manage   │  │
@@ -18,7 +18,7 @@
 │                                       │ Users and permissions    Manage   │  │
 │                                       │ [ New role... ] [ Remove role ]   │  │
 │                                       └───────────────────────────────────┘  │
-│ [  Save  ] [ Reload ]                                                        │
+│ [ Save ] [ Reload ]                                                          │
 │ loaded the permissions                                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
 [ L LANlord ] [ ◆ Users and Permissions ]                             12:00 PM

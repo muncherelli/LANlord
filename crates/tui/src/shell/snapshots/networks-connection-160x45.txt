@@ -19,8 +19,8 @@
    Console    └────────────────────────────────────────│  DHCP Enabled         Yes                      │
                                                        │  IPv4 Address         192.0.2.10               │
                                                        │  IPv4 Subnet Mask     255.255.255.0            │
-      ▣                                                │  Lease Obtained       11/17/2026 10:06:40 PM   │
-    Hosts                                              │  Lease Expires        11/18/2026 10:06:40 PM   │
+      ▣                                                │  Lease Obtained       11/18/2026 4:06:40 AM    │
+    Hosts                                              │  Lease Expires        11/19/2026 4:06:40 AM    │
                                                        │  IPv4 Default Gateway 192.0.2.1                │
                                                        │  IPv4 DHCP Server     192.0.2.1                │
                                                        │  IPv4 DNS Server      198.51.100.53            │
