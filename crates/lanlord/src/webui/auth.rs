@@ -722,6 +722,8 @@ mod tests {
     struct Faults {
         lookup: Arc<AtomicBool>,
         service: Arc<AtomicBool>,
+        /// seconds an operation takes before the runner answers
+        slow: Arc<AtomicU64>,
     }
 
     /// runs operations the way the operations service guards them: the account's grants, from
@@ -730,11 +732,15 @@ mod tests {
     fn runner(ran: Ran, roles: Roles, faults: Faults) -> super::super::Runner {
         use lanlord_core::access::{authorize, Grants};
         use lanlord_core::ops::{Op, Reply, Response, UserChange};
-        Arc::new(move |account, op| {
+        Arc::new(move |account, op, _events| {
             let (ran, roles, faults) = (ran.clone(), roles.clone(), faults.clone());
             Box::pin(async move {
                 if faults.service.load(Ordering::SeqCst) {
                     return Err(super::super::operations_service::Unreachable::Down);
+                }
+                let slow = faults.slow.load(Ordering::SeqCst);
+                if slow > 0 {
+                    tokio::time::sleep(Duration::from_secs(slow)).await;
                 }
                 let admin = roles
                     .lock()
@@ -1179,6 +1185,30 @@ mod tests {
             // with a session, a body that is not an operation is a 400
             assert_eq!(post_op(&rig, Some(&cookie)).await, StatusCode::BAD_REQUEST);
         });
+    }
+
+    #[test]
+    fn an_operation_may_run_longer_than_other_requests_are_allowed() {
+        // time is paused, so minutes pass at once
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "carol").await;
+            // longer than the 30 s every other route gets, shorter than the operations limit
+            rig.faults.slow.store(15 * 60, Ordering::SeqCst);
+            let (status, text) = post_body(&rig, &cookie, FACTS).await;
+            assert_eq!(status, StatusCode::OK, "{text}");
+            // past the service's own limit the request is cut
+            rig.faults.slow.store(17 * 60 + 1, Ordering::SeqCst);
+            let (status, _) = post_body(&rig, &cookie, FACTS).await;
+            assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+        });
+        assert_eq!(super::super::REQUEST_TIMEOUT, Duration::from_secs(30));
+        assert!(super::super::OPERATIONS_TIMEOUT > super::super::operations_service::RUN_TIMEOUT);
     }
 
     #[test]

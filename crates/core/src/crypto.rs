@@ -46,9 +46,22 @@ pub fn load(path: &Path) -> Result<Identity> {
         .map_err(|err| anyhow::anyhow!("{} is not a valid age key: {err}", path.display()))
 }
 
+/// where the default key is kept, when something other than the user's config folder says so.
+static DEFAULT_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// keep the default key at `path` for the rest of this process: the gateway's operations
+/// service has no home folder to look in. only the first call counts.
+pub fn set_default_path(path: std::path::PathBuf) {
+    let _ = DEFAULT_PATH.set(path);
+}
+
 /// the default key, or `None` when there is none yet; a damaged key is an error.
 pub fn load_default() -> Result<Option<Identity>> {
-    match crate::paths::identity_path() {
+    match DEFAULT_PATH
+        .get()
+        .cloned()
+        .or_else(crate::paths::identity_path)
+    {
         Some(path) if path.exists() => load(&path).map(Some),
         _ => Ok(None),
     }

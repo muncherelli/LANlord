@@ -44,6 +44,11 @@ const OP_LIMIT: usize = 64 * 1024;
 /// how long a request may take before it is answered with a timeout.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// how long an operation request may take: a little more than the service lets one run, so the
+/// service's own answer comes first.
+const OPERATIONS_TIMEOUT: Duration =
+    Duration::from_secs(operations_service::RUN_TIMEOUT.as_secs() + 60);
+
 /// the content security policy, with the hashes of the inline scripts a page may run (the build's
 /// loader). caddy sets the same headers for anything that arrives without them.
 fn csp(script_hashes: &[String]) -> String {
@@ -91,7 +96,7 @@ pub fn router_at(static_dir: Option<&Path>, operations_socket: &Path) -> Router 
 /// `run`.
 fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>, run: Runner) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
-    Router::new()
+    let quick = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route(
             "/api/login",
@@ -101,16 +106,24 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>, run: Runner) ->
         .route("/api/session", get(auth::session))
         .route("/api/monitor", get(monitor::sample))
         .route("/api/monitor/end", post(monitor::end))
-        .route(
-            "/api/operations",
-            post(operations).layer(DefaultBodyLimit::max(OP_LIMIT)),
-        )
-        .with_state(App { auth, run })
         .fallback(move |request: Request| web(dir.clone(), request))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
-        ))
+        ));
+    // an operation may run for minutes (an apply, a purge): its route has its own, longer limit
+    let long = Router::new()
+        .route(
+            "/api/operations",
+            post(operations).layer(DefaultBodyLimit::max(OP_LIMIT)),
+        )
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            OPERATIONS_TIMEOUT,
+        ));
+    quick
+        .merge(long)
+        .with_state(App { auth, run })
         .layer(axum::middleware::map_response(secure))
 }
 
@@ -248,13 +261,21 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
     hashes
 }
 
-/// sends one operation for an account to whatever runs it.
-type Runner = Arc<dyn Fn(String, Op) -> operations_service::Asking + Send + Sync>;
+/// sends one operation for an account to whatever runs it; the apply events it reports on the
+/// way go to the `Events` it is given.
+type Runner =
+    Arc<dyn Fn(String, Op, operations_service::Events) -> operations_service::Asking + Send + Sync>;
 
 /// the real runner: the root operations service on its unix socket, which checks what the
 /// account may do itself.
 fn service_runner(socket: PathBuf) -> Runner {
-    Arc::new(move |account, op| operations_service::ask(&socket, account, op))
+    Arc::new(move |account, op, events| operations_service::ask(&socket, account, op, events))
+}
+
+/// where the apply events of an operation go. the progress stream (`publish_apply`) connects
+/// here once it is merged; until then they are dropped.
+fn apply_events() -> operations_service::Events {
+    Arc::new(|_event| {})
 }
 
 /// what the handlers share: the logins and the way operations are run.
@@ -334,7 +355,7 @@ async fn operations(
         );
     }
     let changed = affected(&request.op, &user);
-    let answer = (app.run)(user, request.op).await;
+    let answer = (app.run)(user, request.op, apply_events()).await;
     let revoke = |app: &App| {
         for (name, keep_own) in &changed {
             if *keep_own {

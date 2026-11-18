@@ -333,7 +333,14 @@
               [Service]
               User=root
               Group=lanlord-operations
-              ExecStart=/opt/lanlord/bin/lanlord operations-service --socket /run/lanlord-operations/operations.sock --allowed-uid {{ getent_passwd['lanlord'][1] }}
+              ExecStart=/opt/lanlord/bin/lanlord operations-service --socket /run/lanlord-operations/operations.sock --allowed-uid {{ getent_passwd['lanlord'][1] }} --identity /var/lib/lanlord-operations/identity
+              # its own writable state (0700 root): the settings key goes here, and what apply and
+              # ansible write goes under it, since the home folders are read-only
+              StateDirectory=lanlord-operations
+              StateDirectoryMode=0700
+              Environment=HOME=/var/lib/lanlord-operations
+              Environment=ANSIBLE_HOME=/var/lib/lanlord-operations/.ansible
+              Environment=ANSIBLE_LOCAL_TEMP=/var/lib/lanlord-operations/.ansible/tmp
               RuntimeDirectory=lanlord-operations
               RuntimeDirectoryMode=0750
               RuntimeDirectoryPreserve=yes

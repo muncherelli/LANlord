@@ -106,7 +106,7 @@ for f in "$ROOT"/etc/systemd/network/*.network.d/lanlord.conf; do
 done
 if [ "$netchanged" = 1 ] && [ "$DRY" = 0 ] && have networkctl; then networkctl reload >/dev/null 2>&1; fi
 
-for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web /run/lanlord-operations /run/lanlord-auth; do
+for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web /run/lanlord-operations /run/lanlord-auth /var/lib/lanlord-operations; do
   if exists "$ROOT$d"; then act "remove $d" rm -rf "$ROOT$d"; fi
 done
 
@@ -488,6 +488,7 @@ esac"#,
                 "/run/lanlord",
                 "/run/lanlord-web",
                 "/run/lanlord-operations",
+                "/var/lib/lanlord-operations",
                 "/run/lanlord-auth",
                 "lanlord",
                 "lanlord-web",
