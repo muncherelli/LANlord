@@ -24,6 +24,7 @@ LANlord is early software. The pieces below work today, but expect rough edges.
 | NT4 Domain | Samba in a container, as an NT4-style domain controller or a plain workgroup server, bound to the internal network. The desktop window edits its settings and logins (passwords are stored encrypted, apart from the plain settings). |
 | Web Proxy | Caddy in a container, proxying sites on the internal network, with plain HTTP or Caddy's own certificate authority. It also serves a plain HTML retronet status page (machines, services, sites) at `http://lanlord.retronet/` and on the internal address, readable by old browsers. |
 | DNS | dnsmasq in a container: local-only DNS for the retronet and optional DHCP without a gateway option, for Windows 98, 2000, NT4 and old Linux clients. The desktop window edits the zone, the DHCP range, static leases and extra records, and lists the current leases. |
+| Time Server (NTP) | chrony in a container: serves the time to the networks you tick in the Components window, from public pools or servers you list, without ever setting the server's own clock. dnsmasq hands its address out as DHCP option 42 on the networks both serve. |
 | Remote Cmds | Runs a command on the gateway over SSH from the desktop window, with the output in the window and the console. Running commands on NT4 machines is still being researched. |
 
 The desktop window's LANlord menu switches between saved servers, and reboots or shuts down the selected server after asking. The taskbar always names the server that actions target.

@@ -54,6 +54,7 @@ pub enum Role {
     Dhcp,
     LogonServer,
     Http,
+    Ntp,
 }
 
 /// how a component gets onto a network.
@@ -272,6 +273,14 @@ fn component(module: &'static Module) -> Component {
                     default: true,
                 },
             ],
+            ..plain
+        },
+        "time-server" => Component {
+            requires_docker: true,
+            ports: &[(Udp, 123)],
+            roles: &[Role::Ntp],
+            attach_min: 1,
+            attach_max: None,
             ..plain
         },
         "remote-commands" => Component {
@@ -1131,6 +1140,11 @@ mod tests {
         assert_eq!(find("dns").unwrap().ports(), "udp 53, tcp 53, udp 67");
         assert_eq!(find("dns").unwrap().needs(), "Docker, 1+ network");
         assert_eq!(find("gateway").unwrap().needs(), "gateway only");
+        let time = find("time-server").unwrap();
+        assert_eq!(time.name(), "Time Server (NTP)");
+        assert_eq!(time.ports(), "udp 123");
+        assert_eq!(time.needs(), "Docker, 1+ network");
+        assert!(time.roles.contains(&Role::Ntp) && !time.external);
         assert_eq!(
             find("remote-commands").unwrap().needs(),
             "networks optional"
@@ -1297,6 +1311,71 @@ mod tests {
             "{:?}",
             selection.validate(&networks)
         );
+    }
+
+    #[test]
+    fn the_time_server_joins_lan_networks_beside_network_services() {
+        // it shares a gateway address with dns and dhcp: udp 123 clashes with neither
+        let both = with(&[
+            ("dns", vec![at("retronet", None), at("lab", None)]),
+            ("time-server", vec![at("retronet", None), at("lab", None)]),
+        ]);
+        assert!(messages(&both).is_empty(), "{:?}", messages(&both));
+        // two time servers on one network would both provide Ntp and want udp 123
+        let mut selection = with(&[("time-server", vec![at("retronet", None)])]);
+        assert!(messages(&selection).is_empty());
+        selection
+            .enabled
+            .get_mut("time-server")
+            .unwrap()
+            .attach
+            .push(at("retronet", None));
+        assert!(messages(&selection).iter().any(|m| m.contains("twice")));
+        // it needs a network, Docker and a LANlord (not the outside) network
+        for (selection, want) in [
+            (with(&[("time-server", vec![])]), "needs at least 1 network"),
+            (
+                with(&[("time-server", vec![at(EXTERNAL_NETWORK, None)])]),
+                "only joins LANlord networks",
+            ),
+        ] {
+            let found = messages(&selection);
+            assert!(found.iter().any(|m| m.contains(want)), "{want}: {found:?}");
+        }
+        let mut no_docker = with(&[("time-server", vec![at("lab", None)])]);
+        no_docker.enabled.remove("docker");
+        assert!(messages(&no_docker)
+            .iter()
+            .any(|m| m.contains("Time Server (NTP) needs Docker")));
+    }
+
+    #[test]
+    fn a_time_server_section_or_entry_reads_back_with_its_networks() {
+        // an old-style section alone switches it on for the one internal network
+        let old = Settings::parse(
+            "docker:\n  internal_address: 192.0.2.1/24\ntime-server:\n  pools: [pool.ntp.org]\n  servers: [192.0.2.123]\n",
+        )
+        .unwrap();
+        let selection = Selection::from_settings(&old).unwrap();
+        assert_eq!(
+            selection.enabled["time-server"].attach,
+            vec![at(LEGACY_NETWORK, None)]
+        );
+        // a components entry names the networks, and enabled: false switches it off
+        let listed = Settings::parse(
+            "networks:\n  - {id: retronet, subnet: 192.0.2.0/24, gateway: 192.0.2.1}\n  - {id: lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ncomponents:\n  gateway: {}\n  docker: {}\n  time-server:\n    attach: [{network: lab}]\ntime-server:\n  pools: [pool.ntp.org]\n",
+        )
+        .unwrap();
+        let selection = Selection::from_settings(&listed).unwrap();
+        assert_eq!(
+            selection.enabled["time-server"].attach,
+            vec![at("lab", None)]
+        );
+        let off = Settings::parse("components:\n  gateway: {}\n  time-server: {enabled: false}\n")
+            .unwrap();
+        assert!(!Selection::from_settings(&off)
+            .unwrap()
+            .is_enabled("time-server"));
     }
 
     #[test]
