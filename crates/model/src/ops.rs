@@ -654,4 +654,51 @@ mod tests {
         let op: Op = serde_json::from_str(r#"{"op":"leases"}"#).unwrap();
         assert_eq!(op, Op::Leases);
     }
+
+    #[test]
+    fn operations_serialize_exactly_as_before_the_rename() {
+        let ops = [
+            Op::Leases,
+            Op::ServerFacts,
+            Op::Apply {
+                modules: vec!["dhcp".into()],
+            },
+            Op::ResetMachine {
+                name: "pc01".into(),
+            },
+            Op::Run {
+                command: vec!["uptime".into()],
+            },
+        ];
+        let got: Vec<String> = ops
+            .iter()
+            .map(|op| serde_json::to_string(op).unwrap())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                r#"{"op":"leases"}"#,
+                r#"{"op":"server_facts"}"#,
+                r#"{"op":"apply","modules":["dhcp"]}"#,
+                r#"{"op":"reset_machine","name":"pc01"}"#,
+                r#"{"op":"run","command":["uptime"]}"#,
+            ]
+        );
+        let request = Request {
+            op: Op::Leases,
+            password: Some(Secret::new("x")),
+        };
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"op":{"op":"leases"},"password":"x"}"#
+        );
+        let bridge = crate::bridge::Request {
+            id: 7,
+            op: Op::ServerFacts,
+        };
+        assert_eq!(
+            serde_json::to_string(&bridge).unwrap(),
+            r#"{"id":7,"op":{"op":"server_facts"}}"#
+        );
+    }
 }
