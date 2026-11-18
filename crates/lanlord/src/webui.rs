@@ -4,6 +4,7 @@
 
 mod auth;
 mod monitor;
+mod stream;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -82,6 +83,7 @@ fn router_with(static_dir: Option<&Path>, auth: Arc<auth::Auth>) -> Router {
         .route("/api/session", get(auth::session))
         .route("/api/monitor", get(monitor::sample))
         .route("/api/monitor/end", post(monitor::end))
+        .route("/api/events", get(stream::stream))
         .route("/api/op", post(op).layer(DefaultBodyLimit::max(OP_LIMIT)))
         .with_state(auth)
         .fallback(move |request: Request| web(dir.clone(), request))

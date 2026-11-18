@@ -170,7 +170,7 @@ impl WebSession for HttpSession {
 /// who `/api/session` says is logged on, and whether they are an admin. the api does not tell a
 /// uid, so one is made up (above root's, so nothing treats the account as root).
 /// `Ok(None)` is the server saying there is no session; an error is not being able to ask.
-async fn session_now() -> Result<Option<Identity>> {
+pub(crate) async fn session_now() -> Result<Option<Identity>> {
     let (status, text) = fetch("GET", "/api/session", None).await?;
     if status == 401 {
         return Ok(None);

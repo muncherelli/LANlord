@@ -226,7 +226,9 @@ fn dispatch(
         Op::SaveAccess { access } => {
             self_service::save_access(session, host, (who.caller, who.grants), access, ask)?
         }
-        Op::Subscribe { .. } => bail!("live streams are not available yet"),
+        Op::Subscribe { .. } => {
+            bail!("live streams are served by the web ui, not run as an operation")
+        }
     })
 }
 

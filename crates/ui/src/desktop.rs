@@ -543,6 +543,7 @@ impl Desktop {
         self.sync_window_title(&ctx);
         self.poll_log_off();
         if self.login.is_some() {
+            self.console.follow_server(false, &crate::wake(&ctx));
             self.show_login(ui, &ctx);
             #[cfg(feature = "devtools")]
             self.devtools_corner(&ctx);
@@ -551,6 +552,7 @@ impl Desktop {
         if self.web.is_some() && (self.services.session_ended() || self.monitor.signed_out()) {
             // any call the server turned down for want of a login sends the person back to the box
             self.monitor.clear_signed_out();
+            self.console.follow_server(false, &crate::wake(&ctx));
             self.return_to_web_login(Some("Your session ended. Log on again."), false);
             self.show_login(ui, &ctx);
             #[cfg(feature = "devtools")]
@@ -579,6 +581,8 @@ impl Desktop {
         self.devtools_menu(&ctx, TASKBAR + 2.0);
 
         self.console.drain();
+        self.console
+            .follow_server(self.web.is_some(), &crate::wake(&ctx));
         self.console.apply.tick(ctx.input(|i| i.time));
         if self.console.apply.running() {
             // the elapsed time on the progress dialog keeps counting between events

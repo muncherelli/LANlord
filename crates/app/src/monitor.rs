@@ -3,7 +3,7 @@
 //! sample about once a second, off the ui thread, and the windows read what has arrived.
 //!
 //! the backends: the made-up demo host, this machine's own `/proc` (lanlord on the gateway, a
-//! native build) and the web ui's `/api/monitor` (the browser). a desktop that signed in to
+//! native build) and the web ui's live stream of samples (the browser). a desktop that signed in to
 //! another host over ssh has none yet; it shows why instead of numbers.
 
 use std::collections::HashMap;
@@ -24,7 +24,7 @@ pub enum Backend {
     /// this machine's `/proc`.
     #[cfg(feature = "native")]
     Local,
-    /// the page's own server.
+    /// the page's own server, which pushes the samples (`/api/events`).
     #[cfg(target_arch = "wasm32")]
     Web,
 }
@@ -48,16 +48,14 @@ enum Msg {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     SignedOut,
     Ended(u32, Result<(), String>),
+    /// the live stream is connected.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    Up,
 }
 
 /// the seconds between samples while a window shows them, and while only the tray does.
 pub const FAST: f64 = 1.0;
-/// slower in the browser, where every sample is a request to the gateway.
-pub const SLOW: f64 = if cfg!(target_arch = "wasm32") {
-    5.0
-} else {
-    2.0
-};
+pub const SLOW: f64 = 2.0;
 
 /// how often to sample, and whether to ask for the process list: only a visible Task Manager
 /// needs the list and the quick pace, the tray alone takes the slow one.
@@ -81,6 +79,9 @@ pub struct Monitor {
     asked: bool,
     next_at: f64,
     signed_out: bool,
+    /// the browser's live stream, and whether it carries the process list.
+    #[cfg(target_arch = "wasm32")]
+    stream: Option<(bool, crate::gateway::stream::Stream)>,
 }
 
 impl Default for Monitor {
@@ -96,6 +97,8 @@ impl Default for Monitor {
             asked: false,
             next_at: 0.0,
             signed_out: false,
+            #[cfg(target_arch = "wasm32")]
+            stream: None,
         }
     }
 }
@@ -125,6 +128,10 @@ impl Monitor {
         let (tx, rx) = channel();
         (self.tx, self.rx) = (tx, rx);
         self.asked = false;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.stream = None;
+        }
     }
 
     /// did the server say the session is over? the desktop then returns to the logon box.
@@ -136,6 +143,10 @@ impl Monitor {
     pub fn clear_signed_out(&mut self) {
         self.signed_out = false;
         self.asked = false;
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.stream = None;
+        }
     }
 
     /// is there a host being read?
@@ -172,7 +183,14 @@ impl Monitor {
                     self.next_at = 0.0;
                 }
                 Msg::Ended(_, Err(why)) => self.note = Some((true, why)),
-                Msg::SignedOut => self.signed_out = true,
+                Msg::SignedOut => {
+                    self.signed_out = true;
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        self.stream = None;
+                    }
+                }
+                Msg::Up => self.problem = None,
             }
         }
         changed
@@ -181,26 +199,50 @@ impl Monitor {
     /// ask for the next sample when it is due and none is on its way. `procs` also asks for the
     /// process list, which the Task Manager's Processes tab needs and the tray does not.
     pub fn tick(&mut self, now: f64, every: f64, procs: bool, wake: &Wake) {
+        #[cfg(target_arch = "wasm32")]
+        if matches!(self.backend, Backend::Web) {
+            self.follow(procs, wake);
+            return;
+        }
         if self.asked || now < self.next_at || !self.live() {
             return;
         }
         self.asked = true;
         self.next_at = now + every;
         let (tx, wake, backend) = (self.tx.clone(), wake.clone(), self.backend.clone());
-        #[cfg(target_arch = "wasm32")]
-        if matches!(backend, Backend::Web) {
-            wasm_bindgen_futures::spawn_local(async move {
-                let result = crate::gateway::http::monitor_sample(procs).await;
-                let _ = tx.send(sample_msg(result));
-                wake.wake();
-            });
-            return;
-        }
         run(move || {
             let result = read(&backend, procs);
             let _ = tx.send(Msg::Sample(result.map(Box::new)));
             wake.wake();
         });
+    }
+
+    /// in the browser the server pushes the samples: open the stream (with the process list or
+    /// without), and open it again when the list is wanted or no longer is. what it says
+    /// reaches `poll` like a read from the other backends.
+    #[cfg(target_arch = "wasm32")]
+    fn follow(&mut self, procs: bool, wake: &Wake) {
+        use crate::gateway::stream::{Stream, Update};
+        use lanlord_model::ops::topic;
+        if self.stream.as_ref().is_some_and(|(p, _)| *p == procs) {
+            return;
+        }
+        let (tx, wake) = (self.tx.clone(), wake.clone());
+        let on = std::rc::Rc::new(move |update: Update| {
+            let msg = match update {
+                Update::Item(crate::gateway::stream::Item::Sample(sample)) => {
+                    Msg::Sample(Ok(sample))
+                }
+                Update::Item(_) => return,
+                Update::Up => Msg::Up,
+                Update::Down(why) => Msg::Sample(Err(why)),
+                Update::SignedOut => Msg::SignedOut,
+            };
+            let _ = tx.send(msg);
+            wake.wake();
+        });
+        let name = if procs { topic::PROCS } else { topic::MONITOR };
+        self.stream = Some((procs, Stream::open(name, on)));
     }
 
     /// end process `pid` on the host. the caller has checked that the person may; the server
@@ -225,15 +267,6 @@ impl Monitor {
     }
 }
 
-/// what a sample's answer from the server means: the person is signed out, or a sample or error.
-#[cfg(target_arch = "wasm32")]
-fn sample_msg(result: anyhow::Result<Sample>) -> Msg {
-    match result {
-        Err(e) if e.is::<crate::gateway::round_trip::SessionEnded>() => Msg::SignedOut,
-        other => Msg::Sample(other.map(Box::new).map_err(|e| e.to_string())),
-    }
-}
-
 #[cfg(target_arch = "wasm32")]
 fn ended_msg(pid: u32, result: anyhow::Result<()>) -> Msg {
     match result {
@@ -252,7 +285,7 @@ fn read(backend: &Backend, procs: bool) -> Result<Sample, String> {
             .sample(procs)
             .map_err(|e| format!("{e:#}")),
         #[cfg(target_arch = "wasm32")]
-        Backend::Web => Err("the browser fetches its samples".into()),
+        Backend::Web => Err("the browser follows a stream".into()),
     }
 }
 
