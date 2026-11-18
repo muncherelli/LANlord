@@ -502,6 +502,32 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_window_keeps_its_width_when_a_control_will_not_narrow_beside_the_scroll_bar() {
+        let ctx = egui::Context::default();
+        let mut rect = None;
+        for _ in 0..4 {
+            testkit::run(&ctx, vec![], |ui| {
+                let place = Placement {
+                    start: Pos2::new(100.0, 100.0),
+                    width: 300.0,
+                    area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
+                    growable: false,
+                    fixed: true,
+                    floor: 0.0,
+                    height: Some(250.0),
+                };
+                // tall enough for the scroll bar, and as wide as the window before the bar
+                rect = show(ui.ctx(), "f", "F", place, true, false, |ui| {
+                    ui.allocate_space(Vec2::new(300.0 - 2.0 * FRAME, 900.0));
+                })
+                .map(|s| s.rect);
+            });
+        }
+        let width = rect.expect("shown").width();
+        assert!((width - 300.0).abs() < 0.01, "{width}");
+    }
+
+    #[test]
     fn a_dialog_opens_centred_on_the_point_it_is_given() {
         // the screen is 960 by 640 and the dialog asks for its middle at (480, 320)
         for inner in [50.0, 150.0] {
