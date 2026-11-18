@@ -385,9 +385,12 @@ enum Command {
         host: String,
         #[command(flatten)]
         web: WebFiles,
-        /// skip the prompt, and go ahead even when the services are already not answering
+        /// skip the prompt
         #[arg(long)]
         yes: bool,
+        /// go ahead even when the services are already not answering (nothing is rolled back)
+        #[arg(long)]
+        even_if_down: bool,
     },
     /// purge a server and install lanlord on it again
     Reinstall {
@@ -792,7 +795,12 @@ fn print_upgrade(event: lanlord_core::upgrade::Event) {
     }
 }
 
-fn upgrade(host: &str, web: lanlord_core::webinstall::WebSource, yes: bool) -> Result<()> {
+fn upgrade(
+    host: &str,
+    web: lanlord_core::webinstall::WebSource,
+    yes: bool,
+    even_if_down: bool,
+) -> Result<()> {
     if !yes {
         let typed = confirmed(
             "this restarts the lanlord services, and restarting lanlord-operations interrupts any operation that is running (nothing is removed). type the host name to go on: ",
@@ -802,7 +810,7 @@ fn upgrade(host: &str, web: lanlord_core::webinstall::WebSource, yes: bool) -> R
             bail!("the host name does not match; nothing was changed");
         }
     }
-    lanlord_core::upgrade::run(host, &web, yes, &mut ask, &mut print_upgrade)
+    lanlord_core::upgrade::run(host, &web, even_if_down, &mut ask, &mut print_upgrade)
 }
 
 /// the host name typed at a prompt, or the one given with --confirm.
@@ -1414,7 +1422,12 @@ fn main() -> Result<()> {
         Some(Command::Install { host, web }) => {
             lanlord_core::install::run(&host, &web.source()?, &mut ask, &mut print_install)
         }
-        Some(Command::Upgrade { host, web, yes }) => upgrade(&host, web.source()?, yes),
+        Some(Command::Upgrade {
+            host,
+            web,
+            yes,
+            even_if_down,
+        }) => upgrade(&host, web.source()?, yes, even_if_down),
         Some(Command::Reinstall { host, confirm, web }) => lanlord_core::install::reinstall(
             &host,
             &confirm,
@@ -1991,7 +2004,12 @@ mod tests {
 
     #[test]
     fn upgrade_takes_the_web_files_and_a_prompt_skip() {
-        let Some(Command::Upgrade { host, web, yes }) = Cli::try_parse_from([
+        let Some(Command::Upgrade {
+            host,
+            web,
+            yes,
+            even_if_down,
+        }) = Cli::try_parse_from([
             "lanlord",
             "upgrade",
             "gw",
@@ -2010,14 +2028,19 @@ mod tests {
         };
         assert_eq!(host, "gw");
         assert!(yes);
+        // --yes only skips the prompt
+        assert!(!even_if_down);
         assert_eq!(web.server_binary, Some(PathBuf::from("lanlord")));
-        let Some(Command::Upgrade { yes, .. }) = Cli::try_parse_from(["lanlord", "upgrade", "gw"])
+        let Some(Command::Upgrade {
+            yes, even_if_down, ..
+        }) = Cli::try_parse_from(["lanlord", "upgrade", "gw", "--even-if-down"])
             .unwrap()
             .command
         else {
             panic!("upgrade parses");
         };
         assert!(!yes);
+        assert!(even_if_down);
         assert!(Cli::try_parse_from(["lanlord", "upgrade"]).is_err());
     }
 }

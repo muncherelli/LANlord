@@ -206,9 +206,11 @@ rm -rf "$S/dl"
         .replace("@WEB@", &assets.web)
 }
 
-/// put the staged files in place, keeping the previous binary and web folder beside them as
-/// `lanlord.prev`, `lanlord-auth-helper.prev` and `web.prev` the way tools/dev-deploy.sh does, and restart the service when
-/// it exists so it runs the new files.
+/// put the staged files in place, keeping the previous binary, login helper and web folder
+/// beside them as `lanlord.prev`, `lanlord-auth-helper.prev` and `web.prev` the way
+/// tools/dev-deploy.sh does, and restart the service when it exists so it runs the new files.
+/// the backups of an earlier swap are removed first, so every `.prev` left afterwards belongs to
+/// this swap and a rollback cannot bring back something older.
 pub fn install_script(root: &str) -> String {
     with_root(
         r#"set -eu
@@ -231,11 +233,13 @@ find "$S/web" -type d -exec chmod 0755 {} +
 find "$S/web" -type f -exec chmod 0644 {} +
 # marks the swap as begun, so that an upgrade knows a failure from here on needs a rollback
 : > "$B/.placing"
+rm -f "$B/lanlord.prev" "$B/lanlord-auth-helper.prev"
+rm -rf "$W.prev"
 if [ -f "$B/lanlord" ]; then mv -f "$B/lanlord" "$B/lanlord.prev"; fi
 if [ -f "$B/lanlord-auth-helper" ]; then mv -f "$B/lanlord-auth-helper" "$B/lanlord-auth-helper.prev"; fi
 mv -f "$S/lanlord" "$B/lanlord"
 mv -f "$S/lanlord-auth-helper" "$B/lanlord-auth-helper"
-if [ -d "$W" ]; then rm -rf "$W.prev"; mv "$W" "$W.prev"; fi
+if [ -d "$W" ]; then mv "$W" "$W.prev"; fi
 mv "$S/web" "$W"
 rm -rf "$S"
 if [ -z '@ROOT@' ] && systemctl cat lanlord-webui.service >/dev/null 2>&1; then

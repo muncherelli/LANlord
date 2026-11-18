@@ -270,7 +270,7 @@ pub fn rollback_script(root: &str, services: &[Service], guarded: bool) -> Strin
          \x20 fi\n\
          done\n\
          if [ -d \"$web_dir.prev\" ]; then\n\
-         \x20 if [ -d \"$web_dir\" ]; then mv \"$web_dir\" \"$web_dir.bad.$$\" || exit 1; fi\n\
+         \x20 if [ -d \"$web_dir\" ]; then rm -rf \"$web_dir.bad\"; mv \"$web_dir\" \"$web_dir.bad\" || exit 1; fi\n\
          \x20 mv \"$web_dir.prev\" \"$web_dir\" || exit 1\n\
          \x20 found=1\n\
          fi\n\
@@ -373,7 +373,7 @@ fn check(
         if !allow_unhealthy {
             bail!(
                 "{} not answering on {} before the upgrade, so a failure could not be blamed on it; \
-                 look at the services first, or pass --yes to upgrade anyway",
+                 look at the services first, or pass --even-if-down to upgrade anyway",
                 names(&running),
                 options.host
             );
@@ -470,7 +470,10 @@ pub(crate) fn run_with(
             return Ok(());
         }
         if !before.healthy {
-            bail!("the services still do not answer; they were down before the upgrade, so nothing was rolled back");
+            bail!(
+                "the services still do not answer; they were down before the upgrade, \
+                 so nothing was rolled back"
+            );
         }
         line("the services did not come back");
         let outcome = roll_back(session, &plan.check, false, &mut *ask, line)?;
@@ -495,7 +498,7 @@ mod tests {
         check_script, has_web_server, restart_script, rollback_script, run_with, snapshot_script,
         Event, Plan, Snapshot, Step, BINARY, NO_WEB_SERVER_REVERSED, SERVICES,
     };
-    use crate::webinstall::WebSource;
+    use crate::webinstall::{install_script, WebSource};
 
     const WEBUI: &str = SERVICES[0].unit;
     const OPERATIONS: &str = SERVICES[1].unit;
@@ -827,7 +830,7 @@ esac"##
         let (result, events) = server.upgrade();
         let message = format!("{:#}", result.unwrap_err());
         assert!(message.contains("before the upgrade"), "{message}");
-        assert!(message.contains("--yes"), "{message}");
+        assert!(message.contains("--even-if-down"), "{message}");
         assert_eq!(server.log(), ["check"]);
         assert_eq!(outcomes(&events).last(), Some(&(Step::Check, "failed")));
     }
@@ -1170,5 +1173,44 @@ esac"##
         let (code, output) = root.run(&check_script(&SERVICES));
         assert_eq!(code, 1);
         assert!(output.contains("lanlord-operations is failed"), "{output}");
+    }
+
+    #[test]
+    fn a_swap_that_fails_between_items_cannot_bring_back_older_backups() {
+        let root = Root::new("stale");
+        // an earlier upgrade left backups, and a web folder that cannot be moved into place
+        root.write("opt/lanlord/bin/lanlord", "current");
+        root.write("opt/lanlord/bin/lanlord.prev", "stale");
+        root.write("opt/lanlord/bin/lanlord-auth-helper.prev", "stale helper");
+        root.write("opt/lanlord/web.prev/index.html", "stale page");
+        root.write("opt/lanlord/web", "not a folder");
+        root.write("opt/lanlord/web-stage/lanlord", "new");
+        root.write("opt/lanlord/web-stage/lanlord-auth-helper", "new helper");
+        root.write("opt/lanlord/web-stage/web/index.html", "new page");
+        std::fs::write(root.path("stubs/chown"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::process::Command::new("chmod")
+            .arg("+x")
+            .arg(root.path("stubs/chown"))
+            .status()
+            .unwrap();
+        let (code, _) = root.run(&install_script(&root.root()));
+        assert_ne!(code, 0);
+        // the binary was swapped, the web folder was not, and the old backups are gone
+        assert_eq!(root.read("opt/lanlord/bin/lanlord"), "new");
+        assert_eq!(root.read("opt/lanlord/bin/lanlord.prev"), "current");
+        assert!(!root
+            .path("opt/lanlord/bin/lanlord-auth-helper.prev")
+            .exists());
+        assert!(!root.path("opt/lanlord/web.prev").exists());
+        let (code, output) = root.run(&rollback_script(&root.root(), &SERVICES, true));
+        assert_eq!(code, 0, "{output}");
+        assert_eq!(root.read("opt/lanlord/bin/lanlord"), "current");
+        // nothing older came back, and the unswapped items were left alone
+        assert!(!root.path("opt/lanlord/web.prev").exists());
+        assert_eq!(root.read("opt/lanlord/web"), "not a folder");
+        assert_eq!(
+            root.read("opt/lanlord/bin/lanlord-auth-helper"),
+            "new helper"
+        );
     }
 }
