@@ -273,15 +273,8 @@ fn answer_line(
             return Response::Denied("this account is not known here".into());
         }
     };
-    // the shared rules run here too, before the op is handed on: a bad value is refused and
-    // nothing is written or run
-    if let Err(invalid) = forwarded.op.validate() {
-        log::emit(
-            Kind::Err,
-            format!("operation for {} refused: {invalid}", caller.user),
-        );
-        return Response::Error(format!("invalid value, {invalid}"));
-    }
+    // the shared value rules run in core's `guarded`, after the account is checked for the op:
+    // an unauthorised caller must never make root parse what it sent
     match run(&caller, &forwarded.op) {
         Ok(reply) => Response::Ok(reply),
         Err(e) => {
@@ -812,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn a_malicious_settings_document_is_refused_and_nothing_runs() {
+    fn a_refusal_from_the_run_step_is_one_line_and_a_good_op_reaches_it() {
         let save = |plain: &str| {
             serde_json::json!({
                 "account": "carol",
@@ -820,64 +813,30 @@ mod tests {
             })
             .to_string()
         };
-        let hostile = [
-            ("image: evil\n", "image"),
-            (
-                "gateway:\n  timezone: ../../etc/passwd\n",
-                "gateway.timezone",
-            ),
-            (
-                "gateway:\n  ntp: [\"pool.example.com\\nserver evil\"]\n",
-                "gateway.ntp[0]",
-            ),
-            (
-                "networks:\n  - {name: lan, interface: \"eth0;id\"}\n",
-                "networks[0].interface",
-            ),
-            (
-                "networks:\n  - {name: lan, address: 192.0.2.1/99}\n",
-                "networks[0].address",
-            ),
-            (
-                "web-proxy:\n  webui: {port: 70000}\n",
-                "web-proxy.webui.port",
-            ),
-            ("dns:\n  zone: \"{{ lookup('pipe', 'id') }}\"\n", "dns.zone"),
-        ];
-        for (plain, field) in hostile {
-            let ran = std::cell::Cell::new(false);
-            let answer = answer_line(
-                save(plain).as_bytes(),
-                &|account| {
-                    Ok(Caller {
-                        user: account.to_string(),
-                        admin: true,
-                    })
-                },
-                &|_, _| {
-                    ran.set(true);
-                    Ok(Reply::Done)
-                },
-            );
-            assert!(!ran.get(), "{field}: the op must not run");
-            match answer {
-                Response::Error(message) => {
-                    assert!(message.contains(field), "{message} should name {field}");
-                    assert!(!message.contains('\n'), "one line: {message:?}");
-                }
-                other => panic!("{field}: {other:?}"),
+        let carol = |account: &str| {
+            Ok(Caller {
+                user: account.to_string(),
+                admin: true,
+            })
+        };
+        // the service itself does not parse the document: the run step (core's guarded) does,
+        // and its refusal comes back as one line
+        let answer = answer_line(save("image: evil\n").as_bytes(), &carol, &|_, _| {
+            Err(anyhow::anyhow!(
+                "image: is not a settings section lanlord knows"
+            ))
+        });
+        match answer {
+            Response::Error(message) => {
+                assert!(message.contains("image"), "{message}");
+                assert!(!message.contains('\n'), "one line: {message:?}");
             }
+            other => panic!("{other:?}"),
         }
-        // a good document reaches the op
         let ran = std::cell::Cell::new(false);
         let answer = answer_line(
             save("gateway:\n  timezone: Europe/Berlin\n").as_bytes(),
-            &|account| {
-                Ok(Caller {
-                    user: account.to_string(),
-                    admin: true,
-                })
-            },
+            &carol,
             &|_, _| {
                 ran.set(true);
                 Ok(Reply::Done)
@@ -885,6 +844,27 @@ mod tests {
         );
         assert!(ran.get());
         assert_eq!(answer, Response::Ok(Reply::Done));
+    }
+
+    #[test]
+    fn an_unknown_account_is_refused_before_the_document_is_looked_at() {
+        let bomb = format!("a: &a [x]\nb: *a\n{}", "c: *a\n".repeat(1000));
+        let line = serde_json::json!({
+            "account": "mallory",
+            "op": {"op": "save_document", "plain": bomb, "updates": []}
+        })
+        .to_string();
+        let ran = std::cell::Cell::new(false);
+        let answer = answer_line(
+            line.as_bytes(),
+            &|_| Err(anyhow::anyhow!("no such account")),
+            &|_, _| {
+                ran.set(true);
+                Ok(Reply::Done)
+            },
+        );
+        assert!(!ran.get());
+        assert!(matches!(answer, Response::Denied(_)), "{answer:?}");
     }
 
     #[test]

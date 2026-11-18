@@ -32,12 +32,26 @@ pub struct Invalid {
 }
 
 impl Invalid {
+    /// control characters in the field or the reason are written escaped, so a hostile key
+    /// cannot start a second line in a log.
     pub fn new(field: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
-            field: field.into(),
-            reason: reason.into(),
+            field: escape_controls(&field.into()),
+            reason: escape_controls(&reason.into()),
         }
     }
+}
+
+fn escape_controls(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_debug().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 
 impl fmt::Display for Invalid {
@@ -355,6 +369,19 @@ pub fn text_block(text: &str) -> Check {
     )
 }
 
+/// a samba log level: a short single line of digits, lowercase letters, `_`, `:` and spaces
+/// (`1`, `2 auth:3`).
+pub fn log_level(text: &str) -> Check {
+    flag(
+        !text.is_empty()
+            && text.len() <= 64
+            && text.bytes().all(|b| {
+                b.is_ascii_digit() || b.is_ascii_lowercase() || matches!(b, b'_' | b':' | b' ')
+            }),
+        "must be a samba log level like 1 or 2 auth:3",
+    )
+}
+
 /// a secret value (a password): one line, no control characters. braces are fine, because
 /// secrets are passed to ansible as unsafe text.
 pub fn secret_text(text: &str) -> Check {
@@ -499,6 +526,8 @@ const SECTIONS: &[(&str, Kind)] = &[
             ("admin_password", PASSWORD),
             ("roaming_profiles", Kind::Flag),
             ("software", Kind::Flag),
+            ("lanman_auth", Kind::Flag),
+            ("log_level", Kind::Text(log_level)),
             ("machines", Kind::List(&Kind::Text(machine_name))),
             ("users", Kind::List(&NT4_USER)),
         ]),
@@ -551,6 +580,10 @@ const SECTIONS: &[(&str, Kind)] = &[
 ];
 
 /// the sections that hold named entries whose own keys are checked as components.
+/// the only fields that may hold more than one line; every other text is one line, so a value
+/// that reaches a template cannot add lines to a config file.
+const MULTILINE: &[&str] = &["gateway.motd"];
+
 const COMPONENT_SECTION: &str = "components";
 
 fn describe(kind: &Kind) -> &'static str {
@@ -625,7 +658,66 @@ fn check_map(path: &str, value: &Value, fields: &[(&'static str, Kind)]) -> Resu
             check_kind(&format!("{path}.{key}"), found, kind)?;
         }
     }
+    for (key, found) in map {
+        let name = key.as_str().unwrap_or_default();
+        if !fields.iter().any(|(known, _)| *known == name) {
+            check_words(&format!("{path}.{name}"), found)?;
+        }
+    }
     Ok(())
+}
+
+/// yaml 1.1 reads `yes`, `no`, `on` and `off` as booleans and ansible's templates treat the
+/// text `no` as true, so a bare word like that in a field with no declared type is ambiguous.
+fn bool_word(text: &str) -> Option<bool> {
+    match text.to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" => Some(true),
+        "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// refuse boolean-looking text anywhere in `value` (used where no type says what it is).
+fn check_words(path: &str, value: &Value) -> Result<(), Invalid> {
+    match value {
+        Value::String(text) if bool_word(text).is_some() => Err(Invalid::new(
+            path,
+            "is the text yes, no, on, off, true or false: quote it as text or write true or false for a boolean",
+        )),
+        Value::Sequence(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(position, item)| check_words(&format!("{path}[{position}]"), item)),
+        Value::Mapping(map) => map.iter().try_for_each(|(key, item)| {
+            check_words(&format!("{path}.{}", key.as_str().unwrap_or_default()), item)
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// turn the text booleans of every flag field into real booleans, following the schema.
+fn normalise_flags(value: &mut Value, kind: &Kind) {
+    match (kind, value) {
+        (Kind::Flag, value) => {
+            if let Some(on) = value.as_str().and_then(bool_word) {
+                *value = Value::Bool(on);
+            }
+        }
+        (Kind::List(each) | Kind::OneOrList(each), Value::Sequence(items)) => {
+            items
+                .iter_mut()
+                .for_each(|item| normalise_flags(item, each));
+        }
+        (Kind::OneOrList(each), value) => normalise_flags(value, each),
+        (Kind::Map(fields), Value::Mapping(map)) => {
+            for (name, field) in *fields {
+                if let Some(found) = map.get_mut(*name) {
+                    normalise_flags(found, field);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn check_kind(path: &str, value: &Value, kind: &Kind) -> Result<(), Invalid> {
@@ -633,13 +725,13 @@ fn check_kind(path: &str, value: &Value, kind: &Kind) -> Result<(), Invalid> {
         Kind::Text(rule) => check_text(path, value, *rule),
         Kind::OneOf(choices) => check_choice(path, value, choices, false),
         Kind::OneOfOrOff(choices) => check_choice(path, value, choices, true),
-        Kind::Flag if value.is_bool() => Ok(()),
+        Kind::Flag if value.is_bool() || value.as_str().and_then(bool_word).is_some() => Ok(()),
         Kind::Number(least, most) => check_number(path, value, *least, *most),
         Kind::List(each) => check_list(path, value, each),
         Kind::OneOrList(each) if value.is_sequence() => check_list(path, value, each),
         Kind::OneOrList(each) => check_kind(path, value, each),
         Kind::Map(fields) => check_map(path, value, fields),
-        Kind::Free => Ok(()),
+        Kind::Free => check_words(path, value),
         Kind::Flag => Err(Invalid::new(path, describe(kind))),
     }
 }
@@ -659,7 +751,14 @@ fn check_general(
     }
     match value {
         Value::Tagged(_) => Err(Invalid::new(path, "must not use a yaml tag")),
-        Value::String(text) => text_block(text).map_err(|reason| Invalid::new(path, reason)),
+        Value::String(text) => {
+            let rule = if MULTILINE.contains(&path) {
+                text_block
+            } else {
+                text_line
+            };
+            rule(text).map_err(|reason| Invalid::new(path, reason))
+        }
         Value::Sequence(items) => items.iter().enumerate().try_for_each(|(position, item)| {
             check_general(&format!("{path}[{position}]"), item, depth + 1, nodes)
         }),
@@ -738,6 +837,8 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
             if !value.is_null() {
                 check_kind(name, value, kind)?;
             }
+        } else {
+            check_words(name, value)?;
         }
     }
     Ok(())
@@ -745,12 +846,114 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
 
 /// check settings text before it is stored or applied.
 pub fn settings_document(text: &str) -> Result<(), Invalid> {
+    parse_document(text).map(|_| ())
+}
+
+/// parse and check settings text. anchors and aliases are refused on the text before any parse,
+/// because a few lines of aliases expand into gigabytes.
+fn parse_document(text: &str) -> Result<Value, Invalid> {
     if text.len() > 128 * 1024 {
         return Err(Invalid::new("settings", "is too large"));
     }
+    if has_anchor_or_alias(text) {
+        return Err(Invalid::new(
+            "settings",
+            "must not use yaml anchors or aliases (& or *)",
+        ));
+    }
     let document: Value = serde_yaml_ng::from_str(text)
         .map_err(|error| Invalid::new("settings", format!("is not valid yaml: {error}")))?;
-    settings_value(&document)
+    settings_value(&document)?;
+    Ok(document)
+}
+
+/// where a quoted scalar or a block scalar is, while `has_anchor_or_alias` reads the text.
+#[derive(Clone, Copy)]
+enum Scalar {
+    Plain,
+    Quoted(char),
+    /// a `|` or `>` block that holds every following line indented deeper than this column.
+    Block(usize),
+}
+
+/// does the yaml text hold an anchor (`&name`) or an alias (`*name`)? read token by token, so
+/// an `&` or `*` inside a quoted string, a comment or a block scalar does not count; a false
+/// alarm elsewhere is acceptable, a miss is not.
+fn has_anchor_or_alias(text: &str) -> bool {
+    let mut state = Scalar::Plain;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if let Scalar::Block(parent) = state {
+            if line.trim().is_empty() || indent > parent {
+                continue;
+            }
+            state = Scalar::Plain;
+        }
+        if scan_line(line, &mut state) {
+            return true;
+        }
+    }
+    false
+}
+
+/// the column where the key or value of a line starts, after any `- ` markers.
+fn content_column(line: &str) -> usize {
+    let mut column = 0;
+    let mut rest = line;
+    loop {
+        let trimmed = rest.trim_start_matches(' ');
+        column += rest.len() - trimmed.len();
+        match trimmed.strip_prefix("- ") {
+            Some(after) => {
+                column += 2;
+                rest = after;
+            }
+            None => return column,
+        }
+    }
+}
+
+fn scan_line(line: &str, state: &mut Scalar) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let mut previous: Option<char> = None;
+    let mut position = 0;
+    while position < chars.len() {
+        let c = chars[position];
+        let starts_token =
+            previous.is_none_or(|p| p.is_whitespace() || matches!(p, '[' | '{' | ','));
+        let following = chars.get(position + 1).copied();
+        match *state {
+            Scalar::Quoted(quote) => {
+                if c == '\\' && quote == '"' {
+                    position += 1;
+                } else if c == quote {
+                    *state = Scalar::Plain;
+                }
+            }
+            _ if c == '#' && previous.is_none_or(char::is_whitespace) => return false,
+            _ if starts_token && matches!(c, '"' | '\'') => *state = Scalar::Quoted(c),
+            _ if starts_token
+                && matches!(c, '&' | '*')
+                && following.is_some_and(|f| !f.is_whitespace()) =>
+            {
+                return true;
+            }
+            _ if starts_token
+                && matches!(c, '|' | '>')
+                && chars[position + 1..]
+                    .iter()
+                    .take_while(|k| **k != '#')
+                    .all(|k| k.is_ascii_digit() || matches!(k, '+' | '-' | ' ')) =>
+            {
+                *state = Scalar::Block(content_column(line));
+                return false;
+            }
+            _ => {}
+        }
+        previous = Some(c);
+        position += 1;
+    }
+    false
 }
 
 /// every string in `value` marked `!unsafe`, so that ansible keeps it as text and never runs it
@@ -774,13 +977,22 @@ pub fn mark_unsafe(value: &Value) -> Value {
 /// the yaml the playbooks get as `-e @settings.yml`: checked like [`settings_document`], with
 /// every string marked unsafe. comments are not kept, nothing needs them there.
 pub fn for_ansible(text: &str) -> Result<String, Invalid> {
-    settings_document(text)?;
-    let document: Value = serde_yaml_ng::from_str(text)
-        .map_err(|error| Invalid::new("settings", format!("is not valid yaml: {error}")))?;
-    let document = match document {
+    let mut document = match parse_document(text)? {
         Value::Null => Value::Mapping(Mapping::new()),
         other => other,
     };
+    if let Value::Mapping(map) = &mut document {
+        for (name, kind) in SECTIONS {
+            if let Some(section) = map.get_mut(*name) {
+                normalise_flags(section, kind);
+            }
+        }
+        if let Some(Value::Mapping(components)) = map.get_mut(COMPONENT_SECTION) {
+            components
+                .values_mut()
+                .for_each(|entry| normalise_flags(entry, &COMPONENT));
+        }
+    }
     serde_yaml_ng::to_string(&mark_unsafe(&document))
         .map_err(|error| Invalid::new("settings", format!("cannot be written: {error}")))
 }
@@ -1433,6 +1645,112 @@ web-proxy:
         assert!(written.contains("!unsafe"), "{written}");
         assert!(!written.contains("# comment"));
         assert_eq!(for_ansible("").unwrap().trim(), "{}");
+    }
+
+    #[test]
+    fn unlisted_text_is_one_line_and_samba_fields_are_typed() {
+        // an unlisted field cannot carry a line break, a listed multi-line one can
+        assert!(refused("web-proxy:\n  extra: \"a\\nb\"\n").starts_with("web-proxy.extra"));
+        assert!(settings_document("gateway:\n  motd: \"a\\nb\"\n").is_ok());
+        for bad in ["1\\n root preexec = id", "1;id", "A", "", "1 {{x}}"] {
+            let text = format!("nt4-domain:\n  log_level: \"{bad}\"\n");
+            assert!(refused(&text).starts_with("nt4-domain.log_level"), "{bad}");
+        }
+        for good in ["1", "2 auth:3", "3 smb2_credits:5"] {
+            assert!(settings_document(&format!("nt4-domain:\n  log_level: \"{good}\"\n")).is_ok());
+        }
+        assert!(
+            refused("nt4-domain:\n  lanman_auth: maybe\n").starts_with("nt4-domain.lanman_auth")
+        );
+    }
+
+    #[test]
+    fn yaml_one_one_booleans_become_real_booleans() {
+        let written = for_ansible(
+            "nt4-domain:\n  lanman_auth: no\n  software: On\n  roaming_profiles: false\n",
+        )
+        .unwrap();
+        let back: Value = serde_yaml_ng::from_str(&written).unwrap();
+        assert_eq!(back["nt4-domain"]["lanman_auth"], Value::Bool(false));
+        assert_eq!(back["nt4-domain"]["software"], Value::Bool(true));
+        assert_eq!(back["nt4-domain"]["roaming_profiles"], Value::Bool(false));
+        // nested flags, inside lists, are normalised too
+        let users = for_ansible("nt4-domain:\n  users:\n    - {name: dana, admin: yes}\n").unwrap();
+        let back: Value = serde_yaml_ng::from_str(&users).unwrap();
+        assert_eq!(back["nt4-domain"]["users"][0]["admin"], Value::Bool(true));
+        // a bare word in a field with no type is refused, with the way out in the message
+        let message = refused("web-proxy:\n  extra: no\n");
+        assert!(message.starts_with("web-proxy.extra"), "{message}");
+        assert!(message.contains("quote"), "{message}");
+        assert!(refused("access:\n  open: off\n").starts_with("access.open"));
+        // typed text keeps its word: a user may be called "on"
+        assert!(settings_document("nt4-domain:\n  machines: [\"on\"]\n").is_ok());
+    }
+
+    #[test]
+    fn nested_lists_and_maps_are_unsafe_and_booleans_stay_plain() {
+        let written = for_ansible(
+            "dns:\n  zone: example.com\n  records:\n    - {name: www, address: 192.0.2.7}\nweb-proxy:\n  listen: [host, internal]\n  status: {enabled: true}\n",
+        )
+        .unwrap();
+        assert!(written.contains("zone: !unsafe example.com"), "{written}");
+        assert!(written.contains("name: !unsafe www"), "{written}");
+        assert!(written.contains("- !unsafe host"), "{written}");
+        assert!(written.contains("enabled: true"), "{written}");
+        assert!(!written.contains("!unsafe true"), "{written}");
+    }
+
+    #[test]
+    fn anchors_and_aliases_are_refused_before_any_parse() {
+        // a document that would expand to many gigabytes if it were parsed
+        let mut bomb = String::from("a0: &a0 [x, x, x, x, x, x, x, x, x, x]\n");
+        for step in 1..40 {
+            let last = step - 1;
+            bomb.push_str(&format!(
+                "a{step}: &a{step} [*a{last}, *a{last}, *a{last}, *a{last}, *a{last}, *a{last}, *a{last}, *a{last}, *a{last}]\n"
+            ));
+        }
+        assert!(bomb.len() < 128 * 1024);
+        let started = std::time::Instant::now();
+        let message = refused(&bomb);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(
+            message.starts_with("settings") && message.contains("anchors"),
+            "{message}"
+        );
+        for text in [
+            "gateway: &g {ntp: [a.example.com]}\n",
+            "gateway: *g\n",
+            "gateway:\n  ntp: [*a]\n",
+            "gateway:\n  ntp:\n    - &x a.example.com\n",
+            "gateway:\n  ntp: [pool.example.com, {k: *a}]\n",
+        ] {
+            assert!(refused(text).contains("anchors"), "{text}");
+        }
+        // the same marks inside quotes, comments and block text are only text
+        for text in [
+            "gateway:\n  motd: \"fish & *chips* &x\"\n",
+            "gateway:\n  motd: 'a *b'\n",
+            "gateway:\n  motd: |\n    *** welcome &here\n    line two\n  timezone: UTC\n",
+            "gateway:\n  timezone: UTC # *alias &anchor\n",
+            "gateway:\n  motd: Tom & Jerry * more\n",
+        ] {
+            assert!(
+                settings_document(text).is_ok(),
+                "{text}: {:?}",
+                settings_document(text)
+            );
+        }
+        // a block scalar ends where the indentation does: the sibling after it is read again
+        assert!(refused("gateway:\n  motd: |\n    text\n  timezone: *z\n").contains("anchors"));
+    }
+
+    #[test]
+    fn a_field_name_cannot_forge_a_log_line() {
+        let error = refused("gateway:\n  \"x\\nERR forged\": 1\n");
+        assert!(!error.contains('\n'), "{error:?}");
+        let error = super::Invalid::new("a\nb", "c\rd");
+        assert_eq!(error.to_string(), "a\\nb: c\\rd");
     }
 
     #[test]

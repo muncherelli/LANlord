@@ -471,6 +471,46 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn guarded_refuses_an_invalid_op_before_anything_runs() {
+        let server = quiet_server();
+        let grants_ran = std::cell::Cell::new(false);
+        let go = |op: Op| {
+            grants_ran.set(false);
+            let result = guarded(&server, &admin(), &op, &mut no_password, |_, _| {
+                grants_ran.set(true);
+                Ok(Reply::Done)
+            });
+            (result, grants_ran.get())
+        };
+        let save = |plain: &str| Op::SaveDocument {
+            plain: plain.into(),
+            updates: vec![],
+        };
+        let bomb = format!("a: &a [x]\nb: *a\n{}", "c: *a\n".repeat(1000));
+        let hostile = [
+            (
+                save("nt4-domain:\n  log_level: \"1\\n root preexec = id\"\n"),
+                "log_level",
+            ),
+            (
+                save("dns:\n  zone: \"{{ lookup('pipe', 'id') }}\"\n"),
+                "dns.zone",
+            ),
+            (save(&bomb), "anchors"),
+            (save("image: evil\n"), "image"),
+        ];
+        for (op, word) in hostile {
+            let (result, ran) = go(op);
+            let message = format!("{:#}", result.unwrap_err());
+            assert!(message.contains(word), "{message}");
+            assert!(!message.contains('\n'), "one line: {message:?}");
+            assert!(!ran, "{word}: the op must not run");
+        }
+        let (result, ran) = go(save("gateway:\n  timezone: UTC\n"));
+        assert!(result.is_ok() && ran);
+    }
+
     /// one key for every test, so settings sealed by a test can be read by the executor.
     fn key() -> Result<Option<crypto::Identity>> {
         static KEY: OnceLock<crypto::Identity> = OnceLock::new();
