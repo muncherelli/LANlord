@@ -19,17 +19,25 @@ fn cooked_termios() -> Option<libc::termios> {
     }
 }
 
-/// give the terminal back and exit without unwinding; async-signal-safe calls only.
+/// write the reset escapes to `out` and put the saved settings back on `input`; async-signal-
+/// safe calls only.
+#[cfg(unix)]
+fn restore_terminal(out: i32, input: i32, saved: Option<&libc::termios>) {
+    // safety: write and tcsetattr are async-signal-safe
+    unsafe {
+        libc::write(out, RESET.as_ptr().cast(), RESET.len());
+        if let Some(t) = saved {
+            libc::tcsetattr(input, libc::TCSANOW, t);
+        }
+    }
+}
+
+/// give the terminal back and exit without unwinding.
 #[cfg(unix)]
 fn hard_exit(signal: i32, saved: Option<&libc::termios>) -> ! {
-    // safety: write, tcsetattr and _exit are async-signal-safe
-    unsafe {
-        libc::write(1, RESET.as_ptr().cast(), RESET.len());
-        if let Some(t) = saved {
-            libc::tcsetattr(0, libc::TCSANOW, t);
-        }
-        libc::_exit(128 + signal)
-    }
+    restore_terminal(1, 0, saved);
+    // safety: _exit is async-signal-safe
+    unsafe { libc::_exit(128 + signal) }
 }
 
 /// the stop signals that have arrived, kept in flags the signal handlers set.
@@ -119,5 +127,47 @@ mod tests {
             flags: vec![(SIGTERM, flag)],
         };
         assert_eq!(stop.requested(), Some(SIGTERM));
+    }
+
+    #[test]
+    fn restore_writes_the_reset_escapes() {
+        let mut fds = [0; 2];
+        // safety: plain fd calls on a fresh pipe
+        unsafe {
+            assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+            restore_terminal(fds[1], -1, None);
+            let mut buf = [0u8; 64];
+            let n = libc::read(fds[0], buf.as_mut_ptr().cast(), buf.len());
+            assert_eq!(&buf[..n as usize], RESET);
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+
+    #[test]
+    fn restore_puts_the_saved_settings_back() {
+        let (mut master, mut slave) = (0, 0);
+        let mut pipe = [0; 2];
+        // safety: fd calls on a fresh pty and pipe; the termios structs are zeroed first
+        unsafe {
+            let none = std::ptr::null_mut();
+            assert_eq!(
+                libc::openpty(&mut master, &mut slave, none, none.cast(), none.cast()),
+                0
+            );
+            assert_eq!(libc::pipe(pipe.as_mut_ptr()), 0);
+            let mut saved: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(slave, &mut saved), 0);
+            let mut raw = saved;
+            raw.c_lflag &= !libc::ECHO;
+            assert_eq!(libc::tcsetattr(slave, libc::TCSANOW, &raw), 0);
+            restore_terminal(pipe[1], slave, Some(&saved));
+            let mut now: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(slave, &mut now), 0);
+            assert_ne!(now.c_lflag & libc::ECHO, 0);
+            for fd in [master, slave, pipe[0], pipe[1]] {
+                libc::close(fd);
+            }
+        }
     }
 }
