@@ -133,8 +133,9 @@ fn unbuffered(fd: c_int) -> ManuallyDrop<File> {
 /// up to `JITTER` of random extra delay, or none when the kernel has no randomness to give.
 fn jitter() -> Duration {
     let mut bytes = [0u8; 2];
+    // the raw syscall: glibc only has a getrandom wrapper from 2.25, and this builds for 2.17.
     // SAFETY: `bytes` is two bytes long.
-    let got = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+    let got = unsafe { libc::syscall(libc::SYS_getrandom, bytes.as_mut_ptr(), bytes.len(), 0) };
     if got != 2 {
         return Duration::ZERO;
     }

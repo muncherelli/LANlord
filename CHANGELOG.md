@@ -71,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Linux builds now run on glibc 2.17 and newer
 - The administrators group is renamed `admins`, one group for the gateway and the domain (#49)
 - Every window opens fitted to its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small; the console opens 80 by 24 cells, and the windows with a list, log or text (hosts, settings, changelog, networks, My Server and the rest) can be resized, their lists filling whatever room they are given, while plain forms keep a fixed size. The Changelog window shows plain text without the template's intro (#105)
 - The Welcome window shows the version and has a Changelog topic that opens the changelog (#105)
