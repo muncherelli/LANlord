@@ -863,9 +863,9 @@ fn a_growable_window_opens_as_tall_as_its_contents_up_to_the_desktop() {
         let log = height(&desktop, Target::Changelog);
         assert!(log <= area.height() + 1.0, "{size:?}: {log}");
         assert!(log >= area.height().min(400.0) - 1.0, "{size:?}: {log}");
-        // the hosts list has a few buttons and a short list: shorter than the old 280 default
+        // the hosts list has few entries: it opens at its usual 280, not as a one line strip
         let hosts = height(&desktop, Target::Hosts);
-        assert!(hosts < 280.0, "{size:?}: {hosts}");
+        assert!((hosts - 280.0).abs() <= 1.0, "{size:?}: {hosts}");
     }
 }
 

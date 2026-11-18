@@ -30,6 +30,11 @@ pub const COMPONENTS: &[Named] = &[
         module: "dns",
     },
     Named {
+        name: "time-server",
+        title: "Time Server (NTP)",
+        module: "time-server",
+    },
+    Named {
         name: "web-proxy",
         title: "Web proxy",
         module: "web-proxy",
@@ -46,9 +51,13 @@ pub const COMPONENTS: &[Named] = &[
 /// privileged container's keyctl check ok).
 const DOCKER_CHECKS: &[&str] = &["lxc-nesting", "lxc-keyctl", "nested-container"];
 
+/// the time server runs in docker too, and needs udp 123 free on the host.
+const TIME_CHECKS: &[&str] = &["lxc-nesting", "lxc-keyctl", "nested-container", "ntp-port"];
+
 /// the checks of the report that `module` needs.
 pub fn checks_for_module(module: &str) -> &'static [&'static str] {
     match module {
+        "time-server" => TIME_CHECKS,
         m if crate::doctor::DOCKER_MODULES.contains(&m) => DOCKER_CHECKS,
         "vde" | "wireguard" | "link" => &["tun"],
         _ => &[],
@@ -169,8 +178,14 @@ mod tests {
     #[test]
     fn every_module_that_runs_in_docker_needs_what_docker_needs() {
         for module in crate::doctor::DOCKER_MODULES {
-            assert_eq!(checks_for_module(module), DOCKER_CHECKS, "{module}");
+            let checks = checks_for_module(module);
+            assert!(checks.starts_with(DOCKER_CHECKS), "{module}");
         }
+        assert_eq!(checks_for_module("dns"), DOCKER_CHECKS);
+        // the time server also needs udp 123
+        assert_eq!(checks_for("time-server"), TIME_CHECKS);
+        assert!(needed_for("ntp-port").contains(&"Time Server (NTP)"));
+        assert_eq!(needed_for("ntp-port").len(), 1);
         assert_eq!(checks_for_module("vde"), ["tun"]);
         assert!(checks_for_module("gateway").is_empty());
         assert!(!needs_probe("gateway"));

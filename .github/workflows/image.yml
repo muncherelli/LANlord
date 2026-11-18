@@ -1,12 +1,13 @@
 name: image
 
-# publishes two images, one package each, tagged with a lanlord version (X.Y.Z):
+# publishes three images, one package each, tagged with a lanlord version (X.Y.Z):
 #   ghcr.io/muncherelli/lanlord-nt4-server-components  samba built from source
 #   ghcr.io/muncherelli/lanlord-network-server-components  dnsmasq on alpine
+#   ghcr.io/muncherelli/lanlord-time-server-components  chrony on alpine
 # each image owns a directory (see .github/images.json) with its Dockerfile. the images hold only
 # upstream software; lanlord's scripts and config are mounted by the playbooks. the upstream
 # versions (samba, dnsmasq) are not tags: they are labels (org.opencontainers.image.version is the
-# lanlord version, io.lanlord.samba.version and io.lanlord.dnsmasq.version the upstream ones), set
+# lanlord version, io.lanlord.samba.version, io.lanlord.dnsmasq.version and io.lanlord.chrony.version the upstream ones), set
 # from the ARG in the Dockerfile.
 #
 # the version is the one in development, from tools/image-version.sh: the next patch after the
@@ -19,7 +20,7 @@ name: image
 #   goes to the next version.
 # - release-plz dispatches this workflow with the release tag (tags pushed with the default token
 #   start no workflows), as does a manual run with a `tag` input (like v0.1.0). this makes sure the
-#   released X.Y.Z exists for both images, and never overwrites one: when it is missing, the newest
+#   released X.Y.Z exists for every image, and never overwrites one: when it is missing, the newest
 #   older version's manifest is retagged (no rebuild, the image files did not change in the cycle),
 #   or the image is built from the sources at the tag when there is no older version.
 # - a pull request that touches image files builds those images for amd64 and arm64 without pushing.
@@ -39,12 +40,14 @@ on:
     paths:
       - ansible/playbooks/nt4-domain/image/**
       - ansible/playbooks/dns/image/**
+      - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
       - .github/images.json
   pull_request:
     paths:
       - ansible/playbooks/nt4-domain/image/**
       - ansible/playbooks/dns/image/**
+      - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
       - .github/images.json
   workflow_dispatch:
@@ -56,7 +59,7 @@ on:
       image:
         description: image to handle
         type: choice
-        options: [all, nt4-server-components, network-server-components]
+        options: [all, nt4-server-components, network-server-components, time-server-components]
         default: all
 
 permissions:

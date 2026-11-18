@@ -1297,6 +1297,8 @@ impl Desktop {
                 area,
                 growable: target.growable(),
                 height,
+                // an empty list would open as a strip: the hosts list opens at its usual height
+                floor: if target == Target::Hosts { size.y } else { 0.0 },
             };
             let shown = windows::show(
                 ctx,
@@ -1814,12 +1816,18 @@ mod tests {
         desktop.open(Target::Hosts);
         frames(&mut desktop, &ctx, 2);
         assert_eq!(desktop.host().as_deref(), Some("me@two"));
-        // the list starts under the title bar, the label and the window margin
-        let (add, _) = theme::probe::find(&ctx, "Add...").unwrap();
+        // the list starts under the title bar, the label and the window margin, and the window
+        // is taller than its contents, so it is found from the top
+        let top = desktop
+            .measured
+            .iter()
+            .find(|m| m.0 == Target::Hosts)
+            .unwrap()
+            .1;
         click_at(
             &mut desktop,
             &ctx,
-            Pos2::new(add.left() + 10.0, add.top() - 110.0),
+            Pos2::new(top.left() + 30.0, top.top() + 48.0),
         );
         assert_eq!(desktop.host().as_deref(), Some("me@one"));
         assert!(press(&mut desktop, &ctx, "Remove"));

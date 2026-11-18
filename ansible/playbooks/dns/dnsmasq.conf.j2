@@ -39,6 +39,10 @@ dhcp-option=3
 dhcp-option=6,{{ net.ip }}
 dhcp-option=15,{{ net.zone }}
 dhcp-option=44,{{ net.ip }}
+{% if net.name | lower in time_network_names %}
+# the time server serves this network, on the gateway's address
+dhcp-option=42,{{ net.ip }}
+{% endif %}
 dhcp-option=46,8
 {% for host in net.dhcp.hosts %}
 dhcp-host={{ host.mac | lower }},{{ host.address }},{{ host.name }}

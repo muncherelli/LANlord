@@ -53,7 +53,7 @@ pub const PROXMOX_FEATURES_FIX: &str = "on the proxmox host run `pct set <CTID> 
 pub const PROXMOX_TUN_FIX: &str = "on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun` (proxmox ve 8.1 or newer; replace <CTID> with this container's number), or on proxmox ve 7 or newer add these two lines to /etc/pve/lxc/<CTID>.conf:\nlxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\nand then restart the container with `pct reboot <CTID>`";
 
 /// the modules that run in docker (or install it) and so need what docker needs.
-pub const DOCKER_MODULES: &[&str] = &["docker", "nt4-domain", "web-proxy", "dns"];
+pub const DOCKER_MODULES: &[&str] = &["docker", "nt4-domain", "web-proxy", "dns", "time-server"];
 
 impl Environment {
     /// a short description, such as "unprivileged lxc container on proxmox".
@@ -228,6 +228,7 @@ impl Report {
         checks.push(docker_check(&get));
         checks.push(manager_check(&environment, &get));
         checks.push(vde_check(get("vde_switch"), get("vde_plug")));
+        checks.push(ntp_port_check(get("ntp_port")));
         if environment.proxmox() {
             checks.push(Check {
                 id: "proxmox-macfilter".into(),
@@ -651,6 +652,38 @@ fn vde_check(switch: &str, plug: &str) -> Check {
     }
 }
 
+/// udp 123 on the host: the time server binds it, so a host chronyd or ntpd that already listens
+/// on every address stops it. systemd-timesyncd only asks and is never reported.
+fn ntp_port_check(said: &str) -> Check {
+    let (status, detail, fix) = match said {
+        "free" => (Status::Ok, "udp 123 is free".to_string(), None),
+        busy if busy.starts_with("busy:") => {
+            let who = busy.trim_start_matches("busy:");
+            let who = if who.is_empty() || who == "unknown" {
+                "another program".to_string()
+            } else {
+                who.to_string()
+            };
+            (
+                Status::Fail,
+                format!("udp 123 is already used by {who} on this server, so the time server cannot start"),
+                Some(
+                    "stop it (systemctl disable --now chrony, chronyd or ntpd), or leave the time server off; systemd-timesyncd does not get in the way"
+                        .to_string(),
+                ),
+            )
+        }
+        _ => (Status::Unknown, "not tried".to_string(), None),
+    };
+    Check {
+        id: "ntp-port".into(),
+        title: "ntp port (udp 123)".into(),
+        status,
+        detail,
+        fix,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -923,6 +956,29 @@ vde_plug=missing
         // a missing key is not a no either
         let report = Report::parse("virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\n");
         assert_eq!(check(&report, "lxc-nesting").status, Status::Unknown);
+    }
+
+    #[test]
+    fn a_host_listening_on_udp_123_fails_the_time_server_check() {
+        let free = with(&[("ntp_port", "free")]);
+        assert_eq!(check(&free, "ntp-port").status, Status::Ok);
+        let busy = with(&[("ntp_port", "busy:chronyd")]);
+        let c = check(&busy, "ntp-port");
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.detail.contains("already used by chronyd"), "{}", c.detail);
+        assert!(c.fix.as_deref().unwrap().contains("timesyncd"));
+        // a listener the probe could not name is still a listener
+        let nameless = with(&[("ntp_port", "busy:unknown")]);
+        assert!(check(&nameless, "ntp-port")
+            .detail
+            .contains("another program"));
+        let empty = with(&[("ntp_port", "busy:")]);
+        assert_eq!(check(&empty, "ntp-port").status, Status::Fail);
+        // a probe that could not look is not a no
+        for said in ["unknown", ""] {
+            let report = with(&[("ntp_port", said)]);
+            assert_eq!(check(&report, "ntp-port").status, Status::Unknown);
+        }
     }
 
     #[test]

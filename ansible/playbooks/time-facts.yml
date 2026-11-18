@@ -1,0 +1,40 @@
+# included by time.yml and dns-facts.yml (needs lanlord_networks from networks.yml): which
+# networks the time server serves. nothing here changes the machine. it sets
+#
+#   time_networks         the lanlord networks the time server serves (empty when it is off)
+#   time_network_names    their names, lower case
+#   time_pools, time_servers   the upstream time, from the time-server section
+#
+# the choice is in the components list (`components: {time-server: {enabled: true, attach:
+# [{network: retronet}]}}`); a time-server entry without attach serves every network. without a
+# components entry, a `time-server:` section switches it on for every network.
+- name: read the time server's settings
+  ansible.builtin.set_fact:
+    time_has_section: "{{ 'time-server' in vars }}"
+    time_section: "{{ vars['time-server'] if 'time-server' in vars else {} }}"
+    time_has_choice: "{{ components is defined and components is mapping and 'time-server' in components }}"
+    time_choice: "{{ components['time-server'] if (components is defined and components is mapping and 'time-server' in components) else {} }}"
+
+- name: work out the networks it serves
+  ansible.builtin.set_fact:
+    time_on: >-
+      {{ (time_has_choice | bool and time_choice is mapping and (time_choice.enabled | default(true) | bool))
+         or (not (time_has_choice | bool) and time_has_section | bool) }}
+    # whether the entry has an attach list; without one it serves every network
+    time_has_attach: "{{ time_has_choice | bool and time_choice is mapping and time_choice.attach is defined and time_choice.attach is sequence and time_choice.attach is not string }}"
+
+- name: pick the networks
+  ansible.builtin.set_fact:
+    time_networks: >-
+      {{ [] if not (time_on | bool)
+         else (lanlord_networks | default([])) if not (time_has_attach | bool)
+         else (lanlord_networks | default([]) | selectattr('name', 'in', time_choice.attach | map(attribute='network') | map('lower') | list) | list) }}
+
+- name: name them
+  ansible.builtin.set_fact:
+    time_network_names: "{{ time_networks | map(attribute='name') | map('lower') | list }}"
+
+- name: work out the upstream time
+  ansible.builtin.set_fact:
+    time_pools: "{{ (time_section.pools | default(['pool.ntp.org'])) if time_section is mapping else ['pool.ntp.org'] }}"
+    time_servers: "{{ (time_section.servers | default([])) if time_section is mapping else [] }}"
