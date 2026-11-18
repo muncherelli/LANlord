@@ -203,7 +203,7 @@ pub struct Taskbar<'a> {
 }
 
 /// the widest a window button gets, like the gui's.
-const TASK_BUTTON: u16 = 22;
+const TASK_BUTTON: u16 = 30;
 
 /// the width of a one-row button: its edges, a space each side, the label and the icon.
 fn row_button_width(label: &str, icon: bool) -> u16 {

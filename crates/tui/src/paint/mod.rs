@@ -43,6 +43,10 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Sty
         return;
     }
     let room = width.min(buf.area.right().saturating_sub(x));
+    #[cfg(test)]
+    if text.chars().count() > usize::from(room) {
+        cut::note(text);
+    }
     buf.set_stringn(x, y, text, room as usize, style);
 }
 
@@ -68,4 +72,37 @@ pub fn lines(buf: &Buffer) -> Vec<String> {
                 .collect()
         })
         .collect()
+}
+
+/// which texts a test frame had to cut short, so a test can say that none was.
+#[cfg(test)]
+pub mod cut {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn note(text: &str) {
+        CUT.with(|cut| cut.borrow_mut().push(text.to_string()));
+    }
+
+    /// the texts cut short since the last call.
+    pub fn take() -> Vec<String> {
+        CUT.with(|cut| std::mem::take(&mut *cut.borrow_mut()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_that_does_not_fit_is_cut_and_noted() {
+        cut::take();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        text(&mut buf, 0, 0, 4, "abcdef", Style::default());
+        text(&mut buf, 0, 0, 6, "abcdef", Style::default());
+        assert_eq!(cut::take(), ["abcdef"]);
+    }
 }

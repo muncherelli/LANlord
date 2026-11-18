@@ -1,0 +1,45 @@
+              ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
+    ▔▔▔▔▔▕    ▏ ◆ Time Server (NTP)                                            _▕□▕ ×▕▕
+    ▏ ≡≡ ▕    ▏                                                                       ▕
+    ▏▁▁▁▁▁    ▏ ▔▔▔▔▔▕  Time Server (NTP)                                             ▕
+  My Server   ▏ ▏ ◆  ▕  Status: available                                             ▕
+              ▏ ▏▁▁▁▁▁                                                                ▕
+              ▏                                                                       ▕
+    ▔▔▔▔▔▕    ▏ chrony in Docker: serves the time to the networks you pick, taking it ▕
+    ▏□─□ ▕    ▏ from public pools. It never sets the server's own clock, and dnsmasq  ▕
+    ▏▁▁▁▁▁    ▏ hands its address out as DHCP option 42 (set from the settings,       ▕
+   Networks   ▏ whether or not it is running).                                        ▕
+              ▏ ───────────────────────────────────────────────────────────────────── ▕
+              ▏ ┌ Settings (in your settings file) ─────────────────────────────────┐ ▕
+    ▔▔▔▔▔▕    ▏ │  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │ ▕
+    ▏ ◄► ▕    ▏ │ ▕ time-server:                                                  ▏ │ ▕
+    ▏▁▁▁▁▁    ▏ │ ▕   pools: [pool.ntp.org]                                       ▏ │ ▕
+   Gateway    ▏ │ ▕   servers: [192.0.2.123]                                      ▏ │ ▕
+              ▏ │  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔  │ ▕
+              ▏ └───────────────────────────────────────────────────────────────────┘ ▕
+    ▔▔▔▔▔▕    ▏                                                             ▏ Apply ▕ ▕
+    ▏ ▦▦ ▕    ▏ ▕ Host: demo@gateway                                                ▏ ▕
+    ▏▁▁▁▁▁    ▏                                                                       ▕
+   Settings   ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+
+
+    ▔▔▔▔▔▕
+    ▏ >_ ▕
+    ▏▁▁▁▁▁
+   Console
+
+
+    ▔▔▔▔▔▕
+    ▏ ▣▣ ▕
+    ▏▁▁▁▁▁
+    Hosts
+
+
+
+
+
+
+
+
+
+▏ L LANlord ▕ ▏ ◆ Time Server (NTP) ▕                                                                                                               ▏ 12:00 PM ▕

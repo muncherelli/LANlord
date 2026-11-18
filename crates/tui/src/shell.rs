@@ -37,6 +37,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::Widget;
 use zeroize::Zeroizing;
 
+use crate::layout;
 use crate::paint::chrome::{
     Menu, MenuRow, TaskButton, Taskbar, TaskbarLayout, WindowFrame, WindowLayout,
 };
@@ -128,6 +129,8 @@ struct Answer {
     /// the calendar at the queried path: its month, selected day and whether it can be picked.
     calendar: Option<(i32, u32, chrono::NaiveDate, bool)>,
     height: u16,
+    /// the columns the tree wants when nothing limits it.
+    width: u16,
 }
 
 /// run `pass` over `nodes`; the message it produced, if any.
@@ -196,7 +199,9 @@ fn drive_at<M: Clone>(
             (answer, msg)
         }
         Pass::Measure { width } => {
-            answer.height = Painter::new(palette, state, false).height(nodes, *width, None);
+            let painter = Painter::new(palette, state, false);
+            answer.height = painter.height(nodes, *width, None);
+            answer.width = painter.natural_width(nodes);
             (answer, None)
         }
         Pass::Query { path } => {
@@ -480,8 +485,8 @@ impl Shell {
         self.menu = None;
     }
 
-    /// where a new window goes: right of the icons, cascading, cut down to fit.
-    fn place(&self, target: Target) -> Rect {
+    /// where a new window goes: right of the icons, cascading, as big as its content.
+    fn place(&mut self, target: Target) -> Rect {
         let area = self.hits.desktop;
         let area = if area.is_empty() {
             Rect::new(0, 0, 100, 30)
@@ -492,22 +497,49 @@ impl Shell {
             .map(|i| icon_rect(area, i).right())
             .max()
             .unwrap_or(0);
-        let (w, mut h) = target.size();
-        if target == Target::DateTime {
-            // the Date/Time tree is two columns of groups, a calendar of six weeks and a button
-            // row: taller than the gui's pixel height says once cells are 16 high
-            h = h.max(33.0 * 16.0);
-        }
         let n = self.windows.len() as u16;
-        let x = (icons_right + 1 + n * 2).min(area.right().saturating_sub(20));
+        let x = icons_right + 1 + n * 2;
         let y = area.y + (n % 6);
-        let width = ((w / 7.0) as u16)
-            .min(area.right().saturating_sub(x))
-            .max(20);
-        let height = ((h / 16.0) as u16 + 3)
-            .min(area.bottom().saturating_sub(y))
-            .max(8);
-        Rect::new(x, y, width, height)
+        let size = self.fit_size(target, area);
+        layout::place(size, x, y, area)
+    }
+
+    /// how big a window is that fits its content on `desktop`: the width the window asks for,
+    /// and as many rows as its tree takes at that width. a growable window (a console, a list)
+    /// is never shorter than the least height it opens at. the desktop cuts it down later; what
+    /// still does not fit scrolls.
+    fn fit_size(&mut self, target: Target, desktop: Rect) -> (u16, u16) {
+        let (asked, size_height) = target.size();
+        let width = layout::frame_width((asked / 7.0).round() as u16).min(desktop.width);
+        let measured = self
+            .run_window(
+                target,
+                Pass::Measure {
+                    width: layout::content_width(width),
+                },
+            )
+            .height;
+        let floor = match target {
+            Target::Console => lanlord_app::desktop::CONSOLE_ROWS as u16,
+            _ if target.growable() => (target.floor().min(size_height) / 16.0) as u16,
+            _ => 0,
+        };
+        (width, layout::frame_height(measured.max(floor)))
+    }
+
+    /// resize every window that has not been maximised to its content, keeping its corner.
+    fn refit_windows(&mut self, desktop: Rect) {
+        for i in 0..self.windows.len() {
+            let (target, rect, hidden) = {
+                let win = &self.windows[i];
+                (win.target, win.rect, win.minimized || win.restore.is_some())
+            };
+            if hidden {
+                continue;
+            }
+            let size = self.fit_size(target, desktop);
+            self.windows[i].rect = layout::place(size, rect.x, rect.y, desktop);
+        }
     }
 
     fn close(&mut self, target: Target) {
@@ -982,6 +1014,21 @@ impl Shell {
                 Pass::Measure { width: *width },
             ),
         };
+        if let Pass::Measure { width } = &pass {
+            // the header and strip, then the page in its bevel
+            let width = *width;
+            let strip =
+                Painter::new(palette, state, false).height(&top[..top.len() - 1], width, None) + 1;
+            let mut inner = Pass::Measure {
+                width: width.saturating_sub(4),
+            };
+            let page = self.nt4_page(&mut inner, state, host.as_deref(), &[PAGE]);
+            return Answer {
+                height: strip + page.height + 2,
+                width: page.width + 4,
+                ..Answer::default()
+            };
+        }
         let on_page = match &page_pass {
             Pass::Act { path, .. } | Pass::Query { path } => path.first() == Some(&PAGE),
             _ => false,
@@ -1279,6 +1326,7 @@ impl Shell {
         }
 
         // windows, bottom to top
+        self.refit_windows(desktop);
         let order: Vec<(Target, Rect)> = self
             .windows
             .iter()
@@ -1299,12 +1347,7 @@ impl Shell {
             }
             .render(rect, buf);
             let layout = WindowFrame::layout(rect);
-            let body = Rect::new(
-                layout.body.x + 1,
-                layout.body.y,
-                layout.body.width.saturating_sub(2),
-                layout.body.height,
-            );
+            let body = layout::content(rect);
             let answer = self.run_window(
                 target,
                 Pass::Draw {
@@ -1410,15 +1453,25 @@ impl Shell {
 
     fn render_dialog(&mut self, desktop: Rect, buf: &mut Buffer) {
         let wide = if self.admin_setup.is_some() && self.login.is_none() {
-            72
+            layout::DIALOG_WIDE
         } else {
-            60
+            layout::DIALOG_WIDTH
         };
-        let width = wide.min(desktop.width.saturating_sub(4)).max(20);
-        let Some((title, measured)) = self.run_dialog(Pass::Measure { width: width - 4 }) else {
+        let most = wide.min(desktop.width.saturating_sub(4)).max(20);
+        // the box is as wide as its content wants, between the narrowest and the widest
+        let Some((title, wanted)) = self.run_dialog(Pass::Measure { width: most }) else {
             return;
         };
-        let height = (measured.height + 4).min(desktop.height);
+        let asked = layout::frame_width(wanted.width)
+            .max(layout::DIALOG_MIN)
+            .max(title.chars().count() as u16 + layout::TITLE_ROOM);
+        let width = asked.min(most);
+        let Some((_, measured)) = self.run_dialog(Pass::Measure {
+            width: layout::content_width(width),
+        }) else {
+            return;
+        };
+        let height = layout::frame_height(measured.height).min(desktop.height);
         let rect = Rect::new(
             desktop.x + desktop.width.saturating_sub(width) / 2,
             desktop.y + desktop.height.saturating_sub(height) / 2,
@@ -1432,13 +1485,7 @@ impl Shell {
             palette: self.palette,
         }
         .render(rect, buf);
-        let layout = WindowFrame::layout(rect);
-        let body = Rect::new(
-            layout.body.x + 1,
-            layout.body.y + 1,
-            layout.body.width.saturating_sub(2),
-            layout.body.height.saturating_sub(1),
-        );
+        let body = layout::content(rect);
         if let Some((_, answer)) = self.run_dialog(Pass::Draw {
             area: body,
             buf,
@@ -2186,3 +2233,6 @@ fn focus_key(path: &[usize], part: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod screens;

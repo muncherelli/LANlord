@@ -1,0 +1,24 @@
+                   ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
+    ▔▔▔▔▔▕      ▔▔▔▏ ◆ My Account                                       _▕□▕ ×▕▕
+    ▏ ≡≡ ▕      ▏ ▦▏                                                           ▕
+    ▏▁▁▁▁▁      ▏▁▁▏ This window is not available in the text view yet. Open   ▕
+  My Server    Sett▏ it in the LANlord window or the web UI.                   ▕
+                   ▏                                                           ▕
+                   ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+    ▔▔▔▔▔▕      ▔▔▔▔▔▕
+    ▏□─□ ▕      ▏ >_ ▕
+    ▏▁▁▁▁▁      ▏▁▁▁▁▁
+   Networks    Console
+
+
+    ▔▔▔▔▔▕      ▔▔▔▔▔▕
+    ▏ ◄► ▕      ▏ ▣▣ ▕
+    ▏▁▁▁▁▁      ▏▁▁▁▁▁
+   Gateway      Hosts
+
+
+
+
+
+
+▏ L LANlord ▕ ▏ ◆ My Account ▕                                      ▏ 12:00 PM ▕

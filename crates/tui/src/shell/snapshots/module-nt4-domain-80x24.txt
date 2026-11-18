@@ -1,0 +1,24 @@
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕
+▏ ▌ NT4 Domain                                                          _▕□▕ ×▕▕
+▏                                                                              ▕
+▏ ▔▔▔▔▔▕  NT4 Domain                                                           ▕
+▏ ▏ ▐▌ ▕  Status: available                                                    ▕
+▏ ▏▁▁▁▁▁                                                                       ▕
+▏                                                                              ▕
+▏ A Samba server in Docker for old Windows clients, on the internal network    ▕
+▏ only: an NT4-style domain controller or a plain workgroup, with a basic set  ▕
+▏ of logins.                                                                   ▕
+▏ ──────────────────────────────────────────────────────────────────────────── ▕
+▏ ▏ Settings ▕▏ Logins ▕▏ Logon scripts ▕                                      ▕
+▏ ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▕ ▕
+▏ ▏ ┌ Domain ──────────────────────────────────────────────────────────────┐ ▕ ▕
+▏ ▏ │ Domain name       ▕ RETRONET             ▏                           │ ▕ ▕
+▏ ▏ │ Server name       ▕                      ▏                           │ ▕ ▕
+▏ ▏ │                   blank: the gateway's hostname                      │ ▕ ▕
+▏ ▏ │ Mode               domain        ▼                                   │ ▕ ▕
+▏ ▏ │ Options           ▕  Roaming profiles                                │ ▕ ▕
+▏ ▏ │                   ▕  Software share (S:)                             │ ▕ ▕
+▏ ▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁ ▕
+▏                                                                              ▕
+▏▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+▏ L LANlord ▕ ▏ ▌ NT4 Domain ▕                                      ▏ 12:00 PM ▕
