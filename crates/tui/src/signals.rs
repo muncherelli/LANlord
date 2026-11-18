@@ -5,6 +5,33 @@ use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// escapes that turn off mouse reporting and the alt screen and show the cursor again.
+#[cfg(unix)]
+const RESET: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h";
+
+/// the terminal settings of stdin as they are now, if it is a tty.
+#[cfg(unix)]
+fn cooked_termios() -> Option<libc::termios> {
+    // safety: tcgetattr only writes into the zeroed struct we hand it
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        (libc::tcgetattr(0, &mut t) == 0).then_some(t)
+    }
+}
+
+/// give the terminal back and exit without unwinding; async-signal-safe calls only.
+#[cfg(unix)]
+fn hard_exit(signal: i32, saved: Option<&libc::termios>) -> ! {
+    // safety: write, tcsetattr and _exit are async-signal-safe
+    unsafe {
+        libc::write(1, RESET.as_ptr().cast(), RESET.len());
+        if let Some(t) = saved {
+            libc::tcsetattr(0, libc::TCSANOW, t);
+        }
+        libc::_exit(128 + signal)
+    }
+}
+
 /// the stop signals that have arrived, kept in flags the signal handlers set.
 #[derive(Debug, Default)]
 pub(crate) struct Stop {
@@ -17,18 +44,27 @@ impl Stop {
         #[cfg(unix)]
         {
             use signal_hook::consts::{SIGHUP, SIGTERM};
+            // the cooked terminal settings, taken before the terminal is switched to raw mode;
+            // none when stdin is not a tty, and then nothing is restored on a hard exit
+            let saved = cooked_termios();
             let mut flags = Vec::new();
             for signal in [SIGTERM, SIGHUP] {
                 let flag = Arc::new(AtomicBool::new(false));
-                // order matters: the conditional shutdown is registered first, so the first
+                let seen = flag.clone();
+                // order matters: this is registered before the flag handler, so the first
                 // signal still sees the flag unset and only sets it (graceful stop), while a
-                // second signal finds it set and exits at once with 128 + signal, which ends
-                // a wedged shutdown loop.
-                signal_hook::flag::register_conditional_shutdown(
-                    signal,
-                    128 + signal,
-                    flag.clone(),
-                )?;
+                // second one finds it set and ends a wedged shutdown loop. that exit skips
+                // the normal terminal restore, so it first does it by hand with async-signal-
+                // safe calls only (write, tcsetattr, _exit): mouse capture, alt screen and
+                // cursor escapes, then the saved termios, then 128 + signal.
+                // safety: the closure only calls async-signal-safe functions
+                unsafe {
+                    signal_hook::low_level::register(signal, move || {
+                        if seen.load(std::sync::atomic::Ordering::SeqCst) {
+                            hard_exit(signal, saved.as_ref());
+                        }
+                    })?;
+                }
                 signal_hook::flag::register(signal, flag.clone())?;
                 flags.push((signal, flag));
             }
