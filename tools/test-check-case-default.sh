@@ -51,6 +51,39 @@ TXT
 echo done
 case $a in x) ;; esac
 SH
+expect heredoc-comment.sh "2" <<'SH'
+# see: cat <<TXT
+case $a in x) ;; esac
+SH
+expect heredoc-arithmetic.sh "2" <<'SH'
+n=$((1 << y))
+case $a in x) ;; esac
+SH
+expect heredoc-backslash.sh "4" <<'SH'
+cat <<\TXT
+don't blank what follows
+TXT
+case $a in x) ;; esac
+SH
+expect heredoc-quoted.sh "4" <<'SH'
+cat <<'TXT'
+don't blank what follows
+TXT
+case $a in x) ;; esac
+SH
+expect unclosed.sh "2" <<'SH'
+echo start
+case $a in x) ;; *) ;;
+echo end
+SH
+expect unclosed-in-run.yml "5" <<'YML'
+jobs:
+  a:
+    steps:
+      - run: |
+          case $x in a) ;; *) ;;
+      - run: echo done
+YML
 expect workflow.yml "5" <<'YML'
 jobs:
   a:
