@@ -229,9 +229,9 @@ impl Desktop {
                 rect.left_bottom() + Vec2::new(4.0, -4.0),
                 Align2::LEFT_BOTTOM,
                 format!(
-                    "{}: measured {:.0}x{:.0} , actual {:.0}x{:.0}",
+                    "{}: measured {:.0}x{:.0}, actual {:.0}x{:.0}",
                     target.id(),
-                    rect.width() - crate::windows::chrome().x,
+                    rect.width(),
                     content + crate::windows::CHROME,
                     rect.width(),
                     rect.height()
