@@ -726,7 +726,7 @@ impl LoginBox {
                 (
                     Some(WEB_ICON_COLUMN),
                     vec![Node::Header {
-                        icon: "gateway",
+                        icon: "lanlord",
                         title: String::new(),
                         lines: Vec::new(),
                     }],
