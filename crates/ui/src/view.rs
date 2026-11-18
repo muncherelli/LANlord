@@ -16,6 +16,9 @@ use crate::theme::{self, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use crate::view_wizard;
 use crate::widgets::Table;
 
+/// how long a status bar takes to slide in or out.
+const SLIDE_SECS: f32 = 0.15;
+
 /// draw `nodes` top to bottom; the message of a click, if there was one. a message changes the
 /// window, so another frame is asked for to show it.
 pub fn show<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
@@ -41,12 +44,60 @@ pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
 
 fn nodes_ui<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
     let mut sent = None;
-    for node in nodes {
-        if let Some(msg) = node_ui(ui, node) {
-            sent = Some(msg);
+    for (i, node) in nodes.iter().enumerate() {
+        let msg = match (node, nodes.get(i + 1)) {
+            // a gap that leads into a status bar slides with it
+            (Node::Gap(gap), Some(Node::Status { text, .. })) => {
+                slide_space(ui, i, *gap, !text.is_empty());
+                None
+            }
+            (Node::Status { text, error }, _) => {
+                slide_status(ui, i, text, *error);
+                None
+            }
+            _ => node_ui(ui, node),
+        };
+        if msg.is_some() {
+            sent = msg;
         }
     }
     sent
+}
+
+/// how far a status bar at node `index` has slid in: 0 when hidden, 1 when fully shown.
+fn slide_amount(ui: &Ui, index: usize, shown: bool) -> f32 {
+    let id = ui.scope_id().with(("status-slide", index));
+    ui.ctx().animate_bool_with_time(id, shown, SLIDE_SECS)
+}
+
+/// the gap before a status bar, scaled by how far the bar has slid in.
+fn slide_space(ui: &mut Ui, index: usize, gap: f32, shown: bool) {
+    // the bar is the next node, so it owns the animation under its own index
+    let t = slide_amount(ui, index + 1, shown);
+    ui.add_space(gap * t);
+}
+
+/// a status bar that slides up into the window when it has text and away when it clears.
+fn slide_status(ui: &mut Ui, index: usize, text: &str, error: bool) {
+    let t = slide_amount(ui, index, !text.is_empty());
+    if t <= 0.0 {
+        return;
+    }
+    if t >= 1.0 {
+        controls::status_bar(ui, text, error);
+        return;
+    }
+    let full = controls::STATUS_HEIGHT;
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), full * t), Sense::hover());
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.translate(Vec2::new(0.0, full * (1.0 - t))))
+            .layout(*ui.layout()),
+    );
+    inner.set_clip_rect(rect.intersect(ui.clip_rect()));
+    controls::status_bar(&mut inner, text, error);
+    ui.ctx().request_repaint();
 }
 
 fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
@@ -95,7 +146,9 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             None
         }
         Node::Status { text, error } => {
-            controls::status_bar(ui, text, *error);
+            if !text.is_empty() {
+                controls::status_bar(ui, text, *error);
+            }
             None
         }
         Node::Heading(text) => {
@@ -733,5 +786,90 @@ mod tests {
             sent.extend(show(ui, &nodes));
         });
         assert_eq!(sent, [8]);
+    }
+
+    /// the height a window of `nodes` takes after one frame on `ctx`.
+    fn height(ctx: &egui::Context, nodes: &[Node<u8>]) -> f32 {
+        let mut used = 0.0;
+        testkit::run(ctx, vec![], |ui| {
+            let top = ui.cursor().top();
+            show(ui, nodes);
+            used = ui.cursor().top() - top;
+        });
+        used
+    }
+
+    fn with_status(text: &str) -> Vec<Node<u8>> {
+        vec![
+            Node::Text("body".into()),
+            Node::Gap(6.0),
+            Node::Status {
+                text: text.into(),
+                error: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn an_empty_status_bar_and_its_gap_take_no_room() {
+        let ctx = egui::Context::default();
+        let bare = height(&ctx, &[Node::Text("body".into())]);
+        let empty = height(&ctx, &with_status(""));
+        assert!((empty - bare).abs() < 0.01, "{empty} vs {bare}");
+    }
+
+    #[test]
+    fn a_status_bar_slides_in_with_its_text_and_out_when_it_clears() {
+        let ctx = egui::Context::default();
+        let empty = height(&ctx, &with_status(""));
+        let shown = with_status("ready");
+        let first = height(&ctx, &shown);
+        assert!(first > empty, "starts to grow");
+        let mut full = first;
+        for _ in 0..30 {
+            full = height(&ctx, &shown);
+        }
+        assert!(full > first, "keeps growing: {first} then {full}");
+        assert!(full >= empty + controls::STATUS_HEIGHT + 6.0 - 0.01);
+        let first_out = height(&ctx, &with_status(""));
+        assert!(first_out < full, "starts to shrink");
+        let mut gone = first_out;
+        for _ in 0..30 {
+            gone = height(&ctx, &with_status(""));
+        }
+        assert!((gone - empty).abs() < 0.01, "{gone} vs {empty}");
+    }
+
+    #[test]
+    fn a_status_message_never_moves_or_covers_the_content_above_it() {
+        let ctx = egui::Context::default();
+        let page = |text: &str| {
+            vec![
+                Node::Button(Button::new("Open", true, 1).width(100.0)),
+                Node::Gap(6.0),
+                Node::Status {
+                    text: text.into(),
+                    error: false,
+                },
+            ]
+        };
+        let button = |ctx: &egui::Context, nodes: &[Node<u8>]| {
+            testkit::run(ctx, vec![], |ui| {
+                show(ui, nodes);
+            });
+            crate::theme::probe::find(ctx, "Open").expect("drawn").0
+        };
+        let before = button(&ctx, &page(""));
+        // mid-slide and fully slid in, the button stays where it was, with the bar below it
+        for _ in 0..30 {
+            let now = button(&ctx, &page("saved"));
+            assert_eq!(now, before);
+        }
+        let mut bar = 0.0;
+        testkit::run(&ctx, vec![], |ui| {
+            show(ui, &page("saved"));
+            bar = ui.min_rect().bottom();
+        });
+        assert!(bar >= before.bottom() + 6.0 + controls::STATUS_HEIGHT);
     }
 }
