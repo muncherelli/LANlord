@@ -13,7 +13,7 @@ table inet lanlord {
 {% if host_interface | default('') != '' %}
     iifname "{{ host_interface }}" udp dport { 137, 138 } drop
     iifname "{{ host_interface }}" tcp dport { 139, 445 } drop
-    iifname "{{ host_interface }}" udp dport { 53, 67 } drop
+    iifname "{{ host_interface }}" udp dport { 53, 67, 123 } drop
     iifname "{{ host_interface }}" tcp dport 53 drop
 {% endif %}
   }

@@ -327,7 +327,7 @@ fn ansible_renders_three_networks_each_pinned_to_its_own_address() {
     for drop in [
         "    iifname \"eth0\" udp dport { 137, 138 } drop",
         "    iifname \"eth0\" tcp dport { 139, 445 } drop",
-        "    iifname \"eth0\" udp dport { 53, 67 } drop",
+        "    iifname \"eth0\" udp dport { 53, 67, 123 } drop",
         "    iifname \"eth0\" tcp dport 53 drop",
         "    oifname \"eth0\" udp sport 67 drop",
     ] {
