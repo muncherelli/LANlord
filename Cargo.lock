@@ -3055,6 +3055,7 @@ dependencies = [
  "lanlord-app",
  "lanlord-core",
  "lanlord-model",
+ "libc",
  "ratatui",
  "signal-hook",
  "zeroize",
