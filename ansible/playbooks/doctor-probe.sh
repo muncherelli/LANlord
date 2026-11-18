@@ -53,24 +53,39 @@ lanlord_doctor() {
     say pve_marker 0
   fi
 
-  # can containers run inside this one (the proxmox feature nesting)? a sysctl that is 0 only
-  # says user namespaces are off, which is not the same as this container lacking the feature
+  # can containers run inside this one (the lxc feature nesting)? a sysctl that is 0 only says
+  # user namespaces are off, which is not the same as this container lacking the feature. the
+  # answer must not depend on the sandbox of whoever runs us: lanlord's own service has
+  # RestrictNamespaces=yes, which makes unshare fail even where nesting is on. so as root under
+  # systemd the test runs in a transient unit, outside that sandbox, and a failure that could be
+  # the caller's sandbox is unknown, never no
   nesting=unknown
+  t=""
+  if have timeout; then t="timeout 15"; fi
   if [ "$(cat /proc/sys/user/max_user_namespaces 2>/dev/null)" = 0 ]; then
     nesting=unknown
   elif have unshare; then
-    err=$(unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1)
+    outside=0
+    if [ "$(id -u 2>/dev/null)" = 0 ] && have systemd-run && { [ -n "$INVOCATION_ID" ] || [ -d /run/systemd/system ]; }; then
+      outside=1
+      err=$($t systemd-run --wait --pipe --quiet --collect -p RuntimeMaxSec=15 unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1)
+    else
+      err=$(unshare --user --map-root-user --mount --pid --fork --mount-proc true 2>&1)
+    fi
     if [ $? -eq 0 ]; then
       nesting=yes
     else
       case "$err" in
-        *"not permitted"*|*"ermission denied"*) nesting=no ;;
+        *"unshare"*"not permitted"*|*"unshare"*"ermission denied"*)
+          # a refusal seen from inside a service's sandbox says nothing about the container
+          if [ "$outside" = 1 ] || [ -z "$INVOCATION_ID" ]; then nesting=no; fi ;;
+        *) ;;
       esac
     fi
   fi
   say nesting "$nesting"
 
-  # is the keyctl system call allowed (the proxmox feature keyctl)? only ENOSYS, which the
+  # is the keyctl system call allowed (the lxc feature keyctl)? only ENOSYS, which the
   # container's seccomp profile answers when the feature is off, is a definite no; a refusal
   # for permission could have other causes
   keyctl=unknown
@@ -82,6 +97,7 @@ lanlord_doctor() {
       case "$err" in
         *"not implemented"*) keyctl=no ;;
         *"not available"*|*"No such"*) keyctl=yes ;;
+        *) ;;
       esac
     fi
   elif have python3; then
@@ -157,8 +173,6 @@ else:
   # docker, its firewall backend and the FORWARD policy it may have set
   if have docker; then
     say docker_installed yes
-    t=""
-    if have timeout; then t="timeout 15"; fi
     if $t docker info >/dev/null 2>&1; then
       say docker_running yes
       say docker_version "$($t docker version --format '{{.Server.Version}}' 2>/dev/null)"

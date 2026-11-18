@@ -738,15 +738,17 @@ fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()>
     use lanlord_core::purge::{preview, purge, PurgeOptions};
     let session = lanlord_core::ssh::Session::new(host)?;
     let options = PurgeOptions { remove_admins };
+    // an ssh session: the account it signs in as is the one asking
+    let caller = lanlord_core::account::login_user(&session)?.name;
     println!("this would remove from {host}:");
-    for line in preview(&session, options, &mut ask)? {
+    for line in preview(&session, &caller, options, &mut ask)? {
         println!("  {line}");
     }
     let typed = confirmed("type the host name to remove lanlord from it: ", confirm)?;
     if typed != host {
         bail!("the host name does not match; nothing was removed");
     }
-    for line in purge(&session, host, options, &mut ask)? {
+    for line in purge(&session, &caller, host, options, &mut ask)? {
         println!("{line}");
     }
     if let Some(path) = lanlord_core::hosts::config_path() {

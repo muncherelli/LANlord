@@ -126,6 +126,76 @@ esac"#
             );
         }
 
+        /// what the probe says about nesting with stub tools first on the path: `uid` is what
+        /// `id -u` prints, `unshare` and `systemd_run` are the stubs' shell bodies.
+        fn nesting_with(uid: &str, invocation: bool, unshare: &str, systemd_run: &str) -> String {
+            use std::os::unix::fs::PermissionsExt;
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "lanlord-nesting-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let real_path = std::env::var("PATH").unwrap();
+            // `cat` is stubbed so the host's max_user_namespaces never decides the answer
+            let cat = format!(
+                "if [ \"$1\" = /proc/sys/user/max_user_namespaces ]; then echo 31000; else PATH='{real_path}' exec cat \"$@\"; fi"
+            );
+            for (name, body) in [
+                ("id", format!("echo {uid}")),
+                ("cat", cat),
+                ("unshare", unshare.to_string()),
+                ("systemd-run", systemd_run.to_string()),
+            ] {
+                let path = dir.join(name);
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let path_var = format!("{}:{real_path}", dir.display());
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c").arg(PROBE).env("PATH", path_var);
+            cmd.env_remove("INVOCATION_ID");
+            if invocation {
+                cmd.env("INVOCATION_ID", "0123456789abcdef");
+            }
+            let out = cmd.output().unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find_map(|l| l.strip_prefix("nesting=").map(str::to_string))
+                .unwrap_or_default()
+        }
+
+        const DENIED: &str = "echo 'unshare: unshare failed: Operation not permitted' >&2; exit 1";
+
+        #[test]
+        fn nesting_is_tested_outside_the_callers_sandbox_when_root_under_systemd() {
+            // the service's sandbox would make a direct unshare fail; the transient unit works
+            assert_eq!(nesting_with("0", true, DENIED, "exit 0"), "yes");
+            // a refusal from the unit itself is a real no
+            assert_eq!(nesting_with("0", true, DENIED, DENIED), "no");
+            // root outside a service (a shell, or ssh) takes the same road
+            assert_eq!(nesting_with("0", false, "exit 0", "exit 0"), "yes");
+        }
+
+        #[test]
+        fn a_refusal_that_could_be_the_sandbox_is_unknown_never_no() {
+            // systemd-run couldn't start the unit: nothing was learned
+            let broken = "echo 'Failed to connect to bus: Permission denied' >&2; exit 1";
+            assert_eq!(nesting_with("0", true, DENIED, broken), "unknown");
+            // not root, inside a service: the direct test may be the sandbox talking
+            assert_eq!(nesting_with("1000", true, DENIED, "exit 1"), "unknown");
+            // a unit that hit the time limit (timeout exits 124 with no word) is unknown too
+            assert_eq!(nesting_with("0", true, DENIED, "exit 124"), "unknown");
+        }
+
+        #[test]
+        fn a_plain_refusal_outside_any_service_is_a_no_and_success_is_a_yes() {
+            assert_eq!(nesting_with("1000", false, DENIED, "exit 1"), "no");
+            assert_eq!(nesting_with("1000", false, "exit 0", "exit 1"), "yes");
+        }
+
         #[test]
         fn the_probe_script_runs_here_from_stdin_and_prints_what_it_found() {
             use std::io::Write;
