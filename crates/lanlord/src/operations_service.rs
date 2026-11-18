@@ -92,7 +92,10 @@ impl Limits {
 
     /// a place for one more connection from `uid`, or `None` when it has its share.
     fn hold(&self, uid: u32) -> Option<UidHold> {
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let count = held.entry(uid).or_default();
         if *count >= self.per_uid {
             return None;
@@ -113,7 +116,10 @@ struct UidHold {
 
 impl Drop for UidHold {
     fn drop(&mut self) {
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(count) = held.get_mut(&self.uid) {
             *count -= 1;
             if *count == 0 {
