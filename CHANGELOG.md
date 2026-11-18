@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-18
+
 ### Added
 
 - `lanlord upgrade HOST` upgrades an installed gateway in place without purging anything, checks that the services come back, and rolls the binary and web files back if they do not (#131)
