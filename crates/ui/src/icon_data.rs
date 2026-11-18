@@ -630,6 +630,25 @@ pub(crate) const SMALL_LANLORD: [&str; 16] = [
     "................",
 ];
 
+pub(crate) const SMALL_LOGO: [&str; 16] = [
+    "....kkkkkkkk....",
+    "...kdkkkkkkkk...",
+    "...kdkkkkkkkk...",
+    "...kdkkkkkkkk...",
+    "...kdkkkkkkkk...",
+    "...kdkkkkkkkk...",
+    "...yyyyyyyyyy...",
+    "...yyyyyyyyyy...",
+    "...oooooooooo...",
+    "...kkkkkkkkkk...",
+    ".kkkkkkkkkkkkkk.",
+    "kkkkkkkkkkkkkkkk",
+    ".krrrrrrrrrrrrk.",
+    ".kmmmmmmmmmmmmk.",
+    ".kmmmmmmmmmmmmk.",
+    ".kkkkkkkkkkkkkk.",
+];
+
 pub(crate) const SMALL_MYSERVER: [&str; 16] = [
     "................",
     "...kkkkkkkkkk...",

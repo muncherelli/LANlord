@@ -577,6 +577,46 @@ def s_lanlord():
     return g
 
 
+# ---------------------------------------------------------------- the logo
+#
+# a black top hat with a gold band on a short red box, drawn bold so it reads at 1x on the
+# taskbar grey and on a white browser tab. the 16 pixel one is the start button, taskbar and
+# title bar art; the 32 pixel one is used for the web favicon.
+
+
+def s_logo():
+    g = Grid(16)
+    g.rect(4, 0, 8, 1, "k")
+    g.rect(3, 1, 10, 9, "k")
+    g.rect(4, 1, 1, 5, "d")
+    g.rect(3, 6, 10, 3, "y")
+    g.rect(3, 8, 10, 1, "o")
+    g.rect(1, 10, 14, 1, "k")
+    g.rect(0, 11, 16, 1, "k")
+    g.rect(1, 12, 14, 4, "k")
+    g.rect(2, 12, 12, 1, "r")
+    g.rect(2, 13, 12, 2, "m")
+    return g
+
+
+def logo32():
+    g = Grid(32)
+    g.rect(8, 0, 16, 1, "k")
+    g.rect(7, 1, 18, 21, "k")
+    g.rect(9, 2, 1, 11, "d")
+    g.rect(7, 14, 18, 6, "y")
+    g.rect(7, 19, 18, 1, "o")
+    g.rect(7, 14, 18, 1, "w")
+    g.rect(3, 22, 26, 1, "k")
+    g.rect(1, 23, 30, 2, "k")
+    g.rect(2, 25, 28, 7, "k")
+    g.rect(3, 25, 26, 1, "r")
+    g.rect(3, 26, 26, 5, "m")
+    g.rect(23, 27, 4, 3, "k")
+    g.rect(24, 28, 2, 1, "l")
+    return g
+
+
 # ---------------------------------------------------------------- the update notice icon
 #
 # the tray icon beside the clock. several candidates are drawn below; the one in the tray is
@@ -1039,7 +1079,7 @@ BIG = {
 SMALL = {
     "GATEWAY": s_gateway, "DOCKER": s_docker, "NT4": s_tower, "WEB": s_globe,
     "COMMANDS": lambda: s_window(False), "CONSOLE": lambda: s_window(True), "DNS": s_dns,
-    "SETTINGS": s_settings, "HOSTS": s_hosts, "FOLDER": s_folder, "LANLORD": s_lanlord,
+    "SETTINGS": s_settings, "HOSTS": s_hosts, "FOLDER": s_folder, "LANLORD": s_lanlord, "LOGO": s_logo,
     "MYSERVER": s_my_server, "NETWORKS": s_networks,
     "UPDATE": s_update,
 }
@@ -1091,6 +1131,69 @@ def png(width, height, pixels):
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def png_rgba(width, height, pixels):
+    raw = b"".join(b"\x00" + bytes(v for px in row for v in px) for row in pixels)
+
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def rgba(rows):
+    return [[RGB[c] + (255,) if c in RGB else (0, 0, 0, 0) for c in row] for row in rows]
+
+
+def favicon(path):
+    """a 16 and 32 pixel .ico from the logo art, each entry a png."""
+    images = [(16, s_logo().rows()), (32, logo32().rows())]
+    blobs = [png_rgba(n, n, rgba(rows)) for n, rows in images]
+    out = struct.pack("<HHH", 0, 1, len(images))
+    offset = 6 + 16 * len(images)
+    for (n, _), blob in zip(images, blobs):
+        out += struct.pack("<BBBBHHII", n, n, 0, 0, 1, 32, len(blob), offset)
+        offset += len(blob)
+    with open(path, "wb") as f:
+        f.write(out + b"".join(blobs))
+
+
+def logo_strip(zoom):
+    """the logo zoomed, then at 1x on the taskbar grey and on white."""
+    arts = [s_logo().rows(), logo32().rows()]
+    w = 640
+    h = 16 * zoom * 2 + 80
+    img = [[(0, 128, 128)] * w for _ in range(h)]
+
+    def put(art, ox, oy, z, bg):
+        n = len(art)
+        for y in range(n * z):
+            for x in range(n * z):
+                img[oy + y][ox + x] = bg
+        for y, row in enumerate(art):
+            for x, c in enumerate(row):
+                if c in RGB:
+                    for dy in range(z):
+                        for dx in range(z):
+                            img[oy + y * z + dy][ox + x * z + dx] = RGB[c]
+
+    x = 8
+    for art in arts:
+        z = zoom * 2 if len(art) == 16 else zoom
+        put(art, x, 8, z, (192, 192, 192))
+        x += len(art) * z + 8
+    x = 8
+    for bg in ((192, 192, 192), (255, 255, 255)):
+        for art in arts:
+            for gx in range(x, x + len(art) + 16):
+                for gy in range(16 * zoom * 2 + 24, 16 * zoom * 2 + 24 + len(art) + 16):
+                    img[gy][gx] = bg
+            put(art, x + 8, 16 * zoom * 2 + 32, 1, bg)
+            x += len(art) + 24
+    return img
+
+
 def preview(path, zoom):
     teal = (0, 128, 128)
     cells = [(n, fn().rows()) for n, fn in BIG.items()] + [(n, fn().rows()) for n, fn in SMALL.items()]
@@ -1108,8 +1211,10 @@ def preview(path, zoom):
                     for dy in range(z):
                         for dx in range(z):
                             img[oy + y * z + dy][ox + x * z + dx] = RGB[c]
+    img += logo_strip(zoom)
+    img = [row + [teal] * (max(len(r) for r in img) - len(row)) for row in img]
     with open(path, "wb") as f:
-        f.write(png(w, h, img))
+        f.write(png(len(img[0]), len(img), img))
 
 
 if __name__ == "__main__":
@@ -1122,7 +1227,9 @@ if __name__ == "__main__":
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
     if not a.no_write:
-        emit(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "crates", "ui", "src", "icon_data.rs"))
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        emit(os.path.join(root, "crates", "ui", "src", "icon_data.rs"))
+        favicon(os.path.join(root, "crates", "ui", "assets", "favicon.ico"))
     if a.preview:
         preview(a.preview, a.zoom)
     if a.update_sheet:
