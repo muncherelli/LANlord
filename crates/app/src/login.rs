@@ -237,7 +237,7 @@ const BUTTON_GAP: f32 = 10.0;
 /// the web box follows the NT 4 logon box: more air under the text, and a wide gap above the button.
 const WEB_BODY_GAP: f32 = 20.0;
 const WEB_FIELD_GAP: f32 = 6.0;
-const WEB_BUTTON_GAP: f32 = 58.0;
+const WEB_BUTTON_GAP: f32 = 38.0;
 /// the icon column, the text column, the label column and the inputs of the web box.
 const WEB_ICON_COLUMN: f32 = 78.0;
 const WEB_TEXT_COLUMN: f32 = 256.0;
