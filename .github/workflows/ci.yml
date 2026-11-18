@@ -48,6 +48,19 @@ jobs:
       - if: runner.os != 'Windows'
         run: tools/test-ghcr-own-versions.sh
 
+  # shellcheck and actionlint come from pinned pypi wheels
+  shell-lint:
+    name: shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: install shellcheck and actionlint
+        run: |
+          python3 -m venv "$HOME/lint-venv"
+          "$HOME/lint-venv/bin/pip" install --quiet shellcheck-py==0.11.0.1 actionlint-py==1.7.12.25
+          echo "$HOME/lint-venv/bin" >> "$GITHUB_PATH"
+      - run: tools/lint-shell.sh
+
   headless:
     name: build without gui
     runs-on: ubuntu-latest
