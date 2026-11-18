@@ -238,6 +238,13 @@ const BUTTON_GAP: f32 = 10.0;
 const WEB_BODY_GAP: f32 = 20.0;
 const WEB_FIELD_GAP: f32 = 6.0;
 const WEB_BUTTON_GAP: f32 = 58.0;
+/// the icon column, the text column, the label column and the inputs of the web box.
+const WEB_ICON_COLUMN: f32 = 78.0;
+const WEB_TEXT_COLUMN: f32 = 256.0;
+const WEB_LABEL_COLUMN: f32 = 80.0;
+const WEB_INPUT_WIDTH: f32 = 175.0;
+/// how far the dialog's width is for the web box, in points.
+pub const WEB_WIDTH: f32 = 384.0;
 const STATUS_GAP: f32 = 6.0;
 
 impl LoginBox {
@@ -285,7 +292,7 @@ impl LoginBox {
         self.local && self.here.is_some()
     }
 
-    fn is_web(&self) -> bool {
+    pub fn is_web(&self) -> bool {
         matches!(self.backend, Backend::Web(_))
     }
 
@@ -572,7 +579,10 @@ impl LoginBox {
         let busy = self.busy() || self.overlay.is_some();
         let first = !self.focus;
         self.focus = true;
-        let web = self.is_web();
+        if self.is_web() {
+            return self.web_view(busy, first);
+        }
+        let web = false;
         let local = self.is_local();
         let password_stage = self.stage == Stage::Password;
         let mut nodes = vec![
@@ -675,6 +685,76 @@ impl LoginBox {
             });
         }
         self.finish_view(busy, nodes)
+    }
+
+    /// the web box, laid out like the NT 4 logon box: an icon column, then the text, the two
+    /// fields and the button in a column of their own, and the status bar under them.
+    fn web_view(&self, busy: bool, first: bool) -> Vec<Node<Msg>> {
+        let empty = self.user.is_empty();
+        let row = |label: &str, input: Node<Msg>| {
+            Node::Columns(vec![
+                // the label is a few points shorter than a field, so it is nudged down to its middle
+                (
+                    Some(WEB_LABEL_COLUMN),
+                    vec![Node::Gap(3.0), Node::Text(label.into())],
+                ),
+                (None, vec![input]),
+            ])
+        };
+        let text = vec![
+            Node::Text(self.web_body.clone()),
+            Node::Gap(WEB_BODY_GAP),
+            row(
+                "Username:",
+                Node::Input {
+                    value: self.user.clone(),
+                    size: Size::Points(WEB_INPUT_WIDTH),
+                    focus: first && empty,
+                    hint: String::new(),
+                    edit: Box::new(Msg::User),
+                    enter: (!busy).then(|| Box::new(Msg::SubmitUser) as Box<dyn Fn(String) -> Msg>),
+                },
+            ),
+            Node::Gap(WEB_FIELD_GAP),
+            row(
+                "Password:",
+                Node::Secret {
+                    value: self.password.clone(),
+                    size: Size::Points(WEB_INPUT_WIDTH),
+                    shown: false,
+                    focus: first && !empty,
+                    edit: Box::new(Msg::Password),
+                    enter: (!busy).then(|| {
+                        Box::new(Msg::SubmitPassword) as Box<dyn Fn(Zeroizing<String>) -> Msg>
+                    }),
+                },
+            ),
+            Node::Gap(WEB_BUTTON_GAP),
+            Node::Buttons(vec![Button::new("Log In", !busy, Msg::Ok)]),
+        ];
+        vec![
+            Node::Columns(vec![
+                (
+                    Some(WEB_ICON_COLUMN),
+                    vec![Node::Header {
+                        icon: "gateway",
+                        title: String::new(),
+                        lines: Vec::new(),
+                    }],
+                ),
+                (Some(WEB_TEXT_COLUMN), text),
+            ]),
+            // the status bar is empty when idle, and the gap above it only matters with text
+            Node::Gap(if self.status.is_empty() {
+                0.0
+            } else {
+                STATUS_GAP
+            }),
+            Node::Status {
+                text: self.status.clone(),
+                error: self.status_is_error,
+            },
+        ]
     }
 
     /// the buttons and the status line under the fields.
@@ -999,15 +1079,22 @@ mod tests {
     fn the_web_box_has_no_host_field_or_shut_down_or_cancel() {
         let web = Rc::new(FakeWeb::default());
         let mut login = web_box(&web);
-        let mut labels = Vec::new();
-        let mut buttons = Vec::new();
-        for node in login.view(&["x@y".into()]) {
-            match node {
-                Node::Labelled { label, .. } => labels.push(label),
-                Node::Buttons(list) => buttons.extend(list.into_iter().map(|b| b.label)),
-                _ => {}
+        fn walk(nodes: Vec<Node<Msg>>, labels: &mut Vec<String>, buttons: &mut Vec<String>) {
+            for node in nodes {
+                match node {
+                    Node::Text(text) if text.ends_with(':') => labels.push(text),
+                    Node::Columns(columns) => {
+                        for (_, body) in columns {
+                            walk(body, labels, buttons);
+                        }
+                    }
+                    Node::Buttons(list) => buttons.extend(list.into_iter().map(|b| b.label)),
+                    _ => {}
+                }
             }
         }
+        let (mut labels, mut buttons) = (Vec::new(), Vec::new());
+        walk(login.view(&["x@y".into()]), &mut labels, &mut buttons);
         assert_eq!(labels, ["Username:", "Password:"]);
         assert_eq!(buttons, ["Log In"]);
     }
