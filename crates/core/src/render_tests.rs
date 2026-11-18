@@ -13,11 +13,26 @@ fn playbooks() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ansible/playbooks")
 }
 
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lanlord-render-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// a scratch folder that is removed when it is dropped.
+fn temp(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("lanlord-render-{name}-"))
+        .tempdir()
+        .unwrap()
+}
+
+/// the rendered output folder, which keeps its scratch folder alive until dropped.
+#[derive(Debug)]
+struct Rendered {
+    _work: tempfile::TempDir,
+    out: PathBuf,
+}
+
+impl std::ops::Deref for Rendered {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.out
+    }
 }
 
 fn on_path(program: &str) -> bool {
@@ -199,7 +214,7 @@ const HARNESS: &str = r#"
 "#;
 
 /// run the harness on these settings; the folder it wrote, or the output when ansible failed.
-fn render(name: &str, yaml: &str) -> Result<PathBuf, String> {
+fn render(name: &str, yaml: &str) -> Result<Rendered, String> {
     run_harness(name, yaml, HARNESS, &[], |_| {})
 }
 
@@ -210,8 +225,9 @@ fn run_harness(
     harness: &str,
     env: &[(&str, String)],
     prepare: impl FnOnce(&Path),
-) -> Result<PathBuf, String> {
-    let work = temp(name);
+) -> Result<Rendered, String> {
+    let scratch = temp(name);
+    let work = scratch.path().to_path_buf();
     let book = work.join("playbooks");
     copy_dir(&playbooks(), &book);
     fs::write(book.join("harness.yml"), harness).unwrap();
@@ -230,7 +246,10 @@ fn run_harness(
         .output()
         .unwrap();
     if run.status.success() {
-        Ok(out)
+        Ok(Rendered {
+            _work: scratch,
+            out,
+        })
     } else {
         Err(format!(
             "{}{}",
@@ -512,6 +531,7 @@ fn ansible_moves_a_single_dnsmasq_and_removes_the_networks_that_are_gone() {
         return;
     }
     let bin = temp("stub-bin");
+    let bin = bin.path();
     let stub = bin.join("docker");
     fs::write(&stub, DOCKER_STUB).unwrap();
     Command::new("chmod").arg("+x").arg(&stub).status().unwrap();

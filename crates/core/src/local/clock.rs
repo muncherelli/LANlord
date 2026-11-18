@@ -794,7 +794,15 @@ mod tests {
     #[test]
     fn modes_hold_under_a_strict_umask() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("lanlord-local-umask-{}", std::process::id()));
+        // the child works in the parent's folder, which the parent removes when it is dropped
+        let child_dir = std::env::var_os("LANLORD_UMASK_CHILD").map(std::path::PathBuf::from);
+        let scratch = child_dir.is_none().then(|| {
+            tempfile::Builder::new()
+                .prefix("lanlord-local-umask-")
+                .tempdir()
+                .unwrap()
+        });
+        let dir = child_dir.unwrap_or_else(|| scratch.as_ref().unwrap().path().to_path_buf());
         let conf = dir.join("conf.d");
         if std::env::var_os("LANLORD_UMASK_CHILD").is_some() {
             std::fs::create_dir_all(&conf).unwrap();
@@ -823,10 +831,9 @@ mod tests {
             .arg("umask 077; exec \"$0\" --exact \"$1\" --test-threads=1")
             .arg(exe)
             .arg(name)
-            .env("LANLORD_UMASK_CHILD", "1")
+            .env("LANLORD_UMASK_CHILD", &dir)
             .status()
             .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
         assert!(status.success());
     }
 
