@@ -136,7 +136,14 @@ fn jitter() -> Duration {
     let mut bytes = [0u8; 2];
     // the raw syscall: glibc only has a getrandom wrapper from 2.25, and this builds for 2.17.
     // SAFETY: `bytes` is two bytes long.
-    let got = unsafe { libc::syscall(libc::SYS_getrandom, bytes.as_mut_ptr(), bytes.len(), 0 as libc::c_uint) };
+    let got = unsafe {
+        libc::syscall(
+            libc::SYS_getrandom,
+            bytes.as_mut_ptr(),
+            bytes.len(),
+            0 as libc::c_uint,
+        )
+    };
     if got != 2 {
         return Duration::ZERO;
     }
