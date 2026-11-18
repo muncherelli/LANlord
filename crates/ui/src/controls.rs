@@ -158,12 +158,6 @@ pub fn group<R>(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui) -> R) -> R
 /// the least a part of a window that takes extra room (a list, a log, a text) shrinks to.
 pub const FILL_MIN: f32 = 80.0;
 
-/// the height from the cursor to the bottom of what is visible, for a pane that should fill a
-/// window whose contents scroll.
-pub fn fill_height(ui: &Ui) -> f32 {
-    (ui.clip_rect().bottom() - ui.cursor().top() - 10.0).max(FILL_MIN)
-}
-
 /// what a window tells the growable parts of its contents: the room it has to spare, and what the
 /// parts that took it were without it.
 #[derive(Clone, Copy, Default)]

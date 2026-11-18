@@ -208,8 +208,9 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         Node::Log { id, lines, height } => {
             let (max, min) = match height {
                 Some(height) => (*height, height - 20.0),
+                // a log that fills: this tall on its own, and the room a window has to spare
                 None => {
-                    let fill = controls::fill_height(ui);
+                    let fill = controls::grow(ui, LOG_ROWS);
                     (fill, fill)
                 }
             };
@@ -467,6 +468,9 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         }
     }
 }
+
+/// the height of a log that fills its window, before the window gives it room.
+const LOG_ROWS: f32 = 160.0;
 
 /// the yellow warning triangle of a message box.
 fn warning_sign(ui: &egui::Ui, rect: egui::Rect) {
