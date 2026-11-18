@@ -242,7 +242,7 @@ impl Welcome {
         vec![
             Node::Header {
                 icon: "my-server",
-                title: format!("Welcome to LANlord v{}", env!("CARGO_PKG_VERSION")),
+                title: format!("Welcome to LANlord v{}", crate::pin::version()),
                 lines: vec!["Retro networks, run from one desktop.".into()],
             },
             Node::Gap(8.0),

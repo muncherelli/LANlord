@@ -10,7 +10,7 @@
       ►       │ ││ Processor    Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz     ││ │
    Gateway    │ ││ Processors   4                                            ││ │
               │ ││ Memory       4096 MB, 3328 MB free                        ││ │
-              │ ││ LANlord      Installed, version x.y.z                     ││ │
+              │ ││ LANlord      Installed, version 0.1.0                     ││ │
       ▦       │ ││ Last applied 2026-11-15T20:41:07-06:00                    ││ │
    Settings   │ │└───────────────────────────────────────────────────────────┘│ │
               │ └─────────────────────────────────────────────────────────────┘ │

@@ -1,5 +1,5 @@
    ┌ ◆ Welcome ───────────────────────────────────────────────────────── _ □ × ┐
-   │ Welcome to LANlord vx.y.z                                                 │
+   │ Welcome to LANlord v9.9.9                                                 │
   M│ Retro networks, run from one desktop.                                     │
    │                                                                           │
    │ ┌ Networks ─────────────────────────────────────────────┐ [  Networks  ]  │

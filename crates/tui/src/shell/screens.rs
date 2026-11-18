@@ -372,12 +372,32 @@ fn crowded(size: (u16, u16)) -> Shell {
     shell
 }
 
+/// the changelog the screens show, in place of the real one.
+const PINNED_CHANGELOG: &str = "# Changelog
+
+## [2.0.0] - 2000-01-02
+
+### Added
+
+- a first thing that was added.
+- a second thing, with a [link](https://example.invalid/) in it.
+
+### Fixed
+
+- something that was fixed.
+
+## [1.0.0] - 2000-01-01
+
+- the first release.
+";
+
 /// the picture of a scene. the Date/Time window counts the server's seconds, so those are
 /// masked: a snapshot must not depend on when it was taken.
 fn picture(scene: &Scene, size: (u16, u16)) -> String {
+    // the version and the changelog are pinned, so a release does not change the snapshots
+    let _pin = lanlord_app::pin::pin("9.9.9", PINNED_CHANGELOG);
     let mut shell = (scene.build)(size);
-    // the crate version is masked, same width, so a release bump leaves the snapshots alone
-    let mut text = text_of(&draw(&mut shell, size)).replace(env!("CARGO_PKG_VERSION"), "x.y.z");
+    let mut text = text_of(&draw(&mut shell, size));
     for digit in '0'..='9' {
         text = text
             .replace(&format!("16:12:0{digit}"), "16:12:0X")
