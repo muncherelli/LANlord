@@ -221,11 +221,24 @@ pub struct LoginBox {
     overlay: Option<Overlay>,
     status: String,
     status_is_error: bool,
+    /// the box's title; a field so an admin setting can replace it later.
+    title: String,
+    /// the web box's body text; a field so an admin setting can replace it later.
+    web_body: String,
     focus: bool,
     /// `user@this-server` when the operations socket is here, and whether it is the choice.
     here: Option<String>,
     local: bool,
 }
+
+/// spacing of the box, in points.
+const BODY_GAP: f32 = 8.0;
+const BUTTON_GAP: f32 = 10.0;
+/// the web box follows the NT 4 logon box: more air under the text, and a wide gap above the button.
+const WEB_BODY_GAP: f32 = 20.0;
+const WEB_FIELD_GAP: f32 = 6.0;
+const WEB_BUTTON_GAP: f32 = 58.0;
+const STATUS_GAP: f32 = 6.0;
 
 impl LoginBox {
     /// a box for `auth`, with the fields filled from `last` (`user@host`) when there is one.
@@ -249,6 +262,8 @@ impl LoginBox {
             overlay: None,
             status: String::new(),
             status_is_error: false,
+            title: "Login Information".into(),
+            web_body: "Enter a username and password that is valid for this system.".into(),
             focus: false,
         }
     }
@@ -548,8 +563,8 @@ impl LoginBox {
     }
 
     /// the title of the box.
-    pub fn title(&self) -> &'static str {
-        "Logon Information"
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
     /// the box's contents; `known` are the servers used before.
@@ -565,14 +580,14 @@ impl LoginBox {
                 icon: "gateway",
                 title: String::new(),
                 lines: vec![if web {
-                    "Type your name and password for this gateway.".into()
+                    self.web_body.clone()
                 } else if local {
                     "You are signed in to this server with the account you are using.".into()
                 } else {
                     "Type the name you use on the gateway and its hostname or address.".into()
                 }],
             },
-            Node::Gap(8.0),
+            Node::Gap(if web { WEB_BODY_GAP } else { BODY_GAP }),
         ];
         if let Some(target) = &self.here {
             let user = target
@@ -644,7 +659,7 @@ impl LoginBox {
             ));
         }
         if password_stage {
-            nodes.push(Node::Gap(4.0));
+            nodes.push(Node::Gap(if web { WEB_FIELD_GAP } else { 4.0 }));
             nodes.push(Node::Labelled {
                 label: "Password:".into(),
                 body: vec![Node::Secret {
@@ -666,17 +681,20 @@ impl LoginBox {
     fn finish_view(&self, busy: bool, mut nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
         let web = self.is_web();
         // the browser has nothing to shut down
-        let mut buttons = vec![
-            Button::new("Cancel", !busy, Msg::Cancel),
-            Button::new("OK", !busy, Msg::Ok),
-        ];
-        if !web {
-            buttons.insert(0, Button::new("Shut Down", true, Msg::ShutDown));
-        }
+        // the browser has nothing to shut down or cancel back to
+        let buttons = if web {
+            vec![Button::new("Log In", !busy, Msg::Ok)]
+        } else {
+            vec![
+                Button::new("Shut Down", true, Msg::ShutDown),
+                Button::new("Cancel", !busy, Msg::Cancel),
+                Button::new("OK", !busy, Msg::Ok),
+            ]
+        };
         nodes.extend([
-            Node::Gap(10.0),
+            Node::Gap(if web { WEB_BUTTON_GAP } else { BUTTON_GAP }),
             Node::Buttons(buttons),
-            Node::Gap(6.0),
+            Node::Gap(STATUS_GAP),
             Node::Status {
                 text: self.status.clone(),
                 error: self.status_is_error,
@@ -978,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn the_web_box_has_no_host_field_or_shut_down() {
+    fn the_web_box_has_no_host_field_or_shut_down_or_cancel() {
         let web = Rc::new(FakeWeb::default());
         let mut login = web_box(&web);
         let mut labels = Vec::new();
@@ -991,7 +1009,7 @@ mod tests {
             }
         }
         assert_eq!(labels, ["Username:", "Password:"]);
-        assert_eq!(buttons, ["Cancel", "OK"]);
+        assert_eq!(buttons, ["Log In"]);
     }
 
     #[test]
