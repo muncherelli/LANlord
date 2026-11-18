@@ -273,6 +273,7 @@ mod tests {
         assert_eq!((facts.sockets, facts.cores, facts.cpus), (0, 0, 4));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_topology_script_counts_sockets_and_cores() {
         let cpuinfo = "processor : 0\nphysical id : 0\ncore id : 0\n\n\
