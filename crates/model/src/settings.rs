@@ -791,9 +791,18 @@ impl Check {
 mod tests {
     #[test]
     fn a_secret_path_names_the_section_it_writes_into() {
-        assert_eq!(secret_section("nt4-domain.admin_password").unwrap(), "nt4-domain");
-        assert_eq!(secret_section(".nt4-domain.admin_password").unwrap(), "nt4-domain");
-        assert_eq!(secret_section("nt4-domain[x].password").unwrap(), "nt4-domain");
+        assert_eq!(
+            secret_section("nt4-domain.admin_password").unwrap(),
+            "nt4-domain"
+        );
+        assert_eq!(
+            secret_section(".nt4-domain.admin_password").unwrap(),
+            "nt4-domain"
+        );
+        assert_eq!(
+            secret_section("nt4-domain[x].password").unwrap(),
+            "nt4-domain"
+        );
         assert!(secret_section("[x].password").is_err());
         assert!(secret_section("").is_err());
         assert!(secret_section("nt4-domain.name").is_err());
