@@ -469,14 +469,14 @@ mod web {
         let login = desktop.login.as_mut().expect("the logon box is open");
         login.user = user.into();
         login.set_password(password);
-        assert!(press(desktop, ctx, "OK"));
+        assert!(press(desktop, ctx, "Log In"));
     }
 
     #[test]
     fn the_box_comes_first_and_has_no_host_or_shut_down() {
         let (_desktop, ctx, web, _) = web_logon();
         assert_eq!(web.calls(), ["current"], "the session was looked for");
-        assert!(enabled(&ctx, "OK").is_some() && enabled(&ctx, "Cancel").is_some());
+        assert!(enabled(&ctx, "Log In").is_some() && enabled(&ctx, "Cancel").is_none());
         assert!(enabled(&ctx, "Shut Down").is_none());
         assert!(enabled(&ctx, "Hostname:").is_none());
     }
