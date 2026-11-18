@@ -117,7 +117,7 @@ struct Room {
     claimed: f32,
     /// the window has been given a size, which it keeps
     user: bool,
-    /// frames drawn so far
+    /// frames the contents have been as tall as they are
     age: u8,
 }
 
@@ -284,11 +284,13 @@ pub fn show(
             let natural = content_height - (extra - spare.extra);
             // the window is not the size of its contents (or of the desktop, when they are more),
             // though they did not change: someone dragged its corner
+            let dragging = ctx.input(|i| i.pointer.any_down());
             let user = !fit
                 || before.is_some_and(|r| {
                     r.user
                         // the window takes the size of its contents a frame or two late
-                        || (r.age >= SETTLE
+                        // with the button down it is the drag, which needs no waiting for
+                        || ((r.age >= SETTLE || dragging)
                             && (held - r.natural.min(max_height - CHROME)).abs() > 2.0
                             && (natural - r.natural).abs() < 0.5)
                 });
@@ -296,7 +298,11 @@ pub fn show(
                 natural,
                 claimed: spare.claimed,
                 user,
-                age: before.map_or(0, |r| r.age.saturating_add(1)),
+                // frames the contents have kept their height: the window follows them a frame
+                // or two late, which is not the user resizing it
+                age: before
+                    .filter(|r| (r.natural - natural).abs() <= 0.5)
+                    .map_or(0, |r| r.age.saturating_add(1)),
             };
             ctx.data_mut(|d| d.insert_temp(key, now));
             if before.is_none_or(|r| r.age < SETTLE || (r.natural - natural).abs() > 0.5) {
@@ -478,5 +484,36 @@ mod tests {
             rect.height() < CHROME + 20.0 + 2.0 * MARGIN + 2.0,
             "{rect:?}"
         );
+    }
+
+    #[test]
+    fn a_window_follows_contents_that_grow_a_few_frames_after_it_opens() {
+        let ctx = egui::Context::default();
+        let mut rect = None;
+        // however late, and at whatever pace, the contents arrive (a slow machine loads them
+        // later), the window stays as tall as they are
+        for late in [4, 7, 12] {
+            let id = format!("late{late}");
+            for frame in 0..40 {
+                let inner = if frame < late { 20.0 } else { 300.0 };
+                testkit::run(&ctx, vec![], |ui| {
+                    let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 690.0));
+                    let place = Placement {
+                        start: Pos2::new(110.0, 12.0),
+                        width: 380.0,
+                        area,
+                        growable: true,
+                        height: None,
+                    };
+                    rect = show(ui.ctx(), &id, "G", place, true, false, |ui| {
+                        ui.allocate_space(Vec2::new(10.0, inner));
+                    })
+                    .map(|s| s.rect);
+                });
+            }
+            let height = rect.unwrap().height();
+            let wanted = CHROME + 300.0 + 2.0 * MARGIN;
+            assert!((height - wanted).abs() < 2.0, "{late}: {height} {wanted}");
+        }
     }
 }
