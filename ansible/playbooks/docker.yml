@@ -185,20 +185,20 @@
           [Service]
           Type=oneshot
           RemainAfterExit=yes
-          ExecStart=/usr/bin/nft -f /etc/lanlord/firewall.nft
+          ExecStart=nft -f /etc/lanlord/firewall.nft
 
           [Install]
           WantedBy=multi-user.target
         mode: "0640"
       register: firewall_unit
 
+    # runs every time: a unit that failed or stopped is started again, new rules or a new unit restart it
     - name: enable the firewall and load the current rules
       ansible.builtin.systemd:
         name: lanlord-firewall
         enabled: true
-        state: restarted
+        state: "{{ 'restarted' if (firewall_rules is changed or firewall_unit is changed) else 'started' }}"
         daemon_reload: true
-      when: (firewall_rules is changed or firewall_unit is changed)
 
     - name: report
       ansible.builtin.debug:

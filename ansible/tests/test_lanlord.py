@@ -9,6 +9,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "playbooks", "f
 import lanlord  # noqa: E402
 
 
+class FirewallUnitTest(unittest.TestCase):
+    def setUp(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "playbooks", "docker.yml")
+        with open(path) as f:
+            self.text = f.read()
+
+    def test_nft_is_not_an_absolute_path(self):
+        # debian has nft in /usr/sbin, arch in /usr/bin
+        self.assertIn("ExecStart=nft -f /etc/lanlord/firewall.nft", self.text)
+        self.assertNotIn("/usr/bin/nft", self.text)
+
+    def test_firewall_step_always_runs(self):
+        step = self.text.split("enable the firewall and load the current rules")[1].split("- name:")[0]
+        self.assertNotIn("when:", step)
+        self.assertIn("'started'", step)
+
+
 class NetworksTest(unittest.TestCase):
     def test_listed_network_with_dhcp_host(self):
         settings = {
