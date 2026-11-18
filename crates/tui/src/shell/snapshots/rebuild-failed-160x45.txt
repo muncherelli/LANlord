@@ -20,7 +20,7 @@
                                                       ┌ Rebuild and relaunch ───────────────────── _ □ × ┐
                                                       │ The rebuild did not work, so LANlord stays open. │
       ▣                                               │ the checkout is gone                             │
-    Hosts                                             │                                [ OK ] [ Cancel ] │
+    Hosts                                             │                                           [ OK ] │
                                                       └──────────────────────────────────────────────────┘
 
 

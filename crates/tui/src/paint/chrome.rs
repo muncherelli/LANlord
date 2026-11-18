@@ -194,6 +194,7 @@ pub struct Taskbar<'a> {
 }
 
 /// what the red debug button says: a bug, and the word for it.
+#[cfg(feature = "devtools")]
 pub const BUG_LABEL: &str = "Ж Debug";
 
 /// the width of the debug button: its label and an edge and a space each side.
@@ -305,6 +306,7 @@ pub fn row_button(
 }
 
 /// the red debug button `[Ж Debug]`, on the taskbar and in the corner of the logon screen.
+#[cfg(feature = "devtools")]
 pub fn bug_button(buf: &mut Buffer, rect: Rect, palette: Palette) {
     if rect.width == 0 {
         return;
@@ -377,6 +379,7 @@ impl Widget for Taskbar<'_> {
                 bold(style(palette, WHITE, NAVY)),
             );
         }
+        #[cfg(feature = "devtools")]
         if let Some(rect) = layout.bug {
             bug_button(buf, rect, palette);
         }

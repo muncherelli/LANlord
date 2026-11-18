@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use lanlord_app::console::Console;
 use lanlord_app::gateway::Fake;
 use lanlord_app::login::fake::FakeAuth;
 use lanlord_app::menu::{Action, Row};
@@ -98,7 +99,12 @@ fn scene(name: impl Into<String>, build: impl Fn((u16, u16)) -> Shell + 'static)
 fn scene_with_bug(name: impl Into<String>, build: impl Fn((u16, u16)) -> Shell + 'static) -> Scene {
     Scene {
         name: name.into(),
-        build: Box::new(build),
+        // the log is shared by every test running at once, so a picture hears none of it
+        build: Box::new(move |size| {
+            let mut shell = build(size);
+            shell.console = Console::detached();
+            shell
+        }),
     }
 }
 

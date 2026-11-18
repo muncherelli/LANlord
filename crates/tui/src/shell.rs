@@ -425,6 +425,23 @@ impl Shell {
         self.networks = NetworksWindow::default();
         self.account = AccountWindow::default();
         self.permissions = PermissionsWindow::default();
+        self.my_server = MyServer::default();
+        self.settings = SettingsWindow::default();
+        self.components = Components::default();
+        self.users = UsersPanel::default();
+        self.nt4 = Nt4Panel::default();
+        self.nt4_tab = 0;
+        self.logon = LogonPanel::default();
+        self.dns = DnsPanel::default();
+        self.commands = CommandPanel::default();
+        self.clock_panel = ClockPanel::default();
+        self.feed = ClockFeed::default();
+        self.monitor = Monitor::default();
+        self.top_order = monitor::Order::default();
+        self.drag = None;
+        self.close_requests.clear();
+        self.open_next.clear();
+        self.compat_next = false;
     }
 
     /// keep the Welcome screen's tick box in the preferences file at `path`.
@@ -824,6 +841,9 @@ impl Shell {
         state: &ViewState,
         escape: bool,
     ) -> Option<(String, Answer)> {
+        if let Some(found) = self.update_dialog(pass, state, escape) {
+            return Some(found);
+        }
         let palette = self.palette;
         let host = self.host();
         if let Some(dialog) = self.networks.dialog() {
@@ -1192,6 +1212,18 @@ impl Shell {
         }
     }
 
+    /// the id of the open box of the update, Networks, My Account or Permissions window.
+    fn window_dialog_id(&mut self) -> Option<&'static str> {
+        if self.update_dialog_open() {
+            return Some("update-box");
+        }
+        self.networks
+            .dialog()
+            .map(|dialog| dialog.id)
+            .or_else(|| self.account.dialog().map(|dialog| dialog.id))
+            .or_else(|| self.permissions.dialog().map(|dialog| dialog.id))
+    }
+
     /// the box on top of everything, if there is one: the desktop's own, then a window's.
     fn dialog_id(&mut self) -> Option<&'static str> {
         if let Some(modal) = &self.modal {
@@ -1211,20 +1243,11 @@ impl Shell {
         if let Some(setup) = &self.admin_setup {
             return Some(setup.warning().map_or("admin-setup", |d| d.id));
         }
-        if self.update_dialog_open() {
-            return Some("update-box");
-        }
         if let Some(dialog) = self.users.dialog() {
             return Some(dialog.id);
         }
-        if let Some(dialog) = self.networks.dialog() {
-            return Some(dialog.id);
-        }
-        if let Some(dialog) = self.account.dialog() {
-            return Some(dialog.id);
-        }
-        if let Some(dialog) = self.permissions.dialog() {
-            return Some(dialog.id);
+        if let Some(id) = self.window_dialog_id() {
+            return Some(id);
         }
         if let Some(dialog) = self.nt4.dialog() {
             return Some(dialog.id);
@@ -1312,8 +1335,6 @@ impl Shell {
                 self.admin_outcome(outcome);
             }
             (title, answer)
-        } else if let Some(found) = self.update_dialog(&mut pass, &state, escape) {
-            found
         } else if let Some(dialog) = self.users.dialog() {
             let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
             let title = dialog.title.clone();

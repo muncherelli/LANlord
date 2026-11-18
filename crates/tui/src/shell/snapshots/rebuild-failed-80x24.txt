@@ -10,7 +10,7 @@
       ►       ┌ Rebuild and relaunch ───────────────────── _ □ × ┐
    Gateway    │ The rebuild did not work, so LANlord stays open. │
               │ the checkout is gone                             │
-              │                                [ OK ] [ Cancel ] │
+              │                                           [ OK ] │
       ▦       └──────────────────────────────────────────────────┘
    Settings
 

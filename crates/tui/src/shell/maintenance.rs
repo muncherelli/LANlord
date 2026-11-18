@@ -136,11 +136,8 @@ impl Shell {
     /// the box that says a rebuild did not work.
     pub(super) fn show_failure(&mut self, error: &str) {
         let text = format!("The rebuild did not work, so LANlord stays open.\n{error}");
-        self.modal = Some(Modal::Failure(Form::new(
-            "rebuild-failed",
-            "Rebuild and relaunch",
-            &text,
-        )));
+        let form = Form::new("rebuild-failed", "Rebuild and relaunch", &text).notice();
+        self.modal = Some(Modal::Failure(form));
     }
 
     /// the new build is ready: end here, and start it in this terminal.

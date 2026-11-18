@@ -61,7 +61,7 @@ pub(super) fn press(shell: &mut Shell, needle: &str) -> String {
 }
 
 /// click the field in the row under the line that says `label`, and type `typed` in it.
-fn fill_below(shell: &mut Shell, label: &str, typed: &str) {
+pub(super) fn fill_below(shell: &mut Shell, label: &str, typed: &str) {
     let text = frame(shell);
     let at = find(&text, label);
     let first = text.lines().nth(usize::from(at.y)).unwrap_or_default();

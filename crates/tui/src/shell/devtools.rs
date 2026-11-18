@@ -261,8 +261,18 @@ impl Shell {
         }
     }
 
+    /// a box is open that the demo desktop must not outlive: the logon and first-administrator
+    /// screens are fine, they are what the bug sits on.
+    fn box_open(&mut self) -> bool {
+        !matches!(self.dialog_id(), None | Some("logon" | "admin-setup"))
+    }
+
     /// a click on the bug or in its menu; false when the click is for something else.
     pub(super) fn click_devtools(&mut self, at: Position) -> bool {
+        if self.box_open() {
+            self.devtools.menu = None;
+            return false;
+        }
         if let Some((rect, rows)) = self.devtools.rows.clone() {
             if rect.contains(at) {
                 if let Some(n) = rows.iter().position(|row| row.contains(at)) {
@@ -281,6 +291,10 @@ impl Shell {
 
     /// F12 opens the debug menu; while it is open the arrows, Enter and Escape drive it.
     pub(super) fn key_devtools(&mut self, key: KeyEvent) -> bool {
+        if self.box_open() {
+            self.devtools.menu = None;
+            return false;
+        }
         if key.code == KeyCode::F(12) {
             self.devtools.menu = self.devtools.menu.is_none().then_some(0);
             return true;

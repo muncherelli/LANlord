@@ -246,10 +246,15 @@ impl Notice {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    use lanlord_core::update::{Runner, Source};
+    use lanlord_core::prefs;
+    use lanlord_core::update::{Runner, Source, Update};
+    use lanlord_core::updater::RealClock;
 
-    use super::*;
+    use super::Notice;
+    use crate::wake::Wake;
 
     /// pretends to be git: always one new commit.
     struct Behind;

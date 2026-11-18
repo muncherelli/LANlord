@@ -185,8 +185,10 @@ fn the_update_box_buttons_drive_the_updater() {
     shell.answer_update(Msg::ToggleAutomatic);
     assert!(shell.updates.enabled());
     // pause, resume and cancel go to the updater; with nothing running they change nothing
+    let before = shell.updates.state().clone();
     for choice in [Choice::Pause, Choice::Resume, Choice::Cancel] {
         shell.answer_update(Msg::Choose(choice));
+        assert_eq!(shell.updates.state(), &before, "{choice:?} changed nothing");
     }
     shell.answer_update(Msg::Choose(Choice::Later));
     assert!(!shell.update_dialog_open());
@@ -207,6 +209,19 @@ fn install_opens_the_console_and_restart_asks_the_rebuild_to_verify() {
     // restarting with no build to start says so in the console and starts nothing
     shell.answer_update(Msg::Choose(Choice::Restart));
     assert!(!shell.rebuild.busy());
+    // the log reaches the console from another thread, so give it a moment
+    let started = std::time::Instant::now();
+    let mut said = false;
+    while !said && started.elapsed() < std::time::Duration::from_secs(5) {
+        shell.console.drain();
+        said = shell
+            .console
+            .lines()
+            .iter()
+            .any(|line| line.text.contains("cannot be restarted"));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(said, "the console says so");
 }
 
 #[test]
@@ -328,9 +343,10 @@ mod devtools {
     use ratatui::crossterm::event::KeyCode;
 
     use super::super::tests::{click, frame, key, shell_with};
-    use super::super::window_tests::{find, press};
-    use super::super::{Shell, Target};
+    use super::super::window_tests::{fill_below, find, press, until};
+    use super::super::{Palette, Shell, Target};
     use lanlord_app::gateway::Fake;
+    use std::sync::Arc;
 
     fn desktop() -> Shell {
         let mut shell = shell_with(Fake::new());
@@ -409,9 +425,11 @@ mod devtools {
         let text = press(&mut shell, "Demo desktop");
         assert!(!shell.in_demo() && shell.before_desktop());
         assert!(shell.windows.is_empty(), "the demo's windows are gone");
+        // the real logon is back, and the demo's taskbar is not
+        assert!(shell.login.is_some() && shell.signed_in.is_none());
         assert!(
-            !text.contains("LANlord Client") || text.contains("Log"),
-            "{text}"
+            !text.contains("My Server"),
+            "the demo's windows are gone:\n{text}"
         );
         // leaving when not in the demo does nothing
         assert!(!shell.leave_demo());
@@ -427,6 +445,79 @@ mod devtools {
         assert!(shell.in_demo());
         shell.log_off();
         assert!(!shell.in_demo() && shell.before_desktop());
+    }
+
+    /// a desktop on the logon screen whose outer gateway is `fake`, which the test keeps.
+    fn logon_screen(fake: &Arc<Fake>) -> Shell {
+        let mut shell = Shell::new(
+            fake.clone(),
+            lanlord_app::hostlist::HostList::new(None),
+            Palette::default(),
+        );
+        shell.clock = Some("12:00 PM".into());
+        shell.require_login(Arc::new(lanlord_app::login::fake::FakeAuth::default()));
+        frame(&mut shell);
+        shell
+    }
+
+    #[test]
+    fn the_demo_never_asks_the_real_server_and_a_box_left_open_dies_with_it() {
+        let fake = Arc::new(Fake::new());
+        let mut shell = logon_screen(&fake);
+        shell.pick_debug(0);
+        assert!(shell.in_demo());
+        shell.pick_debug(2);
+        for _ in 0..12 {
+            frame(&mut shell);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // a box inside the demo
+        shell.windows.clear();
+        shell.open(Target::MyAccount);
+        until(&mut shell, "Linux account");
+        press(&mut shell, "Change Password...");
+        fill_below(&mut shell, "Old Password", "old-secret");
+        fill_below(&mut shell, "New Password:", "new-secret");
+        fill_below(&mut shell, "Confirm New Password", "new-secret");
+        assert!(shell.dialog_id().is_some());
+        // leaving (by a path that does not need the menu) drops the box and what was typed
+        assert!(shell.leave_demo());
+        assert_eq!(
+            shell.dialog_id(),
+            Some("logon"),
+            "only the real logon is up"
+        );
+        assert!(shell.account.dialog().is_none());
+        key(&mut shell, KeyCode::Enter);
+        for _ in 0..6 {
+            frame(&mut shell);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let calls = fake.calls.lock().unwrap();
+        assert!(calls.is_empty(), "the real server was asked: {calls:?}");
+    }
+
+    #[test]
+    fn the_debug_menu_stays_shut_while_a_box_is_open() {
+        let fake = Arc::new(Fake::new());
+        let mut shell = Shell::new(
+            fake.clone(),
+            lanlord_app::hostlist::HostList::new(None),
+            Palette::default(),
+        );
+        shell.clock = Some("12:00 PM".into());
+        shell.use_demo_server();
+        frame(&mut shell);
+        shell.open(Target::MyAccount);
+        until(&mut shell, "Linux account");
+        press(&mut shell, "Change Password...");
+        assert!(shell.dialog_id().is_some());
+        key(&mut shell, KeyCode::F(12));
+        assert!(!shell.debug_menu_open(), "F12 does nothing under a box");
+        let text = frame(&mut shell);
+        click(&mut shell, find(&text, "Ж Debug"));
+        assert!(!shell.debug_menu_open(), "nor does the bug");
+        assert!(shell.dialog_id().is_some(), "the box is still there");
     }
 
     #[test]
@@ -446,7 +537,9 @@ mod devtools {
         key(&mut shell, KeyCode::F(12));
         assert!(!shell.debug_menu_open());
         let text = frame(&mut shell);
-        assert!(find(&text, "Ж Debug").y > 0);
+        // the bug sits in the tray of the taskbar, on the last row
+        let last = text.lines().count() as u16 - 1;
+        assert_eq!(find(&text, "Ж Debug").y, last, "{text}");
     }
 }
 

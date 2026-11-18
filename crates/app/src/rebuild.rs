@@ -156,7 +156,10 @@ impl Rebuild {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::Path;
+
+    use super::{Rebuild, Started, Takeover};
+    use crate::wake::Wake;
 
     #[test]
     fn a_release_build_cannot_rebuild_or_restart() {

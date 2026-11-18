@@ -100,7 +100,10 @@ pub fn run() -> Result<()> {
     result?;
     // a rebuild ended this build so that the new one can take over this terminal
     match shell.take_restart() {
-        Some((exe, host)) => update::restart_in_terminal(&exe, host.as_deref()),
+        Some((exe, host)) => {
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            update::restart_in_terminal(&exe, &args, host.as_deref())
+        }
         None => Ok(()),
     }
 }

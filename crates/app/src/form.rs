@@ -67,6 +67,8 @@ pub struct Form {
     pub checks: Vec<(String, bool)>,
     /// shown under the fields, for input that was refused.
     pub error: Option<String>,
+    /// only tells something: an OK button and no Cancel.
+    notice: bool,
     focused: bool,
 }
 
@@ -79,8 +81,15 @@ impl Form {
             fields: Vec::new(),
             checks: Vec::new(),
             error: None,
+            notice: false,
             focused: false,
         }
+    }
+
+    /// a box that only tells something, so it has an OK button and no Cancel.
+    pub fn notice(mut self) -> Self {
+        self.notice = true;
+        self
     }
 
     pub fn text(mut self, label: &str, value: &str) -> Self {
@@ -186,10 +195,11 @@ impl Form {
             body.push(Node::Warning(error.clone()));
         }
         body.push(Node::Gap(8.0));
-        body.push(Node::Buttons(vec![
-            Button::new("Cancel", true, FormMsg::Cancel),
-            Button::new("OK", true, FormMsg::Ok),
-        ]));
+        let mut buttons = vec![Button::new("OK", true, FormMsg::Ok)];
+        if !self.notice {
+            buttons.insert(0, Button::new("Cancel", true, FormMsg::Cancel));
+        }
+        body.push(Node::Buttons(buttons));
         Dialog {
             id: self.id,
             title: self.title.clone(),
@@ -283,5 +293,22 @@ mod tests {
         assert!(!form.checked(0));
         assert_eq!(form.update(FormMsg::Ok), Some(FormAnswer::Ok));
         assert_eq!(form.update(FormMsg::Cancel), Some(FormAnswer::Cancel));
+    }
+
+    #[test]
+    fn a_notice_has_only_an_ok_button() {
+        let buttons = |form: &mut Form| {
+            let dialog = form.view();
+            dialog
+                .body
+                .iter()
+                .find_map(|node| match node {
+                    Node::Buttons(list) => Some(list.len()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(buttons(&mut Form::new("x", "X", "m")), 2);
+        assert_eq!(buttons(&mut Form::new("x", "X", "m").notice()), 1);
     }
 }
