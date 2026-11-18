@@ -54,7 +54,7 @@ pub fn nodes<M>(text: &str) -> Vec<Node<M>> {
 
 /// the nodes of the changelog this build carries.
 pub fn view<M>() -> Vec<Node<M>> {
-    nodes(TEXT)
+    nodes(crate::pin::changelog())
 }
 
 #[cfg(test)]

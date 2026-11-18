@@ -1,5 +1,5 @@
               ┌ ◆ Welcome ───────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ Welcome to LANlord v0.1.0                                                 │
+      ≡       │ Welcome to LANlord v9.9.9                                                 │
   My Server   │ Retro networks, run from one desktop.                                     │
               │                                                                           │
               │ ┌ Networks ─────────────────────────────────────────────┐ [  Networks  ]  │

@@ -1,24 +1,24 @@
   ┌ ◆ Changelog ──────────────────────────────────────────────────────── _ □ × ┐
-  │ [Unreleased]                                                               │
+  │ [2.0.0] - 2000-01-02                                                       │
   │ Added                                                                      │
-  │   • `lanlord upgrade HOST` upgrades an installed gateway in place without  │
-  │     purging anything, checks that the services come back, and rolls the    │
-  │     binary and web files back if they do not (#131)                        │
-  │   • Secrets stay on the gateway: clients hold no key and never decrypt,    │
-  │     secrets are write-only (reads show set or not set), and `lanlord       │
-  │     move-secrets HOST` moves an old local key to the gateway once (#127)   │
-  │   • On the gateway, ordinary local accounts sign in without ssh through a  │
-  │     local socket, as themselves; the logon box offers "This server" first  │
-  │     (#127)                                                                 │
-  │   • A root operations service on the gateway runs the web interface's      │
-  │     operations for the signed-in account, re-checking its permissions on   │
-  │     every request, with no ssh in the web path (#124)                      │
-  │   • Live event streams for the browser's Task Manager and apply progress,  │
-  │     with automatic reconnection (#125)                                     │
-  │   • The terminal desktop has the Networks, My Account and Permissions      │
-  │     windows (#128)                                                         │
-  │   • The terminal desktop has the update notice, check for updates, Rebuild │
-  │     and Developer menu actions (#129)                                      │
-  │   • A `devtools` build feature, off in releases, adds a red bug menu with  │
+  │   • a first thing that was added.                                          │
+  │   • a second thing, with a link in it.                                     │
+  │ Fixed                                                                      │
+  │   • something that was fixed.                                              │
+  │ [1.0.0] - 2000-01-01                                                       │
+  │   • the first release.                                                     │
   └────────────────────────────────────────────────────────────────────────────┘
+   Gateway
+
+
+      ▦
+   Settings
+
+
+      >
+   Console
+
+
+
+
 [ L LANlord ] [ ◆ Changelog ]                                         12:00 PM

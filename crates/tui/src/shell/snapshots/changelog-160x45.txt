@@ -1,45 +1,45 @@
               ┌ ◆ Changelog ──────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ [Unreleased]                                                               │
+      ≡       │ [2.0.0] - 2000-01-02                                                       │
   My Server   │ Added                                                                      │
-              │   • `lanlord upgrade HOST` upgrades an installed gateway in place without  │
-              │     purging anything, checks that the services come back, and rolls the    │
-      □       │     binary and web files back if they do not (#131)                        │
-   Networks   │   • Secrets stay on the gateway: clients hold no key and never decrypt,    │
-              │     secrets are write-only (reads show set or not set), and `lanlord       │
-              │     move-secrets HOST` moves an old local key to the gateway once (#127)   │
-      ►       │   • On the gateway, ordinary local accounts sign in without ssh through a  │
-   Gateway    │     local socket, as themselves; the logon box offers "This server" first  │
-              │     (#127)                                                                 │
-              │   • A root operations service on the gateway runs the web interface's      │
-      ▦       │     operations for the signed-in account, re-checking its permissions on   │
-   Settings   │     every request, with no ssh in the web path (#124)                      │
-              │   • Live event streams for the browser's Task Manager and apply progress,  │
-              │     with automatic reconnection (#125)                                     │
-      >       │   • The terminal desktop has the Networks, My Account and Permissions      │
-   Console    │     windows (#128)                                                         │
-              │   • The terminal desktop has the update notice, check for updates, Rebuild │
-              │     and Developer menu actions (#129)                                      │
-      ▣       │   • A `devtools` build feature, off in releases, adds a red bug menu with  │
-    Hosts     │     a demo desktop and window-manager debug, in the window, the browser    │
-              │     and the terminal (#108, #129)                                          │
-              │   • A Time Server (NTP) component runs chrony in a container for the       │
-              │     networks you tick, and dnsmasq hands out its address as DHCP option    │
-              │     42; `lanlord doctor` warns when a host chronyd or ntpd already listens │
-              │     on udp 123 (#118)                                                      │
-              │   • `lanlord leases`, `lanlord power` (reboot or shutdown, confirmed by    │
-              │     typing the host name) and `lanlord facts` show DHCP leases, power off  │
-              │     or restart a server, and print system facts (#63)                      │
-              │   • Clock changes run on the gateway in plain Rust through a bridge,       │
-              │     falling back to the old scripts when it is missing (#113)              │
-              │   • Each account gets a role (Administrators, Operators or Users, or one   │
-              │     you define) that says what it may see and change in each area; windows │
-              │     and menu items you may not use are hidden (#115)                       │
-              │   • My Account for everyone: edit your profile and change your password,   │
-              │     which is changed on every linked account or on none (#115)             │
-              │   • Users and Permissions window for administrators: roles, a grid of      │
-              │     areas and levels, and who has which role (#115)                        │
-              │   • Applying settings shows a progress dialog with a bar, the task being   │
-              │     worked on, the elapsed time and the tasks done so far, with the raw    │
-              │     output under Details, in the window and the terminal (#112)            │
-              └────────────────────────────────────────────────────────────────────────────┘
+              │   • a first thing that was added.                                          │
+              │   • a second thing, with a link in it.                                     │
+      □       │ Fixed                                                                      │
+   Networks   │   • something that was fixed.                                              │
+              │ [1.0.0] - 2000-01-01                                                       │
+              │   • the first release.                                                     │
+      ►       └────────────────────────────────────────────────────────────────────────────┘
+   Gateway
+
+
+      ▦
+   Settings
+
+
+      >
+   Console
+
+
+      ▣
+    Hosts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 [ L LANlord ] [ ◆ Changelog ]                                                                                                                         12:00 PM
