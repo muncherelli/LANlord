@@ -17,7 +17,6 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
     permissions:
       contents: write
       id-token: write
@@ -28,26 +27,14 @@ jobs:
         include:
           - { name: macos-arm64, os: macos-latest, flags: "" }
           - { name: macos-x86_64, os: macos-15-intel, flags: "" }
-          - { name: linux-x86_64, os: ubuntu-latest, flags: "" }
-          # the server builds run in an older-glibc container so they start on older gateways
-          - { name: linux-x86_64-headless, os: ubuntu-latest, container: "debian:bullseye", flags: "--no-default-features --features webui" }
-          - { name: linux-arm64, os: ubuntu-24.04-arm, flags: "" }
-          - { name: linux-arm64-headless, os: ubuntu-24.04-arm, container: "debian:bullseye", flags: "--no-default-features --features webui" }
+          # the linux builds target glibc 2.17 with zig (see the zigbuild steps) so they start on old systems
+          - { name: linux-x86_64, os: ubuntu-latest, arch: x86_64, flags: "" }
+          - { name: linux-x86_64-headless, os: ubuntu-latest, arch: x86_64, flags: "--no-default-features --features webui" }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, arch: aarch64, flags: "" }
+          - { name: linux-arm64-headless, os: ubuntu-24.04-arm, arch: aarch64, flags: "--no-default-features --features webui" }
           - { name: windows-x86_64, os: windows-latest, flags: "" }
           - { name: windows-arm64, os: windows-11-arm, flags: "" }
     steps:
-      # the container has none of the runner's tools: the compiler toolchain, pam for the login
-      # helper, and the github cli for the upload
-      - name: install the build tools in the container
-        if: matrix.container != ''
-        run: |
-          apt-get update
-          apt-get install -y build-essential libpam0g-dev curl ca-certificates git
-          mkdir -p -m 755 /etc/apt/keyrings
-          curl -fsSL --proto '=https' --tlsv1.2 https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
-          apt-get update
-          apt-get install -y gh
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
@@ -60,23 +47,52 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: install gui libraries
-        if: runner.os == 'Linux' && matrix.container == ''
+        if: runner.os == 'Linux' && !endsWith(matrix.name, '-headless')
         run: >
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev
           libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
           libgl1-mesa-dev
+      - if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - if: runner.os == 'Linux'
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-zigbuild@0.24.1
       - run: cargo build --release --locked -p lanlord ${{ matrix.flags }}
+        if: runner.os != 'Linux'
       # the headless build is the server: it also carries the web ui login helper
       - name: build the login helper
-        if: endsWith(matrix.name, '-headless')
+        if: runner.os != 'Linux' && endsWith(matrix.name, '-headless')
         run: cargo build --release --locked -p lanlord-auth-helper
-      - name: show the glibc the server files need
-        if: endsWith(matrix.name, '-headless')
+      - name: build for glibc 2.17
+        if: runner.os == 'Linux'
+        env:
+          ARCH: ${{ matrix.arch }}
+          MATRIX_NAME: ${{ matrix.name }}
+          FLAGS: ${{ matrix.flags }}
         run: |
-          for f in target/release/lanlord target/release/lanlord-auth-helper; do
-            echo "$f needs up to $(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)"
-          done
+          tools/pam-stub.sh "$ARCH" "$RUNNER_TEMP/pam"
+          export RUSTFLAGS="-L native=$RUNNER_TEMP/pam"
+          target="$ARCH-unknown-linux-gnu"
+          cargo zigbuild --release --locked --target "$target.2.17" -p lanlord $FLAGS
+          files="target/$target/release/lanlord"
+          case "$MATRIX_NAME" in
+            *-headless)
+              cargo zigbuild --release --locked --target "$target.2.17" -p lanlord-auth-helper
+              files="$files target/$target/release/lanlord-auth-helper" ;;
+            *) ;;
+          esac
+          # the packaged binaries are the ones checked
+          mkdir -p target/release
+          for f in $files; do cp "$f" target/release/; done
+          tools/check-glibc.sh 2.17 $files
+          case "$MATRIX_NAME" in
+            *-headless) tools/check-helper-linkage.sh "target/$target/release/lanlord-auth-helper" ;;
+            *) ;;
+          esac
 
       # signing hook (not enabled yet): sign and notarize the macos binary
       # here with the developer id certificate once the secrets exist.
