@@ -44,7 +44,7 @@ fn text(map: &Mapping, key: &str) -> Option<String> {
 }
 
 /// `^[A-Z0-9][A-Z0-9_-]{0,14}$`, as the playbook checks the upper-cased name.
-fn netbios_ok(name: &str) -> bool {
+pub fn netbios_ok(name: &str) -> bool {
     let name = name.to_ascii_uppercase();
     let mut chars = name.chars();
     name.len() <= 15

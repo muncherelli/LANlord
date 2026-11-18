@@ -156,6 +156,12 @@ pub mod topic {
 }
 
 impl Op {
+    /// check the arguments before anything runs: the first wrong field is named. the server does
+    /// this whatever the client did; a client may too, for early feedback.
+    pub fn validate(&self) -> Result<(), crate::validate::Invalid> {
+        crate::validate::operation(self)
+    }
+
     /// does the op touch the stored secrets? those run only where the gateway's key is: the root
     /// operations service, or `lanlord operate` under sudo. no client decrypts anything.
     pub fn needs_gateway_key(&self) -> bool {

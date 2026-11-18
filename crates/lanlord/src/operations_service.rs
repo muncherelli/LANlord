@@ -273,6 +273,15 @@ fn answer_line(
             return Response::Denied("this account is not known here".into());
         }
     };
+    // the shared rules run here too, before the op is handed on: a bad value is refused and
+    // nothing is written or run
+    if let Err(invalid) = forwarded.op.validate() {
+        log::emit(
+            Kind::Err,
+            format!("operation for {} refused: {invalid}", caller.user),
+        );
+        return Response::Error(format!("invalid value, {invalid}"));
+    }
     match run(&caller, &forwarded.op) {
         Ok(reply) => Response::Ok(reply),
         Err(e) => {
@@ -800,6 +809,82 @@ mod tests {
             },
         );
         assert_eq!(answer, Response::Error("reading the settings".into()));
+    }
+
+    #[test]
+    fn a_malicious_settings_document_is_refused_and_nothing_runs() {
+        let save = |plain: &str| {
+            serde_json::json!({
+                "account": "carol",
+                "op": {"op": "save_document", "plain": plain, "updates": []}
+            })
+            .to_string()
+        };
+        let hostile = [
+            ("image: evil\n", "image"),
+            (
+                "gateway:\n  timezone: ../../etc/passwd\n",
+                "gateway.timezone",
+            ),
+            (
+                "gateway:\n  ntp: [\"pool.example.com\\nserver evil\"]\n",
+                "gateway.ntp[0]",
+            ),
+            (
+                "networks:\n  - {name: lan, interface: \"eth0;id\"}\n",
+                "networks[0].interface",
+            ),
+            (
+                "networks:\n  - {name: lan, address: 192.0.2.1/99}\n",
+                "networks[0].address",
+            ),
+            (
+                "web-proxy:\n  webui: {port: 70000}\n",
+                "web-proxy.webui.port",
+            ),
+            ("dns:\n  zone: \"{{ lookup('pipe', 'id') }}\"\n", "dns.zone"),
+        ];
+        for (plain, field) in hostile {
+            let ran = std::cell::Cell::new(false);
+            let answer = answer_line(
+                save(plain).as_bytes(),
+                &|account| {
+                    Ok(Caller {
+                        user: account.to_string(),
+                        admin: true,
+                    })
+                },
+                &|_, _| {
+                    ran.set(true);
+                    Ok(Reply::Done)
+                },
+            );
+            assert!(!ran.get(), "{field}: the op must not run");
+            match answer {
+                Response::Error(message) => {
+                    assert!(message.contains(field), "{message} should name {field}");
+                    assert!(!message.contains('\n'), "one line: {message:?}");
+                }
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+        // a good document reaches the op
+        let ran = std::cell::Cell::new(false);
+        let answer = answer_line(
+            save("gateway:\n  timezone: Europe/Berlin\n").as_bytes(),
+            &|account| {
+                Ok(Caller {
+                    user: account.to_string(),
+                    admin: true,
+                })
+            },
+            &|_, _| {
+                ran.set(true);
+                Ok(Reply::Done)
+            },
+        );
+        assert!(ran.get());
+        assert_eq!(answer, Response::Ok(Reply::Done));
     }
 
     #[test]

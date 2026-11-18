@@ -30,3 +30,4 @@ pub mod settings;
 pub mod signin;
 pub mod update;
 pub mod users;
+pub mod validate;
