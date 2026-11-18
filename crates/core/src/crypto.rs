@@ -102,7 +102,10 @@ pub fn ensure(path: &Path) -> Result<Identity> {
 /// write a new key to a temp file beside `path` and link it into place.
 fn create_atomically(path: &Path) -> Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    let temp = dir.join(format!(".identity-{}.tmp", std::process::id()));
+    // a name of its own per call: starters in one process do not share a temp file
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = dir.join(format!(".identity-{}-{n}.tmp", std::process::id()));
     let _ = fs::remove_file(&temp);
     generate(&temp)?;
     fs::File::open(&temp)?.sync_all()?;
@@ -184,6 +187,7 @@ mod tests {
         cleanup(&path);
     }
 
+    #[cfg(unix)]
     #[test]
     fn two_starters_end_with_one_key_and_no_temp_file_is_left() {
         let path = temp("race");

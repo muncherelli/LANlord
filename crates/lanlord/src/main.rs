@@ -1181,6 +1181,22 @@ fn response_of(ran: Result<lanlord_core::ops::Reply>) -> lanlord_core::ops::Resp
     }
 }
 
+/// the response to one request line: refused without an account, an error for a line that is
+/// not an operation, else whatever `run` makes of the op for that account.
+#[cfg(unix)]
+fn answer_request(
+    line: &str,
+    account: Option<String>,
+    run: impl FnOnce(&str, &lanlord_core::ops::Op) -> Result<lanlord_core::ops::Reply>,
+) -> lanlord_core::ops::Response {
+    use lanlord_core::ops::Response;
+    match (account, lanlord_core::operate::read_request(line)) {
+        (None, _) => Response::Denied("run this through sudo from your own account".into()),
+        (_, Err(_)) => Response::Error("not an operation".into()),
+        (Some(account), Ok(op)) => response_of(run(&account, &op)),
+    }
+}
+
 /// the gateway's own door over ssh: run one operation that needs the settings key, as root, for
 /// the account that ran sudo. the account comes from sudo's variables checked against each other
 /// (see `sudo_account`), never from the request, so a login can only act as itself. the answer
@@ -1188,7 +1204,7 @@ fn response_of(ran: Result<lanlord_core::ops::Reply>) -> lanlord_core::ops::Resp
 #[cfg(unix)]
 fn operate() -> Result<()> {
     use lanlord_core::access::Caller;
-    use lanlord_core::ops::{execute_in, Response};
+    use lanlord_core::ops::execute_in;
     use lanlord_core::ssh::Session;
     use std::os::unix::fs::MetadataExt;
 
@@ -1203,17 +1219,12 @@ fn operate() -> Result<()> {
         std::env::var("SUDO_UID").ok().as_deref(),
         uid_of_account,
     );
-    let response = match (account, lanlord_core::operate::read_request(&line)) {
-        (None, _) => Response::Denied("run this through sudo from your own account".into()),
-        (_, Err(_)) => Response::Error("not an operation".into()),
-        (Some(account), Ok(op)) => {
-            lanlord_core::crypto::use_gateway_key(lanlord_core::crypto::GATEWAY_KEY.into())?;
-            let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: this is root") };
-            let ran = Caller::of_account(&session, &account)
-                .and_then(|caller| execute_in(&session, "localhost", &caller, &op, &mut ask));
-            response_of(ran)
-        }
-    };
+    let response = answer_request(&line, account, |account, op| {
+        lanlord_core::crypto::use_gateway_key(lanlord_core::crypto::GATEWAY_KEY.into())?;
+        let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: this is root") };
+        Caller::of_account(&session, account)
+            .and_then(|caller| execute_in(&session, "localhost", &caller, op, &mut ask))
+    });
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({ "response": response }))?
@@ -1224,21 +1235,30 @@ fn operate() -> Result<()> {
 /// hand the old client key to the gateway once, so the settings are sealed to the gateway's own
 /// key, and then remove the key here: clients hold no keys, and no copy is kept.
 fn move_secrets(host: &str) -> Result<()> {
-    use lanlord_core::ops::{Op, Reply};
+    use lanlord_core::ops::execute;
     let Some(path) = paths::identity_path().filter(|path| path.exists()) else {
         bail!("there is no old key on this machine; nothing to move");
     };
-    let key = std::fs::read_to_string(&path)?;
-    lanlord_core::ops::execute(host, &Op::MoveSecrets { key: key.into() }, &mut ask)?;
+    move_key(&path, &mut |op| execute(host, op, &mut ask))
+}
+
+/// send the key at `path` to the gateway through `run`, and erase it once the gateway confirms.
+fn move_key(
+    path: &std::path::Path,
+    run: &mut dyn FnMut(&lanlord_core::ops::Op) -> Result<lanlord_core::ops::Reply>,
+) -> Result<()> {
+    use lanlord_core::ops::{Op, Reply};
+    let key = std::fs::read_to_string(path)?;
+    run(&Op::MoveSecrets { key: key.into() })?;
     // the gateway says it re-sealed; only a read that decrypts with its own key is believed
-    match lanlord_core::ops::execute(host, &Op::LoadDocument, &mut ask)? {
+    match run(&Op::LoadDocument)? {
         Reply::Document(document) if !document.needs_move => {}
         _ => bail!(
             "the gateway did not confirm the move; the old key is kept at {}",
             path.display()
         ),
     }
-    erase(&path)?;
+    erase(path)?;
     println!("the settings are sealed to the gateway's key now");
     println!(
         "the old key at {} is removed; no copy is kept",
@@ -1427,6 +1447,70 @@ mod tests {
             super::response_of(Ok(Reply::Done)),
             Response::Ok(Reply::Done)
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_system_gives_root_uid_zero_and_nobody_else_none() {
+        assert_eq!(super::uid_of_account("root"), Some(0));
+        assert_eq!(super::uid_of_account("no-such-account-here"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_request_is_refused_without_an_account_and_garbled_ones_are_errors() {
+        use lanlord_core::ops::{Reply, Response};
+        let line = "{\"op\":{\"op\":\"load_document\"}}";
+        let run = |_: &str, _: &lanlord_core::ops::Op| Ok(Reply::Done);
+        assert!(matches!(
+            super::answer_request(line, None, run),
+            Response::Denied(_)
+        ));
+        assert!(matches!(
+            super::answer_request("nonsense", Some("ann".into()), run),
+            Response::Error(_)
+        ));
+        let seen = |account: &str, _: &lanlord_core::ops::Op| {
+            assert_eq!(account, "ann");
+            Ok(Reply::Done)
+        };
+        assert!(matches!(
+            super::answer_request(line, Some("ann".into()), seen),
+            Response::Ok(Reply::Done)
+        ));
+    }
+
+    #[test]
+    fn a_key_is_erased_only_after_the_gateway_confirms_the_move() {
+        use lanlord_core::ops::{Op, Reply};
+        let dir = std::env::temp_dir().join(format!("lanlord-move-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("identity");
+        std::fs::write(&file, "AGE-SECRET-KEY-1TEST").unwrap();
+        // the gateway still says the settings need a move: the key stays
+        let mut unconfirmed = |op: &Op| {
+            Ok(match op {
+                Op::LoadDocument => Reply::Document(lanlord_core::settings::Document {
+                    needs_move: true,
+                    ..Default::default()
+                }),
+                _ => Reply::Done,
+            })
+        };
+        assert!(super::move_key(&file, &mut unconfirmed).is_err());
+        assert!(file.exists());
+        let mut sent = Vec::new();
+        let mut confirmed = |op: &Op| {
+            sent.push(matches!(op, Op::MoveSecrets { .. }));
+            Ok(match op {
+                Op::LoadDocument => Reply::Document(Default::default()),
+                _ => Reply::Done,
+            })
+        };
+        super::move_key(&file, &mut confirmed).unwrap();
+        assert_eq!(sent, [true, false]);
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
