@@ -4,6 +4,7 @@
 mod layout;
 pub mod paint;
 mod shell;
+mod signals;
 mod view;
 
 use std::io::{stdout, Write};
@@ -80,6 +81,9 @@ pub fn run() -> Result<()> {
     let mut terminal = ratatui::init();
     // mouse reporting stays on for the length of the loop and goes off when the guard drops
     let capture = paint::mouse::Capture::start()?;
+    // a stop from outside (SIGTERM, SIGHUP) gives the terminal back before the process exits
+    #[cfg(unix)]
+    signals::restore_on_signal()?;
     let result = run_loop(
         &mut terminal,
         &mut shell,
