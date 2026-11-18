@@ -727,7 +727,6 @@ func pixelIcon16() -> CGContext {
     let c = burgundy
     var p = Pix(16, 16)
     tileBase(&p)
-    p.rect(3, 14, 10, 1, backdropColours().edge)
     p.rect(4, 8, 6, 6, towerFront)
     p.rect(10, 8, 3, 6, c.side)
     p.rect(4, 7, 9, 1, c.top)
@@ -740,8 +739,8 @@ func pixelIcon16() -> CGContext {
     // the hat, tipped to the right
     p.rect(2, 6, 12, 1, hatBrim)
     p.rect(4, 5, 2, 1, hatBrim)
-    for (y, shift) in [(1, 1), (2, 1), (3, 1), (4, 0), (5, 0)] {
-        p.rect(4 + shift, y, 7, 1, y == 1 ? 0x383849 : hatBlack)
+    for (y, shift) in [(2, 1), (3, 1), (4, 0), (5, 0)] {
+        p.rect(4 + shift, y, 7, 1, y == 2 ? 0x383849 : hatBlack)
     }
     p.rect(4, 4, 8, 1, gold)
     return p.image()
