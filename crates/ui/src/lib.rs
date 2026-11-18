@@ -21,7 +21,6 @@ mod icons;
 mod login;
 mod logon_panel;
 mod my_server;
-mod networks_window;
 mod nt4_panel;
 mod nt4_window;
 mod platform;

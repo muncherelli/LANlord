@@ -1,0 +1,24 @@
+┌ ◆ Users and Permissions ────────────────────────────────────────────── _ □ × ┐
+│ ┌ Users ────────────────────────────┐ ┌ Roles ────────────────────────────┐  │
+│ │  User          Roles              │ │  Administrators                   │  │
+│ │  alice         Administrators     │ │  Operators                        │  │
+│ │  ben           Users              │ │  Users                            │  │
+│ │                                   │ │ Server status            Manage   │  │
+│ │                                   │ │ Network and DHCP         Manage   │  │
+│ │ [ Add user... ]                   │ │ DNS                      Manage   │  │
+│ └───────────────────────────────────┘ │ Firewall                 Manage   │  │
+│                   ┌ Add user ───────────────────── _ □ × ┐       Manage   │  │
+│                   │ Name                                 │ngs    Manage   │  │
+│                   │                                      │       Manage   │  │
+│                   │                    [ OK ] [ Cancel ] │cripts Manage   │  │
+│                   └──────────────────────────────────────┘       Manage   │  │
+│                                       │ Task manager             Manage   │  │
+│                                       │ Install and updates      Manage   │  │
+│                                       │ Remote commands          Manage   │  │
+│                                       │ Users and permissions    Manage   │  │
+│                                       │ [ New role... ] [ Remove role ]   │  │
+│                                       └───────────────────────────────────┘  │
+│ [  Save  ] [ Reload ]                                                        │
+│ loaded the permissions                                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+[ L LANlord ] [ ◆ Users and Permissions ]                             12:00 PM

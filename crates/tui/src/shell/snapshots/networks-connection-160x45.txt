@@ -1,0 +1,45 @@
+              ┌ □ Networks ─────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ [ External Network ]                                                             │
+  My Server   │ ┌──────────────────────────────────────────────────────────────────────────────┐ │
+              │ │┌ Connection ────────────────────────────────────────────────────────────────┐│ │
+              │ ││ Status:    Connected                                                       ││ │
+      □       │ ││ Interface: eth0                                                            ││ │
+   Networks   │ ││ Speed:     10.0 Gbps                                                       ││ │
+              │ ││ Address:   192.0.2.10/24                                                   ││ │
+              │ │└────────────────────────────────────────────────────────────────────────────┘│ │
+      ►       │ │┌ Activity ──────────────────────────────────────────────────────────────────┐│ │
+   Gateway    │ ││             Sent                   Received                                ││ │
+              │ ││  Bytes:     48,211,933             913,442,071                             ││ │
+              │ ││  Packets:   402,113                771,904                                 ││ │
+      ▦       │ │└─────────────────────────────────────┌ Network Connection Details ───────────── _ □ × ┐
+   Settings   │ └──────────────────────────────────────│ Network Connection Details:                    │
+              │                   [ Properties... ] [ D│  Property             Value                    │
+              │ Editing networks comes next. For now yo│  Description          Virtual Ethernet (veth)  │
+      >       │ up to date                             │  Physical Address     02-00-00-00-AA-01        │
+   Console    └────────────────────────────────────────│  DHCP Enabled         Yes                      │
+                                                       │  IPv4 Address         192.0.2.10               │
+                                                       │  IPv4 Subnet Mask     255.255.255.0            │
+      ▣                                                │  Lease Obtained       11/17/2026 10:06:40 PM   │
+    Hosts                                              │  Lease Expires        11/18/2026 10:06:40 PM   │
+                                                       │  IPv4 Default Gateway 192.0.2.1                │
+                                                       │  IPv4 DHCP Server     192.0.2.1                │
+                                                       │  IPv4 DNS Server      198.51.100.53            │
+                                                       │  IPv6 Address         2001:db8::10/64          │
+                                                       │  MTU                  1500                     │
+                                                       │                                      [ Close ] │
+                                                       └────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ □ Networks ]                                                                                                                          12:00 PM

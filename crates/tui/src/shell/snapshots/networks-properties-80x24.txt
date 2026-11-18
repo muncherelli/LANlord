@@ -1,0 +1,24 @@
+┌ □ Networks ─────────────────────────────────────────────────────────── _ □ × ┐
+│ [ External Network ]                                                         │
+│ ┌──────────────────────────────────────────────────────────────────────────┐ │
+│ │┌ Connection ────────────────────────────────────────────────────────────┐│ │
+│ ││ Status:    Connected                                                   ││ │
+│ ││ Interface: eth0                                                        ││ │
+│ ││ Speed:     10.0 Gbps                                                   ││ │
+│ ││ Address:   19┌ External Network Properties ───── _ □ × ┐               ││ │
+│ │└──────────────│ Name      External Network              │───────────────┘│ │
+│ │┌ Activity ────│ Kind      External network              │───────────────┐│ │
+│ ││             S│ Interface eth0                          │               ││ │
+│ ││  Bytes:     4│ Address   192.0.2.10/24                 │               ││ │
+│ ││  Packets:   4│ MTU       1500                          │               ││ │
+│ │└──────────────│ Link      Connected                     │───────────────┘│ │
+│ └───────────────│                                  [ OK ] │────────────────┘ │
+│               [ └─────────────────────────────────────────┘... ] [ Refresh ] │
+│ Editing networks comes next. For now you can look at them, and open DNS &    │
+│ DHCP.                                                                        │
+│ up to date                                                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+
+[ L LANlord ] [ □ Networks ]                                          12:00 PM

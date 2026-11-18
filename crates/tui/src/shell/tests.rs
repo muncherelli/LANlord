@@ -14,7 +14,7 @@ const SIZE: Rect = Rect {
     height: 34,
 };
 
-fn shell_with(fake: Fake) -> Shell {
+pub(super) fn shell_with(fake: Fake) -> Shell {
     let mut shell = Shell::new(Arc::new(fake), HostList::new(None), Palette::default());
     shell.clock = Some("12:00 PM".into());
     shell
@@ -26,7 +26,7 @@ fn demo() -> Shell {
     shell
 }
 
-fn frame(shell: &mut Shell) -> String {
+pub(super) fn frame(shell: &mut Shell) -> String {
     shell.poll();
     let mut buf = Buffer::empty(SIZE);
     shell.render(SIZE, &mut buf);
@@ -43,7 +43,7 @@ fn mouse(shell: &mut Shell, kind: MouseEventKind, at: Position, when: Instant) {
     shell.on_event(Event::Mouse(event), when);
 }
 
-fn click(shell: &mut Shell, at: Position) {
+pub(super) fn click(shell: &mut Shell, at: Position) {
     let now = Instant::now();
     mouse(shell, MouseEventKind::Down(MouseButton::Left), at, now);
     mouse(shell, MouseEventKind::Up(MouseButton::Left), at, now);
@@ -60,7 +60,7 @@ fn double_click(shell: &mut Shell, at: Position) {
     frame(shell);
 }
 
-fn key(shell: &mut Shell, code: KeyCode) {
+pub(super) fn key(shell: &mut Shell, code: KeyCode) {
     shell.on_event(
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
         Instant::now(),
@@ -68,7 +68,7 @@ fn key(shell: &mut Shell, code: KeyCode) {
     frame(shell);
 }
 
-fn type_text(shell: &mut Shell, text: &str) {
+pub(super) fn type_text(shell: &mut Shell, text: &str) {
     for c in text.chars() {
         key(shell, KeyCode::Char(c));
     }
@@ -390,15 +390,6 @@ fn root_signs_in_to_the_administrator_screen_first() {
 }
 
 #[test]
-fn windows_not_on_the_layout_tree_yet_say_so() {
-    let mut shell = demo();
-    frame(&mut shell);
-    shell.open(Target::Networks);
-    let text = frame(&mut shell);
-    assert!(text.contains("not available in the text view"), "{text}");
-}
-
-#[test]
 fn my_server_draws_from_the_shared_tree() {
     let mut shell = demo();
     frame(&mut shell);
@@ -410,7 +401,7 @@ fn my_server_draws_from_the_shared_tree() {
     );
 }
 
-fn module(id: &str) -> Target {
+pub(super) fn module(id: &str) -> Target {
     Target::Module(MODULES.iter().position(|m| m.id == id).unwrap())
 }
 
@@ -431,10 +422,12 @@ fn the_nt4_window_switches_tabs_and_dns_and_commands_draw_from_their_trees() {
     for id in ["dns", "remote-commands"] {
         shell.open(module(id));
         let text = frame(&mut shell);
-        assert!(
-            !text.contains("not available in the text view"),
-            "{id}:\n{text}"
-        );
+        let tab = if id == "dns" {
+            "Static leases"
+        } else {
+            "Run on the gateway"
+        };
+        assert!(text.contains(tab), "{id}:\n{text}");
     }
 }
 
@@ -468,7 +461,6 @@ const DATE_TIME: Owner = Owner::Window(Target::DateTime);
 fn date_time_is_a_tree_window_with_spin_boxes_and_a_calendar() {
     let mut shell = editable_clock();
     let text = frame(&mut shell);
-    assert!(!text.contains("not available in the text view"), "{text}");
     for needle in [
         "Date & Time",
         "Time Zone",
@@ -800,7 +792,6 @@ fn the_components_window_opens_as_a_wizard_with_a_check_list() {
     frame(&mut shell);
     shell.open(Target::Components);
     let text = settle_components(&mut shell);
-    assert!(!text.contains("not available in the text view"), "{text}");
     for needle in ["LANlord Components", "[x] ", "Next >", "Cancel"] {
         assert!(text.contains(needle), "{needle}:\n{text}");
     }

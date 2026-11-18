@@ -417,6 +417,12 @@ pub struct Painter<'a> {
     label_column: Cell<u16>,
 }
 
+/// the most of `width` a label column may take: three quarters, so the value beside it keeps
+/// some room.
+fn label_share(width: u16) -> u16 {
+    width - width / 4
+}
+
 /// the label column of `nodes`: the longest label of a field or labelled row, and a gap.
 fn label_column<M>(nodes: &[Node<M>]) -> u16 {
     let width = |node: &Node<M>| match node {
@@ -492,6 +498,7 @@ impl<'a> Painter<'a> {
                     + longest(value)
             }
             Node::Labelled { body, .. } => self.label_column.get() + self.natural_width(body),
+            Node::Table(table) => table_width(table),
             Node::Group { title, body } => {
                 self.natural_width(body).max(title.chars().count() as u16) + BOXED
             }
@@ -619,12 +626,14 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Disabled(body) => inner(body, width),
-            Node::Labelled { body, .. } => {
-                inner(body, width.saturating_sub(self.label_column.get())).max(1)
-            }
+            Node::Labelled { body, .. } => inner(
+                body,
+                width.saturating_sub(self.label_column.get().min(label_share(width))),
+            )
+            .max(1),
             Node::Alert(text) => wrap(text, width.saturating_sub(5)).len() as u16,
             Node::Field { value, .. } => {
-                let room = width.saturating_sub(self.label_column.get().min(width / 2));
+                let room = width.saturating_sub(self.label_column.get().min(label_share(width)));
                 (wrap(value, room).len() as u16).max(1)
             }
             Node::Spin { .. } => 1,
@@ -712,7 +721,7 @@ impl<'a> Painter<'a> {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
             Node::Field { label, value } => {
-                let label_width = self.label_column.get().min(area.width / 2);
+                let label_width = self.label_column.get().min(label_share(area.width));
                 text(
                     buf,
                     area.x,
@@ -1083,7 +1092,7 @@ impl<'a> Painter<'a> {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
             Node::Labelled { label, body } => {
-                let width = self.label_column.get().min(area.width / 2);
+                let width = self.label_column.get().min(label_share(area.width));
                 text(buf, area.x, area.y, width, label, self.st(BLACK, GRAY));
                 let rest = Rect::new(area.x + width, area.y, area.width - width, area.height);
                 self.draw(body, rest, buf, path);
@@ -1793,6 +1802,20 @@ fn boxed(area: Rect) -> Rect {
     )
 }
 
+/// the columns a table asks for: its fixed columns, the longest text of the last one and the
+/// inset on both sides.
+fn table_width<M>(table: &lanlord_app::view::Table<M>) -> u16 {
+    let last = table.headings.len().saturating_sub(1);
+    let fixed: u16 = table.widths.iter().take(last).map(|w| cols(*w)).sum();
+    let cells = table.rows.iter().filter_map(|row| row.get(last));
+    let longest = cells
+        .map(|cell| cell.chars().count())
+        .chain(table.headings.get(last).map(|h| h.chars().count()))
+        .max()
+        .unwrap_or(0) as u16;
+    fixed + longest + 2 * INSET
+}
+
 /// the inside of a light box less the inset its text keeps from the edge.
 fn padded(inner: Rect) -> Rect {
     Rect::new(
@@ -1902,7 +1925,7 @@ mod tests {
         vec![
             Node::Heading("Accounts".into()),
             Node::Tabs {
-                titles: vec!["General", "Advanced"],
+                titles: lanlord_app::view::titles(&["General", "Advanced"]),
                 current: 0,
                 pick: Msg::Tab,
                 body: vec![

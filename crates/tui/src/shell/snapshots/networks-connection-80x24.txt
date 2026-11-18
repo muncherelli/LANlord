@@ -1,0 +1,24 @@
+┌ □ Networks ─────────────────────────────────────────────────────────── _ □ × ┐
+│ [ External Network ]                                                         │
+│ ┌──────────────────────────────────────────────────────────────────────────┐ │
+│ │┌ Connection┌ Network Connection Details ───────────── _ □ × ┐───────────┐│ │
+│ ││ Status:   │ Network Connection Details:                    │           ││ │
+│ ││ Interface:│  Property             Value                    │           ││ │
+│ ││ Speed:    │  Description          Virtual Ethernet (veth)  │           ││ │
+│ ││ Address:  │  Physical Address     02-00-00-00-AA-01        │           ││ │
+│ │└───────────│  DHCP Enabled         Yes                      │───────────┘│ │
+│ │┌ Activity ─│  IPv4 Address         192.0.2.10               │───────────┐│ │
+│ ││           │  IPv4 Subnet Mask     255.255.255.0            │           ││ │
+│ ││  Bytes:   │  Lease Obtained       11/17/2026 10:06:40 PM   │           ││ │
+│ ││  Packets: │  Lease Expires        11/18/2026 10:06:40 PM   │           ││ │
+│ │└───────────│  IPv4 Default Gateway 192.0.2.1                │───────────┘│ │
+│ └────────────│  IPv4 DHCP Server     192.0.2.1                │────────────┘ │
+│              │  IPv4 DNS Server      198.51.100.53            │] [ Refresh ] │
+│ Editing netwo│  IPv6 Address         2001:db8::10/64          │open DNS &    │
+│ DHCP.        │  MTU                  1500                     │              │
+│ up to date   │                                      [ Close ] │              │
+└──────────────└────────────────────────────────────────────────┘──────────────┘
+
+
+
+[ L LANlord ] [ □ Networks ]                                          12:00 PM

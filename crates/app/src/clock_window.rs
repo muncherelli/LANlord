@@ -615,7 +615,7 @@ impl ClockPanel {
                     Tab::Internet => loaded.internet_tab(gates),
                 };
                 nodes.push(Node::Tabs {
-                    titles: vec!["Date & Time", "Time Zone", "Internet Time"],
+                    titles: view::titles(&["Date & Time", "Time Zone", "Internet Time"]),
                     current: self.tab as usize,
                     pick: Msg::Tab,
                     body: page,

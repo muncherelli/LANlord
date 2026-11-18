@@ -14,3 +14,4 @@ zeroize = "1"
 
 [dev-dependencies]
 lanlord-app = { path = "../app", features = ["fake"] }
+lanlord-model.workspace = true

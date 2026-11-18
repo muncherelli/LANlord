@@ -1,21 +1,21 @@
               ┌ ◆ My Account ────────────────────────────────────── _ □ × ┐
-      ≡       │ This window is not available in the text view yet. Open   │
-  My Server   │ it in the LANlord window or the web UI.                   │
-              └───────────────────────────────────────────────────────────┘
-
-      □
-   Networks
-
-
-      ►
-   Gateway
-
-
-      ▦
-   Settings
-
-
-      >
+      ≡       │ alice                                                     │
+  My Server   │ Roles: Administrators                                     │
+              │                                                           │
+              │ ┌ Profile ──────────────────────────────────────────────┐ │
+      □       │ │ Full name                                             │ │
+   Networks   │ │ Description                                           │ │
+              │ │ [ Save profile ]                                      │ │
+              │ └───────────────────────────────────────────────────────┘ │
+      ►       │ ┌ Linked accounts ──────────────────────────────────────┐ │
+   Gateway    │ │  Account                      Status                  │ │
+              │ │  Linux account                active                  │ │
+              │ │  NT4 domain                   not available yet       │ │
+      ▦       │ │                                                       │ │
+   Settings   │ └───────────────────────────────────────────────────────┘ │
+              │ [ Change Password... ]                                    │
+              │ loaded your account                                       │
+      >       └───────────────────────────────────────────────────────────┘
    Console
 
 

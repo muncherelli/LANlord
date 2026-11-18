@@ -181,12 +181,12 @@ impl DnsPanel {
         let ok = self.can_save(services, host);
         let mut nodes = vec![
             Node::Tabs {
-                titles: vec![
+                titles: view::titles(&[
                     "Settings",
                     "Static leases",
                     "Extra records",
                     "Current leases",
-                ],
+                ]),
                 current: self.tab,
                 pick: Msg::Tab,
                 body: page,

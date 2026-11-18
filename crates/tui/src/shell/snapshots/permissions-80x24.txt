@@ -1,24 +1,24 @@
 ┌ ◆ Users and Permissions ────────────────────────────────────────────── _ □ × ┐
-│ This window is not available in the text view yet. Open it in the LANlord    │
-│ window or the web UI.                                                        │
+│ ┌ Users ────────────────────────────┐ ┌ Roles ────────────────────────────┐  │
+│ │  User          Roles              │ │  Administrators                   │  │
+│ │  alice         Administrators     │ │  Operators                        │  │
+│ │  ben           Users              │ │  Users                            │  │
+│ │                                   │ │ Server status            Manage   │  │
+│ │                                   │ │ Network and DHCP         Manage   │  │
+│ │ [ Add user... ]                   │ │ DNS                      Manage   │  │
+│ └───────────────────────────────────┘ │ Firewall                 Manage   │  │
+│                                       │ Date and time            Manage   │  │
+│                                       │ Services and settings    Manage   │  │
+│                                       │ NT4 domain               Manage   │  │
+│                                       │ Shares and logon scripts Manage   │  │
+│                                       │ Logs                     Manage   │  │
+│                                       │ Task manager             Manage   │  │
+│                                       │ Install and updates      Manage   │  │
+│                                       │ Remote commands          Manage   │  │
+│                                       │ Users and permissions    Manage   │  │
+│                                       │ [ New role... ] [ Remove role ]   │  │
+│                                       └───────────────────────────────────┘  │
+│ [  Save  ] [ Reload ]                                                        │
+│ loaded the permissions                                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
-
-      □
-   Networks
-
-
-      ►
-   Gateway
-
-
-      ▦
-   Settings
-
-
-      >
-   Console
-
-
-
-
 [ L LANlord ] [ ◆ Users and Permissions ]                             12:00 PM

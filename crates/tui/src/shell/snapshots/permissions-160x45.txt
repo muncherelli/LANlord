@@ -1,26 +1,26 @@
               ┌ ◆ Users and Permissions ───────────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ This window is not available in the text view yet. Open it in the LANlord window or the web │
-  My Server   │ UI.                                                                                         │
-              └─────────────────────────────────────────────────────────────────────────────────────────────┘
-
-      □
-   Networks
-
-
-      ►
-   Gateway
-
-
-      ▦
-   Settings
-
-
-      >
-   Console
-
-
-      ▣
-    Hosts
+      ≡       │ ┌ Users ────────────────────────────────────┐ ┌ Roles ────────────────────────────────────┐ │
+  My Server   │ │  User          Roles                      │ │  Administrators                           │ │
+              │ │  alice         Administrators             │ │  Operators                                │ │
+              │ │  ben           Users                      │ │  Users                                    │ │
+      □       │ │                                           │ │ Server status            Manage           │ │
+   Networks   │ │                                           │ │ Network and DHCP         Manage           │ │
+              │ │ [ Add user... ]                           │ │ DNS                      Manage           │ │
+              │ └───────────────────────────────────────────┘ │ Firewall                 Manage           │ │
+      ►       │                                               │ Date and time            Manage           │ │
+   Gateway    │                                               │ Services and settings    Manage           │ │
+              │                                               │ NT4 domain               Manage           │ │
+              │                                               │ Shares and logon scripts Manage           │ │
+      ▦       │                                               │ Logs                     Manage           │ │
+   Settings   │                                               │ Task manager             Manage           │ │
+              │                                               │ Install and updates      Manage           │ │
+              │                                               │ Remote commands          Manage           │ │
+      >       │                                               │ Users and permissions    Manage           │ │
+   Console    │                                               │ [ New role... ] [ Remove role ]           │ │
+              │                                               └───────────────────────────────────────────┘ │
+              │ [  Save  ] [ Reload ]                                                                       │
+      ▣       │ loaded the permissions                                                                      │
+    Hosts     └─────────────────────────────────────────────────────────────────────────────────────────────┘
 
 
 

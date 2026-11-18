@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use lanlord_app::account_window::AccountWindow;
 use lanlord_app::admin_setup::{self, AdminSetup};
 use lanlord_app::clock_window::{ClockFeed, ClockPanel};
 use lanlord_app::command_panel::CommandPanel;
@@ -20,7 +21,9 @@ use lanlord_app::logon_panel::LogonPanel;
 use lanlord_app::menu::{self, Action, Row};
 use lanlord_app::monitor::{self, Monitor};
 use lanlord_app::my_server::MyServer;
+use lanlord_app::networks_window::{self, NetworksWindow};
 use lanlord_app::nt4_panel::Nt4Panel;
+use lanlord_app::permissions_window::PermissionsWindow;
 use lanlord_app::services::Services;
 use lanlord_app::settings_window::SettingsWindow;
 use lanlord_app::tasks::PasswordRequest;
@@ -46,9 +49,6 @@ use crate::paint::mouse::{Gesture, Mouse};
 use crate::paint::palette::{Palette, BLACK, GRAY, NAVY, WHITE};
 use crate::paint::{fill, style, text};
 use crate::view::{self, Input, Painter, Part, Region, ViewState};
-
-/// what a window body says when its window has not moved to the layout tree yet.
-pub const NOT_YET: &str = "This window is not available in the text view yet. Open it in the LANlord window or the web UI.";
 
 /// the warning item in the taskbar (F8 opens it too).
 const COMPAT_ALERT: &str = "! Compatibility (F8)";
@@ -218,11 +218,6 @@ fn drive_at<M: Clone>(
     }
 }
 
-/// a placeholder body for a window that is still drawn by egui alone.
-fn not_yet<M>() -> Vec<Node<M>> {
-    vec![Node::Text(NOT_YET.into())]
-}
-
 pub struct Shell {
     palette: Palette,
     services: Services,
@@ -235,6 +230,9 @@ pub struct Shell {
     components: Components,
     welcome: Welcome,
     users: UsersPanel,
+    networks: NetworksWindow,
+    account: AccountWindow,
+    permissions: PermissionsWindow,
     nt4: Nt4Panel,
     logon: LogonPanel,
     dns: DnsPanel,
@@ -298,6 +296,9 @@ impl Shell {
             components: Components::default(),
             welcome: Welcome::new(None),
             users: UsersPanel::default(),
+            networks: NetworksWindow::default(),
+            account: AccountWindow::default(),
+            permissions: PermissionsWindow::default(),
             nt4: Nt4Panel::default(),
             logon: LogonPanel::default(),
             dns: DnsPanel::default(),
@@ -383,6 +384,7 @@ impl Shell {
         self.active = None;
         self.selected = None;
         self.menu = None;
+        self.reset_windows();
         if signed_in.identity.is_root() {
             self.admin_setup = Some(AdminSetup::new());
         }
@@ -391,6 +393,14 @@ impl Shell {
         if self.welcome.logon(&account) {
             self.open(Target::Welcome);
         }
+    }
+
+    /// forget what the windows of the last account showed, so the next one starts clean and
+    /// cannot answer a box the last one opened.
+    fn reset_windows(&mut self) {
+        self.networks = NetworksWindow::default();
+        self.account = AccountWindow::default();
+        self.permissions = PermissionsWindow::default();
     }
 
     /// keep the Welcome screen's tick box in the preferences file at `path`.
@@ -447,6 +457,7 @@ impl Shell {
         self.windows.clear();
         self.active = None;
         self.menu = None;
+        self.reset_windows();
         let mut login = LoginBox::new(auth, Wake::none(), last.as_deref());
         if let Some(note) = note {
             login.note(&note);
@@ -698,6 +709,9 @@ impl Shell {
         }
         self.sync_components();
         self.users.poll();
+        self.networks.poll();
+        self.account.poll();
+        self.permissions.poll();
         self.nt4.poll();
         self.logon.poll();
         self.dns.poll();
@@ -880,8 +894,38 @@ impl Shell {
                     drive(&nodes, &mut pass, &state, palette).0
                 }
             },
-            Target::Networks | Target::MyAccount | Target::Permissions => {
-                drive::<()>(&not_yet(), &mut pass, &state, palette).0
+            Target::Networks => {
+                let now = self.epoch.elapsed().as_secs_f64();
+                let nodes = self.networks.view(&self.services, host.as_deref(), now);
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    let ask = self.networks.update(msg, &self.services, host, now);
+                    if ask == Some(networks_window::Ask::Dns) {
+                        if let Some(dns) = MODULES.iter().position(|m| m.id == "dns") {
+                            self.open_next.push(Target::Module(dns));
+                        }
+                    }
+                }
+                answer
+            }
+            Target::MyAccount => {
+                let nodes = self.account.view(&self.services, host.as_deref());
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    self.account.update(msg, &self.services, host);
+                }
+                answer
+            }
+            Target::Permissions => {
+                let writable = Target::Permissions.writable(&self.grants());
+                let nodes = self
+                    .permissions
+                    .view(&self.services, host.as_deref(), writable);
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    self.permissions.update(msg, &self.services, host, writable);
+                }
+                answer
             }
             Target::Progress => {
                 let nodes = self.console.apply.view();
@@ -943,7 +987,7 @@ impl Shell {
         let host = self.host();
         let mut top: Vec<Node<usize>> = module_window::header(module);
         top.push(Node::Tabs {
-            titles: vec!["Settings", "Logins", "Logon scripts"],
+            titles: lanlord_app::view::titles(&["Settings", "Logins", "Logon scripts"]),
             current: self.nt4_tab,
             pick: |tab| tab,
             body: Vec::new(),
@@ -1091,6 +1135,15 @@ impl Shell {
         if let Some(dialog) = self.users.dialog() {
             return Some(dialog.id);
         }
+        if let Some(dialog) = self.networks.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.account.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.permissions.dialog() {
+            return Some(dialog.id);
+        }
         if let Some(dialog) = self.nt4.dialog() {
             return Some(dialog.id);
         }
@@ -1182,6 +1235,28 @@ impl Shell {
                 let host = self.host();
                 self.users
                     .update_dialog(msg, &self.services, host.as_deref());
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.networks.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let (Some(msg), Some(host)) = (msg, self.host()) {
+                let now = self.epoch.elapsed().as_secs_f64();
+                self.networks.update(msg, &self.services, &host, now);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.account.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let (Some(msg), Some(host)) = (msg, self.host()) {
+                self.account.update_dialog(msg, &self.services, &host);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.permissions.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                self.permissions.update_dialog(msg);
             }
             (title, answer)
         } else if let Some(dialog) = self.nt4.dialog() {
@@ -2227,3 +2302,6 @@ mod tests;
 
 #[cfg(test)]
 mod screens;
+
+#[cfg(test)]
+mod window_tests;

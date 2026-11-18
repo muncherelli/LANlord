@@ -91,7 +91,7 @@ impl PermissionsWindow {
         let mut body = vec![Node::Table(Table {
             id: "permission-users",
             headings: vec!["User", "Roles"],
-            widths: vec![140.0],
+            widths: vec![100.0],
             rows: self.user_rows(),
             selected: self.user,
             bad: Vec::new(),
@@ -401,7 +401,10 @@ mod tests {
         window.update(Msg::PickRole(1), &services, "gw", true);
         let nodes = window.view(&services, Some("gw"), true);
         assert_eq!(nodes.len(), 4);
-        assert_eq!(window.user_rows(), [["dana", USERS]]);
+        assert_eq!(
+            window.user_rows(),
+            [["alice", ADMINISTRATORS], ["ben", USERS], ["dana", USERS]]
+        );
         assert_eq!(fake.calls(), ["load-access gw"]);
         window.update(Msg::Reload, &services, "gw", true);
         settle(&mut window, &services);
