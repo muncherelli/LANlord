@@ -213,12 +213,16 @@ mod tests {
 
     /// a service on a socket of its own that reads one line and answers with `lines`.
     #[cfg(unix)]
-    fn serve_once(name: &str, lines: &'static [&'static str]) -> std::path::PathBuf {
+    fn serve_once(
+        name: &str,
+        lines: &'static [&'static str],
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
         use std::io::{BufRead, BufReader, Write};
-        let dir = std::env::temp_dir().join(format!("lanlord-op-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("local.sock");
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("lanlord-op-{name}-"))
+            .tempdir()
+            .unwrap();
+        let socket = dir.path().join("local.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -231,13 +235,13 @@ mod tests {
                 writeln!(stream, "{line}").unwrap();
             }
         });
-        socket
+        (dir, socket)
     }
 
     #[cfg(unix)]
     #[test]
     fn a_request_through_the_socket_gets_the_response_after_the_events() {
-        let socket = serve_once(
+        let (_dir, socket) = serve_once(
             "ok",
             &[
                 r#"{"event":{"event":"log","text":"hi"}}"#,
@@ -254,13 +258,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_socket_says_denied_as_a_refusal_and_silence_as_an_error() {
-        let socket = serve_once("denied", &[r#"{"response":{"denied":"no"}}"#]);
+        let (_dir, socket) = serve_once("denied", &[r#"{"response":{"denied":"no"}}"#]);
         let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
         assert!(error.downcast_ref::<Refused>().is_some());
-        let socket = serve_once("silent", &[]);
+        let (_dir, socket) = serve_once("silent", &[]);
         let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
         assert!(error.to_string().contains("no answer"), "{error}");
-        let socket = serve_once("failed", &[r#"{"response":{"error":"broke"}}"#]);
+        let (_dir, socket) = serve_once("failed", &[r#"{"response":{"error":"broke"}}"#]);
         let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
         assert_eq!(error.to_string(), "broke");
     }
