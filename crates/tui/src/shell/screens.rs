@@ -376,7 +376,8 @@ fn crowded(size: (u16, u16)) -> Shell {
 /// masked: a snapshot must not depend on when it was taken.
 fn picture(scene: &Scene, size: (u16, u16)) -> String {
     let mut shell = (scene.build)(size);
-    let mut text = text_of(&draw(&mut shell, size));
+    // the crate version is masked, same width, so a release bump leaves the snapshots alone
+    let mut text = text_of(&draw(&mut shell, size)).replace(env!("CARGO_PKG_VERSION"), "x.y.z");
     for digit in '0'..='9' {
         text = text
             .replace(&format!("16:12:0{digit}"), "16:12:0X")
