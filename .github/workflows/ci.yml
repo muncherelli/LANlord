@@ -64,36 +64,57 @@ jobs:
 
   # the linux release builds must keep running on glibc 2.17: build them the way release.yml does
   old-glibc:
-    name: linux builds on glibc 2.17
-    runs-on: ubuntu-latest
+    name: linux builds on glibc 2.17 (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          key: old-glibc
+          key: old-glibc-${{ matrix.arch }}
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: cargo-zigbuild@0.24.1
-      - name: install gui libraries
-        run: >
-          sudo apt-get update && sudo apt-get install -y
-          libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev
-          libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-          libgl1-mesa-dev
       - name: build and check the client, the server and the login helper
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
-          tools/pam-stub.sh x86_64 "$RUNNER_TEMP/pam"
+          tools/pam-stub.sh "$ARCH" "$RUNNER_TEMP/pam"
           export RUSTFLAGS="-L native=$RUNNER_TEMP/pam"
-          target=x86_64-unknown-linux-gnu.2.17
-          cargo zigbuild --release --locked --target $target -p lanlord
-          cp target/x86_64-unknown-linux-gnu/release/lanlord client
-          cargo zigbuild --release --locked --target $target -p lanlord --no-default-features --features webui
-          cargo zigbuild --release --locked --target $target -p lanlord-auth-helper
-          tools/check-glibc.sh 2.17 client target/x86_64-unknown-linux-gnu/release/lanlord target/x86_64-unknown-linux-gnu/release/lanlord-auth-helper
+          triple="$ARCH-unknown-linux-gnu"
+          out="target/$triple/release"
+          cargo zigbuild --release --locked --target "$triple.2.17" -p lanlord
+          mkdir -p bin
+          cp "$out/lanlord" bin/lanlord-client
+          cargo zigbuild --release --locked --target "$triple.2.17" -p lanlord --no-default-features --features webui
+          cp "$out/lanlord" bin/lanlord-server
+          cargo zigbuild --release --locked --target "$triple.2.17" -p lanlord-auth-helper
+          cp "$out/lanlord-auth-helper" bin/
+          tools/check-glibc.sh 2.17 bin/*
+          tools/check-helper-linkage.sh bin/lanlord-auth-helper
+      # centos 7 has glibc 2.17: the binaries must start there. the client is only shown to
+      # start, not to open its window, which needs a display and a gpu
+      - name: start the binaries on glibc 2.17
+        run: |
+          docker run --rm -v "$PWD/bin:/bin-under-test:ro" centos:7 sh -c '
+            set -e
+            ldd --version | head -n 1
+            /bin-under-test/lanlord-client --version
+            /bin-under-test/lanlord-server --version
+            # the helper has no version flag: with nothing on stdin it must load and refuse
+            rc=0
+            /bin-under-test/lanlord-auth-helper </dev/null || rc=$?
+            test "$rc" -le 2
+          '
 
   run-as-caller:
     name: run as the caller (root)

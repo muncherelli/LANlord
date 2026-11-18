@@ -6,7 +6,9 @@ max=${1:?usage: check-glibc.sh <max version> <binary>...}
 shift
 bad=0
 for f in "$@"; do
-  need=$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1 || true)
+  # objdump on its own, so a missing or non-elf file fails the gate; only the grep may match nothing
+  symbols=$(objdump -T "$f")
+  need=$(printf '%s\n' "$symbols" | { grep -o 'GLIBC_[0-9.]*' || true; } | sed 's/^GLIBC_//' | sort -uV | tail -n 1)
   echo "$f needs glibc ${need:-nothing} (limit $max)"
   if [ -n "$need" ] && [ "$(printf '%s\n%s\n' "$need" "$max" | sort -V | tail -n 1)" != "$max" ]; then
     echo "error: $f needs glibc $need, newer than $max" >&2

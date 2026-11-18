@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Linux builds now run on glibc 2.17 and newer
+- Linux builds now start on glibc 2.17 and newer (the desktop window also needs the system's display and graphics libraries)
 - Settings are checked on the server when saved and again before Apply: a top-level section LANlord does not know, or (in a component's settings that have no fixed type) text that is just yes, no, on, off, true or false, is refused with an error naming the field; yes/no/on/off in on/off fields are read as true/false (#132)
 - The terminal desktop uses one layout system: windows sized to their contents and clamped to the screen, one column of padding, equal-width buttons, a navy selection and wrapped text (#126, #130)
 - The terminal desktop restores the terminal when it gets SIGTERM or SIGHUP (#130)
