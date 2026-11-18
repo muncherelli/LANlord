@@ -1,4 +1,4 @@
-//! the browser's backend: every op goes to the web ui's `/api/op` as json.
+//! the browser's backend: every op goes to the web ui's `/api/operations` as json.
 //!
 //! a browser cannot wait for an answer, so ops are awaited with [`Http::exchange`]; tasks run
 //! on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says so.
@@ -22,7 +22,7 @@ use crate::login::{login_status, LocalFuture, WebSession};
 /// the gateway this page was served from.
 #[derive(Clone)]
 pub struct Http {
-    /// where ops are posted, `/api/op` on the page's own server.
+    /// where ops are posted, `/api/operations` on the page's own server.
     pub endpoint: String,
     /// set once the server answered that the session is gone; shared by every clone.
     ended: Arc<AtomicBool>,
@@ -31,7 +31,7 @@ pub struct Http {
 impl Default for Http {
     fn default() -> Self {
         Self {
-            endpoint: "/api/op".into(),
+            endpoint: "/api/operations".into(),
             ended: Arc::default(),
         }
     }
@@ -191,20 +191,11 @@ async fn session_now() -> Result<Option<Identity>> {
             .get("admin")
             .and_then(|v| v.as_bool())
             .ok_or_else(|| field("admin"))?,
-        grants: None,
+        // the server reads the account's roles now; an answer without them leaves the fallback
+        grants: value
+            .get("grants")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     }))
-}
-
-/// one sample of the gateway, with the process list when `procs`. any signed-in user may ask.
-pub async fn monitor_sample(procs: bool) -> Result<lanlord_model::monitor::Sample> {
-    let url = if procs {
-        "/api/monitor?procs=1"
-    } else {
-        "/api/monitor"
-    };
-    let (status, text) = fetch("GET", url, None).await?;
-    monitor_status(status, &text)?;
-    Ok(serde_json::from_str(&text)?)
 }
 
 /// end a process on the gateway; the server only lets administrators.

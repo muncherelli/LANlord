@@ -32,6 +32,35 @@ impl Caller {
             .any(|g| g == crate::admins::ADMINS_GROUP);
         Ok(Self { user, admin })
     }
+
+    /// the named account as the machine `session` runs on knows it now: whether it is in
+    /// `admins` is read again here, never taken from the caller. an unknown account or a name
+    /// that is not a plain login name is an error.
+    pub fn of_account(session: &Session, account: &str) -> Result<Self> {
+        if !plain_account(account) {
+            anyhow::bail!("not an account name");
+        }
+        let groups = session
+            .capture(&["id".into(), "-nG".into(), "--".into(), account.into()])
+            .map_err(|_| anyhow::anyhow!("unknown account"))?;
+        let admin = groups
+            .split_whitespace()
+            .any(|g| g == crate::admins::ADMINS_GROUP);
+        Ok(Self {
+            user: account.to_string(),
+            admin,
+        })
+    }
+}
+
+/// whether `name` is a plain login name: safe to pass as an argument to a system tool.
+pub fn plain_account(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// the typed error for an op the caller may not run.
@@ -214,6 +243,14 @@ fn drop_leases(settings: &mut Settings) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_account_name_must_be_a_plain_login_name() {
+        let session = crate::ssh::Session::local();
+        for bad in ["", "-x", "a b", "a;b", "$(id)", &"a".repeat(33)] {
+            assert!(super::Caller::of_account(&session, bad).is_err(), "{bad:?}");
+        }
+    }
+
     use super::*;
     use lanlord_model::leases::Lease;
 

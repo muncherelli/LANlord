@@ -1,5 +1,7 @@
 mod launcher;
 #[cfg(feature = "webui")]
+mod operations_service;
+#[cfg(feature = "webui")]
 mod webui;
 
 use std::io::{IsTerminal, Read, Write};
@@ -268,6 +270,33 @@ enum Command {
         /// the browser build to serve (default: the web folder beside the binary's folder)
         #[arg(long = "static", value_name = "DIR")]
         static_dir: Option<PathBuf>,
+        /// the operations service's unix socket
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "/run/lanlord-operations/operations.sock"
+        )]
+        operations_socket: PathBuf,
+    },
+    /// run the root service that carries out the operations the web server forwards
+    OperationsService {
+        /// the unix socket to listen on
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "/run/lanlord-operations/operations.sock"
+        )]
+        socket: PathBuf,
+        /// the uid of the web server's account; only it and root may connect
+        #[arg(long, value_name = "UID")]
+        allowed_uid: u32,
+        /// the settings key; when there is none, operations that read secrets say so
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "/var/lib/lanlord-operations/identity"
+        )]
+        identity: PathBuf,
     },
     /// install the gateway payload on a host
     Bootstrap {
@@ -962,7 +991,10 @@ fn answer(
         }
     }
     writeln!(out, "{}", serde_json::to_string(&response)?)?;
-    Ok(!matches!(response, Response::Error(_)))
+    Ok(!matches!(
+        response,
+        Response::Error(_) | Response::Denied(_)
+    ))
 }
 
 /// read `input` as a request (or a bare op) and answer it with `run`. sudo prompts are answered
@@ -985,8 +1017,18 @@ fn respond(input: &str, run: impl FnOnce(&Op, AskPassword) -> Result<Reply>) -> 
     };
     match asked {
         Some(prompt) => Response::Ok(Reply::NeedsPassword { prompt }),
-        None => result.into(),
+        None => match result {
+            // a refusal is its own answer, so a front end can tell it from a failure
+            Err(e) if is_refusal(&e) => Response::Denied(format!("{e:#}")),
+            other => other.into(),
+        },
     }
+}
+
+/// whether the error is the caller's roles (or the arguments) not allowing the op.
+fn is_refusal(error: &anyhow::Error) -> bool {
+    use lanlord_core::access::{Denied, Refused};
+    error.downcast_ref::<Denied>().is_some() || error.downcast_ref::<Refused>().is_some()
 }
 
 /// a request, or a bare op as older callers send it.
@@ -1076,11 +1118,27 @@ fn main() -> Result<()> {
             socket,
             listen,
             static_dir,
+            operations_socket,
         }) => webui::run(webui::Options {
             socket,
             listen,
             static_dir,
+            operations_socket,
         }),
+        #[cfg(feature = "webui")]
+        Some(Command::OperationsService {
+            socket,
+            allowed_uid,
+            identity,
+        }) => operations_service::run(operations_service::Options {
+            socket,
+            allowed_uid,
+            identity,
+        }),
+        #[cfg(not(feature = "webui"))]
+        Some(Command::OperationsService { .. }) => {
+            bail!("this build has no operations service; build lanlord with --features webui")
+        }
         #[cfg(not(feature = "webui"))]
         Some(Command::Webui { .. }) => {
             bail!("this build has no web server; build lanlord with --features webui")
@@ -1352,6 +1410,14 @@ mod tests {
         assert_eq!(ok, Response::Ok(Reply::Leases(vec![])));
         let failed = respond(r#"{"op":"server_facts"}"#, |_, _| bail!("no route to host"));
         assert_eq!(failed, Response::Error("no route to host".into()));
+        let refused = respond(r#"{"op":"server_facts"}"#, |_, _| {
+            Err(lanlord_core::access::Denied {
+                area: lanlord_core::access::Area::Status,
+                level: lanlord_core::access::Level::View,
+            }
+            .into())
+        });
+        assert!(matches!(refused, Response::Denied(m) if m.contains("permission denied")));
         let garbage = respond("not json", |_, _| unreachable!("never runs"));
         assert!(matches!(garbage, Response::Error(e) if e.starts_with("not an operation")));
         let json = serde_json::to_string(&ok).unwrap();

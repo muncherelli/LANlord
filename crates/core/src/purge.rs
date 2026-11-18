@@ -78,7 +78,7 @@ if have docker; then
   done
 fi
 
-for u in lanlord-webui.service lanlord-auth.socket lanlord-auth@.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
+for u in lanlord-webui.service lanlord-operations.service lanlord-auth.socket lanlord-auth@.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
   if exists "$ROOT/etc/systemd/system/$u"; then
     # the per-connection login service is a template that is never enabled itself
     if have systemctl && [ "$u" != lanlord-auth@.service ]; then act "stop and disable $u" systemctl disable --now "$u"; fi
@@ -106,7 +106,7 @@ for f in "$ROOT"/etc/systemd/network/*.network.d/lanlord.conf; do
 done
 if [ "$netchanged" = 1 ] && [ "$DRY" = 0 ] && have networkctl; then networkctl reload >/dev/null 2>&1; fi
 
-for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web /run/lanlord-auth; do
+for d in /etc/lanlord /opt/lanlord /run/lanlord /run/lanlord-web /run/lanlord-operations /run/lanlord-auth /var/lib/lanlord-operations; do
   if exists "$ROOT$d"; then act "remove $d" rm -rf "$ROOT$d"; fi
 done
 
@@ -118,6 +118,7 @@ if [ "$REMOVE_ADMINS" = 1 ]; then
 fi
 if getent passwd lanlord >/dev/null 2>&1; then act "remove the service account lanlord" userdel lanlord; fi
 if getent group lanlord-web >/dev/null 2>&1; then act "remove the group lanlord-web" groupdel lanlord-web; fi
+if getent group lanlord-operations >/dev/null 2>&1; then act "remove the group lanlord-operations" groupdel lanlord-operations; fi
 if getent group lanlord >/dev/null 2>&1; then act "remove the group lanlord" groupdel lanlord; fi
 if getent group @ADMINS@ >/dev/null 2>&1; then act "remove the group @ADMINS@" groupdel @ADMINS@; fi
 
@@ -251,6 +252,7 @@ echo "nft $*" >> LOG"#,
   "passwd lanlord") echo "lanlord:x:9999:9999::/opt/lanlord:/bin/false" ;;
   "group lanlord") echo "lanlord:x:9999:" ;;
   "group lanlord-web") echo "lanlord-web:x:9990:" ;;
+  "group lanlord-operations") echo "lanlord-operations:x:9991:lanlord" ;;
   *) exit 2 ;;
 esac"#,
                 ),
@@ -403,6 +405,7 @@ esac"#,
             "nft delete table inet lanlord",
             "userdel lanlord",
             "groupdel lanlord-web",
+            "groupdel lanlord-operations",
             "groupdel lanlord",
             "groupdel admins",
             "systemctl daemon-reload",
@@ -484,9 +487,12 @@ esac"#,
                 "/opt/lanlord",
                 "/run/lanlord",
                 "/run/lanlord-web",
+                "/run/lanlord-operations",
+                "/var/lib/lanlord-operations",
                 "/run/lanlord-auth",
                 "lanlord",
                 "lanlord-web",
+                "lanlord-operations",
                 ADMINS_GROUP,
             ]
             .map(str::to_string),

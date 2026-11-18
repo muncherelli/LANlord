@@ -4,7 +4,7 @@
 //! every action is an [`Op`] answered by a [`Reply`]: a backend implements [`Gateway::call`],
 //! and the typed methods the windows use are a thin layer over it. on the desktop the op runs
 //! over ssh (client mode) or on the gateway itself (server mode); in the browser it goes to
-//! the web ui's `/api/op`.
+//! the web ui's `/api/operations`.
 
 use anyhow::{anyhow, Result};
 use lanlord_model::access::{Access, Profile};
@@ -606,6 +606,7 @@ mod native {
 #[cfg(target_arch = "wasm32")]
 pub mod http;
 pub mod round_trip;
+pub mod stream;
 
 #[cfg(any(test, feature = "fake"))]
 pub use fake::Fake;
@@ -835,7 +836,9 @@ mod fake {
                     self.enter(format!("save-access {host}"), ask)?;
                     Reply::Done
                 }
-                Op::Subscribe { .. } => anyhow::bail!("live streams are not available yet"),
+                Op::Subscribe { .. } => {
+                    anyhow::bail!("live streams are served by the web ui, not run as an operation")
+                }
             })
         }
 

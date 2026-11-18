@@ -58,7 +58,9 @@ impl std::error::Error for BridgeError {}
 /// run `op` the way the bridge does, on this machine. `log` gets progress lines.
 pub fn run_local(op: &Op, log: &mut dyn FnMut(&str)) -> Result<Reply> {
     match op {
-        Op::Subscribe { .. } => bail!("live streams are not available yet"),
+        Op::Subscribe { .. } => {
+            bail!("live streams are served by the web ui, not run as an operation")
+        }
         op if op.runs_on_bridge() => run_clock(op, log),
         _ => bail!("the bridge does not run this operation"),
     }
@@ -334,7 +336,7 @@ mod tests {
             "{}",
             lines[4]
         );
-        assert!(lines[5].contains("not available yet"), "{}", lines[5]);
+        assert!(lines[5].contains("served by the web ui"), "{}", lines[5]);
         assert_eq!(lines.len(), 6);
     }
 

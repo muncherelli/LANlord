@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 
-use lanlord_model::apply::{self, ApplyEvent, TaskStatus};
+use lanlord_model::apply::{self, TaskStatus};
+
+pub use lanlord_model::apply::ApplyEvent;
 
 use crate::bootstrap::{run_as_root_lines, AskPassword};
 use crate::config::{wrap, INSTALLED_GUARD, NOT_INSTALLED_MESSAGE, NOT_INSTALLED_STATUS};

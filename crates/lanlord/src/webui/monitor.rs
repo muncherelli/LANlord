@@ -1,17 +1,14 @@
-//! live numbers for the web desktop: the gateway reads its own `/proc` in-process (no ssh to
-//! itself) and the page asks for a fresh sample about once a second. there is no other live
-//! channel in the web ui to push on, and a plain request per sample keeps the session, origin and
-//! timeout rules of every other route. anyone logged in may look; ending a process is for admins,
-//! the same rule as `/api/op`.
+//! ending a process from the web desktop. the live numbers themselves come from the event stream
+//! (see `stream`); ending a process is for admins, the same rule as `/api/operations`.
 
 use std::sync::Arc;
 
 use axum::extract::State;
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use lanlord_core::monitor::{end_process, Sampler};
+use lanlord_core::monitor::end_process;
 
-use super::auth::{require, require_peek, same_origin_json, Auth};
+use super::auth::{require_current, same_origin_json, Auth};
 
 fn reply(status: StatusCode, body: String) -> Response {
     (
@@ -27,31 +24,6 @@ fn reply(status: StatusCode, body: String) -> Response {
 
 fn error(status: StatusCode, text: &str) -> Response {
     reply(status, serde_json::json!({ "error": text }).to_string())
-}
-
-/// GET /api/monitor, or /api/monitor?procs=1 with the process list: one sample as json.
-pub async fn sample(State(auth): State<Arc<Auth>>, headers: HeaderMap, uri: Uri) -> Response {
-    // a poll the page makes on its own must not count as activity
-    if let Err(unauthorized) = require_peek(&auth, &headers) {
-        return unauthorized;
-    }
-    let procs = uri
-        .query()
-        .is_some_and(|q| q.split('&').any(|p| p == "procs=1"));
-    let read = tokio::task::spawn_blocking(move || Sampler::default().sample(procs)).await;
-    match read {
-        Ok(Ok(sample)) => match serde_json::to_string(&sample) {
-            Ok(text) => reply(StatusCode::OK, text),
-            Err(_) => error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not encode the sample",
-            ),
-        },
-        _ => error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "this host cannot be monitored",
-        ),
-    }
 }
 
 /// the pid in `{"pid":123}`, and nothing else in the body.
@@ -72,7 +44,7 @@ pub async fn end(
     if let Err(refused) = same_origin_json(&headers) {
         return refused;
     }
-    let admin = match require(&auth, &headers) {
+    let admin = match require_current(&auth, &headers).await {
         Ok((_, admin)) => admin,
         Err(unauthorized) => return unauthorized,
     };

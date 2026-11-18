@@ -7,7 +7,6 @@ pub use lanlord_model::ops::*;
 
 use crate::access::{Caller, Grants, Need};
 use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
-use crate::exec::{self, Target};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
@@ -30,10 +29,24 @@ pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
 /// cover it, and the reply holds only what the caller may see. this is the one door every front
 /// end uses; the web ui passes the account it signed in.
 pub fn execute_as(host: &str, caller: &Caller, op: &Op, ask: AskPassword) -> Result<Reply> {
-    let session = Session::new(host)?;
-    guarded(&session, caller, op, ask, |grants, ask| match op {
+    execute_in(&Session::new(host)?, host, caller, op, ask)
+}
+
+/// as [`execute_as`], through `session`: ssh for a client, [`Session::local`] on the gateway.
+/// `host` only names the server in messages and settings.
+pub fn execute_in(
+    session: &Session,
+    host: &str,
+    caller: &Caller,
+    op: &Op,
+    ask: AskPassword,
+) -> Result<Reply> {
+    guarded(session, caller, op, ask, |grants, ask| match op {
         // these two reach the server their own way
         Op::Bootstrap => {
+            if session.is_local() {
+                bail!("bootstrap is run from a client, not on the gateway itself");
+            }
             let options = Options {
                 host: host.to_string(),
                 ansible: AnsibleMode::detect(),
@@ -43,14 +56,136 @@ pub fn execute_as(host: &str, caller: &Caller, op: &Op, ask: AskPassword) -> Res
             Ok(Reply::Done)
         }
         Op::Run { command } => {
-            let target = Target::Gateway { host: host.into() };
-            Ok(Reply::ExitCode(exec::exec_detached(&target, command)?))
+            let command = run_as(session, caller, command)?;
+            Ok(Reply::ExitCode(session.stream(&command)?))
         }
         _ => {
             let who = Who { caller, grants };
-            dispatch(&session, host, &who, op, ask, crypto::load_default)
+            dispatch(session, host, &who, op, ask, crypto::load_default)
         }
     })
+}
+
+/// how long an operation may run: the longest ones (an apply, a purge) take minutes. the
+/// operations service stops waiting then, and a command started in a transient unit is stopped.
+pub const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(16 * 60);
+
+/// how a command is started as another account on the gateway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Launch {
+    /// a transient systemd unit: the command gets a clean environment of its own, and what it
+    /// leaves running ends with the unit instead of staying next to the service's own tasks.
+    Unit,
+    /// `setpriv`, for a machine that is not run by systemd: a clean environment, but nothing
+    /// ends the command's children.
+    Priv,
+}
+
+impl Launch {
+    fn here() -> Self {
+        let on_path = |name: &str| {
+            std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+            })
+        };
+        if std::path::Path::new("/run/systemd/system").is_dir() && on_path("systemd-run") {
+            Self::Unit
+        } else {
+            Self::Priv
+        }
+    }
+
+    /// `command` as the account with this uid and gid (and its other groups). a command that
+    /// cannot start gives systemd's 203 on the unit path (127 under a shell).
+    fn argv(self, uid: u32, gid: u32, command: &[String]) -> Vec<String> {
+        let mut argv: Vec<String> = match self {
+            Self::Unit => [
+                "systemd-run".to_string(),
+                format!("--uid={uid}"),
+                format!("--gid={gid}"),
+                "--pipe".into(),
+                "--wait".into(),
+                "--collect".into(),
+                "--quiet".into(),
+                format!("--property=RuntimeMaxSec={}", RUN_LIMIT.as_secs()),
+                "--".into(),
+            ]
+            .into(),
+            Self::Priv => [
+                "setpriv".to_string(),
+                format!("--reuid={uid}"),
+                format!("--regid={gid}"),
+                "--init-groups".into(),
+                "--reset-env".into(),
+                "--".into(),
+            ]
+            .into(),
+        };
+        argv.extend(command.iter().cloned());
+        argv
+    }
+}
+
+/// the uids of ordinary login accounts here: `UID_MIN` to `UID_MAX` of `login.defs`, or 1000 to
+/// 60000. whatever that file says, never root, a system account (below 1000) or `nobody`.
+fn login_uids() -> std::ops::RangeInclusive<u32> {
+    login_uids_in(&std::fs::read_to_string("/etc/login.defs").unwrap_or_default())
+}
+
+fn login_uids_in(defs: &str) -> std::ops::RangeInclusive<u32> {
+    let value = |key: &str, default: u32| {
+        defs.lines()
+            .find_map(|line| {
+                let mut words = line.split_whitespace();
+                (words.next()? == key).then(|| words.next()?.parse().ok())?
+            })
+            .unwrap_or(default)
+    };
+    value("UID_MIN", 1000).max(1000)..=value("UID_MAX", 60000).min(65533)
+}
+
+/// the uid and primary gid of the account on the machine `session` runs on.
+fn ids_of(session: &Session, account: &str) -> Result<(u32, u32)> {
+    let id = |flag: &str| -> Result<u32> {
+        let out = session.capture(&["id".into(), flag.into(), "--".into(), account.into()])?;
+        out.trim()
+            .parse()
+            .map_err(|_| anyhow!("could not read the account's ids"))
+    };
+    Ok((id("-u")?, id("-g")?))
+}
+
+/// the command a `Run` executes. over ssh it runs as the account that signed in; on the gateway
+/// the service is root, so a local session runs it as the caller's own account, with that
+/// account's groups and a clean environment, and never as root or a system account. only the
+/// caller's name, checked to be a plain login name, and its numeric ids go into the command.
+fn run_as(session: &Session, caller: &Caller, command: &[String]) -> Result<Vec<String>> {
+    run_as_by(session, caller, command, Launch::here())
+}
+
+fn run_as_by(
+    session: &Session,
+    caller: &Caller,
+    command: &[String],
+    launch: Launch,
+) -> Result<Vec<String>> {
+    if !session.is_local() {
+        return Ok(command.to_vec());
+    }
+    if command.is_empty() {
+        bail!("nothing to run");
+    }
+    if !access::plain_account(&caller.user) {
+        bail!("not an account name");
+    }
+    let (uid, gid) = ids_of(session, &caller.user)?;
+    if !login_uids().contains(&uid) {
+        return Err(access::Refused(
+            "commands run only as an ordinary login account, not root or a system account".into(),
+        )
+        .into());
+    }
+    Ok(launch.argv(uid, gid, command))
 }
 
 /// who asks and what they may do.
@@ -226,7 +361,9 @@ fn dispatch(
         Op::SaveAccess { access } => {
             self_service::save_access(session, host, (who.caller, who.grants), access, ask)?
         }
-        Op::Subscribe { .. } => bail!("live streams are not available yet"),
+        Op::Subscribe { .. } => {
+            bail!("live streams are served by the web ui, not run as an operation")
+        }
     })
 }
 
@@ -640,5 +777,161 @@ esac"#,
     fn a_bad_host_is_refused_before_anything_runs() {
         let err = execute("-oProxyCommand=x", &Op::Leases, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("invalid host"), "{err:#}");
+    }
+
+    fn commander(user: &str) -> Caller {
+        Caller {
+            user: user.into(),
+            admin: false,
+        }
+    }
+
+    #[test]
+    fn a_local_run_is_the_callers_own_account_never_root() {
+        let command = vec!["id".to_string(), "-u".to_string()];
+        // the exact command for each way of starting it
+        assert_eq!(
+            Launch::Unit.argv(1001, 1002, &command),
+            [
+                "systemd-run",
+                "--uid=1001",
+                "--gid=1002",
+                "--pipe",
+                "--wait",
+                "--collect",
+                "--quiet",
+                "--property=RuntimeMaxSec=960",
+                "--",
+                "id",
+                "-u"
+            ]
+        );
+        assert_eq!(
+            Launch::Priv.argv(1001, 1002, &command),
+            [
+                "setpriv",
+                "--reuid=1001",
+                "--regid=1002",
+                "--init-groups",
+                "--reset-env",
+                "--",
+                "id",
+                "-u"
+            ]
+        );
+        // a name that is not a plain login name is never looked up, let alone run
+        let local = Session::local();
+        for bad in ["", "-u", "a b", "x;y", "root\n"] {
+            assert!(
+                run_as(&local, &commander(bad), &command).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(run_as(&local, &commander("dana"), &[]).is_err());
+        // over ssh the command is the caller's as it was: the login is the account
+        let remote = Session::new("gw").unwrap();
+        assert_eq!(
+            run_as(&remote, &commander("dana"), &command).unwrap(),
+            command
+        );
+    }
+
+    #[test]
+    fn login_defs_never_lets_in_root_system_accounts_or_nobody() {
+        assert_eq!(login_uids_in(""), 1000..=60000);
+        assert_eq!(login_uids_in("UID_MIN 500\nUID_MAX 70000\n"), 1000..=65533);
+        let wide = login_uids_in("UID_MIN\t0\nUID_MAX 65534\n");
+        assert!(!wide.contains(&0) && !wide.contains(&999) && !wide.contains(&65534));
+        assert!(wide.contains(&1000));
+        assert!(login_uids_in("UID_MIN 2000").contains(&2000));
+        assert!(!login_uids_in("UID_MIN 2000").contains(&1500));
+    }
+
+    #[test]
+    fn root_and_system_accounts_are_refused_a_local_run() {
+        let command = vec!["id".to_string()];
+        let local = Session::local();
+        for name in ["root", "daemon", "nobody"] {
+            // (an account this machine lacks is refused too, for another reason)
+            let err = run_as(&local, &commander(name), &command).unwrap_err();
+            let known = local
+                .capture(&["id".into(), "-u".into(), name.into()])
+                .is_ok();
+            if known {
+                assert!(
+                    err.downcast_ref::<access::Refused>().is_some(),
+                    "{name}: {err:#}"
+                );
+            }
+        }
+    }
+
+    /// run `command` through core's run path as `caller` on this machine, and say what it
+    /// printed to the file named by its one argument.
+    #[cfg(unix)]
+    fn output_of_run(caller: &Caller, script: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let file = std::env::temp_dir().join(format!("lanlord-run-{}", std::process::id()));
+        std::fs::write(&file, "").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let argv = run_as(
+            &Session::local(),
+            caller,
+            &[
+                "sh".into(),
+                "-c".into(),
+                script.into(),
+                "sh".into(),
+                file.display().to_string(),
+            ],
+        )
+        .unwrap();
+        let code = Session::local().stream(&argv).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(code, 0, "{text}");
+        text
+    }
+
+    /// runs only as root, which is how the service runs (`--ignored root_`; CI does it in the
+    /// job "run as the caller (root)"). a throwaway account with an extra group runs a command.
+    #[test]
+    #[ignore = "needs root"]
+    #[cfg(unix)]
+    fn root_a_local_run_is_the_callers_uid_and_groups_in_a_clean_environment() {
+        let local = Session::local();
+        let pid = std::process::id();
+        let (user, group) = (format!("lltest{pid}"), format!("llgrp{pid}"));
+        let sh = |args: &[&str]| {
+            let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            local.capture(&argv).unwrap()
+        };
+        sh(&["groupadd", &group]);
+        sh(&["useradd", "-m", "-s", "/bin/sh", "-G", &group, &user]);
+        let uid = sh(&["id", "-u", &user]).trim().to_string();
+        let groups = sh(&["id", "-G", &user]).trim().to_string();
+        // something of the service's own that must not reach the command
+        std::env::set_var("ANSIBLE_HOME", "/root/leak");
+        std::env::set_var("LANLORD_LEAK", "1");
+        let text = output_of_run(&commander(&user), r#"{ id -u; id -G; env; } > "$1""#);
+        std::env::remove_var("ANSIBLE_HOME");
+        std::env::remove_var("LANLORD_LEAK");
+        sh(&["userdel", "-r", &user]);
+        sh(&["groupdel", &group]);
+
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some(uid.as_str()), "{text}");
+        assert_ne!(uid, "0");
+        let seen = lines.next().unwrap_or_default();
+        assert_eq!(seen, groups, "{text}");
+        assert!(!seen.split(' ').any(|g| g == "0"), "root's group: {text}");
+        let env: Vec<&str> = lines.collect();
+        for leaked in ["ANSIBLE_", "LANLORD_LEAK", "HOME=/root"] {
+            assert!(
+                !env.iter().any(|l| l.starts_with(leaked)),
+                "{leaked}: {text}"
+            );
+        }
+        assert!(env.contains(&format!("USER={user}").as_str()), "{text}");
     }
 }
