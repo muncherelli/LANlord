@@ -333,20 +333,20 @@ impl MyServer {
             (true, Some(version)) => format!("Installed, version {version}"),
             (true, None) => "Installed".to_string(),
         };
+        let processor = if facts.cpu_model.is_empty() {
+            "Unknown".to_string()
+        } else {
+            facts.cpu_model.clone()
+        };
         let mut computer: Vec<Node<Msg>> = [
             ("Server", facts.hostname.clone()),
             ("Signed in as", facts.user.clone()),
             ("System", facts.os.clone()),
             ("Kernel", facts.kernel.clone()),
             ("Up for", facts.uptime()),
-            ("Processors", facts.cpus.to_string()),
-            (
-                "Memory",
-                format!(
-                    "{} MB, {} MB free",
-                    facts.mem_total_mb, facts.mem_available_mb
-                ),
-            ),
+            ("Processor", processor),
+            ("Processors", facts.processors()),
+            ("Memory", facts.memory()),
             ("LANlord", lanlord),
         ]
         .into_iter()
@@ -355,33 +355,11 @@ impl MyServer {
         if let Some(applied) = &facts.last_applied {
             computer.push(Node::field("Last applied", applied.clone()));
         }
-        let interfaces = facts
-            .interfaces
-            .iter()
-            .filter(|i| !i.loopback())
-            .map(|iface| {
-                let address = iface.addresses.first().map_or("no address", String::as_str);
-                Node::Text(format!(
-                    "{}   {}   MTU {}   {}",
-                    iface.name,
-                    address,
-                    iface.mtu,
-                    iface.link()
-                ))
-            })
-            .collect();
         // the environment check (container, nesting, keyctl) joins these once core::env lands
-        vec![
-            Node::Group {
-                title: "Computer".into(),
-                body: computer,
-            },
-            Node::Gap(4.0),
-            Node::Group {
-                title: "Network interfaces".into(),
-                body: interfaces,
-            },
-        ]
+        vec![Node::Group {
+            title: "Computer".into(),
+            body: computer,
+        }]
     }
 
     fn advanced(&self, idle: bool) -> Vec<Node<Msg>> {
@@ -532,6 +510,60 @@ mod tests {
     use super::*;
     use crate::gateway::Fake;
     use crate::wake::Wake;
+
+    /// the group titles and the label and value of every field on the General page.
+    fn general_lines(window: &MyServer) -> (Vec<String>, Vec<(String, String)>) {
+        let (mut titles, mut fields) = (Vec::new(), Vec::new());
+        for node in window.general() {
+            if let Node::Group { title, body } = node {
+                titles.push(title);
+                for node in body {
+                    if let Node::Field { label, value } = node {
+                        fields.push((label, value));
+                    }
+                }
+            }
+        }
+        (titles, fields)
+    }
+
+    #[test]
+    fn the_general_page_shows_the_processor_and_what_a_container_allows() {
+        let mut window = MyServer::default();
+        window.facts.data = Some(lanlord_model::server::demo());
+        let (titles, fields) = general_lines(&window);
+        let value = |label: &str| {
+            fields
+                .iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        // the interfaces moved to the Networks window
+        assert_eq!(titles, ["Computer"]);
+        assert_eq!(
+            value("Processor"),
+            "Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz"
+        );
+        assert_eq!(value("Processors"), "4");
+        assert_eq!(value("Memory"), "4096 MB, 3328 MB free");
+        let facts = window.facts.data.as_mut().unwrap();
+        (facts.cpus, facts.cpus_limited) = (2, true);
+        (
+            facts.mem_total_mb,
+            facts.mem_available_mb,
+            facts.mem_limited,
+        ) = (1024, 512, true);
+        facts.cpu_model.clear();
+        let (_, fields) = general_lines(&window);
+        let value = |label: &str| fields.iter().find(|(l, _)| l == label).unwrap().1.clone();
+        assert_eq!(value("Processors"), "2 processors (limited by container)");
+        assert_eq!(
+            value("Memory"),
+            "1024 MB, 512 MB free (limited by container)"
+        );
+        assert_eq!(value("Processor"), "Unknown");
+    }
 
     fn until(window: &mut MyServer, done: impl Fn(&MyServer) -> bool) {
         let start = Instant::now();

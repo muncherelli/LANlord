@@ -21,6 +21,31 @@ echo "os=$os"
     )
 }
 
+/// the shell that finds the processor's model: `model name`, then the `Hardware` and `Model`
+/// lines of an arm board, then `lscpu`.
+const CPU_SNIPPET: &str = r#"cpu=
+for k in 'model name' Hardware Model; do
+  cpu=$(sed -n "s/^$k[[:space:]]*:[[:space:]]*//p" /proc/cpuinfo 2>/dev/null | head -n 1)
+  if [ -n "$cpu" ]; then break; fi
+done
+if [ -z "$cpu" ]; then cpu=$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1); fi
+echo "cpu_model=$cpu"
+"#;
+
+/// the shell that reads what a container's cgroup allows: memory (v2, then v1), the cpu quota
+/// and the cpus the container may run on. a value that is not there is left empty.
+const CGROUP_SNIPPET: &str = r#"for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+  if [ -r "$f" ]; then echo "cgroup_mem_max=$(cat "$f" 2>/dev/null)"; break; fi
+done
+for f in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory/memory.usage_in_bytes; do
+  if [ -r "$f" ]; then echo "cgroup_mem_current=$(cat "$f" 2>/dev/null)"; break; fi
+done
+echo "cgroup_cpu_max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null)"
+for f in /sys/fs/cgroup/cpuset.cpus.effective /sys/fs/cgroup/cpuset/cpuset.effective_cpus; do
+  if [ -r "$f" ]; then echo "cgroup_cpuset=$(cat "$f" 2>/dev/null)"; break; fi
+done
+"#;
+
 /// the read-only script; sections are separated by `---` lines.
 fn script(etc: &str, usr: &str) -> String {
     format!(
@@ -30,7 +55,7 @@ echo "uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)"
 echo "user=$(id -un)"
 echo "uid=$(id -u)"
 echo "cpus=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
-echo "mem_total_kb=$(awk '/^MemTotal/{{print $2}}' /proc/meminfo 2>/dev/null)"
+{cpu}{cgroup}echo "mem_total_kb=$(awk '/^MemTotal/{{print $2}}' /proc/meminfo 2>/dev/null)"
 echo "mem_available_kb=$(awk '/^MemAvailable/{{print $2}}' /proc/meminfo 2>/dev/null)"
 if [ -d /opt/lanlord ] && getent passwd lanlord >/dev/null 2>&1; then echo installed=1; else echo installed=0; fi
 echo "version=$(cat /opt/lanlord/state/version 2>/dev/null)"
@@ -45,7 +70,9 @@ echo "---route6"
 ip -6 route show default 2>/dev/null
 exit 0
 "#,
-        os = os_snippet(etc, usr)
+        os = os_snippet(etc, usr),
+        cpu = CPU_SNIPPET,
+        cgroup = CGROUP_SNIPPET
     )
 }
 
@@ -107,6 +134,65 @@ mod tests {
         let down =
             parse_links("4: tap0: <BROADCAST> mtu 1500 qdisc noop state DOWN mode DEFAULT\n");
         assert_eq!(down[0].link(), "Disconnected");
+    }
+
+    fn limited(extra: &str) -> ServerFacts {
+        parse(&format!(
+            "hostname=h\ncpus=8\nmem_total_kb=8388608\nmem_available_kb=6291456\n{extra}---link\n---addr\n---route\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_container_limit_below_the_host_is_what_the_server_has() {
+        let free = limited("");
+        assert_eq!((free.cpus, free.mem_total_mb), (8, 8192));
+        assert!(!free.cpus_limited && !free.mem_limited);
+        assert_eq!(free.processors(), "8");
+        // no limit: cgroup v2 says `max`, v1 a number past the host's memory
+        let open = limited("cgroup_mem_max=max\ncgroup_cpu_max=max 100000\ncgroup_cpuset=0-7\n");
+        assert!(!open.cpus_limited && !open.mem_limited);
+        let huge = limited("cgroup_mem_max=9223372036854771712\n");
+        assert_eq!(huge.mem_total_mb, 8192);
+        let box_ = limited(
+            "cgroup_mem_max=2147483648\ncgroup_mem_current=1073741824\ncgroup_cpu_max=150000 100000\ncgroup_cpuset=0-3\n",
+        );
+        assert_eq!((box_.mem_total_mb, box_.mem_available_mb), (2048, 1024));
+        assert_eq!(
+            box_.memory(),
+            "2048 MB, 1024 MB free (limited by container)"
+        );
+        // the lower of the quota (1.5 rounds up to 2) and the cpuset (4)
+        assert_eq!((box_.cpus, box_.cpus_limited), (2, true));
+        assert_eq!(box_.processors(), "2 processors (limited by container)");
+        let one = limited("cgroup_cpuset=3\n");
+        assert_eq!(one.processors(), "1 processor (limited by container)");
+        let set = limited("cgroup_cpuset=0-1,4,6-7\n");
+        assert_eq!(set.cpus, 5);
+        // a limit above the host's is no limit
+        let big = limited("cgroup_mem_max=17179869184\ncgroup_cpu_max=1600000 100000\n");
+        assert!(!big.mem_limited && !big.cpus_limited);
+    }
+
+    #[test]
+    fn the_processor_model_is_read_from_the_facts() {
+        assert_eq!(demo().cpu_model, "Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz");
+        assert_eq!(limited("cpu_model=Cortex-A72\n").cpu_model, "Cortex-A72");
+        assert_eq!(limited("").cpu_model, "");
+    }
+
+    #[test]
+    fn the_cpu_and_cgroup_snippets_read_a_model_and_limits() {
+        // the real files of this machine: whatever they say, the script still runs and ends well
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script("/etc/os-release", "/usr/lib/os-release"))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("cpu_model="), "{text}");
+        assert!(parse(&text).is_ok());
     }
 
     #[test]

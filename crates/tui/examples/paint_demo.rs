@@ -136,6 +136,7 @@ impl Demo {
                 icon: Some(id),
                 active: i == top && !self.menu_open,
                 palette,
+                fixed: false,
             }
             .render(rect, buf);
             let layout = WindowFrame::layout(rect);

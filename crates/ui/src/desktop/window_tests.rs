@@ -905,3 +905,55 @@ fn the_users_progress_and_task_windows_are_resizable_and_their_lists_fill() {
         }
     }
 }
+
+#[test]
+fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
+    use super::my_server::Msg;
+    use eframe::egui::Vec2;
+    let size = Vec2::new(1280.0, 720.0);
+    assert!(Target::MyServer.fixed() && !Target::MyServer.growable());
+    // only the windows that mark themselves fixed are
+    assert!([
+        Target::Networks,
+        Target::Hosts,
+        Target::Console,
+        Target::Welcome
+    ]
+    .iter()
+    .all(|t| !t.fixed()));
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::MyServer);
+    until(&mut desktop, &ctx, |d| {
+        d.my_server.facts().belongs_to("me@gw") && !d.services.busy("me@gw")
+    });
+    frames_on(&mut desktop, &ctx, size, 8);
+    let measured = |d: &Desktop| *d.measured.iter().find(|m| m.0 == Target::MyServer).unwrap();
+    let (_, opened, _) = measured(&desktop);
+    for tab in [
+        super::my_server::ADVANCED,
+        super::my_server::COMPATIBILITY,
+        super::my_server::GENERAL,
+    ] {
+        desktop
+            .my_server
+            .update(Msg::Tab(tab), &desktop.services, "me@gw");
+        frames_on(&mut desktop, &ctx, size, 8);
+        let (_, rect, content) = measured(&desktop);
+        assert_eq!(rect, opened, "tab {tab}");
+        // what the tab holds fits without scrolling
+        assert!(
+            content <= rect.height() - super::windows::CHROME,
+            "{tab}: {content} in {rect:?}"
+        );
+    }
+    // dragging its corner moves it, as any press on a window does, but does not size it
+    drag_corner(
+        &mut desktop,
+        &ctx,
+        size,
+        Target::MyServer,
+        Vec2::new(80.0, 100.0),
+    );
+    assert_eq!(measured(&desktop).1.size(), opened.size());
+}

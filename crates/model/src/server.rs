@@ -41,9 +41,18 @@ pub struct ServerFacts {
     pub uptime_secs: u64,
     pub user: String,
     pub is_root: bool,
+    /// the processor model, like `Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz`; empty when unknown.
+    #[serde(default)]
+    pub cpu_model: String,
+    /// the processors the server can use: the host's, or fewer when a container limits them.
     pub cpus: u32,
+    #[serde(default)]
+    pub cpus_limited: bool,
+    /// the memory the server can use: the host's, or less when a container limits it.
     pub mem_total_mb: u64,
     pub mem_available_mb: u64,
+    #[serde(default)]
+    pub mem_limited: bool,
     /// lanlord's directory and service account are both there.
     pub lanlord_installed: bool,
     pub lanlord_version: Option<String>,
@@ -51,7 +60,52 @@ pub struct ServerFacts {
     pub interfaces: Vec<Iface>,
 }
 
+/// how many cpus a cpuset list like `0-1,4` names.
+fn cpuset_count(list: &str) -> Option<u32> {
+    let mut count = 0;
+    for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        count += match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b) = (a.parse::<u32>().ok()?, b.parse::<u32>().ok()?);
+                b.checked_sub(a)? + 1
+            }
+            None => part.parse::<u32>().map(|_| 1).ok()?,
+        };
+    }
+    (count > 0).then_some(count)
+}
+
+/// how many cpus a cgroup `cpu.max` (`quota period` or `max period`) allows, rounded up.
+fn quota_cpus(text: &str) -> Option<u32> {
+    let mut words = text.split_whitespace();
+    let quota = words.next()?.parse::<u64>().ok()?;
+    let period = words.next()?.parse::<u64>().ok().filter(|p| *p > 0)?;
+    Some(quota.div_ceil(period).max(1) as u32)
+}
+
 impl ServerFacts {
+    /// the processors as a line: the number, and when a container limits it, that it does.
+    pub fn processors(&self) -> String {
+        match (self.cpus_limited, self.cpus) {
+            (false, n) => n.to_string(),
+            (true, 1) => "1 processor (limited by container)".to_string(),
+            (true, n) => format!("{n} processors (limited by container)"),
+        }
+    }
+
+    /// the memory as a line: what the server can use and how much of it is free.
+    pub fn memory(&self) -> String {
+        let limit = if self.mem_limited {
+            " (limited by container)"
+        } else {
+            ""
+        };
+        format!(
+            "{} MB, {} MB free{limit}",
+            self.mem_total_mb, self.mem_available_mb
+        )
+    }
+
     /// the uptime as `3 days, 4 hours, 12 minutes`.
     pub fn uptime(&self) -> String {
         let (d, h, m) = (
@@ -141,6 +195,27 @@ pub fn parse(output: &str) -> Result<ServerFacts> {
             iface.default_route = true;
         }
     }
+    // a container's limits, when they are lower than the host's
+    let host_cpus = number(&head, "cpus") as u32;
+    let cpu_limit = [
+        quota_cpus(field(&head, "cgroup_cpu_max")),
+        cpuset_count(field(&head, "cgroup_cpuset")),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    let cpus_limited = cpu_limit.is_some_and(|n| host_cpus > 0 && n < host_cpus);
+    let host_mem = number(&head, "mem_total_kb") / 1024;
+    let mut mem_total_mb = host_mem;
+    let mut mem_available_mb = number(&head, "mem_available_kb") / 1024;
+    // `max` (v2) is no limit and does not parse; a huge v1 number is not below the host's memory
+    let mem_limit = field(&head, "cgroup_mem_max").parse::<u64>().ok();
+    let mem_limited = mem_limit.is_some_and(|b| host_mem > 0 && b / 1_048_576 < host_mem);
+    if let (true, Some(bytes)) = (mem_limited, mem_limit) {
+        mem_total_mb = bytes / 1_048_576;
+        let used = number(&head, "cgroup_mem_current") / 1_048_576;
+        mem_available_mb = mem_available_mb.min(mem_total_mb.saturating_sub(used));
+    }
     let version = field(&head, "version");
     let applied = field(&head, "applied");
     Ok(ServerFacts {
@@ -150,9 +225,15 @@ pub fn parse(output: &str) -> Result<ServerFacts> {
         uptime_secs: number(&head, "uptime"),
         user: field(&head, "user").to_string(),
         is_root: field(&head, "uid") == "0",
-        cpus: number(&head, "cpus") as u32,
-        mem_total_mb: number(&head, "mem_total_kb") / 1024,
-        mem_available_mb: number(&head, "mem_available_kb") / 1024,
+        cpu_model: field(&head, "cpu_model").to_string(),
+        cpus: match cpu_limit {
+            Some(n) if cpus_limited => n,
+            _ => host_cpus,
+        },
+        cpus_limited,
+        mem_total_mb,
+        mem_available_mb,
+        mem_limited,
         lanlord_installed: field(&head, "installed") == "1",
         lanlord_version: (!version.is_empty()).then(|| version.to_string()),
         last_applied: (!applied.is_empty()).then(|| applied.to_string()),
@@ -165,4 +246,4 @@ pub fn demo() -> ServerFacts {
     parse(DEMO).expect("the demo facts parse")
 }
 
-const DEMO: &str = "hostname=demo\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpus=4\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 192.0.2.10/24 metric 1024 brd 192.0.2.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 1024\n";
+const DEMO: &str = "hostname=demo\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpu_model=Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz\ncpus=4\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 192.0.2.10/24 metric 1024 brd 192.0.2.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 1024\n";

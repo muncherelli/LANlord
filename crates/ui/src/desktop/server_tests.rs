@@ -169,7 +169,7 @@ fn networks_lists_the_external_and_the_lanlord_network() {
         d.networks.rows().belongs_to("me@gw")
     });
     frames(&mut desktop, &ctx, 2);
-    let rows = desktop.networks.rows().data.clone().unwrap();
+    let rows = desktop.networks.rows().data.clone().unwrap().rows;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].interface, "eth0");
     assert_eq!(rows[1].name, "retronet");

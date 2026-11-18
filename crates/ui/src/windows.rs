@@ -56,7 +56,14 @@ enum Glyph {
     Close,
 }
 
-fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -> TitleActions {
+fn title_bar(
+    ui: &mut Ui,
+    icon: &str,
+    title: &str,
+    active: bool,
+    dialog: bool,
+    fixed: bool,
+) -> TitleActions {
     let (rect, _) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), TITLE_BAR), Sense::hover());
     ui.painter()
@@ -78,6 +85,14 @@ fn title_bar(ui: &mut Ui, icon: &str, title: &str, active: bool, dialog: bool) -
         return TitleActions {
             close: title_button(ui, close, base.with("close"), Glyph::Close),
             minimize: false,
+        };
+    }
+    // a fixed window has no maximize button, and its minimize sits beside close
+    if fixed {
+        let minimize = close.translate(Vec2::new(-size.x - 2.0, 0.0));
+        return TitleActions {
+            close: title_button(ui, close, base.with("close"), Glyph::Close),
+            minimize: title_button(ui, minimize, base.with("min"), Glyph::Minimize),
         };
     }
     let maximize = close.translate(Vec2::new(-size.x - 2.0, 0.0));
@@ -103,6 +118,9 @@ pub struct Placement {
     /// the contents can grow (a console, a list, a text): the window can be resized and the
     /// growable part of its contents takes the room.
     pub growable: bool,
+    /// a fixed dialog like System Properties: minimize and close only, no resizing, and always
+    /// `width` by `height`, which must be given.
+    pub fixed: bool,
     /// the height a growable window opens at when it is not as tall as its contents, like a
     /// console of 24 lines. `None` opens it as tall as its contents, stopping at the desktop.
     pub height: Option<f32>,
@@ -268,7 +286,8 @@ pub fn show(
     let mut content_height = 0.0;
     let width = place.width;
     let max_height = place.area.height();
-    let growable = place.growable && !dialog;
+    let fixed = place.fixed && !dialog;
+    let growable = place.growable && !dialog && !fixed;
     // what the contents were last frame: how tall without the room they were given, and how tall
     // the parts that take room are on their own. none on the first frame, when a window is as
     // tall as its contents
@@ -300,7 +319,10 @@ pub fn show(
         window.pivot(Align2::CENTER_CENTER).default_pos(place.start)
     } else {
         let window = window.constrain_to(place.area).default_pos(place.start);
-        open_size(window, place, least, before, fit, floor)
+        match place.height.filter(|_| fixed) {
+            Some(h) => window.fixed_size(Vec2::new(place.width, h.min(max_height - 2.0 * FRAME))),
+            None => open_size(window, place, least, before, fit, floor),
+        }
     };
     let shown = window.show(ctx, |ui| {
         // the title bar spans the window inside its 3 pixel border; the contents sit in
@@ -310,13 +332,13 @@ pub fn show(
         }
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.y = 0.0;
-        actions = title_bar(ui, id, title, active, dialog);
+        actions = title_bar(ui, id, title, active, dialog, fixed);
         // the contents are laid out in a space as tall as the desktop and the window takes the
         // size they use. asking the window's own ui would cap them at its last size, so a window
         // could never grow
         // a growable window gives its contents the room it has, so they follow its size
         let held = ui.available_height();
-        let room = if sized {
+        let room = if sized || fixed {
             held.clamp(40.0, (max_height - CHROME).max(40.0))
         } else {
             (max_height - CHROME).max(40.0)
@@ -337,7 +359,7 @@ pub fn show(
                 .id_salt(("window-scroll", id))
                 .max_height(room)
                 .min_scrolled_height(least.y - CHROME)
-                .auto_shrink([false, !sized])
+                .auto_shrink([false, !sized && !fixed])
                 .show(&mut inner, |ui| {
                     let framed = egui::Frame::new()
                         .inner_margin(Margin::same(MARGIN as i8))
@@ -404,6 +426,7 @@ mod tests {
                     width: 300.0,
                     area,
                     growable: false,
+                    fixed: false,
                     floor: 0.0,
                     height: None,
                 };
@@ -418,6 +441,37 @@ mod tests {
 
     fn height(inner: f32, max: f32) -> f32 {
         shown(inner, max, true).height()
+    }
+
+    #[test]
+    fn a_fixed_window_is_the_size_it_is_given_whatever_its_contents() {
+        for inner in [10.0, 100.0, 900.0] {
+            let ctx = egui::Context::default();
+            let mut rect = None;
+            for _ in 0..4 {
+                testkit::run(&ctx, vec![], |ui| {
+                    let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0));
+                    let place = Placement {
+                        start: Pos2::new(100.0, 100.0),
+                        width: 300.0,
+                        area,
+                        growable: false,
+                        fixed: true,
+                        floor: 0.0,
+                        height: Some(250.0),
+                    };
+                    rect = show(ui.ctx(), "f", "F", place, true, false, |ui| {
+                        ui.allocate_space(Vec2::new(10.0, inner));
+                    })
+                    .map(|s| s.rect);
+                });
+            }
+            let size = rect.expect("shown").size();
+            assert!(
+                (size - Vec2::new(300.0, 250.0)).abs().max_elem() <= 1.0,
+                "{inner}: {size:?}"
+            );
+        }
     }
 
     #[test]
@@ -457,6 +511,7 @@ mod tests {
                         width: 300.0,
                         area,
                         growable: false,
+                        fixed: false,
                         floor: 0.0,
                         height: None,
                     };
@@ -502,6 +557,7 @@ mod tests {
                         width: 300.0,
                         area: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 472.0)),
                         growable: false,
+                        fixed: false,
                         floor: 0.0,
                         height: None,
                     };
@@ -538,6 +594,7 @@ mod tests {
                     width: 380.0,
                     area,
                     growable: true,
+                    fixed: false,
                     floor: 0.0,
                     height: None,
                 };
@@ -571,6 +628,7 @@ mod tests {
                         width: 380.0,
                         area,
                         growable: true,
+                        fixed: false,
                         floor: 0.0,
                         height: None,
                     };
@@ -610,6 +668,7 @@ mod tests {
                     width: 380.0,
                     area,
                     growable: true,
+                    fixed: false,
                     floor: 0.0,
                     height: None,
                 };

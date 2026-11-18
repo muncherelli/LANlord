@@ -14,13 +14,13 @@
       ▦       │ │└────────────────────────────────────────────────────────────────────────────┘│ │
    Settings   │ └──────────────────────────────────────────────────────────────────────────────┘ │
               │                   [ Properties... ] [ DNS & DHCP... ] [ Details... ] [ Refresh ] │
-              │ Editing networks comes next. For now you can look at them, and open DNS & DHCP.  │
-      >       │ up to date                                ┌ External Network Properties ───── _ □ × ┐
-   Console    └───────────────────────────────────────────│ Name      External Network              │
-                                                          │ Kind      External network              │
-                                                          │ Interface eth0                          │
-      ▣                                                   │ Address   192.0.2.10/24                 │
-    Hosts                                                 │ MTU       1500                          │
+              │ ┌ Network interfaces ──────────────────────────────────────────────────────────┐ │
+      >       │ │ eth0   192.0.2.10/24   MTU 1500   Connec┌ External Network Properties ───── _ □ × ┐
+   Console    │ │ eth1   172.16.120.1/22   MTU 1450   Conn│ Name      External Network              │
+              │ └─────────────────────────────────────────│ Kind      External network              │
+              │ Editing networks comes next. For now you c│ Interface eth0                          │
+      ▣       │ up to date                                │ Address   192.0.2.10/24                 │
+    Hosts     └───────────────────────────────────────────│ MTU       1500                          │
                                                           │ Link      Connected                     │
                                                           │                                  [ OK ] │
                                                           └─────────────────────────────────────────┘
