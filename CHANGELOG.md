@@ -9,13 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Each account gets a role (Administrators, Operators or Users, or one you define) that says what it may see and change in each area; windows and menu items you may not use are hidden
-- My Account for everyone: edit your profile and change your password, which is changed on every linked account or on none
-- Users and Permissions window for administrators: roles, a grid of areas and levels, and who has which role
-- Applying settings shows a progress dialog with a bar, the task being worked on, the elapsed time and the tasks done so far, with the raw output under Details
-- A Task Manager (Processes, Performance and Networking) opens from the LANlord menu, and a network activity icon in the taskbar tray lights up with traffic and opens it on Networking. Anyone logged in can look; only administrators can end a process (#114)
-- The web desktop asks you to log on, and Log Off returns to the logon box. Accounts that are not administrators can read but cannot change the server (#102)
-- The web interface logs in with the gateway's accounts and keeps sessions (#101)
+- `lanlord upgrade HOST` upgrades an installed gateway in place without purging anything, checks that the services come back, and rolls the binary and web files back if they do not (#131)
+- Secrets stay on the gateway: clients hold no key and never decrypt, secrets are write-only (reads show set or not set), and `lanlord move-secrets HOST` moves an old local key to the gateway once (#127)
+- On the gateway, ordinary local accounts sign in without ssh through a local socket, as themselves; the logon box offers "This server" first (#127)
+- A root operations service on the gateway runs the web interface's operations for the signed-in account, re-checking its permissions on every request, with no ssh in the web path (#124)
+- Live event streams for the browser's Task Manager and apply progress, with automatic reconnection (#125)
+- The terminal desktop has the Networks, My Account and Permissions windows (#128)
+- The terminal desktop has the update notice, check for updates, Rebuild and Developer menu actions (#129)
+- A `devtools` build feature, off in releases, adds a red bug menu with a demo desktop and window-manager debug, in the window, the browser and the terminal (#108, #129)
+- A Time Server (NTP) component runs chrony in a container for the networks you tick, and dnsmasq hands out its address as DHCP option 42; `lanlord doctor` checks that nothing else holds udp 123 (#118)
+- `lanlord leases`, `lanlord power` (reboot or shutdown, confirmed by typing the host name) and `lanlord facts` show DHCP leases, power off or restart a server, and print system facts (#63)
+- Clock changes run on the gateway in plain Rust through a bridge, falling back to the old scripts when it is missing (#113)
+- Each account gets a role (Administrators, Operators or Users, or one you define) that says what it may see and change in each area; windows and menu items you may not use are hidden (#115)
+- My Account for everyone: edit your profile and change your password, which is changed on every linked account or on none (#115)
+- Users and Permissions window for administrators: roles, a grid of areas and levels, and who has which role (#115)
+- Applying settings shows a progress dialog with a bar, the task being worked on, the elapsed time and the tasks done so far, with the raw output under Details, in the window and the terminal (#112)
+- A Task Manager (Processes, Performance and Networking) opens from the LANlord menu, and a network activity icon in the taskbar tray lights up with traffic and opens it on Networking. Ending a process needs the matching permission (#114)
+- The web desktop asks you to log on, and Log Off returns to the logon box. What an account may do depends on its role (#102, #115)
+- The web interface logs in with the gateway's accounts, any ordinary account may sign in, and keeps sessions (#101, #124)
 - The browser desktop runs every server operation over HTTP (#98)
 - Install and set up the web interface (#93)
 - `lanlord install` and `lanlord reinstall` set up a gateway in resumable steps (#88)
@@ -30,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Developer tools: cross-compile the server for Linux, preview the web interface locally and deploy to a test server (#82)
 - Developer and preview launchers, and dev builds with demo data (#81)
 - The web interface is served from the gateway behind Caddy on port 8443 (#66)
-- A root helper checks web interface logins with PAM and the `admins` group (#64)
+- A root helper checks web interface logins with PAM (#64)
 - LXC, nesting and keyctl are detected, and Docker modules stop where they cannot run (#56)
 - Install and remove app launchers on Linux, macOS and Windows (#67)
 - A Date/Time Properties window opens from the taskbar clock (#55)
@@ -71,16 +82,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Settings are checked on the server when saved and when applied: stored settings with a top-level section the playbooks do not read, or with text that is just yes, no, on or off (which YAML reads as a boolean), now fail at Apply with a clear error naming the field (#132)
+- The terminal desktop uses one layout system: windows sized to their contents and clamped to the screen, one column of padding, equal-width buttons, a navy selection and wrapped text (#126, #130)
+- The terminal desktop restores the terminal when it gets SIGTERM or SIGHUP (#130)
 - The administrators group is renamed `admins`, one group for the gateway and the domain (#49)
 - Every window opens fitted to its contents, centred (dialogs) or cascaded, and scrolls only when the desktop is too small; the console opens 80 by 24 cells, and the windows with a list, log or text (hosts, settings, changelog, networks, My Server and the rest) can be resized, their lists filling whatever room they are given, while plain forms keep a fixed size. The Changelog window shows plain text without the template's intro (#105)
 - The Welcome window shows the version and has a Changelog topic that opens the changelog (#105)
-
-- NT4 domain and network services now run from published `lanlord-nt4-server-components` (Samba built from source) and `lanlord-network-server-components` (dnsmasq) images, tagged with the LANlord version (`X.Y.Z`; the rolling `X.Y`, `X` and `latest` move on releases), published from trunk during development and frozen at release. The playbooks pin the version their build was made for. The old `image` and `build_locally` settings are gone.
+- NT4 domain and network services now run from published `lanlord-nt4-server-components` (Samba built from source) and `lanlord-network-server-components` (dnsmasq) images, tagged with the LANlord version (`X.Y.Z`; the rolling `X.Y`, `X` and `latest` move on releases), published from trunk during development and frozen at release. The playbooks pin the version their build was made for. The old `image` and `build_locally` settings are gone (#107, #120)
 
 ### Fixed
 
-- A save whose secret path does not fit what is stored (such as `docker[a].token` over a section) is refused instead of wiping the stored secrets
-- The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss`
+- A save whose secret path does not fit what is stored (such as `docker[a].token` over a section) is refused instead of wiping the stored secrets (#123)
+- The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss` (#122)
 - The taskbar start button shows the logo with no separator after it (#106)
 - NT4 domain group mappings that drifted are repaired (#40)
 - Settings are read when the plain settings directory cannot be searched (#39)
@@ -102,6 +115,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The NT4 domain logon script task name is quote-free, and the embedded YAML is tested (#41)
 - The internal interface's existing address is used by default (#25)
 - Bootstrap runs on Arch and creates a regular service account (#12)
+
+### Security
+
+- The server checks every setting and operation argument before anything runs: host names, domains, addresses, MAC addresses, ports, interface names, time zones, login names and paths must be well formed, and an unknown top-level settings section is refused. Values reach the playbooks marked unsafe so they are never run through Jinja templating (#132)
+- Secrets are kept only on the gateway, under a root-only key that only the root service uses to decrypt; clients never hold a key (#127)
+- Web interface operations go through a root service that accepts only the web account and root on its socket, limits request size and time, and re-checks the account's permissions each time (#124)
+- Validation patterns now reject values with a trailing newline (#119)
 
 ## [0.1.0] - 2026-11-13
 
