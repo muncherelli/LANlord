@@ -579,7 +579,7 @@ impl LoginBox {
                 .split_once('@')
                 .map_or(target.as_str(), |(user, _)| user);
             let options = vec![
-                (0, format!("This server (signed in as {user})")),
+                (0, format!("This server ({user})")),
                 (1, "Another server (ssh)".to_string()),
             ];
             nodes.push(Node::Labelled {
@@ -1051,7 +1051,7 @@ mod tests {
         assert!(with.is_local(), "the default when it is there");
         assert_eq!(
             choice_labels(&mut with),
-            ["This server (signed in as ann)", "Another server (ssh)"]
+            ["This server (ann)", "Another server (ssh)"]
         );
     }
 

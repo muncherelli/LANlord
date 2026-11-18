@@ -564,6 +564,11 @@ pub fn run(options: Options) -> Result<()> {
 }
 
 async fn serve(options: Options) -> Result<()> {
+    serve_until(options, crate::webui::stopped()).await
+}
+
+/// the service on its sockets until `stop` resolves; then the sockets are removed.
+async fn serve_until(options: Options, stop_signal: impl Future<Output = ()>) -> Result<()> {
     // the gateway's own key: made here on first start, root only, and used only in this process
     if let Err(error) = lanlord_core::crypto::use_gateway_key(options.identity.clone()) {
         log::emit(
@@ -623,7 +628,7 @@ async fn serve(options: Options) -> Result<()> {
         }
     };
     let stopper = async {
-        crate::webui::stopped().await;
+        stop_signal.await;
         let _ = stop.send(true);
     };
     tokio::join!(web, here, stopper);
@@ -1113,6 +1118,48 @@ mod tests {
         ] {
             assert!(bind_account(good, "ann").is_ok());
         }
+    }
+
+    #[test]
+    fn the_service_answers_on_both_sockets_and_removes_them_when_stopped() {
+        runtime().block_on(async {
+            let dir = std::env::temp_dir().join(format!("lanlord-serve-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let options = Options {
+                socket: dir.join("operations.sock"),
+                local_socket: dir.join("local.sock"),
+                allowed_uid: our_uid(),
+                // a key that cannot be made: the service says so and runs without one
+                identity: "/proc/lanlord-no-such-folder/identity".into(),
+            };
+            let (socket, local) = (options.socket.clone(), options.local_socket.clone());
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let service = tokio::spawn(serve_until(options, async {
+                let _ = stopped.await;
+            }));
+            for _ in 0..100 {
+                if socket.exists() && local.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            // the web socket serves its allowed uid: a garbled request is answered as such
+            let mut web = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            web.write_all(b"garbled\n").await.unwrap();
+            let mut text = Vec::new();
+            web.read_to_end(&mut text).await.unwrap();
+            assert!(String::from_utf8_lossy(&text).contains("response"));
+            // the local socket takes the connection too (what it says depends on the account)
+            let mut here = tokio::net::UnixStream::connect(&local).await.unwrap();
+            here.write_all(b"garbled\n").await.unwrap();
+            let mut text = Vec::new();
+            let _ = here.read_to_end(&mut text).await;
+            let _ = stop.send(());
+            service.await.unwrap().unwrap();
+            assert!(!socket.exists() && !local.exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        });
     }
 
     #[test]

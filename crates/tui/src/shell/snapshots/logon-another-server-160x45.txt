@@ -1,0 +1,45 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                       ┌ Logon Information ────────────────────── _ □ × ┐
+                                                       │ Type the name you use on the gateway and its   │
+                                                       │ hostname or address.                           │
+                                                       │                                                │
+                                                       │ Sign in to:  Another server (ssh) ▼            │
+                                                       │ Username:                                      │
+                                                       │ Hostname:                                      │
+                                                       │                [ OK ] [ Cancel ] [ Shut Down ] │
+                                                       └────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
