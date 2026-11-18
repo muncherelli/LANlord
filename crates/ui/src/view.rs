@@ -133,7 +133,8 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             body,
         } => {
             let mut tab = *current;
-            let inside = controls::tabs(ui, titles, &mut tab, |ui, _| nodes_ui(ui, body));
+            let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
+            let inside = controls::tabs(ui, &labels, &mut tab, |ui, _| nodes_ui(ui, body));
             if tab == *current {
                 inside
             } else {

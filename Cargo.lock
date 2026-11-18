@@ -3046,6 +3046,7 @@ dependencies = [
  "chrono",
  "lanlord-app",
  "lanlord-core",
+ "lanlord-model",
  "ratatui",
  "zeroize",
 ]

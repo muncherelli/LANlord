@@ -31,6 +31,7 @@ pub mod message;
 pub mod module_window;
 pub mod monitor;
 pub mod my_server;
+pub mod networks_window;
 pub mod nt4_panel;
 pub mod permissions_window;
 pub mod prompt;

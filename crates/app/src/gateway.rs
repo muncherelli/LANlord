@@ -622,6 +622,8 @@ mod fake {
         Gateway, InterfaceStatus, Internal, Lease, NewAdmin, Op, Outcome, PasswordReport, Power,
         Reply, Report, Result, ServerFacts, Settings, Stored, ZoneNow,
     };
+    use lanlord_model::access::{ADMINISTRATORS, USERS};
+    use lanlord_model::identity::{LinkInfo, LinkReport, LinkState};
 
     /// a gateway that records what it was asked and answers from memory.
     pub struct Fake {
@@ -655,6 +657,12 @@ mod fake {
         pub purge_lines: Mutex<Vec<String>>,
         /// when set, reading the network status fails with this.
         pub network_error: Mutex<Option<String>>,
+        /// the signed-in person's profile, changed by `update_profile`.
+        pub profile: Mutex<lanlord_model::access::Profile>,
+        /// the roles and who has them, changed by `save_access`.
+        pub access: Mutex<Access>,
+        /// what a password change reports.
+        pub password_report: Mutex<PasswordReport>,
         /// the server's clock, changed by `clock_apply`.
         pub clock: Mutex<ClockState>,
         /// what `clock_apply` says about keeping the change in the settings.
@@ -693,6 +701,22 @@ mod fake {
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
                 network_error: Mutex::new(None),
+                profile: Mutex::new(lanlord_model::access::Profile::default()),
+                access: Mutex::new(Access {
+                    members: [
+                        ("alice".to_string(), vec![ADMINISTRATORS.to_string()]),
+                        ("ben".to_string(), vec![USERS.to_string()]),
+                    ]
+                    .into(),
+                    ..Access::default()
+                }),
+                password_report: Mutex::new(PasswordReport {
+                    ok: true,
+                    links: vec![LinkReport {
+                        link: "Linux account".into(),
+                        state: LinkState::Changed,
+                    }],
+                }),
                 kept: Mutex::new(Stored::Yes),
                 clock: Mutex::new(ClockState {
                     timezone: "Etc/UTC".into(),
@@ -815,26 +839,40 @@ mod fake {
                 Op::AccountInfo => {
                     self.enter(format!("account {host}"), ask)?;
                     Reply::Account(AccountInfo {
+                        user: "alice".into(),
+                        profile: self.profile.lock().unwrap().clone(),
+                        roles: vec![ADMINISTRATORS.into()],
                         grants: lanlord_model::access::Grants::all(
                             lanlord_model::access::Level::Manage,
                         ),
-                        ..AccountInfo::default()
+                        links: vec![
+                            LinkInfo {
+                                link: "Linux account".into(),
+                                status: "active".into(),
+                            },
+                            LinkInfo {
+                                link: "NT4 domain".into(),
+                                status: "not available yet".into(),
+                            },
+                        ],
                     })
                 }
                 Op::ChangePassword { .. } | Op::ResetPassword { .. } => {
                     self.enter(format!("password {host}"), ask)?;
-                    Reply::Password(PasswordReport::default())
+                    Reply::Password(self.password_report.lock().unwrap().clone())
                 }
-                Op::UpdateProfile { .. } => {
+                Op::UpdateProfile { profile } => {
                     self.enter(format!("profile {host}"), ask)?;
+                    *self.profile.lock().unwrap() = profile;
                     Reply::Done
                 }
                 Op::LoadAccess => {
                     self.enter(format!("load-access {host}"), ask)?;
-                    Reply::Access(Access::default())
+                    Reply::Access(self.access.lock().unwrap().clone())
                 }
-                Op::SaveAccess { .. } => {
+                Op::SaveAccess { access } => {
                     self.enter(format!("save-access {host}"), ask)?;
+                    *self.access.lock().unwrap() = access;
                     Reply::Done
                 }
                 Op::Subscribe { .. } => {

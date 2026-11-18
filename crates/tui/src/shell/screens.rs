@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use lanlord_app::gateway::Fake;
 use lanlord_app::login::fake::FakeAuth;
+use lanlord_app::networks_window::{self, NetworksWindow};
 
 use super::{
     AdminSetup, Arc, Buffer, Form, HostList, Modal, Palette, Power, Rect, Shell, Target, MODULES,
@@ -22,13 +23,16 @@ const SIZES: [(u16, u16); 3] = [SMALL, (100, 30), LARGE];
 
 /// a demo desktop with a fixed clock, its first frame drawn at `size`.
 fn desktop(size: (u16, u16)) -> Shell {
-    let mut shell = Shell::new(
-        Arc::new(Fake::new()),
-        HostList::new(None),
-        Palette::default(),
-    );
+    desktop_with(size, Fake::new())
+}
+
+/// a demo desktop over `fake`. lease times are written in UTC, so a snapshot reads the same
+/// in every time zone.
+fn desktop_with(size: (u16, u16), fake: Fake) -> Shell {
+    let mut shell = Shell::new(Arc::new(fake), HostList::new(None), Palette::default());
     shell.clock = Some("12:00 PM".into());
     shell.use_demo_server();
+    shell.networks = NetworksWindow::default().with_time(networks_window::utc_time);
     draw(&mut shell, size);
     shell
 }
@@ -176,6 +180,7 @@ fn scenes() -> Vec<Scene> {
             window(size, Target::Module(index))
         }));
     }
+    all.extend(window_boxes());
     for tab in 1..3 {
         all.push(scene(format!("nt4-domain-tab{tab}"), move |size| {
             let mut shell = window(size, module("nt4-domain"));
@@ -184,6 +189,59 @@ fn scenes() -> Vec<Scene> {
         }));
     }
     all
+}
+
+/// the boxes that open from the Networks, My Account and Permissions windows.
+fn window_boxes() -> Vec<Scene> {
+    use lanlord_app::account_window::Msg as AccountMsg;
+    use lanlord_app::networks_window::Msg as Networks;
+    use lanlord_app::permissions_window::Msg as PermissionsMsg;
+    const HOST: &str = "demo@gateway";
+    vec![
+        scene("networks-lanlord", |size| {
+            let fake = Fake::new();
+            *fake.stored.lock().unwrap() = super::window_tests::NETWORKS.into();
+            let mut shell = desktop_with(size, fake);
+            shell.open(Target::Networks);
+            draw(&mut shell, size);
+            shell
+                .networks
+                .update(Networks::Tab(1), &shell.services, HOST, 0.0);
+            shell
+        }),
+        scene("networks-properties", |size| {
+            let mut shell = window(size, Target::Networks);
+            draw(&mut shell, size);
+            shell
+                .networks
+                .update(Networks::Properties, &shell.services, HOST, 0.0);
+            shell
+        }),
+        scene("networks-connection", |size| {
+            let mut shell = window(size, Target::Networks);
+            draw(&mut shell, size);
+            shell
+                .networks
+                .update(Networks::Details, &shell.services, HOST, 0.0);
+            shell
+        }),
+        scene("change-password", |size| {
+            let mut shell = window(size, Target::MyAccount);
+            draw(&mut shell, size);
+            shell
+                .account
+                .update(AccountMsg::ChangePassword, &shell.services, HOST);
+            shell
+        }),
+        scene("add-user", |size| {
+            let mut shell = window(size, Target::Permissions);
+            draw(&mut shell, size);
+            shell
+                .permissions
+                .update(PermissionsMsg::AddUser, &shell.services, HOST, true);
+            shell
+        }),
+    ]
 }
 
 /// the desktop with a handful of windows open at once, the last one on top.
@@ -399,15 +457,18 @@ fn blanks(buf: &Buffer, x: u16, y: u16, step: i32) -> u16 {
     count
 }
 
-/// the regions of every window and of the dialog, one list each.
+/// the regions of every window and of the dialog, one list each. a dialog has the whole
+/// desktop's input, and may cover part of a window, so the windows behind it do not count.
 fn region_lists(shell: &Shell) -> Vec<Vec<Region>> {
-    let mut lists: Vec<Vec<Region>> = shell
+    if let Some((_, regions)) = &shell.hits.dialog {
+        return vec![regions.clone()];
+    }
+    let lists: Vec<Vec<Region>> = shell
         .hits
         .windows
         .iter()
         .map(|(_, _, _, regions)| regions.clone())
         .collect();
-    lists.extend(shell.hits.dialog.iter().map(|(_, regions)| regions.clone()));
     lists
 }
 

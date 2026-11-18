@@ -29,7 +29,6 @@ use crate::form::Form;
 use crate::icons;
 use crate::login::{Auth, LoginBox, Outcome, SignedIn};
 use crate::my_server::{self, MyServer};
-use crate::networks_window::{self, Networks};
 use crate::nt4_window::Nt4Window;
 use crate::settings_editor::SettingsEditor;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, TEAL, WHITE};
@@ -44,6 +43,7 @@ use lanlord_app::gateway::Gateway;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::login::WebSession;
 use lanlord_app::monitor::{self, Backend, Monitor};
+use lanlord_app::networks_window::{self, NetworksWindow};
 use lanlord_app::permissions_window::PermissionsWindow;
 use lanlord_app::remote::Remote;
 use lanlord_app::services::Services;
@@ -91,7 +91,7 @@ pub struct Desktop {
     dns: DnsPanel,
     commands: CommandPanel,
     my_server: MyServer,
-    networks: Networks,
+    networks: NetworksWindow,
     /// the components wizard, and which components the server has switched on.
     components: Components,
     welcome: Welcome,
@@ -188,7 +188,7 @@ impl Desktop {
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             my_server: MyServer::default(),
-            networks: Networks::default(),
+            networks: NetworksWindow::default(),
             components: Components::default(),
             welcome: Welcome::new(None),
             monitor: Monitor::default(),
@@ -367,7 +367,7 @@ impl Desktop {
         self.dns = DnsPanel::default();
         self.commands = CommandPanel::default();
         self.my_server = MyServer::default();
-        self.networks = Networks::default();
+        self.networks = NetworksWindow::default();
         self.components = Components::default();
         self.clock.reset();
         self.monitor = Monitor::default();
@@ -605,6 +605,7 @@ impl Desktop {
         }
         self.refresh_grants();
         self.account.poll();
+        self.networks.poll();
         self.permissions.poll();
         self.settings.poll();
         self.nt4.poll();
@@ -856,7 +857,7 @@ impl Desktop {
         self.nt4.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.account_dialogs(ctx, host.as_deref());
-        self.networks.dialog(ctx);
+        self.network_dialog(ctx);
         my_server::dialog(&mut self.my_server, ctx, &self.services);
         components_window::dialog(&mut self.components, ctx, &self.services, host.as_deref());
         if let Some(host) = self.my_server.take_purged() {
@@ -1435,6 +1436,33 @@ impl Desktop {
         }
     }
 
+    /// the Networks window; what it asks the desktop to do. an open window reads the status
+    /// again every few seconds, so it asks to be drawn again.
+    fn networks_window(&mut self, ui: &mut Ui) -> Option<networks_window::Ask> {
+        let host = self.host();
+        let now = ui.input(|i| i.time);
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(
+                networks_window::STATUS_EVERY,
+            ));
+        let nodes = self.networks.view(&self.services, host.as_deref(), now);
+        match (view::show(ui, &nodes), host.as_deref()) {
+            (Some(msg), Some(host)) => self.networks.update(msg, &self.services, host, now),
+            _ => None,
+        }
+    }
+
+    /// the properties box and the Network Connection Details list.
+    fn network_dialog(&mut self, ctx: &egui::Context) {
+        let host = self.host();
+        if let Some(dialog) = self.networks.dialog() {
+            if let (Some(msg), Some(host)) = (view::dialog(ctx, &dialog), host.as_deref()) {
+                let now = ctx.input(|i| i.time);
+                self.networks.update(msg, &self.services, host, now);
+            }
+        }
+    }
+
     fn permissions_window(&mut self, ui: &mut Ui) {
         let (host, writable) = (self.host(), Target::Permissions.writable(&self.grants()));
         let nodes = self
@@ -1464,8 +1492,7 @@ impl Desktop {
                 my_server::show(&mut self.my_server, ui, &self.services, host.as_deref());
             }
             Target::Networks => {
-                let host = self.host();
-                let ask = self.networks.show(ui, &self.services, host.as_deref());
+                let ask = self.networks_window(ui);
                 if ask == Some(networks_window::Ask::Dns) {
                     self.open_next = MODULES
                         .iter()

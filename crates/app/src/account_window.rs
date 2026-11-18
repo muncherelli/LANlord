@@ -153,13 +153,22 @@ impl AccountWindow {
     }
 
     fn profile_group(&self, idle: bool) -> Node<Msg> {
-        let input = |value: &str, edit: fn(String) -> Msg| Node::Input {
-            value: value.into(),
-            size: Size::FillLess(8.0),
-            focus: false,
-            hint: String::new(),
-            edit: Box::new(edit),
-            enter: None,
+        // a save or reload in flight replaces the draft when it ends, so nothing is typed meanwhile
+        let busy = self.remote.busy();
+        let input = |value: &str, edit: fn(String) -> Msg| {
+            let field = Node::Input {
+                value: value.into(),
+                size: Size::FillLess(8.0),
+                focus: false,
+                hint: String::new(),
+                edit: Box::new(edit),
+                enter: None,
+            };
+            if busy {
+                Node::Disabled(vec![field])
+            } else {
+                field
+            }
         };
         Node::Group {
             title: "Profile".into(),
@@ -190,8 +199,8 @@ impl AccountWindow {
 
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
         match msg {
-            Msg::FullName(text) => self.draft.full_name = text,
-            Msg::Description(text) => self.draft.description = text,
+            Msg::FullName(text) if !self.remote.busy() => self.draft.full_name = text,
+            Msg::Description(text) if !self.remote.busy() => self.draft.description = text,
             Msg::SaveProfile if self.idle(services, host) => self.save_profile(services, host),
             Msg::Reload if self.idle(services, host) => self.reload(services, host),
             Msg::ChangePassword if self.form.is_none() => self.form = Some(password_form()),
@@ -363,5 +372,25 @@ mod tests {
         window.update_dialog(FormMsg::Cancel, &services, "gw");
         assert!(window.form.is_none() && window.dialog().is_none());
         assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn the_profile_is_not_edited_while_a_load_or_save_is_in_flight() {
+        let (mut window, services, _) = setup();
+        let _ = window.view(&services, Some("gw"));
+        assert!(window.remote.busy());
+        window.update(Msg::FullName("typed".into()), &services, "gw");
+        window.update(Msg::Description("typed".into()), &services, "gw");
+        assert_eq!(window.draft, Profile::default());
+        let nodes = window.view(&services, Some("gw"));
+        let disabled = nodes.iter().any(|n| {
+            matches!(n, Node::Group { title, body }
+                if title == "Profile" && body.iter().any(|b| matches!(b,
+                    Node::Labelled { body, .. } if matches!(body[0], Node::Disabled(_)))))
+        });
+        assert!(disabled);
+        settle(&mut window, &services);
+        window.update(Msg::FullName("typed".into()), &services, "gw");
+        assert_eq!(window.draft.full_name, "typed");
     }
 }

@@ -221,7 +221,7 @@ impl MyServer {
         };
         vec![
             Node::Tabs {
-                titles: vec!["General", "Advanced", "Compatibility"],
+                titles: view::titles(&["General", "Advanced", "Compatibility"]),
                 current: self.tab,
                 pick: Msg::Tab,
                 body: page,

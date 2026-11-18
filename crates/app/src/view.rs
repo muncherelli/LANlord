@@ -38,7 +38,7 @@ pub enum Node<M> {
     Button(Button<M>),
     /// a row of tabs over the page of the `current` one; clicking a tab sends `pick(tab)`.
     Tabs {
-        titles: Vec<&'static str>,
+        titles: Vec<String>,
         current: usize,
         pick: fn(usize) -> M,
         body: Vec<Node<M>>,
@@ -262,6 +262,11 @@ pub struct Dialog<M> {
     pub body: Vec<Node<M>>,
     /// what pressing Escape sends, if it closes the box.
     pub escape: Option<M>,
+}
+
+/// the titles of a row of tabs, from their names.
+pub fn titles(names: &[&str]) -> Vec<String> {
+    names.iter().map(ToString::to_string).collect()
 }
 
 /// the status bar for a window following a `Remote`.
