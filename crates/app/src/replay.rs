@@ -1,10 +1,10 @@
 //! running a task whose operations cannot be waited for (the browser).
 //!
-//! a task is plain code that calls the gateway one operation after another and waits for each answer.
-//! a page has no thread to wait on, so the task is run in passes instead: every operation it has
-//! already had an answer to is answered from the record, and the first one it has not is
-//! stopped at and handed back to be sent. once the answer is recorded the task runs again
-//! from the start, so each operation is sent exactly once.
+//! a task is plain code that calls the gateway one operation after another and waits for each
+//! answer. a page has no thread to wait on, so the task is run in passes instead: every operation
+//! it has already had an answer to is answered from the record, and the first one it has not is
+//! stopped at and handed back to be sent. once the answer is recorded the task runs again from the
+//! start, so each operation is sent exactly once.
 
 use std::sync::{Mutex, PoisonError};
 

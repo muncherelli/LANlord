@@ -2,12 +2,12 @@
 //! cannot hold a thread or a socket of its own opens one `EventSource` per topic and gets the
 //! monitor samples (the Task Manager and the tray) or the progress of an apply pushed to it.
 //!
-//! the rules are those of `/api/operations`: a login, a request that comes from the page itself and the
-//! permission the subscription needs (`Operation::requires`), read from the account's real roles and
-//! its live group membership (see [`Roster`]) when the stream opens and at every recheck. a
-//! stream keeps checking, so ending the session (logout, idle, a revoked user) or losing the
-//! permission ends the stream within a few seconds. nothing in the stream path counts as
-//! activity (opening, rechecking), so the idle logout still fires.
+//! the rules are those of `/api/operations`: a login, a request that comes from the page itself and
+//! the permission the subscription needs (`Operation::requires`), read from the account's real
+//! roles and its live group membership (see [`Roster`]) when the stream opens and at every recheck.
+//! a stream keeps checking, so ending the session (logout, idle, a revoked user) or losing the
+//! permission ends the stream within a few seconds. nothing in the stream path counts as activity
+//! (opening, rechecking), so the idle logout still fires.
 //!
 //! nothing queues without bound: a stream holds a few events for its client, and a client that
 //! does not read them is dropped (it reconnects and starts from the newest data); the apply

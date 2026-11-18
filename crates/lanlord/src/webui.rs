@@ -319,8 +319,9 @@ fn refusal(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-/// the accounts whose sessions an operation leaves out of date, and whether the caller's own session
-/// may stay: a password change keeps the window it was made in, a permission change does not.
+/// the accounts whose sessions an operation leaves out of date, and whether the caller's own
+/// session may stay: a password change keeps the window it was made in, a permission change does
+/// not.
 fn affected(operation: &Operation, caller: &str) -> Vec<(String, bool)> {
     let own = |name: &str| name == caller;
     match operation {
@@ -340,13 +341,13 @@ fn affected(operation: &Operation, caller: &str) -> Vec<(String, bool)> {
 }
 
 /// the operations endpoint. it needs a page-origin json request and a login, and takes the same
-/// `Request` body the browser sends. the account's admin state is read again on every request,
-/// and the operation goes to the operations service, which checks `Operation::requires` for the account itself:
-/// a refusal is a 403, a body that is not an operation a 400, a service that is not there a 503,
-/// and anything else the `Response` json of `lanlord operation`. after an operation that changes a password or
-/// a user's permissions, even one that failed half way, the affected users' sessions end (see
-/// `Auth::revoke_user`). no sudo password travels: the service is root. live streams are not
-/// operations: they are served on `/api/events`. the body is read already so the size limit
+/// `Request` body the browser sends. the account's admin state is read again on every request, and
+/// the operation goes to the operations service, which checks `Operation::requires` for the account
+/// itself: a refusal is a 403, a body that is not an operation a 400, a service that is not there a
+/// 503, and anything else the `Response` json of `lanlord op`. after an operation that changes a
+/// password or a user's permissions, even one that failed half way, the affected users' sessions
+/// end (see `Auth::revoke_user`). no sudo password travels: the service is root. live streams are
+/// not operations: they are served on `/api/events`. the body is read already so the size limit
 /// applies.
 async fn operations(
     State(app): State<App>,

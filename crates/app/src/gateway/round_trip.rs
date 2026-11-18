@@ -51,8 +51,8 @@ impl std::fmt::Display for SessionEnded {
 
 impl std::error::Error for SessionEnded {}
 
-/// how long one request may take before it is given up, in milliseconds: the operations that run for
-/// minutes get longer than the server's own 15 minute limit, so its answer is the one shown.
+/// how long one request may take before it is given up, in milliseconds: the operations that run
+/// for minutes get longer than the server's own 15 minute limit, so its answer is the one shown.
 pub fn timeout_ms(operation: &Operation) -> i32 {
     match operation {
         Operation::Apply { .. }

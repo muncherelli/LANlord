@@ -1,7 +1,8 @@
 //! the browser's backend: every operation goes to the web ui's `/api/operations` as json.
 //!
-//! a browser cannot wait for an answer, so operations are awaited with [`Http::exchange`]; tasks run
-//! on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says so.
+//! a browser cannot wait for an answer, so operations are awaited with [`Http::exchange`]; tasks
+//! run on it in passes (see `replay`). the synchronous [`Gateway::call`] the desktop uses only says
+//! so.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

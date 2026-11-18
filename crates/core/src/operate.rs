@@ -56,7 +56,8 @@ pub fn offered_at(socket: &Path) -> bool {
     }
 }
 
-/// the one request line for `operation`: the operation alone. a local request never names an account.
+/// the one request line for `operation`: the operation alone. a local request never names an
+/// account.
 fn request_line(operation: &Operation) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     let mut line = serde_json::to_vec(&serde_json::json!({ "op": operation }))?;
     line.push(b'\n');
@@ -128,8 +129,8 @@ pub fn through_socket(_socket: &Path, _operation: &Operation) -> Result<Reply> {
     bail!("the operations service is only on the gateway")
 }
 
-/// run `operation` with `sudo lanlord operate` over `session`. sudo's password, when the server wants
-/// one, is the first line of what is sent and the request follows (see `bridge`).
+/// run `operation` with `sudo lanlord operate` over `session`. sudo's password, when the server
+/// wants one, is the first line of what is sent and the request follows (see `bridge`).
 pub fn through_sudo(session: &Session, operation: &Operation, ask: AskPassword) -> Result<Reply> {
     let admin = crate::config::admin(session)?;
     let (remote, first) = root_argv(session, &admin, &[BRIDGE_BIN, "operate"], ask)?;
@@ -140,8 +141,8 @@ pub fn through_sudo(session: &Session, operation: &Operation, ask: AskPassword) 
     answered.finish()
 }
 
-/// the request `lanlord operate` reads: one line holding the operation (a password field, as a bridge
-/// request may carry, is ignored: sudo asked for it already).
+/// the request `lanlord operate` reads: one line holding the operation (a password field, as a
+/// bridge request may carry, is ignored: sudo asked for it already).
 pub fn read_request(line: &str) -> Result<Operation> {
     Ok(serde_json::from_str::<Request>(line)?.operation)
 }

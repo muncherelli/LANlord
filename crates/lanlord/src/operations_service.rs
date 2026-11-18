@@ -2,7 +2,7 @@
 //! the web ui itself is sandboxed (no network, no privileges), so it sends each operation here
 //! over a unix socket as one line of json, `{"account": ..., "op": ...}`. an apply sends progress
 //! first, one `{"event": ...}` line per `ApplyEvent`; the last line is always
-//! `{"response": ...}`, the same `Response` `lanlord operation` prints.
+//! `{"response": ...}`, the same `Response` `lanlord op` prints.
 //!
 //! trust boundary: this service believes the web ui about which account is signed in; it does
 //! not believe it about what that account may do. it reads the account's group membership again
@@ -274,8 +274,8 @@ fn answer_line(
             return Response::Denied("this account is not known here".into());
         }
     };
-    // the shared value rules run in core's `guarded`, after the account is checked for the operation:
-    // an unauthorised caller must never make root parse what it sent
+    // the shared value rules run in core's `guarded`, after the account is checked for the
+    // operation: an unauthorised caller must never make root parse what it sent
     match run(&caller, &forwarded.operation) {
         Ok(reply) => Response::Ok(reply),
         Err(e) => {
@@ -294,8 +294,8 @@ fn answer_line(
     }
 }
 
-/// run `work` as the only apply when `operation` is one: a second one is refused while the first runs,
-/// and any other operation is not held up.
+/// run `work` as the only apply when `operation` is one: a second one is refused while the first
+/// runs, and any other operation is not held up.
 fn single_apply<T>(
     lock: &Mutex<()>,
     operation: &Operation,
@@ -355,8 +355,8 @@ fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
     })
 }
 
-/// the real thing: the account is read from this machine's groups, and the operation runs locally as
-/// root through core's `execute_in`, which checks `Operation::requires`.
+/// the real thing: the account is read from this machine's groups, and the operation runs locally
+/// as root through core's `execute_in`, which checks `Operation::requires`.
 fn system_answer(line: &[u8], emit: Emit) -> Response {
     let session = Session::local();
     answer_line(

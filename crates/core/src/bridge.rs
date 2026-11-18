@@ -1,10 +1,11 @@
-//! `lanlord bridge`, both ends. on the gateway [`serve`] reads requests and runs the operations it can in
-//! plain rust ([`run_local`]); on the controller [`Session::bridge`] starts it over the ssh session
-//! that is already open and [`Bridge::call`] talks to it. frames are in `lanlord_model::bridge`.
+//! `lanlord bridge`, both ends. on the gateway [`serve`] reads requests and runs the operations it
+//! can in plain rust ([`run_local`]); on the controller [`Session::bridge`] starts it over the ssh
+//! session that is already open and [`Bridge::call`] talks to it. frames are in
+//! `lanlord_model::bridge`.
 //!
-//! the bridge is a speedup and a cleaner way to run an operation, never a requirement: when the gateway
-//! has no bridge, or one that speaks another protocol, [`try_call`] says so and the caller uses
-//! the shell scripts it always had.
+//! the bridge is a speedup and a cleaner way to run an operation, never a requirement: when the
+//! gateway has no bridge, or one that speaks another protocol, [`try_call`] says so and the caller
+//! uses the shell scripts it always had.
 //!
 //! # sudo and stdin
 //!
@@ -66,7 +67,8 @@ pub fn run_local(operation: &Operation, log: &mut dyn FnMut(&str)) -> Result<Rep
     }
 }
 
-/// the clock operations; the bridge only runs on linux gateways, so elsewhere there is nothing to run.
+/// the clock operations; the bridge only runs on linux gateways, so elsewhere there is nothing to
+/// run.
 #[cfg(unix)]
 fn run_clock(operation: &Operation, log: &mut dyn FnMut(&str)) -> Result<Reply> {
     use crate::local::clock;
@@ -259,8 +261,9 @@ impl Drop for Bridge {
     }
 }
 
-/// run `operation` through the bridge. `Ok(None)` when the gateway has none (or a mismatched one): the
-/// reason is logged, later operations skip the attempt, and the caller runs its shell script instead.
+/// run `operation` through the bridge. `Ok(None)` when the gateway has none (or a mismatched one):
+/// the reason is logged, later operations skip the attempt, and the caller runs its shell script
+/// instead.
 pub fn try_call(
     session: &Session,
     operation: &Operation,

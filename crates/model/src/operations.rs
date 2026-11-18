@@ -1,8 +1,9 @@
 //! every action a front end asks of a server, as data.
 //!
-//! the gui, the tui, the cli and the web ui all describe what they want as an [`Operation`], and lanlord
-//! answers with a [`Reply`]. on a client the operation runs over ssh; on the gateway (server mode, and
-//! the web ui) it runs locally. an operation names no server: whoever runs it knows which one.
+//! the gui, the tui, the cli and the web ui all describe what they want as an [`Operation`], and
+//! lanlord answers with a [`Reply`]. on a client the operation runs over ssh; on the gateway
+//! (server mode, and the web ui) it runs locally. an operation names no server: whoever runs it
+//! knows which one.
 //!
 //! sudo passwords are not part of an operation. how a front end that cannot answer a prompt gets
 //! privileges (a root helper, or a socket daemon only the lanlord-admins group may use) is not
@@ -108,8 +109,8 @@ pub enum Operation {
 }
 
 impl Operation {
-    /// what this operation needs from its caller. the match has no catch-all on purpose: a new operation does
-    /// not compile until it says what it needs.
+    /// what this operation needs from its caller. the match has no catch-all on purpose: a new
+    /// operation does not compile until it says what it needs.
     pub fn requires(&self) -> Need {
         match self {
             Operation::Bootstrap => Need::manage(Area::Updates),
@@ -168,8 +169,8 @@ impl Operation {
         crate::validate::operation(self)
     }
 
-    /// does the operation touch the stored secrets? those run only where the gateway's key is: the root
-    /// operations service, or `lanlord operate` under sudo. no client decrypts anything.
+    /// does the operation touch the stored secrets? those run only where the gateway's key is: the
+    /// root operations service, or `lanlord operate` under sudo. no client decrypts anything.
     pub fn needs_gateway_key(&self) -> bool {
         matches!(
             self,
@@ -190,7 +191,8 @@ impl Operation {
         )
     }
 
-    /// can `lanlord bridge` on the gateway run the operation itself? the others stay on the shell path.
+    /// can `lanlord bridge` on the gateway run the operation itself? the others stay on the shell
+    /// path.
     pub fn runs_on_bridge(&self) -> bool {
         matches!(
             self,
@@ -298,16 +300,17 @@ pub enum Reply {
     /// how a password change went on each linked account.
     Password(PasswordReport),
     Access(Access),
-    /// the server needs the sudo password: a front end that cannot answer a prompt while an operation
-    /// runs (the web ui) asks the person and sends the same operation again in a [`Request`] carrying
-    /// it. the terminal and the desktop answer the prompt directly and never see this.
+    /// the server needs the sudo password: a front end that cannot answer a prompt while an
+    /// operation runs (the web ui) asks the person and sends the same operation again in a
+    /// [`Request`] carrying it. the terminal and the desktop answer the prompt directly and never
+    /// see this.
     NeedsPassword {
         prompt: String,
     },
 }
 
-/// an operation as the web ui sends it: the operation, and the sudo password once the server has asked for
-/// it with [`Reply::NeedsPassword`].
+/// an operation as the web ui sends it: the operation, and the sudo password once the server has
+/// asked for it with [`Reply::NeedsPassword`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     #[serde(rename = "op")]
@@ -316,7 +319,7 @@ pub struct Request {
     pub password: Option<Secret>,
 }
 
-/// a reply, or why there is none; what `lanlord operation` prints.
+/// a reply, or why there is none; what `lanlord op` prints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Response {

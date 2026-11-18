@@ -120,9 +120,9 @@ fn render(template: &str, pairs: &[(&str, &str)]) -> String {
     render_in(template, TIMESYNCD_FILE, pairs)
 }
 
-/// the bridge's answer to `operation`, or `None` when the gateway has no bridge and the shell scripts
-/// below must do it. `pick` takes the one reply kind `operation` may get; any other kind is an error,
-/// never a reason to fall back (the bridge may already have made the change).
+/// the bridge's answer to `operation`, or `None` when the gateway has no bridge and the shell
+/// scripts below must do it. `pick` takes the one reply kind `operation` may get; any other kind is
+/// an error, never a reason to fall back (the bridge may already have made the change).
 fn via_bridge<T>(
     session: &Session,
     operation: &Operation,

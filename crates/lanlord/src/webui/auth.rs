@@ -709,8 +709,8 @@ mod tests {
         slow: Arc<AtomicU64>,
     }
 
-    /// runs operations the way the operations service guards them: the account's grants, from
-    /// its current admin state, must cover `Operation::requires`. what is allowed answers with the name
+    /// runs operations the way the operations service guards them: the account's grants, from its
+    /// current admin state, must cover `Operation::requires`. what is allowed answers with the name
     /// of the user, and is recorded. an operation that names the user `broken` fails half way.
     fn runner(ran: Ran, roles: Roles, faults: Faults) -> super::super::Runner {
         use lanlord_core::access::{authorize, Grants};

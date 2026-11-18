@@ -241,8 +241,8 @@ fn guarded(
 /// where this machine keeps its time zone database.
 const ZONEINFO: &str = "/usr/share/zoneinfo";
 
-/// the time zones an operation names must be in the zone database of the machine it runs on. when the
-/// machine has no database (a minimal container) the name rules alone apply.
+/// the time zones an operation names must be in the zone database of the machine it runs on. when
+/// the machine has no database (a minimal container) the name rules alone apply.
 fn known_zones(operation: &Operation, zoneinfo: &str) -> Result<()> {
     let root = std::path::Path::new(zoneinfo);
     if !root.is_dir() {

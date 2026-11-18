@@ -1044,9 +1044,9 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
     lines
 }
 
-/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the operation
-/// without asking for confirmation (the front end that sent it already did) and never prompts on
-/// the terminal: a sudo password comes in the request, or the reply asks for one.
+/// one operation in, one reply out, both as json; what the web ui backend calls. it runs the
+/// operation without asking for confirmation (the front end that sent it already did) and never
+/// prompts on the terminal: a sudo password comes in the request, or the reply asks for one.
 fn operation(host: &str) -> Result<()> {
     // the operation may carry passwords
     let mut input = zeroize::Zeroizing::new(String::new());
@@ -1063,8 +1063,9 @@ fn operation(host: &str) -> Result<()> {
     Ok(())
 }
 
-/// answer `input` with exactly one json line on `out`. whatever the server printed while the operation
-/// ran goes to `err`, so `out` stays readable by a program. false when the answer is an error.
+/// answer `input` with exactly one json line on `out`. whatever the server printed while the
+/// operation ran goes to `err`, so `out` stays readable by a program. false when the answer is an
+/// error.
 fn answer(
     input: &str,
     run: impl FnOnce(&Operation, AskPassword) -> Result<Reply>,
@@ -1086,8 +1087,8 @@ fn answer(
     ))
 }
 
-/// read `input` as a request (or a bare operation) and answer it with `run`. sudo prompts are answered
-/// with the request's password; without one the reply asks for it instead.
+/// read `input` as a request (or a bare operation) and answer it with `run`. sudo prompts are
+/// answered with the request's password; without one the reply asks for it instead.
 fn respond(input: &str, run: impl FnOnce(&Operation, AskPassword) -> Result<Reply>) -> Response {
     let request = match read_request(input) {
         Ok(request) => request,

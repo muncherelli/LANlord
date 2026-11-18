@@ -1,10 +1,10 @@
 //! everything the windows do to a gateway, behind one trait so tests can
 //! swap in a fake that never touches the network.
 //!
-//! every action is an [`Operation`] answered by a [`Reply`]: a backend implements [`Gateway::call`],
-//! and the typed methods the windows use are a thin layer over it. on the desktop the operation runs
-//! over ssh (client mode) or on the gateway itself (server mode); in the browser it goes to
-//! the web ui's `/api/operations`.
+//! every action is an [`Operation`] answered by a [`Reply`]: a backend implements
+//! [`Gateway::call`], and the typed methods the windows use are a thin layer over it. on the
+//! desktop the operation runs over ssh (client mode) or on the gateway itself (server mode); in the
+//! browser it goes to the web ui's `/api/operations`.
 
 use anyhow::{anyhow, Result};
 use lanlord_model::access::{Access, Profile};
@@ -37,7 +37,8 @@ fn unexpected(operation: &str, reply: Reply) -> anyhow::Error {
 }
 
 pub trait Gateway: Send + Sync {
-    /// run `operation` on `host`, asking for the sudo password through `ask` when the server needs it.
+    /// run `operation` on `host`, asking for the sudo password through `ask` when the server needs
+    /// it.
     fn call(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<Reply>;
 
     /// true when lanlord runs on the gateway itself: there is one server and no host list.
