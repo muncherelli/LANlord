@@ -4,9 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ops::{Op, Reply};
+use crate::operations::{Operation, Reply};
 
-/// bumped whenever a frame or an op changes in a way an older peer cannot read.
+/// bumped whenever a frame or an operation changes in a way an older peer cannot read.
 pub const PROTO: u32 = 1;
 
 /// the first frame the bridge sends.
@@ -37,11 +37,12 @@ impl Hello {
     }
 }
 
-/// one op for the bridge to run; the id comes back on every event about it.
+/// one operation for the bridge to run; the id comes back on every event about it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub id: u64,
-    pub op: Op,
+    #[serde(rename = "op")]
+    pub operation: Operation,
 }
 
 /// what the bridge says about a request. a request ends with a `Reply` or an `Error`; `Log` lines
@@ -73,7 +74,7 @@ mod tests {
         assert_eq!(hello, r#"{"proto":1,"version":"1.2.3"}"#);
         let request = Request {
             id: 7,
-            op: Op::ClockZoneNow { zone: "UTC".into() },
+            operation: Operation::ClockZoneNow { zone: "UTC".into() },
         };
         let text = serde_json::to_string(&request).unwrap();
         assert!(!text.contains('\n'));
@@ -117,9 +118,9 @@ mod tests {
     }
 
     #[test]
-    fn only_clock_ops_run_on_the_bridge_and_only_writes_need_root() {
-        assert!(Op::ClockState.runs_on_bridge() && !Op::ClockState.needs_root());
-        assert!(Op::ClockUpdateNow.needs_root());
-        assert!(!Op::Doctor.runs_on_bridge());
+    fn only_clock_operations_run_on_the_bridge_and_only_writes_need_root() {
+        assert!(Operation::ClockState.runs_on_bridge() && !Operation::ClockState.needs_root());
+        assert!(Operation::ClockUpdateNow.needs_root());
+        assert!(!Operation::Doctor.runs_on_bridge());
     }
 }

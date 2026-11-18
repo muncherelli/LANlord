@@ -31,7 +31,7 @@ pub enum Update {
     Refused(String),
 }
 
-/// the address of the stream for `topic` (see `lanlord_model::ops::topic`).
+/// the address of the stream for `topic` (see `lanlord_model::operations::topic`).
 pub fn url(topic: &str) -> String {
     format!("/api/events?topic={topic}")
 }

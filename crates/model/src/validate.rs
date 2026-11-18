@@ -19,7 +19,7 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::access::Access;
 use crate::modules::{self, MODULES};
-use crate::ops::{Op, UserChange};
+use crate::operations::{Operation, UserChange};
 
 /// why a value is refused.
 pub type Check = Result<(), &'static str>;
@@ -1025,7 +1025,7 @@ fn check_clock(change: &crate::clock::Change) -> Result<(), Invalid> {
     Ok(())
 }
 
-fn check_save(plain: &str, updates: &[crate::ops::SecretUpdate]) -> Result<(), Invalid> {
+fn check_save(plain: &str, updates: &[crate::operations::SecretUpdate]) -> Result<(), Invalid> {
     settings_document(plain)?;
     for (position, update) in updates.iter().enumerate() {
         named(
@@ -1069,13 +1069,13 @@ fn check_modules(ids: &[String]) -> Result<(), Invalid> {
 
 /// check the arguments of an operation the way the server will, before anything runs. the first
 /// field that is wrong is named.
-pub fn operation(op: &Op) -> Result<(), Invalid> {
-    match op {
-        Op::Apply { modules } => check_modules(modules),
-        Op::SaveDocument { plain, updates } => check_save(plain, updates),
-        Op::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
-        Op::ResetMachine { name } => named("name", machine_name, name),
-        Op::CreateAdmin {
+pub fn operation(operation: &Operation) -> Result<(), Invalid> {
+    match operation {
+        Operation::Apply { modules } => check_modules(modules),
+        Operation::SaveDocument { plain, updates } => check_save(plain, updates),
+        Operation::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
+        Operation::ResetMachine { name } => named("name", machine_name, name),
+        Operation::CreateAdmin {
             name,
             password,
             ssh_key: key,
@@ -1086,12 +1086,12 @@ pub fn operation(op: &Op) -> Result<(), Invalid> {
             key.as_deref()
                 .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
         }
-        Op::ReadLogon { name } => flag(
+        Operation::ReadLogon { name } => flag(
             crate::logon::valid_script_name(name),
             "is not a script name",
         )
         .map_err(|reason| invalid("name", reason)),
-        Op::WriteLogon { name, text } => {
+        Operation::WriteLogon { name, text } => {
             flag(
                 crate::logon::valid_script_name(name),
                 "is not a script name",
@@ -1100,23 +1100,23 @@ pub fn operation(op: &Op) -> Result<(), Invalid> {
             flag(!text.contains('\0'), "must not hold a NUL")
                 .map_err(|reason| invalid("text", reason))
         }
-        Op::Run { command } => check_command(command),
-        Op::ClockZoneNow { zone } => named("zone", time_zone, zone),
-        Op::ClockApply { change } => check_clock(change),
-        Op::ChangePassword { old, new } => {
+        Operation::Run { command } => check_command(command),
+        Operation::ClockZoneNow { zone } => named("zone", time_zone, zone),
+        Operation::ClockApply { change } => check_clock(change),
+        Operation::ChangePassword { old, new } => {
             named("old", secret_text, old.expose())?;
             named("new", secret_text, new.expose())
         }
-        Op::ResetPassword { user, new } => {
+        Operation::ResetPassword { user, new } => {
             named("user", login_name, user)?;
             named("new", secret_text, new.expose())
         }
-        Op::UpdateProfile { profile } => {
+        Operation::UpdateProfile { profile } => {
             named("full_name", text_line, &profile.full_name)?;
             named("description", text_line, &profile.description)
         }
-        Op::SaveAccess { access } => check_access(access),
-        Op::Subscribe { topic } => flag(
+        Operation::SaveAccess { access } => check_access(access),
+        Operation::Subscribe { topic } => flag(
             topic.len() <= 64 && !has_control(topic, &[]),
             "is not a topic",
         )
@@ -1136,7 +1136,7 @@ mod tests {
         text_line, time_server, time_zone, upstream, Check,
     };
     use crate::clock::{Change, NtpChange};
-    use crate::ops::{Op, SecretUpdate, UserChange};
+    use crate::operations::{Operation, SecretUpdate, UserChange};
     use crate::secret::Secret;
 
     fn table(rule: fn(&str) -> Check, good: &[&str], bad: &[&str]) {
@@ -1794,20 +1794,20 @@ web-proxy:
     fn operations_are_checked_field_by_field() {
         let refused = [
             (
-                Op::Apply {
+                Operation::Apply {
                     modules: vec!["dns".into(), "dns; id".into()],
                 },
                 "modules[1]",
             ),
             (
-                Op::SaveDocument {
+                Operation::SaveDocument {
                     plain: "gateway:\n  timezone: ../x\n".into(),
                     updates: vec![],
                 },
                 "gateway.timezone",
             ),
             (
-                Op::SaveDocument {
+                Operation::SaveDocument {
                     plain: String::new(),
                     updates: vec![SecretUpdate {
                         path: "a b".into(),
@@ -1817,7 +1817,7 @@ web-proxy:
                 "updates[0].path",
             ),
             (
-                Op::SaveDocument {
+                Operation::SaveDocument {
                     plain: String::new(),
                     updates: vec![SecretUpdate {
                         path: "a".into(),
@@ -1827,13 +1827,13 @@ web-proxy:
                 "updates[0].value",
             ),
             (
-                Op::ResetMachine {
+                Operation::ResetMachine {
                     name: "ws1; id".into(),
                 },
                 "name",
             ),
             (
-                Op::ChangeUsers {
+                Operation::ChangeUsers {
                     changes: vec![UserChange::Remove {
                         name: "x --y".into(),
                     }],
@@ -1841,7 +1841,7 @@ web-proxy:
                 "name",
             ),
             (
-                Op::ChangeUsers {
+                Operation::ChangeUsers {
                     changes: vec![UserChange::SetPassword {
                         name: "dana".into(),
                         password: password("a\nb"),
@@ -1850,7 +1850,7 @@ web-proxy:
                 "password",
             ),
             (
-                Op::CreateAdmin {
+                Operation::CreateAdmin {
                     name: "Root".into(),
                     password: password("x"),
                     ssh_key: None,
@@ -1859,7 +1859,7 @@ web-proxy:
                 "name",
             ),
             (
-                Op::CreateAdmin {
+                Operation::CreateAdmin {
                     name: "ok".into(),
                     password: password("x"),
                     ssh_key: Some("ssh-ed25519 AAAA\nssh-rsa B".into()),
@@ -1868,33 +1868,33 @@ web-proxy:
                 "ssh_key",
             ),
             (
-                Op::ReadLogon {
+                Operation::ReadLogon {
                     name: "../x".into(),
                 },
                 "name",
             ),
             (
-                Op::WriteLogon {
+                Operation::WriteLogon {
                     name: "x".into(),
                     text: "a\0b".into(),
                 },
                 "text",
             ),
-            (Op::Run { command: vec![] }, "command"),
+            (Operation::Run { command: vec![] }, "command"),
             (
-                Op::Run {
+                Operation::Run {
                     command: vec!["ls\0".into()],
                 },
                 "command",
             ),
             (
-                Op::ClockZoneNow {
+                Operation::ClockZoneNow {
                     zone: "../x".into(),
                 },
                 "zone",
             ),
             (
-                Op::ClockApply {
+                Operation::ClockApply {
                     change: Change {
                         timezone: Some("a b".into()),
                         ..Change::default()
@@ -1903,7 +1903,7 @@ web-proxy:
                 "timezone",
             ),
             (
-                Op::ClockApply {
+                Operation::ClockApply {
                     change: Change {
                         time: Some("yesterday".into()),
                         ..Change::default()
@@ -1912,7 +1912,7 @@ web-proxy:
                 "time",
             ),
             (
-                Op::ClockApply {
+                Operation::ClockApply {
                     change: Change {
                         ntp: Some(NtpChange {
                             enabled: true,
@@ -1924,36 +1924,36 @@ web-proxy:
                 "ntp.servers",
             ),
             (
-                Op::ResetPassword {
+                Operation::ResetPassword {
                     user: "a b".into(),
                     new: password("x"),
                 },
                 "user",
             ),
             (
-                Op::Subscribe {
+                Operation::Subscribe {
                     topic: "a\nb".into(),
                 },
                 "topic",
             ),
         ];
-        for (op, field) in refused {
-            let error = op.validate().expect_err(&format!("{op:?}"));
-            assert!(error.field.starts_with(field), "{op:?} gave {error}");
+        for (operation, field) in refused {
+            let error = operation.validate().expect_err(&format!("{operation:?}"));
+            assert!(error.field.starts_with(field), "{operation:?} gave {error}");
         }
         let fine = [
-            Op::Apply {
+            Operation::Apply {
                 modules: vec!["dns".into()],
             },
-            Op::LoadDocument,
-            Op::ResetMachine { name: "ws1".into() },
-            Op::Run {
+            Operation::LoadDocument,
+            Operation::ResetMachine { name: "ws1".into() },
+            Operation::Run {
                 command: vec!["uname".into(), "-a".into()],
             },
-            Op::ClockZoneNow {
+            Operation::ClockZoneNow {
                 zone: "Europe/Berlin".into(),
             },
-            Op::ClockApply {
+            Operation::ClockApply {
                 change: Change {
                     timezone: Some("UTC".into()),
                     time: Some("2026-11-15 17:30:00".into()),
@@ -1963,13 +1963,13 @@ web-proxy:
                     }),
                 },
             },
-            Op::SaveDocument {
+            Operation::SaveDocument {
                 plain: "dns:\n  zone: lab\n".into(),
                 updates: vec![],
             },
         ];
-        for op in fine {
-            assert_eq!(op.validate(), Ok(()), "{op:?}");
+        for operation in fine {
+            assert_eq!(operation.validate(), Ok(()), "{operation:?}");
         }
     }
 }

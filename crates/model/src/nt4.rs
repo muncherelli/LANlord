@@ -160,7 +160,7 @@ pub enum MachineChange {
     Reset(String),
 }
 
-/// the machine names in `plain` settings after `change`; adding a name twice is a no-op.
+/// the machine names in `plain` settings after `change`; adding a name twice is a no-operation.
 pub fn edit_machines(plain: &str, change: &MachineChange) -> Result<String> {
     let mut settings = Settings::parse(plain)?;
     let mut nt4 = Nt4Settings::from_settings(&settings)?;

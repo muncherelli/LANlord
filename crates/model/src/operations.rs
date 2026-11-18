@@ -1,12 +1,13 @@
 //! every action a front end asks of a server, as data.
 //!
-//! the gui, the tui, the cli and the web ui all describe what they want as an [`Op`], and lanlord
-//! answers with a [`Reply`]. on a client the op runs over ssh; on the gateway (server mode, and
-//! the web ui) it runs locally. an op names no server: whoever runs it knows which one.
+//! the gui, the tui, the cli and the web ui all describe what they want as an [`Operation`], and
+//! lanlord answers with a [`Reply`]. on a client the operation runs over ssh; on the gateway
+//! (server mode, and the web ui) it runs locally. an operation names no server: whoever runs it
+//! knows which one.
 //!
-//! sudo passwords are not part of an op. how a front end that cannot answer a prompt gets
+//! sudo passwords are not part of an operation. how a front end that cannot answer a prompt gets
 //! privileges (a root helper, or a socket daemon only the lanlord-admins group may use) is not
-//! decided yet; until then lanlord asks on its terminal while it runs an op.
+//! decided yet; until then lanlord asks on its terminal while it runs an operation.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +26,7 @@ use crate::users::Change as UserChangeInMemory;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
-pub enum Op {
+pub enum Operation {
     /// set the gateway up for lanlord.
     Bootstrap,
     /// apply these modules (all of them when empty) with the stored settings.
@@ -107,40 +108,46 @@ pub enum Op {
     Subscribe { topic: String },
 }
 
-impl Op {
-    /// what this op needs from its caller. the match has no catch-all on purpose: a new op does
-    /// not compile until it says what it needs.
+impl Operation {
+    /// what this operation needs from its caller. the match has no catch-all on purpose: a new
+    /// operation does not compile until it says what it needs.
     pub fn requires(&self) -> Need {
         match self {
-            Op::Bootstrap => Need::manage(Area::Updates),
-            Op::Apply { .. } => Need::manage(Area::Services),
-            Op::LoadDocument => Need::view(Area::Services),
-            Op::SaveDocument { .. } | Op::MoveSecrets { .. } => Need::manage(Area::Services),
-            Op::Probe => Need::view(Area::Network),
-            Op::ChangeUsers { .. } => Need::manage(Area::Domain),
-            Op::ResetMachine { .. } => Need::manage(Area::Domain),
-            Op::CreateAdmin { .. } => Need::manage(Area::Users),
-            Op::Leases => Need::view(Area::Network),
-            Op::LogonScripts | Op::ReadLogon { .. } | Op::ReadGeneratedLogon => {
-                Need::view(Area::Shares)
+            Operation::Bootstrap => Need::manage(Area::Updates),
+            Operation::Apply { .. } => Need::manage(Area::Services),
+            Operation::LoadDocument => Need::view(Area::Services),
+            Operation::SaveDocument { .. } | Operation::MoveSecrets { .. } => {
+                Need::manage(Area::Services)
             }
-            Op::WriteLogon { .. } => Need::manage(Area::Shares),
-            Op::Run { .. } => Need::manage(Area::Commands),
-            Op::Power { .. } => Need::manage(Area::Status),
-            Op::ServerFacts | Op::Doctor => Need::view(Area::Status),
-            Op::NetworkStatus => Need::view(Area::Network),
-            Op::PurgePreview { .. } => Need::view(Area::Updates),
-            Op::Purge { .. } => Need::manage(Area::Updates),
-            Op::ClockState | Op::ClockZones | Op::ClockZoneNow { .. } => Need::view(Area::Clock),
-            Op::ClockApply { .. } | Op::ClockUpdateNow => Need::manage(Area::Clock),
-            Op::AccountInfo | Op::ChangePassword { .. } | Op::UpdateProfile { .. } => {
-                Need::SelfOnly
+            Operation::Probe => Need::view(Area::Network),
+            Operation::ChangeUsers { .. } => Need::manage(Area::Domain),
+            Operation::ResetMachine { .. } => Need::manage(Area::Domain),
+            Operation::CreateAdmin { .. } => Need::manage(Area::Users),
+            Operation::Leases => Need::view(Area::Network),
+            Operation::LogonScripts
+            | Operation::ReadLogon { .. }
+            | Operation::ReadGeneratedLogon => Need::view(Area::Shares),
+            Operation::WriteLogon { .. } => Need::manage(Area::Shares),
+            Operation::Run { .. } => Need::manage(Area::Commands),
+            Operation::Power { .. } => Need::manage(Area::Status),
+            Operation::ServerFacts | Operation::Doctor => Need::view(Area::Status),
+            Operation::NetworkStatus => Need::view(Area::Network),
+            Operation::PurgePreview { .. } => Need::view(Area::Updates),
+            Operation::Purge { .. } => Need::manage(Area::Updates),
+            Operation::ClockState | Operation::ClockZones | Operation::ClockZoneNow { .. } => {
+                Need::view(Area::Clock)
             }
-            Op::ResetPassword { .. } | Op::SaveAccess { .. } => Need::manage(Area::Users),
-            Op::LoadAccess => Need::view(Area::Users),
+            Operation::ClockApply { .. } | Operation::ClockUpdateNow => Need::manage(Area::Clock),
+            Operation::AccountInfo
+            | Operation::ChangePassword { .. }
+            | Operation::UpdateProfile { .. } => Need::SelfOnly,
+            Operation::ResetPassword { .. } | Operation::SaveAccess { .. } => {
+                Need::manage(Area::Users)
+            }
+            Operation::LoadAccess => Need::view(Area::Users),
             // apply progress carries the output of the tasks, so it needs what applying shows
-            Op::Subscribe { topic } if topic == topic::APPLY => Need::view(Area::Services),
-            Op::Subscribe { .. } => Need::view(Area::Status),
+            Operation::Subscribe { topic } if topic == topic::APPLY => Need::view(Area::Services),
+            Operation::Subscribe { .. } => Need::view(Area::Status),
         }
     }
 }
@@ -155,41 +162,45 @@ pub mod topic {
     pub const APPLY: &str = "apply";
 }
 
-impl Op {
+impl Operation {
     /// check the arguments before anything runs: the first wrong field is named. the server does
     /// this whatever the client did; a client may too, for early feedback.
     pub fn validate(&self) -> Result<(), crate::validate::Invalid> {
         crate::validate::operation(self)
     }
 
-    /// does the op touch the stored secrets? those run only where the gateway's key is: the root
-    /// operations service, or `lanlord operate` under sudo. no client decrypts anything.
+    /// does the operation touch the stored secrets? those run only where the gateway's key is: the
+    /// root operations service, or `lanlord operate` under sudo. no client decrypts anything.
     pub fn needs_gateway_key(&self) -> bool {
         matches!(
             self,
-            Op::Apply { .. }
-                | Op::LoadDocument
-                | Op::SaveDocument { .. }
-                | Op::MoveSecrets { .. }
-                | Op::ChangeUsers { .. }
-                | Op::ClockApply { .. }
+            Operation::Apply { .. }
+                | Operation::LoadDocument
+                | Operation::SaveDocument { .. }
+                | Operation::MoveSecrets { .. }
+                | Operation::ChangeUsers { .. }
+                | Operation::ClockApply { .. }
         )
     }
 
-    /// does the op change the server, so that the bridge that runs it must be root?
+    /// does the operation change the server, so that the bridge that runs it must be root?
     pub fn needs_root(&self) -> bool {
-        matches!(self, Op::ClockApply { .. } | Op::ClockUpdateNow)
+        matches!(
+            self,
+            Operation::ClockApply { .. } | Operation::ClockUpdateNow
+        )
     }
 
-    /// can `lanlord bridge` on the gateway run the op itself? the others stay on the shell path.
+    /// can `lanlord bridge` on the gateway run the operation itself? the others stay on the shell
+    /// path.
     pub fn runs_on_bridge(&self) -> bool {
         matches!(
             self,
-            Op::ClockState
-                | Op::ClockZones
-                | Op::ClockZoneNow { .. }
-                | Op::ClockApply { .. }
-                | Op::ClockUpdateNow
+            Operation::ClockState
+                | Operation::ClockZones
+                | Operation::ClockZoneNow { .. }
+                | Operation::ClockApply { .. }
+                | Operation::ClockUpdateNow
         )
     }
 }
@@ -257,7 +268,7 @@ impl From<&UserChangeInMemory> for UserChange {
     }
 }
 
-/// what an op answered.
+/// what an operation answered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reply", content = "value", rename_all = "snake_case")]
 pub enum Reply {
@@ -289,19 +300,21 @@ pub enum Reply {
     /// how a password change went on each linked account.
     Password(PasswordReport),
     Access(Access),
-    /// the server needs the sudo password: a front end that cannot answer a prompt while an op
-    /// runs (the web ui) asks the person and sends the same op again in a [`Request`] carrying
-    /// it. the terminal and the desktop answer the prompt directly and never see this.
+    /// the server needs the sudo password: a front end that cannot answer a prompt while an
+    /// operation runs (the web ui) asks the person and sends the same operation again in a
+    /// [`Request`] carrying it. the terminal and the desktop answer the prompt directly and never
+    /// see this.
     NeedsPassword {
         prompt: String,
     },
 }
 
-/// an op as the web ui sends it: the op, and the sudo password once the server has asked for
-/// it with [`Reply::NeedsPassword`].
+/// an operation as the web ui sends it: the operation, and the sudo password once the server has
+/// asked for it with [`Reply::NeedsPassword`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
-    pub op: Op,
+    #[serde(rename = "op")]
+    pub operation: Operation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<Secret>,
 }
@@ -312,7 +325,7 @@ pub struct Request {
 pub enum Response {
     Ok(Reply),
     Error(String),
-    /// the caller's roles do not cover the op; the reason, in words.
+    /// the caller's roles do not cover the operation; the reason, in words.
     Denied(String),
 }
 
@@ -340,25 +353,25 @@ mod tests {
         assert_eq!(&back, value, "{json}");
     }
 
-    fn every_op() -> Vec<Op> {
+    fn every_operation() -> Vec<Operation> {
         vec![
-            Op::Bootstrap,
-            Op::Apply {
+            Operation::Bootstrap,
+            Operation::Apply {
                 modules: vec!["dns".into()],
             },
-            Op::LoadDocument,
-            Op::SaveDocument {
+            Operation::LoadDocument,
+            Operation::SaveDocument {
                 plain: "dns:\n  zone: example\n".into(),
                 updates: vec![SecretUpdate {
                     path: "nt4-domain.admin_password".into(),
                     value: Secret::new("s3cret"),
                 }],
             },
-            Op::MoveSecrets {
+            Operation::MoveSecrets {
                 key: Secret::new("AGE-SECRET-KEY-s3cret"),
             },
-            Op::Probe,
-            Op::ChangeUsers {
+            Operation::Probe,
+            Operation::ChangeUsers {
                 changes: vec![
                     UserChange::SetPassword {
                         name: "alice".into(),
@@ -375,45 +388,45 @@ mod tests {
                     UserChange::Remove { name: "eve".into() },
                 ],
             },
-            Op::ResetMachine {
+            Operation::ResetMachine {
                 name: "pc01".into(),
             },
-            Op::CreateAdmin {
+            Operation::CreateAdmin {
                 name: "admin".into(),
                 password: Secret::new("pw"),
                 ssh_key: Some("ssh-ed25519 AAAA example".into()),
                 passwordless_sudo: false,
             },
-            Op::Leases,
-            Op::LogonScripts,
-            Op::ReadLogon {
+            Operation::Leases,
+            Operation::LogonScripts,
+            Operation::ReadLogon {
                 name: "alice.bat".into(),
             },
-            Op::ReadGeneratedLogon,
-            Op::WriteLogon {
+            Operation::ReadGeneratedLogon,
+            Operation::WriteLogon {
                 name: "alice.bat".into(),
                 text: "net use s: \\\\server\\software\n".into(),
             },
-            Op::Run {
+            Operation::Run {
                 command: vec!["uptime".into()],
             },
-            Op::Power {
+            Operation::Power {
                 power: Power::Reboot,
             },
-            Op::ServerFacts,
-            Op::NetworkStatus,
-            Op::PurgePreview {
+            Operation::ServerFacts,
+            Operation::NetworkStatus,
+            Operation::PurgePreview {
                 remove_admins: true,
             },
-            Op::Purge {
+            Operation::Purge {
                 remove_admins: false,
             },
-            Op::ClockState,
-            Op::ClockZones,
-            Op::ClockZoneNow {
+            Operation::ClockState,
+            Operation::ClockZones,
+            Operation::ClockZoneNow {
                 zone: "Europe/Berlin".into(),
             },
-            Op::ClockApply {
+            Operation::ClockApply {
                 change: ClockChange {
                     timezone: Some("UTC".into()),
                     time: None,
@@ -423,78 +436,81 @@ mod tests {
                     }),
                 },
             },
-            Op::ClockUpdateNow,
-            Op::Doctor,
-            Op::AccountInfo,
-            Op::ChangePassword {
+            Operation::ClockUpdateNow,
+            Operation::Doctor,
+            Operation::AccountInfo,
+            Operation::ChangePassword {
                 old: Secret::new("pw"),
                 new: Secret::new("pw2"),
             },
-            Op::UpdateProfile {
+            Operation::UpdateProfile {
                 profile: Profile {
                     full_name: "Dana Example".into(),
                     description: String::new(),
                 },
             },
-            Op::ResetPassword {
+            Operation::ResetPassword {
                 user: "dana".into(),
                 new: Secret::new("pw2"),
             },
-            Op::LoadAccess,
-            Op::SaveAccess {
+            Operation::LoadAccess,
+            Operation::SaveAccess {
                 access: Access::default(),
             },
-            Op::Subscribe {
+            Operation::Subscribe {
                 topic: "clock".into(),
             },
         ]
     }
 
     #[test]
-    fn every_op_says_what_it_needs() {
+    fn every_operation_says_what_it_needs() {
         use crate::access::Level;
-        // each op has an entry (the match in `requires` is exhaustive); spot-check the ends
-        for op in every_op() {
-            let _ = op.requires();
+        // each operation has an entry (the match in `requires` is exhaustive); spot-check the ends
+        for operation in every_operation() {
+            let _ = operation.requires();
         }
-        assert_eq!(Op::Leases.requires(), Need::view(Area::Network));
+        assert_eq!(Operation::Leases.requires(), Need::view(Area::Network));
         assert_eq!(
-            Op::Purge {
+            Operation::Purge {
                 remove_admins: false
             }
             .requires(),
             Need::Area(Area::Updates, Level::Manage)
         );
-        assert_eq!(Op::AccountInfo.requires(), Need::SelfOnly);
-        let subscription = |t: &str| Op::Subscribe { topic: t.into() }.requires();
+        assert_eq!(Operation::AccountInfo.requires(), Need::SelfOnly);
+        let subscription = |t: &str| Operation::Subscribe { topic: t.into() }.requires();
         assert_eq!(subscription(topic::MONITOR), Need::view(Area::Status));
         assert_eq!(subscription(topic::PROCS), Need::view(Area::Status));
         assert_eq!(subscription(topic::APPLY), Need::view(Area::Services));
-        // no op needs `Hidden`, which every account has
-        for op in every_op() {
+        // no operation needs `Hidden`, which every account has
+        for operation in every_operation() {
             assert!(
-                !matches!(op.requires(), Need::Area(_, Level::Hidden)),
-                "{op:?}"
+                !matches!(operation.requires(), Need::Area(_, Level::Hidden)),
+                "{operation:?}"
             );
         }
         // nothing that changes something needs less than Manage
-        for op in every_op() {
-            if matches!(op, Op::Apply { .. } | Op::Power { .. } | Op::Run { .. }) {
+        for operation in every_operation() {
+            if matches!(
+                operation,
+                Operation::Apply { .. } | Operation::Power { .. } | Operation::Run { .. }
+            ) {
                 assert!(
-                    matches!(op.requires(), Need::Area(_, Level::Manage)),
-                    "{op:?}"
+                    matches!(operation.requires(), Need::Area(_, Level::Manage)),
+                    "{operation:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn every_op_survives_the_wire() {
-        let ops = every_op();
+    fn every_operation_survives_the_wire() {
+        let operations = every_operation();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 33);
-        for op in &ops {
-            round_trip(op);
+        assert_eq!(operations.len(), 33);
+        for operation in &operations {
+            round_trip(operation);
         }
     }
 
@@ -588,14 +604,14 @@ mod tests {
     #[test]
     fn a_request_carries_the_password_only_when_asked_for() {
         let first = Request {
-            op: Op::Leases,
+            operation: Operation::Leases,
             password: None,
         };
         let json = serde_json::to_string(&first).unwrap();
         assert!(!json.contains("password"), "{json}");
         round_trip(&first);
         let retry = Request {
-            op: Op::Leases,
+            operation: Operation::Leases,
             password: Some(Secret::new("s3cret")),
         };
         round_trip(&retry);
@@ -603,8 +619,8 @@ mod tests {
     }
 
     #[test]
-    fn no_op_shows_a_password_in_debug_output() {
-        let shown = format!("{:?}", every_op());
+    fn no_operation_shows_a_password_in_debug_output() {
+        let shown = format!("{:?}", every_operation());
         assert!(
             !shown.contains("s3cret") && !shown.contains("\"pw\""),
             "{shown}"
@@ -643,15 +659,63 @@ mod tests {
     }
 
     #[test]
-    fn an_op_reads_as_tagged_json() {
-        let op: Op = serde_json::from_str(r#"{"op":"reset_machine","name":"pc01"}"#).unwrap();
+    fn an_operation_reads_as_tagged_json() {
+        let operation: Operation =
+            serde_json::from_str(r#"{"op":"reset_machine","name":"pc01"}"#).unwrap();
         assert_eq!(
-            op,
-            Op::ResetMachine {
+            operation,
+            Operation::ResetMachine {
                 name: "pc01".into()
             }
         );
-        let op: Op = serde_json::from_str(r#"{"op":"leases"}"#).unwrap();
-        assert_eq!(op, Op::Leases);
+        let operation: Operation = serde_json::from_str(r#"{"op":"leases"}"#).unwrap();
+        assert_eq!(operation, Operation::Leases);
+    }
+
+    #[test]
+    fn operations_serialize_exactly_as_before_the_rename() {
+        let operations = [
+            Operation::Leases,
+            Operation::ServerFacts,
+            Operation::Apply {
+                modules: vec!["dhcp".into()],
+            },
+            Operation::ResetMachine {
+                name: "pc01".into(),
+            },
+            Operation::Run {
+                command: vec!["uptime".into()],
+            },
+        ];
+        let got: Vec<String> = operations
+            .iter()
+            .map(|operation| serde_json::to_string(operation).unwrap())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                r#"{"op":"leases"}"#,
+                r#"{"op":"server_facts"}"#,
+                r#"{"op":"apply","modules":["dhcp"]}"#,
+                r#"{"op":"reset_machine","name":"pc01"}"#,
+                r#"{"op":"run","command":["uptime"]}"#,
+            ]
+        );
+        let request = Request {
+            operation: Operation::Leases,
+            password: Some(Secret::new("x")),
+        };
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"op":{"op":"leases"},"password":"x"}"#
+        );
+        let bridge = crate::bridge::Request {
+            id: 7,
+            operation: Operation::ServerFacts,
+        };
+        assert_eq!(
+            serde_json::to_string(&bridge).unwrap(),
+            r#"{"id":7,"op":{"op":"server_facts"}}"#
+        );
     }
 }

@@ -1,9 +1,9 @@
-//! runs an [`Op`] against a server with the same functions the cli and the windows use, so
+//! runs an [`Operation`] against a server with the same functions the cli and the windows use, so
 //! every front end gets the same behaviour from one description of what it wants.
 
 use anyhow::{anyhow, bail, Result};
 
-pub use lanlord_model::ops::*;
+pub use lanlord_model::operations::*;
 
 use crate::access::{Caller, Grants, Need};
 use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
@@ -18,27 +18,32 @@ use crate::{
 /// the message when the gateway has no key to decrypt the secrets with.
 pub const NO_KEY: &str = "the gateway has no settings key; operations that read secrets need one";
 
-/// run `op` on `host` as the account the session signs in as, asking for the sudo password
-/// through `ask` when the server needs it. a client holds no key: an op that touches secrets
+/// run `operation` on `host` as the account the session signs in as, asking for the sudo password
+/// through `ask` when the server needs it. a client holds no key: an operation that touches secrets
 /// runs where the key is, through the gateway's local socket when `host` is this machine
 /// (the kernel says who is asking) and through `sudo lanlord operate` over ssh otherwise.
-pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
+pub fn execute(host: &str, operation: &Operation, ask: AskPassword) -> Result<Reply> {
     if operate::is_this_server(host) {
-        return operate::through_socket(std::path::Path::new(operate::LOCAL_SOCKET), op);
+        return operate::through_socket(std::path::Path::new(operate::LOCAL_SOCKET), operation);
     }
     let session = Session::new(host)?;
-    if op.needs_gateway_key() {
-        return operate::through_sudo(&session, op, ask);
+    if operation.needs_gateway_key() {
+        return operate::through_sudo(&session, operation, ask);
     }
     let caller = Caller::of_session(&session)?;
-    execute_in(&session, host, &caller, op, ask)
+    execute_in(&session, host, &caller, operation, ask)
 }
 
-/// run `op` on `host` for `caller`: refused with [`Denied`] when the caller's roles do not
+/// run `operation` on `host` for `caller`: refused with [`Denied`] when the caller's roles do not
 /// cover it, and the reply holds only what the caller may see. this is the one door every front
 /// end uses; the web ui passes the account it signed in.
-pub fn execute_as(host: &str, caller: &Caller, op: &Op, ask: AskPassword) -> Result<Reply> {
-    execute_in(&Session::new(host)?, host, caller, op, ask)
+pub fn execute_as(
+    host: &str,
+    caller: &Caller,
+    operation: &Operation,
+    ask: AskPassword,
+) -> Result<Reply> {
+    execute_in(&Session::new(host)?, host, caller, operation, ask)
 }
 
 /// as [`execute_as`], through `session`: ssh for a client, [`Session::local`] on the gateway.
@@ -47,32 +52,38 @@ pub fn execute_in(
     session: &Session,
     host: &str,
     caller: &Caller,
-    op: &Op,
+    operation: &Operation,
     ask: AskPassword,
 ) -> Result<Reply> {
-    guarded(session, caller, op, ask, |grants, ask| match op {
-        // these two reach the server their own way
-        Op::Bootstrap => {
-            if session.is_local() {
-                bail!("bootstrap is run from a client, not on the gateway itself");
+    guarded(
+        session,
+        caller,
+        operation,
+        ask,
+        |grants, ask| match operation {
+            // these two reach the server their own way
+            Operation::Bootstrap => {
+                if session.is_local() {
+                    bail!("bootstrap is run from a client, not on the gateway itself");
+                }
+                let options = Options {
+                    host: host.to_string(),
+                    ansible: AnsibleMode::detect(),
+                    passwordless_sudo: false,
+                };
+                bootstrap::bootstrap(&options, ask)?;
+                Ok(Reply::Done)
             }
-            let options = Options {
-                host: host.to_string(),
-                ansible: AnsibleMode::detect(),
-                passwordless_sudo: false,
-            };
-            bootstrap::bootstrap(&options, ask)?;
-            Ok(Reply::Done)
-        }
-        Op::Run { command } => {
-            let command = run_as(session, caller, command)?;
-            Ok(Reply::ExitCode(session.stream(&command)?))
-        }
-        _ => {
-            let who = Who { caller, grants };
-            dispatch(session, host, &who, op, ask, crypto::load_default)
-        }
-    })
+            Operation::Run { command } => {
+                let command = run_as(session, caller, command)?;
+                Ok(Reply::ExitCode(session.stream(&command)?))
+            }
+            _ => {
+                let who = Who { caller, grants };
+                dispatch(session, host, &who, operation, ask, crypto::load_default)
+            }
+        },
+    )
 }
 
 /// how long an operation may run: the longest ones (an apply, a purge) take minutes. the
@@ -207,21 +218,21 @@ struct Who<'a> {
 fn guarded(
     session: &Session,
     caller: &Caller,
-    op: &Op,
+    operation: &Operation,
     ask: AskPassword,
     run: impl FnOnce(&Grants, AskPassword) -> Result<Reply>,
 ) -> Result<Reply> {
     // a person's own account needs no lookup of rights, which needs root on the server
     let grants = match access::grants_of(session, caller, &mut *ask) {
         Ok(grants) => grants,
-        Err(_) if op.requires() == Need::SelfOnly => Grants::fallback(caller.admin),
+        Err(_) if operation.requires() == Need::SelfOnly => Grants::fallback(caller.admin),
         Err(e) => return Err(e),
     };
-    access::authorize(&grants, op)?;
+    access::authorize(&grants, operation)?;
     // whatever the client checked, nothing runs on an argument that fails the shared rules
-    op.validate()?;
+    operation.validate()?;
     if session.is_local() {
-        known_zones(op, ZONEINFO)?;
+        known_zones(operation, ZONEINFO)?;
     }
     let reply = run(&grants, ask)?;
     Ok(access::redact(&grants, caller, reply))
@@ -230,20 +241,22 @@ fn guarded(
 /// where this machine keeps its time zone database.
 const ZONEINFO: &str = "/usr/share/zoneinfo";
 
-/// the time zones an op names must be in the zone database of the machine it runs on. when the
-/// machine has no database (a minimal container) the name rules alone apply.
-fn known_zones(op: &Op, zoneinfo: &str) -> Result<()> {
+/// the time zones an operation names must be in the zone database of the machine it runs on. when
+/// the machine has no database (a minimal container) the name rules alone apply.
+fn known_zones(operation: &Operation, zoneinfo: &str) -> Result<()> {
     let root = std::path::Path::new(zoneinfo);
     if !root.is_dir() {
         return Ok(());
     }
-    let named = match op {
-        Op::ClockZoneNow { zone } => Some(("zone", zone.clone())),
-        Op::ClockApply { change } => change.timezone.clone().map(|zone| ("timezone", zone)),
-        Op::SaveDocument { plain, .. } => serde_yaml_ng::from_str::<serde_yaml_ng::Value>(plain)
-            .ok()
-            .and_then(|settings| settings["gateway"]["timezone"].as_str().map(str::to_string))
-            .map(|zone| ("gateway.timezone", zone)),
+    let named = match operation {
+        Operation::ClockZoneNow { zone } => Some(("zone", zone.clone())),
+        Operation::ClockApply { change } => change.timezone.clone().map(|zone| ("timezone", zone)),
+        Operation::SaveDocument { plain, .. } => {
+            serde_yaml_ng::from_str::<serde_yaml_ng::Value>(plain)
+                .ok()
+                .and_then(|settings| settings["gateway"]["timezone"].as_str().map(str::to_string))
+                .map(|zone| ("gateway.timezone", zone))
+        }
         _ => None,
     };
     match named {
@@ -257,19 +270,19 @@ fn known_zones(op: &Op, zoneinfo: &str) -> Result<()> {
 /// where the key that decrypts the settings comes from; `None` when there is none yet.
 type Keys = fn() -> Result<Option<crypto::Identity>>;
 
-/// run `op` through `session` for `caller`. `host` names the server in the settings and
+/// run `operation` through `session` for `caller`. `host` names the server in the settings and
 /// messages.
 #[cfg(all(test, unix))]
 pub(crate) fn execute_with(
     session: &Session,
     host: &str,
     caller: &Caller,
-    op: &Op,
+    operation: &Operation,
     ask: AskPassword,
     keys: Keys,
 ) -> Result<Reply> {
-    guarded(session, caller, op, ask, |grants, ask| {
-        dispatch(session, host, &Who { caller, grants }, op, ask, keys)
+    guarded(session, caller, operation, ask, |grants, ask| {
+        dispatch(session, host, &Who { caller, grants }, operation, ask, keys)
     })
 }
 
@@ -286,26 +299,30 @@ fn dispatch(
     session: &Session,
     host: &str,
     who: &Who,
-    op: &Op,
+    operation: &Operation,
     ask: AskPassword,
     keys: Keys,
 ) -> Result<Reply> {
     let key = || keys()?.ok_or_else(|| anyhow!(NO_KEY));
-    Ok(match op {
-        Op::Bootstrap | Op::Run { .. } => bail!("this operation is run with `execute`"),
-        Op::Apply { modules } => {
+    Ok(match operation {
+        Operation::Bootstrap | Operation::Run { .. } => {
+            bail!("this operation is run with `execute`")
+        }
+        Operation::Apply { modules } => {
             // no key yet just means no settings; a damaged key is an error
             apply::apply_with(session, host, keys()?.as_ref(), modules, ask)?;
             Reply::Done
         }
-        Op::LoadDocument => Reply::Document(settings::load_document_with(session, &key()?, ask)?),
-        Op::MoveSecrets { key: old_key } => {
+        Operation::LoadDocument => {
+            Reply::Document(settings::load_document_with(session, &key()?, ask)?)
+        }
+        Operation::MoveSecrets { key: old_key } => {
             let moved = crypto::parse(old_key.expose())
                 .and_then(|old| settings::move_secrets_with(session, host, &key()?, &old, ask));
             moved?;
             Reply::Done
         }
-        Op::SaveDocument { plain, updates } => {
+        Operation::SaveDocument { plain, updates } => {
             let updates: Vec<(String, String)> = updates
                 .iter()
                 .map(|u| (u.path.clone(), u.value.expose().to_string()))
@@ -320,8 +337,8 @@ fn dispatch(
             saved?;
             Reply::Done
         }
-        Op::Probe => Reply::Internal(network::probe(session)?),
-        Op::ChangeUsers { changes } => {
+        Operation::Probe => Reply::Internal(network::probe(session)?),
+        Operation::ChangeUsers { changes } => {
             let changes: Vec<users::Change> = changes.iter().map(Into::into).collect();
             let changed =
                 key().and_then(|key| users::change_with(session, host, &key, &changes, ask));
@@ -330,11 +347,11 @@ fn dispatch(
             changed?;
             Reply::Done
         }
-        Op::ResetMachine { name } => {
+        Operation::ResetMachine { name } => {
             nt4::reset_machine(session, name, ask)?;
             Reply::Done
         }
-        Op::CreateAdmin {
+        Operation::CreateAdmin {
             name,
             password,
             ssh_key,
@@ -356,25 +373,25 @@ fn dispatch(
             )?;
             Reply::Done
         }
-        Op::Leases => Reply::Leases(leases::read_with(session, ask)?),
-        Op::LogonScripts => Reply::Names(logon::list(session, ask)?),
-        Op::ReadLogon { name } => Reply::Text(logon::read(session, name, ask)?),
-        Op::ReadGeneratedLogon => Reply::Text(logon::read_generated(session, ask)?),
-        Op::WriteLogon { name, text } => {
+        Operation::Leases => Reply::Leases(leases::read_with(session, ask)?),
+        Operation::LogonScripts => Reply::Names(logon::list(session, ask)?),
+        Operation::ReadLogon { name } => Reply::Text(logon::read(session, name, ask)?),
+        Operation::ReadGeneratedLogon => Reply::Text(logon::read_generated(session, ask)?),
+        Operation::WriteLogon { name, text } => {
             logon::write(session, name, text, ask)?;
             Reply::Done
         }
-        Op::Power { power } => Reply::Outcome(power::run_with(session, *power, ask)?),
-        Op::ServerFacts => Reply::Facts(server::read(session)?),
-        Op::NetworkStatus => Reply::Interfaces(netstatus::read(session)?),
-        Op::PurgePreview { remove_admins } => Reply::Lines(purge::preview(
+        Operation::Power { power } => Reply::Outcome(power::run_with(session, *power, ask)?),
+        Operation::ServerFacts => Reply::Facts(server::read(session)?),
+        Operation::NetworkStatus => Reply::Interfaces(netstatus::read(session)?),
+        Operation::PurgePreview { remove_admins } => Reply::Lines(purge::preview(
             session,
             PurgeOptions {
                 remove_admins: *remove_admins,
             },
             ask,
         )?),
-        Op::Purge { remove_admins } => Reply::Lines(purge::purge(
+        Operation::Purge { remove_admins } => Reply::Lines(purge::purge(
             session,
             host,
             PurgeOptions {
@@ -382,33 +399,33 @@ fn dispatch(
             },
             ask,
         )?),
-        Op::ClockState => Reply::Clock(clock::read(session)?),
-        Op::ClockZones => Reply::Names(clock::zones(session)?),
-        Op::ClockZoneNow { zone } => Reply::ZoneNow(clock::zone_now(session, zone)?),
-        Op::ClockApply { change } => {
+        Operation::ClockState => Reply::Clock(clock::read(session)?),
+        Operation::ClockZones => Reply::Names(clock::zones(session)?),
+        Operation::ClockZoneNow { zone } => Reply::ZoneNow(clock::zone_now(session, zone)?),
+        Operation::ClockApply { change } => {
             // no key just means the change is not kept in the settings
             let identity = keys()?;
             let (lines, stored) =
                 clock::apply_stored(session, host, identity.as_ref(), change, ask)?;
             Reply::ClockApplied { lines, stored }
         }
-        Op::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
-        Op::Doctor => Reply::Doctor(doctor::run_with(session, ask)?),
-        Op::AccountInfo => self_service::account_info(session, who.caller, ask)?,
-        Op::ChangePassword { old, new } => {
+        Operation::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
+        Operation::Doctor => Reply::Doctor(doctor::run_with(session, ask)?),
+        Operation::AccountInfo => self_service::account_info(session, who.caller, ask)?,
+        Operation::ChangePassword { old, new } => {
             self_service::change_password(session, who.caller, old, new, ask)?
         }
-        Op::UpdateProfile { profile } => {
+        Operation::UpdateProfile { profile } => {
             self_service::update_profile(session, host, who.caller, profile, ask)?
         }
-        Op::ResetPassword { user, new } => {
+        Operation::ResetPassword { user, new } => {
             self_service::reset_password(session, (who.caller, who.grants), user, new, ask)?
         }
-        Op::LoadAccess => self_service::load_access(session, ask)?,
-        Op::SaveAccess { access } => {
+        Operation::LoadAccess => self_service::load_access(session, ask)?,
+        Operation::SaveAccess { access } => {
             self_service::save_access(session, host, (who.caller, who.grants), access, ask)?
         }
-        Op::Subscribe { .. } => {
+        Operation::Subscribe { .. } => {
             bail!("live streams are served by the web ui, not run as an operation")
         }
     })
@@ -449,41 +466,41 @@ mod tests {
         std::fs::create_dir_all(root.join("Europe")).unwrap();
         std::fs::write(root.join("Europe/Berlin"), b"").unwrap();
         let dir = root.to_str().unwrap();
-        let zone = |zone: &str| Op::ClockZoneNow { zone: zone.into() };
+        let zone = |zone: &str| Operation::ClockZoneNow { zone: zone.into() };
         assert!(known_zones(&zone("Europe/Berlin"), dir).is_ok());
         let error = known_zones(&zone("Europe/Nowhere"), dir).unwrap_err();
         assert!(error.to_string().starts_with("zone: "), "{error}");
-        let save = |text: &str| Op::SaveDocument {
+        let save = |text: &str| Operation::SaveDocument {
             plain: text.into(),
             updates: vec![],
         };
         assert!(known_zones(&save("gateway:\n  timezone: Europe/Berlin\n"), dir).is_ok());
         assert!(known_zones(&save("gateway:\n  timezone: Mars/Base\n"), dir).is_err());
         assert!(known_zones(&save("dns: {}\n"), dir).is_ok());
-        assert!(known_zones(&Op::LoadDocument, dir).is_ok());
+        assert!(known_zones(&Operation::LoadDocument, dir).is_ok());
         let change = ClockChange {
             timezone: Some("Mars/Base".into()),
             ..ClockChange::default()
         };
-        assert!(known_zones(&Op::ClockApply { change }, dir).is_err());
+        assert!(known_zones(&Operation::ClockApply { change }, dir).is_err());
         // no database on the machine: the name rules alone apply
         assert!(known_zones(&zone("Mars/Base"), "/nonexistent-zoneinfo").is_ok());
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn guarded_refuses_an_invalid_op_before_anything_runs() {
+    fn guarded_refuses_an_invalid_operation_before_anything_runs() {
         let server = quiet_server();
         let grants_ran = std::cell::Cell::new(false);
-        let go = |op: Op| {
+        let go = |operation: Operation| {
             grants_ran.set(false);
-            let result = guarded(&server, &admin(), &op, &mut no_password, |_, _| {
+            let result = guarded(&server, &admin(), &operation, &mut no_password, |_, _| {
                 grants_ran.set(true);
                 Ok(Reply::Done)
             });
             (result, grants_ran.get())
         };
-        let save = |plain: &str| Op::SaveDocument {
+        let save = |plain: &str| Operation::SaveDocument {
             plain: plain.into(),
             updates: vec![],
         };
@@ -500,12 +517,12 @@ mod tests {
             (save(&bomb), "anchors"),
             (save("image: evil\n"), "image"),
         ];
-        for (op, word) in hostile {
-            let (result, ran) = go(op);
+        for (operation, word) in hostile {
+            let (result, ran) = go(operation);
             let message = format!("{:#}", result.unwrap_err());
             assert!(message.contains(word), "{message}");
             assert!(!message.contains('\n'), "one line: {message:?}");
-            assert!(!ran, "{word}: the op must not run");
+            assert!(!ran, "{word}: the operation must not run");
         }
         let (result, ran) = go(save("gateway:\n  timezone: UTC\n"));
         assert!(result.is_ok() && ran);
@@ -514,7 +531,7 @@ mod tests {
     /// one key for every test, so settings sealed by a test can be read by the executor.
     fn key() -> Result<Option<crypto::Identity>> {
         static KEY: OnceLock<crypto::Identity> = OnceLock::new();
-        Ok(Some(KEY.get_or_init(|| identity("ops")).clone()))
+        Ok(Some(KEY.get_or_init(|| identity("operations")).clone()))
     }
 
     fn no_key() -> Result<Option<crypto::Identity>> {
@@ -542,58 +559,59 @@ esac"#,
         }
     }
 
-    fn run(session: &Session, op: Op) -> Result<Reply> {
-        execute_with(session, "gw", &admin(), &op, &mut no_password, key)
+    fn run(session: &Session, operation: Operation) -> Result<Reply> {
+        execute_with(session, "gw", &admin(), &operation, &mut no_password, key)
     }
 
     #[test]
-    fn each_op_answers_with_its_own_kind_of_reply() {
+    fn each_operation_answers_with_its_own_kind_of_reply() {
         let server = quiet_server();
         let cases = [
-            (Op::Apply { modules: vec![] }, Reply::Done),
+            (Operation::Apply { modules: vec![] }, Reply::Done),
             (
-                Op::SaveDocument {
+                Operation::SaveDocument {
                     plain: "dns:\n  zone: example\n".into(),
                     updates: vec![],
                 },
                 Reply::Done,
             ),
             (
-                Op::ResetMachine {
+                Operation::ResetMachine {
                     name: "pc01".into(),
                 },
                 Reply::Done,
             ),
-            (Op::Leases, Reply::Leases(vec![])),
-            (Op::LogonScripts, Reply::Names(vec![])),
+            (Operation::Leases, Reply::Leases(vec![])),
+            (Operation::LogonScripts, Reply::Names(vec![])),
             (
-                Op::ReadLogon {
+                Operation::ReadLogon {
                     name: "alice.bat".into(),
                 },
                 Reply::Text(None),
             ),
-            (Op::ReadGeneratedLogon, Reply::Text(None)),
+            (Operation::ReadGeneratedLogon, Reply::Text(None)),
             (
-                Op::WriteLogon {
+                Operation::WriteLogon {
                     name: "alice.bat".into(),
                     text: "echo hi\n".into(),
                 },
                 Reply::Done,
             ),
             (
-                Op::Power {
+                Operation::Power {
                     power: Power::Reboot,
                 },
                 Reply::Outcome(Outcome::Done),
             ),
-            (Op::ClockUpdateNow, Reply::Lines(vec![])),
+            (Operation::ClockUpdateNow, Reply::Lines(vec![])),
         ];
-        for (op, want) in cases {
-            let got = run(&server, op.clone()).unwrap_or_else(|e| panic!("{op:?}: {e:#}"));
-            assert_eq!(got, want, "{op:?}");
+        for (operation, want) in cases {
+            let got =
+                run(&server, operation.clone()).unwrap_or_else(|e| panic!("{operation:?}: {e:#}"));
+            assert_eq!(got, want, "{operation:?}");
         }
         assert!(matches!(
-            run(&server, Op::LoadDocument).unwrap(),
+            run(&server, Operation::LoadDocument).unwrap(),
             Reply::Document(doc) if doc.plain.is_empty()
         ));
         let change = ClockChange {
@@ -601,7 +619,7 @@ esac"#,
             ..ClockChange::default()
         };
         assert!(matches!(
-            run(&server, Op::ClockApply { change }).unwrap(),
+            run(&server, Operation::ClockApply { change }).unwrap(),
             Reply::ClockApplied { .. }
         ));
     }
@@ -609,62 +627,62 @@ esac"#,
     #[test]
     fn what_the_server_cannot_answer_comes_back_as_an_error() {
         let server = quiet_server();
-        let ops = [
-            Op::Probe,
-            Op::ServerFacts,
-            Op::ClockState,
-            Op::ClockZones,
-            Op::ClockZoneNow { zone: "UTC".into() },
-            Op::PurgePreview {
+        let operations = [
+            Operation::Probe,
+            Operation::ServerFacts,
+            Operation::ClockState,
+            Operation::ClockZones,
+            Operation::ClockZoneNow { zone: "UTC".into() },
+            Operation::PurgePreview {
                 remove_admins: false,
             },
-            Op::Purge {
+            Operation::Purge {
                 remove_admins: true,
             },
-            Op::CreateAdmin {
+            Operation::CreateAdmin {
                 name: "admin".into(),
                 password: "pw".into(),
                 ssh_key: None,
                 passwordless_sudo: false,
             },
         ];
-        for op in ops {
-            assert!(run(&server, op.clone()).is_err(), "{op:?}");
+        for operation in operations {
+            assert!(run(&server, operation.clone()).is_err(), "{operation:?}");
         }
     }
 
     #[test]
     fn user_changes_reach_the_stored_settings() {
-        let gw = Gateway::new("ops-users");
+        let gw = Gateway::new("operations-users");
         let key = key().unwrap().unwrap();
         gw.seed_sealed(
             &key,
             "nt4-domain:\n  mode: domain\n  name: EXAMPLE\n  users:\n    - name: dana\n      password: one\n",
         );
-        let op = Op::ChangeUsers {
+        let operation = Operation::ChangeUsers {
             changes: vec![UserChange::SetPassword {
                 name: "olive".into(),
                 password: "two".into(),
             }],
         };
-        assert_eq!(run(&gw.session, op).unwrap(), Reply::Done);
+        assert_eq!(run(&gw.session, operation).unwrap(), Reply::Done);
         assert!(gw.plain().unwrap().contains("olive"));
         assert!(gw.sealed(&key).unwrap().contains("two"));
     }
 
     #[test]
     fn secrets_are_saved_through_the_settings() {
-        let gw = Gateway::new("ops-save");
+        let gw = Gateway::new("operations-save");
         let key = key().unwrap().unwrap();
         gw.seed_sealed(&key, "nt4-domain:\n  mode: domain\n  name: EXAMPLE\n");
-        let op = Op::SaveDocument {
+        let operation = Operation::SaveDocument {
             plain: "nt4-domain:\n  mode: domain\n  name: EXAMPLE\n".into(),
             updates: vec![SecretUpdate {
                 path: "nt4-domain.admin_password".into(),
                 value: "s3cret".into(),
             }],
         };
-        assert_eq!(run(&gw.session, op).unwrap(), Reply::Done);
+        assert_eq!(run(&gw.session, operation).unwrap(), Reply::Done);
         assert!(gw.sealed(&key).unwrap().contains("s3cret"));
         assert!(!gw.plain().unwrap().contains("s3cret"));
     }
@@ -678,19 +696,19 @@ esac"#,
     }
 
     fn save_marked(gw: &Gateway) {
-        let op = Op::SaveDocument {
+        let operation = Operation::SaveDocument {
             plain: "nt4-domain:\n  mode: domain\n  name: EXAMPLE\n".into(),
             updates: vec![SecretUpdate {
                 path: "nt4-domain.admin_password".into(),
                 value: MARKER.into(),
             }],
         };
-        assert_eq!(run(&gw.session, op).unwrap(), Reply::Done);
+        assert_eq!(run(&gw.session, operation).unwrap(), Reply::Done);
     }
 
     #[test]
     fn a_secret_is_set_write_only_and_every_read_path_redacts_it() {
-        let gw = Gateway::new("ops-redact");
+        let gw = Gateway::new("operations-redact");
         let sealed_with = key().unwrap().unwrap();
         gw.seed_sealed(
             &sealed_with,
@@ -710,7 +728,11 @@ esac"#,
                 admin: false,
             },
         ] {
-            let reads = [Op::LoadDocument, Op::LoadAccess, Op::AccountInfo];
+            let reads = [
+                Operation::LoadDocument,
+                Operation::LoadAccess,
+                Operation::AccountInfo,
+            ];
             for read in reads {
                 let reply = execute_with(&gw.session, "gw", &caller, &read, &mut no_password, key);
                 if let Ok(reply) = reply {
@@ -720,7 +742,7 @@ esac"#,
                 }
             }
         }
-        let Reply::Document(document) = run(&gw.session, Op::LoadDocument).unwrap() else {
+        let Reply::Document(document) = run(&gw.session, Operation::LoadDocument).unwrap() else {
             panic!("not a document")
         };
         assert!(document
@@ -740,37 +762,37 @@ esac"#,
 
     #[test]
     fn secrets_sealed_to_an_old_client_key_move_to_the_gateway_once() {
-        let gw = Gateway::new("ops-move");
+        let gw = Gateway::new("operations-move");
         let gateway_key = key().unwrap().unwrap();
-        let old = identity("ops-move-old");
+        let old = identity("operations-move-old");
         gw.seed_sealed(&old, "nt4-domain:\n  admin_password: oldsecret\n");
         // the gateway cannot read them yet, and says so
-        let Reply::Document(before) = run(&gw.session, Op::LoadDocument).unwrap() else {
+        let Reply::Document(before) = run(&gw.session, Operation::LoadDocument).unwrap() else {
             panic!("not a document")
         };
         assert!(before.needs_move);
         // a save does not quietly overwrite what it cannot read
         assert!(run(
             &gw.session,
-            Op::SaveDocument {
+            Operation::SaveDocument {
                 plain: String::new(),
                 updates: vec![]
             }
         )
         .is_err());
         // a wrong key moves nothing
-        let wrong = Op::MoveSecrets {
-            key: key_text(&identity("ops-move-wrong")),
+        let wrong = Operation::MoveSecrets {
+            key: key_text(&identity("operations-move-wrong")),
         };
         assert!(run(&gw.session, wrong).is_err());
         assert!(gw.sealed(&old).is_some());
         // the right one seals them to the gateway's key
-        let mv = Op::MoveSecrets {
+        let mv = Operation::MoveSecrets {
             key: key_text(&old),
         };
         assert_eq!(run(&gw.session, mv.clone()).unwrap(), Reply::Done);
         assert!(gw.sealed(&gateway_key).unwrap().contains("oldsecret"));
-        let Reply::Document(after) = run(&gw.session, Op::LoadDocument).unwrap() else {
+        let Reply::Document(after) = run(&gw.session, Operation::LoadDocument).unwrap() else {
             panic!("not a document")
         };
         assert!(!after.needs_move);
@@ -780,31 +802,38 @@ esac"#,
     }
 
     #[test]
-    fn settings_ops_need_a_key() {
+    fn settings_operations_need_a_key() {
         let server = quiet_server();
-        for op in [
-            Op::LoadDocument,
-            Op::SaveDocument {
+        for operation in [
+            Operation::LoadDocument,
+            Operation::SaveDocument {
                 plain: String::new(),
                 updates: vec![],
             },
-            Op::ChangeUsers { changes: vec![] },
+            Operation::ChangeUsers { changes: vec![] },
         ] {
-            let err =
-                execute_with(&server, "gw", &admin(), &op, &mut no_password, no_key).unwrap_err();
-            assert_eq!(err.to_string(), NO_KEY, "{op:?}");
+            let err = execute_with(
+                &server,
+                "gw",
+                &admin(),
+                &operation,
+                &mut no_password,
+                no_key,
+            )
+            .unwrap_err();
+            assert_eq!(err.to_string(), NO_KEY, "{operation:?}");
         }
     }
 
     #[test]
     fn only_an_administrator_creates_administrators_and_applies_every_area() {
-        let gw = Gateway::new("ops-create-admin");
+        let gw = Gateway::new("operations-create-admin");
         let everything = Grants::all(Level::Manage);
         let olly = Caller {
             user: "olly".into(),
             admin: false,
         };
-        let create = Op::CreateAdmin {
+        let create = Operation::CreateAdmin {
             name: "eve".into(),
             password: "pw".into(),
             ssh_key: None,
@@ -827,24 +856,26 @@ esac"#,
 
     #[test]
     fn someone_who_is_not_an_administrator_is_a_user() {
-        let gw = Gateway::new("ops-user");
+        let gw = Gateway::new("operations-user");
         let dana = Caller {
             user: "dana".into(),
             admin: false,
         };
-        let go = |op: Op| execute_with(&gw.session, "gw", &dana, &op, &mut no_password, key);
-        let denied = go(Op::Leases).unwrap_err();
+        let go = |operation: Operation| {
+            execute_with(&gw.session, "gw", &dana, &operation, &mut no_password, key)
+        };
+        let denied = go(Operation::Leases).unwrap_err();
         assert!(
             denied.downcast_ref::<access::Denied>().is_some(),
             "{denied:#}"
         );
-        assert!(go(Op::Power {
+        assert!(go(Operation::Power {
             power: Power::Reboot
         })
         .is_err());
-        assert!(go(Op::Apply { modules: vec![] }).is_err());
+        assert!(go(Operation::Apply { modules: vec![] }).is_err());
         // status is open to everyone, so this one is not refused
-        let facts = go(Op::ServerFacts);
+        let facts = go(Operation::ServerFacts);
         assert!(
             facts.is_ok()
                 || facts
@@ -856,7 +887,7 @@ esac"#,
 
     #[test]
     fn a_save_by_someone_without_users_manage_cannot_change_the_assignments() {
-        let gw = Gateway::new("ops-save-access");
+        let gw = Gateway::new("operations-save-access");
         let key = key().unwrap().unwrap();
         gw.seed_sealed(&key, "dns: {}\n");
         let plain = "dns: {}\naccess:\n  members:\n    dana: [Administrators]\n";
@@ -884,24 +915,24 @@ esac"#,
 
     #[test]
     fn each_built_in_role_is_allowed_exactly_what_its_grants_say() {
-        let gw = Gateway::new("ops-roles");
+        let gw = Gateway::new("operations-roles");
         std::fs::write(
             gw.dir.join("yml"),
             "access:\n  members:\n    olly: [Operators]\n    dana: [Users]\n",
         )
         .unwrap();
-        let ops = [
-            Op::Leases,
-            Op::ServerFacts,
-            Op::LoadAccess,
-            Op::ResetMachine {
+        let operations = [
+            Operation::Leases,
+            Operation::ServerFacts,
+            Operation::LoadAccess,
+            Operation::ResetMachine {
                 name: "pc01".into(),
             },
-            Op::Power {
+            Operation::Power {
                 power: Power::Reboot,
             },
-            Op::LogonScripts,
-            Op::AccountInfo,
+            Operation::LogonScripts,
+            Operation::AccountInfo,
         ];
         let callers = [
             (admin(), true),
@@ -930,13 +961,14 @@ esac"#,
         .unwrap();
         for (caller, is_admin) in callers {
             let grants = stored.grants(&caller.user, is_admin);
-            for op in &ops {
-                let got = execute_with(&gw.session, "gw", &caller, op, &mut no_password, key);
-                let allowed = grants.allows(op.requires());
+            for operation in &operations {
+                let got =
+                    execute_with(&gw.session, "gw", &caller, operation, &mut no_password, key);
+                let allowed = grants.allows(operation.requires());
                 assert_eq!(
                     is_denied(&got),
                     !allowed,
-                    "{} on {op:?}: {got:?}",
+                    "{} on {operation:?}: {got:?}",
                     caller.user
                 );
             }
@@ -945,15 +977,15 @@ esac"#,
 
     #[test]
     fn a_user_reaches_their_own_account_and_nobody_elses_or_the_permissions() {
-        let gw = Gateway::new("ops-self");
+        let gw = Gateway::new("operations-self");
         let dana = Caller {
             user: "dana".into(),
             admin: false,
         };
-        let go = |caller: &Caller, op: Op| {
-            execute_with(&gw.session, "gw", caller, &op, &mut no_password, key)
+        let go = |caller: &Caller, operation: Operation| {
+            execute_with(&gw.session, "gw", caller, &operation, &mut no_password, key)
         };
-        let Ok(Reply::Account(info)) = go(&dana, Op::AccountInfo) else {
+        let Ok(Reply::Account(info)) = go(&dana, Operation::AccountInfo) else {
             panic!("a user may read their own account");
         };
         assert_eq!(info.user, "dana");
@@ -962,45 +994,48 @@ esac"#,
             description: String::new(),
         };
         assert_eq!(
-            go(&dana, Op::UpdateProfile { profile }).unwrap(),
+            go(&dana, Operation::UpdateProfile { profile }).unwrap(),
             Reply::Done
         );
-        let reset = Op::ResetPassword {
+        let reset = Operation::ResetPassword {
             user: "ann".into(),
             new: lanlord_model::secret::Secret::new("pw"),
         };
         assert!(is_denied(&go(&dana, reset.clone())));
-        assert!(is_denied(&go(&dana, Op::LoadAccess)));
+        assert!(is_denied(&go(&dana, Operation::LoadAccess)));
         assert!(is_denied(&go(
             &dana,
-            Op::SaveAccess {
+            Operation::SaveAccess {
                 access: access::Access::default()
             }
         )));
         // an administrator may do all three
         assert!(matches!(go(&admin(), reset), Ok(Reply::Password(_))));
-        assert!(matches!(go(&admin(), Op::LoadAccess), Ok(Reply::Access(_))));
+        assert!(matches!(
+            go(&admin(), Operation::LoadAccess),
+            Ok(Reply::Access(_))
+        ));
         let mut open = access::Access::default();
         open.members
             .insert("dana".into(), vec![access::OPERATORS.into()]);
         assert_eq!(
-            go(&admin(), Op::SaveAccess { access: open }).unwrap(),
+            go(&admin(), Operation::SaveAccess { access: open }).unwrap(),
             Reply::Done
         );
         // and the new role takes effect for dana's next request
-        assert!(go(&dana, Op::Leases).is_ok());
+        assert!(go(&dana, Operation::Leases).is_ok());
     }
 
     #[test]
     fn bootstrap_and_run_go_through_execute_only() {
         let server = quiet_server();
-        assert!(run(&server, Op::Bootstrap).is_err());
-        assert!(run(&server, Op::Run { command: vec![] }).is_err());
+        assert!(run(&server, Operation::Bootstrap).is_err());
+        assert!(run(&server, Operation::Run { command: vec![] }).is_err());
     }
 
     #[test]
     fn a_bad_host_is_refused_before_anything_runs() {
-        let err = execute("-oProxyCommand=x", &Op::Leases, &mut no_password).unwrap_err();
+        let err = execute("-oProxyCommand=x", &Operation::Leases, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("invalid host"), "{err:#}");
     }
 

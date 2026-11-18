@@ -33,7 +33,7 @@ use anyhow::{bail, Result};
 use lanlord_core::access::{Caller, Denied, Refused};
 use lanlord_core::apply::ApplyEvent;
 use lanlord_core::log::{self, Kind};
-use lanlord_core::ops::{execute_in, login_uids, Op, Reply, Response};
+use lanlord_core::operations::{execute_in, login_uids, Operation, Reply, Response};
 use lanlord_core::ssh::Session;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
@@ -48,7 +48,7 @@ pub const ANSWER_LIMIT: u64 = 16 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// how long an operation may run: the longest ones (an apply, a purge) take minutes.
-pub const RUN_TIMEOUT: Duration = lanlord_core::ops::RUN_LIMIT;
+pub const RUN_TIMEOUT: Duration = lanlord_core::operations::RUN_LIMIT;
 
 /// how many operations run at the same time.
 const WORKERS: usize = 4;
@@ -136,14 +136,15 @@ const MESSAGE_LIMIT: usize = 200;
 /// in it: the service runs as root and never prompts.
 pub struct Forwarded {
     pub account: String,
-    pub op: Op,
+    pub operation: Operation,
 }
 
 impl Forwarded {
     fn to_line(&self) -> Option<Vec<u8>> {
-        let mut line =
-            serde_json::to_vec(&serde_json::json!({ "account": self.account, "op": self.op }))
-                .ok()?;
+        let mut line = serde_json::to_vec(
+            &serde_json::json!({ "account": self.account, "op": self.operation }),
+        )
+        .ok()?;
         line.push(b'\n');
         Some(line)
     }
@@ -153,8 +154,8 @@ impl Forwarded {
         let mut value: serde_json::Value = serde_json::from_slice(line).ok()?;
         let fields = value.as_object_mut().filter(|o| o.len() == 2)?;
         let account = fields.remove("account")?.as_str()?.to_string();
-        let op = serde_json::from_value(fields.remove("op")?).ok()?;
-        Some(Self { account, op })
+        let operation = serde_json::from_value(fields.remove("op")?).ok()?;
+        Some(Self { account, operation })
     }
 }
 
@@ -216,7 +217,7 @@ fn account_of_uid(uid: u32) -> Option<String> {
     lanlord_core::access::plain_account(&name).then_some(name)
 }
 
-/// the request of a peer that is `account` itself, in the form the service reads: the op,
+/// the request of a peer that is `account` itself, in the form the service reads: the operation,
 /// with the account taken from the kernel. only exactly `{"op":..}` or `{"account":<self>,"op":..}`
 /// is accepted; anything else, however it is wrong, is refused and never passed on.
 fn bind_account(line: &[u8], account: &str) -> Result<Vec<u8>, String> {
@@ -231,14 +232,14 @@ fn bind_account(line: &[u8], account: &str) -> Result<Vec<u8>, String> {
             return Err("a request here acts as your own account, not another".into());
         }
     }
-    let op = fields
+    let operation = fields
         .remove("op")
         .filter(|_| fields.is_empty())
-        .and_then(|op| serde_json::from_value(op).ok())
+        .and_then(|operation| serde_json::from_value(operation).ok())
         .ok_or_else(|| NOT_AN_OPERATION.to_string())?;
     Forwarded {
         account: account.to_string(),
-        op,
+        operation,
     }
     .to_line()
     .ok_or_else(|| NOT_AN_OPERATION.to_string())
@@ -252,13 +253,13 @@ fn short(error: &anyhow::Error) -> String {
     line.chars().take(MESSAGE_LIMIT).collect()
 }
 
-/// answer one request line: look the account up again, run the op if core's check allows it,
+/// answer one request line: look the account up again, run the operation if core's check allows it,
 /// and say what happened. a refusal is a `Denied` answer, anything else that goes wrong a short
 /// `Error`.
 fn answer_line(
     line: &[u8],
     lookup: &dyn Fn(&str) -> Result<Caller>,
-    run: &dyn Fn(&Caller, &Op) -> Result<Reply>,
+    run: &dyn Fn(&Caller, &Operation) -> Result<Reply>,
 ) -> Response {
     let Some(forwarded) = Forwarded::from_line(line) else {
         return Response::Error("not an operation".into());
@@ -273,9 +274,9 @@ fn answer_line(
             return Response::Denied("this account is not known here".into());
         }
     };
-    // the shared value rules run in core's `guarded`, after the account is checked for the op:
-    // an unauthorised caller must never make root parse what it sent
-    match run(&caller, &forwarded.op) {
+    // the shared value rules run in core's `guarded`, after the account is checked for the
+    // operation: an unauthorised caller must never make root parse what it sent
+    match run(&caller, &forwarded.operation) {
         Ok(reply) => Response::Ok(reply),
         Err(e) => {
             let refused =
@@ -293,10 +294,14 @@ fn answer_line(
     }
 }
 
-/// run `work` as the only apply when `op` is one: a second one is refused while the first runs,
-/// and any other op is not held up.
-fn single_apply<T>(lock: &Mutex<()>, op: &Op, work: impl FnOnce() -> Result<T>) -> Result<T> {
-    if !matches!(op, Op::Apply { .. }) {
+/// run `work` as the only apply when `operation` is one: a second one is refused while the first
+/// runs, and any other operation is not held up.
+fn single_apply<T>(
+    lock: &Mutex<()>,
+    operation: &Operation,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if !matches!(operation, Operation::Apply { .. }) {
         return work();
     }
     let _running = match lock.try_lock() {
@@ -350,19 +355,19 @@ fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
     })
 }
 
-/// the real thing: the account is read from this machine's groups, and the op runs locally as
-/// root through core's `execute_in`, which checks `Op::requires`.
+/// the real thing: the account is read from this machine's groups, and the operation runs locally
+/// as root through core's `execute_in`, which checks `Operation::requires`.
 fn system_answer(line: &[u8], emit: Emit) -> Response {
     let session = Session::local();
     answer_line(
         line,
         &|account| Caller::of_account(&session, account),
-        &|caller, op| {
+        &|caller, operation| {
             let mut ask =
                 |_: &str| -> Result<String> { bail!("no sudo prompt: the service is root") };
-            let mut run = || execute_in(&session, "localhost", caller, op, &mut ask);
-            single_apply(&APPLY, op, || match op {
-                Op::Apply { .. } => with_events(emit, &mut run),
+            let mut run = || execute_in(&session, "localhost", caller, operation, &mut ask);
+            single_apply(&APPLY, operation, || match operation {
+                Operation::Apply { .. } => with_events(emit, &mut run),
                 _ => run(),
             })
         },
@@ -387,7 +392,7 @@ async fn read_line<R: tokio::io::AsyncRead + Unpin>(stream: R) -> Result<Vec<u8>
 /// they happen; blocking, so it runs off the async threads.
 type Answer = Arc<dyn Fn(&[u8], Emit) -> Response + Send + Sync>;
 
-/// where an op's apply events are handed as they happen.
+/// where an operation's apply events are handed as they happen.
 type Emit<'a> = &'a (dyn Fn(&ApplyEvent) + Sync);
 
 /// one line of the service's answer: an apply event.
@@ -664,7 +669,7 @@ pub enum Unreachable {
 /// the future an ask returns.
 pub type Asking = Pin<Box<dyn Future<Output = Result<Response, Unreachable>> + Send>>;
 
-/// where the apply events of an op go.
+/// where the apply events of an operation go.
 pub type Events = Arc<dyn Fn(ApplyEvent) + Send + Sync>;
 
 /// read a service answer: each event goes to `on_event` in order, and the response ends it. none
@@ -686,15 +691,15 @@ async fn read_answer<R: tokio::io::AsyncRead + Unpin>(
     None
 }
 
-/// send `account`'s `op` to the service listening on `socket`, pass the apply events on to
+/// send `account`'s `operation` to the service listening on `socket`, pass the apply events on to
 /// `events` as they come, and read its answer.
-pub fn ask(socket: &Path, account: String, op: Op, events: Events) -> Asking {
+pub fn ask(socket: &Path, account: String, operation: Operation, events: Events) -> Asking {
     let socket = socket.to_path_buf();
     Box::pin(async move {
         let mut stream = tokio::net::UnixStream::connect(&socket)
             .await
             .map_err(|_| Unreachable::Down)?;
-        let line = Forwarded { account, op }
+        let line = Forwarded { account, operation }
             .to_line()
             .ok_or(Unreachable::NoAnswer)?;
         let exchange = async {
@@ -713,7 +718,7 @@ pub fn ask(socket: &Path, account: String, op: Op, events: Events) -> Asking {
 mod tests {
     use super::*;
     use lanlord_core::access::{authorize, Grants};
-    use lanlord_core::ops::NO_KEY;
+    use lanlord_core::operations::NO_KEY;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -732,8 +737,8 @@ mod tests {
                     admin,
                 })
             },
-            &|caller, op| {
-                authorize(&Grants::fallback(caller.admin), op)?;
+            &|caller, operation| {
+                authorize(&Grants::fallback(caller.admin), operation)?;
                 Ok(Reply::Names(vec![caller.user.clone()]))
             },
         )
@@ -805,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_from_the_run_step_is_one_line_and_a_good_op_reaches_it() {
+    fn a_refusal_from_the_run_step_is_one_line_and_a_good_operation_reaches_it() {
         let save = |plain: &str| {
             serde_json::json!({
                 "account": "carol",
@@ -932,7 +937,7 @@ mod tests {
     async fn test_socket() -> (PathBuf, PathBuf, tokio::net::UnixListener) {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "lanlord-ops-{}-{}",
+            "lanlord-operations-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
@@ -1014,7 +1019,7 @@ mod tests {
     #[test]
     fn a_panicking_apply_ends_cleanly_and_frees_the_lock() {
         let lock = Mutex::new(());
-        let apply = Op::Apply { modules: vec![] };
+        let apply = Operation::Apply { modules: vec![] };
         // on its own thread, so a forwarder that never stops fails the test instead of hanging it
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
@@ -1038,7 +1043,7 @@ mod tests {
     #[test]
     fn a_second_apply_is_refused_while_one_runs() {
         let lock = Arc::new(Mutex::new(()));
-        let apply = Op::Apply { modules: vec![] };
+        let apply = Operation::Apply { modules: vec![] };
         let (started, wait_started) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         // the first apply, on its own thread as the service runs it
@@ -1057,7 +1062,7 @@ mod tests {
         let second = single_apply(&lock, &apply, || Ok(())).unwrap_err();
         assert_eq!(second.to_string(), "an apply is already running");
         // other operations are not held up
-        assert!(single_apply(&lock, &Op::ServerFacts, || Ok(())).is_ok());
+        assert!(single_apply(&lock, &Operation::ServerFacts, || Ok(())).is_ok());
         release.send(()).unwrap();
         first.join().unwrap().unwrap();
         assert!(single_apply(&lock, &apply, || Ok(())).is_ok());
@@ -1122,7 +1127,7 @@ mod tests {
             };
             let seen = Forwarded::from_line(seen.as_bytes()).expect("a bound request");
             assert_eq!(seen.account, "ann");
-            assert!(matches!(seen.op, Op::LoadDocument));
+            assert!(matches!(seen.operation, Operation::LoadDocument));
         });
     }
 
@@ -1172,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn the_account_binding_refuses_anything_but_an_op_alone_or_with_its_own_name() {
+    fn the_account_binding_refuses_anything_but_an_operation_alone_or_with_its_own_name() {
         for bad in [
             &b"not json\n"[..],
             br#"[1]"#,
@@ -1369,7 +1374,13 @@ mod tests {
     fn a_missing_socket_means_the_service_is_down() {
         runtime().block_on(async {
             let missing = Path::new("/nonexistent-lanlord/operations.sock");
-            let asked = ask(missing, "carol".into(), Op::ServerFacts, Arc::new(|_| {})).await;
+            let asked = ask(
+                missing,
+                "carol".into(),
+                Operation::ServerFacts,
+                Arc::new(|_| {}),
+            )
+            .await;
             assert_eq!(asked.unwrap_err(), Unreachable::Down);
         });
     }

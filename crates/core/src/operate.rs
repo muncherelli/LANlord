@@ -1,6 +1,6 @@
 //! how a client reaches the operations that touch secrets without holding a key. the gateway
 //! keeps the key (root only) and decrypts only inside the root operations service, so a client
-//! sends such an op where the key is and gets back a reply that has no secret in it:
+//! sends such an operation where the key is and gets back a reply that has no secret in it:
 //!
 //! - on the gateway itself, through the service's local unix socket. the kernel says who is
 //!   asking (`SO_PEERCRED`), so there is no ssh and no sudo, and the request names no account;
@@ -14,7 +14,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Result};
 use lanlord_model::apply::ApplyEvent;
-use lanlord_model::ops::{Op, Reply, Request, Response};
+use lanlord_model::operations::{Operation, Reply, Request, Response};
 
 use crate::access::Refused;
 use crate::bootstrap::{root_argv, AskPassword};
@@ -56,9 +56,10 @@ pub fn offered_at(socket: &Path) -> bool {
     }
 }
 
-/// the one request line for `op`: the op alone. a local request never names an account.
-fn request_line(op: &Op) -> Result<zeroize::Zeroizing<Vec<u8>>> {
-    let mut line = serde_json::to_vec(&serde_json::json!({ "op": op }))?;
+/// the one request line for `operation`: the operation alone. a local request never names an
+/// account.
+fn request_line(operation: &Operation) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    let mut line = serde_json::to_vec(&serde_json::json!({ "op": operation }))?;
     line.push(b'\n');
     Ok(zeroize::Zeroizing::new(line))
 }
@@ -100,9 +101,9 @@ impl Answered {
     }
 }
 
-/// run `op` through the service on `socket`. the service takes the account from the kernel.
+/// run `operation` through the service on `socket`. the service takes the account from the kernel.
 #[cfg(unix)]
-pub fn through_socket(socket: &Path, op: &Op) -> Result<Reply> {
+pub fn through_socket(socket: &Path, operation: &Operation) -> Result<Reply> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
@@ -113,9 +114,9 @@ pub fn through_socket(socket: &Path, op: &Op) -> Result<Reply> {
         )
     })?;
     stream.set_read_timeout(Some(
-        crate::ops::RUN_LIMIT + std::time::Duration::from_secs(30),
+        crate::operations::RUN_LIMIT + std::time::Duration::from_secs(30),
     ))?;
-    stream.write_all(&request_line(op)?)?;
+    stream.write_all(&request_line(operation)?)?;
     let mut answered = Answered::default();
     for line in BufReader::new(stream).lines() {
         answered.take(&line?);
@@ -124,26 +125,26 @@ pub fn through_socket(socket: &Path, op: &Op) -> Result<Reply> {
 }
 
 #[cfg(not(unix))]
-pub fn through_socket(_socket: &Path, _op: &Op) -> Result<Reply> {
+pub fn through_socket(_socket: &Path, _operation: &Operation) -> Result<Reply> {
     bail!("the operations service is only on the gateway")
 }
 
-/// run `op` with `sudo lanlord operate` over `session`. sudo's password, when the server wants
-/// one, is the first line of what is sent and the request follows (see `bridge`).
-pub fn through_sudo(session: &Session, op: &Op, ask: AskPassword) -> Result<Reply> {
+/// run `operation` with `sudo lanlord operate` over `session`. sudo's password, when the server
+/// wants one, is the first line of what is sent and the request follows (see `bridge`).
+pub fn through_sudo(session: &Session, operation: &Operation, ask: AskPassword) -> Result<Reply> {
     let admin = crate::config::admin(session)?;
     let (remote, first) = root_argv(session, &admin, &[BRIDGE_BIN, "operate"], ask)?;
     let mut input = zeroize::Zeroizing::new(first.into_bytes());
-    input.extend_from_slice(&request_line(op)?);
+    input.extend_from_slice(&request_line(operation)?);
     let mut answered = Answered::default();
     session.run_with_stdin_lines(&remote, &input, &mut |line| answered.take(line))?;
     answered.finish()
 }
 
-/// the request `lanlord operate` reads: one line holding the op (a password field, as a bridge
-/// request may carry, is ignored: sudo asked for it already).
-pub fn read_request(line: &str) -> Result<Op> {
-    Ok(serde_json::from_str::<Request>(line)?.op)
+/// the request `lanlord operate` reads: one line holding the operation (a password field, as a
+/// bridge request may carry, is ignored: sudo asked for it already).
+pub fn read_request(line: &str) -> Result<Operation> {
+    Ok(serde_json::from_str::<Request>(line)?.operation)
 }
 
 #[cfg(test)]
@@ -166,12 +167,15 @@ mod tests {
     }
 
     #[test]
-    fn a_local_request_is_the_op_alone() {
-        let line = request_line(&Op::LoadDocument).unwrap();
+    fn a_local_request_is_the_operation_alone() {
+        let line = request_line(&Operation::LoadDocument).unwrap();
         let text = String::from_utf8(line.to_vec()).unwrap();
         assert_eq!(text, "{\"op\":{\"op\":\"load_document\"}}\n");
         assert!(!text.contains("account"));
-        assert!(matches!(read_request(&text).unwrap(), Op::LoadDocument));
+        assert!(matches!(
+            read_request(&text).unwrap(),
+            Operation::LoadDocument
+        ));
     }
 
     #[test]
@@ -219,7 +223,7 @@ mod tests {
     ) -> (tempfile::TempDir, std::path::PathBuf) {
         use std::io::{BufRead, BufReader, Write};
         let dir = tempfile::Builder::new()
-            .prefix(&format!("lanlord-op-{name}-"))
+            .prefix(&format!("lanlord-operation-{name}-"))
             .tempdir()
             .unwrap();
         let socket = dir.path().join("local.sock");
@@ -250,7 +254,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            through_socket(&socket, &Op::LoadDocument).unwrap(),
+            through_socket(&socket, &Operation::LoadDocument).unwrap(),
             Reply::Done
         ));
     }
@@ -259,21 +263,21 @@ mod tests {
     #[test]
     fn the_socket_says_denied_as_a_refusal_and_silence_as_an_error() {
         let (_dir, socket) = serve_once("denied", &[r#"{"response":{"denied":"no"}}"#]);
-        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        let error = through_socket(&socket, &Operation::LoadDocument).unwrap_err();
         assert!(error.downcast_ref::<Refused>().is_some());
         let (_dir, socket) = serve_once("silent", &[]);
-        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        let error = through_socket(&socket, &Operation::LoadDocument).unwrap_err();
         assert!(error.to_string().contains("no answer"), "{error}");
         let (_dir, socket) = serve_once("failed", &[r#"{"response":{"error":"broke"}}"#]);
-        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        let error = through_socket(&socket, &Operation::LoadDocument).unwrap_err();
         assert_eq!(error.to_string(), "broke");
     }
 
     #[cfg(unix)]
     #[test]
     fn no_service_is_said_with_where_it_looked() {
-        let socket = std::env::temp_dir().join("lanlord-op-nothing-here.sock");
-        let error = through_socket(&socket, &Op::LoadDocument).unwrap_err();
+        let socket = std::env::temp_dir().join("lanlord-operation-nothing-here.sock");
+        let error = through_socket(&socket, &Operation::LoadDocument).unwrap_err();
         assert!(error.to_string().contains("not reachable"), "{error}");
     }
 }
