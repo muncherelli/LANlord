@@ -46,6 +46,12 @@ pub struct ServerFacts {
     pub cpu_model: String,
     /// the processors the server can use: the host's, or fewer when a container limits them.
     pub cpus: u32,
+    /// the physical processors (sockets) the host has; 0 when the server did not say.
+    #[serde(default)]
+    pub sockets: u16,
+    /// the physical cores in total, as opposed to `cpus`, which counts threads; 0 when unknown.
+    #[serde(default)]
+    pub cores: u16,
     #[serde(default)]
     pub cpus_limited: bool,
     /// the memory the server can use: the host's, or less when a container limits it.
@@ -84,14 +90,62 @@ fn quota_cpus(text: &str) -> Option<u32> {
     u32::try_from(quota.div_ceil(period).max(1)).ok()
 }
 
+/// `raw` (an rfc 3339 time, as ansible writes it) in `zone`, like `11/16/2026 4:05:09 PM`;
+/// `raw` itself when it does not parse.
+pub fn format_applied<Tz: chrono::TimeZone>(raw: &str, zone: &Tz) -> String
+where
+    Tz::Offset: core::fmt::Display,
+{
+    match chrono::DateTime::parse_from_rfc3339(raw.trim()) {
+        Ok(time) => time
+            .with_timezone(zone)
+            .format("%-m/%-d/%Y %-I:%M:%S %p")
+            .to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
 impl ServerFacts {
-    /// the processors as a line: the number, and when a container limits it, that it does.
-    pub fn processors(&self) -> String {
-        match (self.cpus_limited, self.cpus) {
-            (false, n) => n.to_string(),
-            (true, 1) => "1 processor (limited by container)".to_string(),
-            (true, n) => format!("{n} processors (limited by container)"),
+    /// the rows that describe the processors, in order: `Processors` when there is more than
+    /// one socket, `Cores` when there is more than one, and `Threads` when they outnumber the
+    /// cores. a container's limit is only known in threads, so that is all it shows.
+    pub fn cpu_rows(&self) -> Vec<(&'static str, String)> {
+        let threads = self.cpus;
+        if self.cpus_limited {
+            return vec![("Threads", format!("{threads} (limited by container)"))];
         }
+        // a server that did not say (an arm board, an old script) has as many cores as threads
+        let cores = if self.cores == 0 {
+            threads
+        } else {
+            u32::from(self.cores)
+        };
+        let mut rows = Vec::new();
+        if self.sockets > 1 {
+            rows.push(("Processors", self.sockets.to_string()));
+        }
+        if cores > 1 {
+            rows.push(("Cores", cores.to_string()));
+        }
+        if threads > cores {
+            rows.push(("Threads", threads.to_string()));
+        }
+        if rows.is_empty() {
+            let one = if cores == 0 {
+                "Unknown".to_string()
+            } else {
+                "1".to_string()
+            };
+            rows.push(("Cores", one));
+        }
+        rows
+    }
+
+    /// when lanlord was last applied, in this computer's time zone (the browser's, on the
+    /// web); the text as the server wrote it when that is not a time.
+    pub fn last_applied_local(&self) -> Option<String> {
+        let raw = self.last_applied.as_deref()?;
+        Some(format_applied(raw, &chrono::Local))
     }
 
     /// the memory as a line: what the server can use and how much of it is free.
@@ -232,6 +286,8 @@ pub fn parse(output: &str) -> Result<ServerFacts> {
             Some(n) if cpus_limited => n,
             _ => host_cpus,
         },
+        sockets: number(&head, "sockets") as u16,
+        cores: number(&head, "cores") as u16,
         cpus_limited,
         mem_total_mb,
         mem_available_mb,
@@ -248,4 +304,4 @@ pub fn demo() -> ServerFacts {
     parse(DEMO).expect("the demo facts parse")
 }
 
-const DEMO: &str = "hostname=demo\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpu_model=Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz\ncpus=4\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 192.0.2.10/24 metric 1024 brd 192.0.2.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 1024\n";
+const DEMO: &str = "hostname=demo\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpu_model=Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz\ncpus=4\nsockets=1\ncores=2\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 192.0.2.10/24 metric 1024 brd 192.0.2.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 1024\n";

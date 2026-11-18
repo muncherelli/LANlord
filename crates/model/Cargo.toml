@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+chrono = { version = "0.4.45", default-features = false, features = ["alloc", "clock"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json.workspace = true
 saphyr-parser = "0.3.4"

@@ -338,22 +338,22 @@ impl MyServer {
         } else {
             facts.cpu_model.clone()
         };
-        let mut computer: Vec<Node<Msg>> = [
+        let rows = [
             ("Server", facts.hostname.clone()),
             ("Signed in as", facts.user.clone()),
             ("System", facts.os.clone()),
             ("Kernel", facts.kernel.clone()),
             ("Up for", facts.uptime()),
             ("Processor", processor),
-            ("Processors", facts.processors()),
-            ("Memory", facts.memory()),
-            ("LANlord", lanlord),
         ]
         .into_iter()
-        .map(|(label, value)| Node::field(label, value))
-        .collect();
-        if let Some(applied) = &facts.last_applied {
-            computer.push(Node::field("Last applied", applied.clone()));
+        .chain(facts.cpu_rows())
+        .chain([("Memory", facts.memory()), ("LANlord", lanlord)]);
+        let mut computer: Vec<Node<Msg>> = rows
+            .map(|(label, value)| Node::field(label, value))
+            .collect();
+        if let Some(applied) = facts.last_applied_local() {
+            computer.push(Node::field("Last applied", applied));
         }
         // the environment check (container, nesting, keyctl) joins these once core::env lands
         vec![Node::Group {
@@ -545,8 +545,13 @@ mod tests {
             value("Processor"),
             "Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz"
         );
-        assert_eq!(value("Processors"), "4");
+        assert_eq!((value("Cores"), value("Threads")), ("2".into(), "4".into()));
+        assert!(fields.iter().all(|(l, _)| l != "Processors"));
         assert_eq!(value("Memory"), "4096 MB, 3328 MB free");
+        assert!(
+            value("Last applied").ends_with('M'),
+            "local time, not the raw text"
+        );
         let facts = window.facts.data.as_mut().unwrap();
         (facts.cpus, facts.cpus_limited) = (2, true);
         (
@@ -557,7 +562,10 @@ mod tests {
         facts.cpu_model.clear();
         let (_, fields) = general_lines(&window);
         let value = |label: &str| fields.iter().find(|(l, _)| l == label).unwrap().1.clone();
-        assert_eq!(value("Processors"), "2 processors (limited by container)");
+        assert_eq!(value("Threads"), "2 (limited by container)");
+        assert!(fields
+            .iter()
+            .all(|(l, _)| l != "Cores" && l != "Processors"));
         assert_eq!(
             value("Memory"),
             "1024 MB, 512 MB free (limited by container)"
