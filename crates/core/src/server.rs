@@ -34,6 +34,15 @@ fi
 echo "cpu_model=$cpu"
 "#;
 
+/// the shell that counts the sockets and the physical cores (a socket and core id pair each)
+/// from `/proc/cpuinfo`; both stay 0 where it has no ids, as on most arm boards.
+const TOPOLOGY_SNIPPET: &str = r#"awk -F: '
+/^physical id/ { p = $2; s[p] = 1 }
+/^core id/ { c[p "/" $2] = 1 }
+END { for (k in s) a++; for (k in c) b++; print "sockets=" a + 0; print "cores=" b + 0 }
+' /proc/cpuinfo 2>/dev/null
+"#;
+
 /// the shell that reads what a container's cgroup allows: memory (v2, then v1), the cpu quota
 /// and the cpus the container may run on. a value that is not there is left empty.
 const CGROUP_SNIPPET: &str = r#"for f in /sys/fs/cgroup/memory.max \
@@ -67,7 +76,7 @@ echo "uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)"
 echo "user=$(id -un)"
 echo "uid=$(id -u)"
 echo "cpus=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
-{cpu}{cgroup}echo "mem_total_kb=$(awk '/^MemTotal/{{print $2}}' /proc/meminfo 2>/dev/null)"
+{topology}{cpu}{cgroup}echo "mem_total_kb=$(awk '/^MemTotal/{{print $2}}' /proc/meminfo 2>/dev/null)"
 echo "mem_available_kb=$(awk '/^MemAvailable/{{print $2}}' /proc/meminfo 2>/dev/null)"
 if [ -d /opt/lanlord ] && getent passwd lanlord >/dev/null 2>&1; then echo installed=1; else echo installed=0; fi
 echo "version=$(cat /opt/lanlord/state/version 2>/dev/null)"
@@ -83,6 +92,7 @@ ip -6 route show default 2>/dev/null
 exit 0
 "#,
         os = os_snippet(etc, usr),
+        topology = TOPOLOGY_SNIPPET,
         cpu = CPU_SNIPPET,
         cgroup = CGROUP_SNIPPET
     )
@@ -158,7 +168,7 @@ mod tests {
         let free = limited("");
         assert_eq!((free.cpus, free.mem_total_mb), (8, 8192));
         assert!(!free.cpus_limited && !free.mem_limited);
-        assert_eq!(free.processors(), "8");
+        assert_eq!(free.cpu_rows(), [("Cores", "8".to_string())]);
         // no limit: cgroup v2 says `max`, v1 a number past the host's memory
         let open = limited("cgroup_mem_max=max\ncgroup_cpu_max=max 100000\ncgroup_cpuset=0-7\n");
         assert!(!open.cpus_limited && !open.mem_limited);
@@ -175,7 +185,10 @@ mod tests {
         );
         // the lower of the quota (1.5 rounds up to 2) and the cpuset (4)
         assert_eq!((box_.cpus, box_.cpus_limited), (2, true));
-        assert_eq!(box_.processors(), "2 processors (limited by container)");
+        assert_eq!(
+            box_.cpu_rows(),
+            [("Threads", "2 (limited by container)".to_string())]
+        );
         // cgroup v1: a quota over a period, and -1 for none
         let v1 = limited("cgroup_cpu_v1=200000 100000\n");
         assert_eq!((v1.cpus, v1.cpus_limited), (2, true));
@@ -184,12 +197,100 @@ mod tests {
         assert!(!limited("cgroup_cpuset=0-4294967295\n").cpus_limited);
         assert!(!limited("cgroup_cpuset=5-1\n").cpus_limited);
         let one = limited("cgroup_cpuset=3\n");
-        assert_eq!(one.processors(), "1 processor (limited by container)");
+        assert_eq!(
+            one.cpu_rows(),
+            [("Threads", "1 (limited by container)".to_string())]
+        );
         let set = limited("cgroup_cpuset=0-1,4,6-7\n");
         assert_eq!(set.cpus, 5);
         // a limit above the host's is no limit
         let big = limited("cgroup_mem_max=17179869184\ncgroup_cpu_max=1600000 100000\n");
         assert!(!big.mem_limited && !big.cpus_limited);
+    }
+
+    #[test]
+    fn last_applied_shows_in_the_zone_it_is_asked_for() {
+        use chrono::FixedOffset;
+        let utc = FixedOffset::east_opt(0).unwrap();
+        let cst = FixedOffset::west_opt(6 * 3600).unwrap();
+        let raw = "2026-11-18T19:42:07Z";
+        assert_eq!(format_applied(raw, &utc), "11/18/2026 7:42:07 PM");
+        assert_eq!(format_applied(raw, &cst), "11/18/2026 1:42:07 PM");
+        // a date line carrying its own offset converts too
+        assert_eq!(
+            format_applied("2026-11-15T20:41:07-06:00\n", &utc),
+            "11/16/2026 2:41:07 AM"
+        );
+        assert_eq!(format_applied("last tuesday", &cst), "last tuesday");
+        let mut facts = demo();
+        facts.last_applied = None;
+        assert_eq!(facts.last_applied_local(), None);
+        facts.last_applied = Some("last tuesday".into());
+        assert_eq!(facts.last_applied_local().as_deref(), Some("last tuesday"));
+        facts.last_applied = Some(raw.into());
+        assert!(facts.last_applied_local().unwrap().ends_with('M'));
+    }
+
+    #[test]
+    fn sockets_cores_and_threads_show_by_the_owners_rule() {
+        let rows = |extra: &str| limited(extra).cpu_rows();
+        let n = |s: &str| s.to_string();
+        // one socket, four cores, eight threads
+        assert_eq!(
+            rows("sockets=1\ncores=4\n"),
+            [("Cores", n("4")), ("Threads", n("8"))]
+        );
+        // two sockets, one thread per core
+        assert_eq!(
+            rows("sockets=2\ncores=8\n"),
+            [("Processors", n("2")), ("Cores", n("8"))]
+        );
+        assert_eq!(
+            rows("sockets=2\ncores=4\n"),
+            [
+                ("Processors", n("2")),
+                ("Cores", n("4")),
+                ("Threads", n("8"))
+            ]
+        );
+        // one core, one thread
+        let one = parse("cpus=1\nsockets=1\ncores=1\n---link\n---addr\n---route\n").unwrap();
+        assert_eq!(one.cpu_rows(), [("Cores", n("1"))]);
+        // no ids (an arm board): as many cores as threads
+        assert_eq!(rows(""), [("Cores", n("8"))]);
+        // nothing at all is not a number
+        let none = parse("hostname=h\n---link\n---addr\n---route\n").unwrap();
+        assert_eq!(none.cpu_rows(), [("Cores", n("Unknown"))]);
+    }
+
+    #[test]
+    fn old_facts_without_sockets_and_cores_still_parse() {
+        let json = serde_json::to_value(demo()).unwrap();
+        let mut old = json.as_object().unwrap().clone();
+        old.remove("sockets");
+        old.remove("cores");
+        let facts: ServerFacts = serde_json::from_value(old.into()).unwrap();
+        assert_eq!((facts.sockets, facts.cores, facts.cpus), (0, 0, 4));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_topology_script_counts_sockets_and_cores() {
+        let cpuinfo = "processor : 0\nphysical id : 0\ncore id : 0\n\n\
+                       processor : 1\nphysical id : 0\ncore id : 0\n\n\
+                       processor : 2\nphysical id : 1\ncore id : 0\n\n\
+                       processor : 3\nphysical id : 1\ncore id : 1\n";
+        let dir = std::env::temp_dir().join(format!("lanlord-topo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cpuinfo");
+        std::fs::write(&file, cpuinfo).unwrap();
+        let script = TOPOLOGY_SNIPPET.replace("/proc/cpuinfo", file.to_str().unwrap());
+        let out = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .output();
+        std::fs::remove_dir_all(&dir).ok();
+        let out = String::from_utf8(out.unwrap().stdout).unwrap();
+        assert_eq!(out, "sockets=2\ncores=3\n");
     }
 
     #[test]

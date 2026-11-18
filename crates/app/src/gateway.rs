@@ -271,7 +271,7 @@ pub trait Gateway: Send + Sync {
     /// what the server is: its system, uptime and interfaces (read-only, no sudo).
     fn server_facts(&self, host: &str, ask: AskPassword) -> Result<ServerFacts> {
         match self.call(host, Operation::ServerFacts, ask)? {
-            Reply::Facts(facts) => Ok(facts),
+            Reply::Facts(facts) => Ok(*facts),
             other => Err(unexpected("server_facts", other)),
         }
     }
@@ -499,7 +499,7 @@ mod native {
                 Ok(Reply::Done)
             }
             Operation::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
-            Operation::ServerFacts => Ok(Reply::Facts(server::demo())),
+            Operation::ServerFacts => Ok(Reply::Facts(Box::new(server::demo()))),
             Operation::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
             Operation::NetworkStatus => Ok(Reply::Interfaces(lanlord_model::netstatus::demo())),
             Operation::PurgePreview { .. } => Ok(Reply::Lines(demo_purge())),
@@ -841,7 +841,7 @@ mod fake {
                 }
                 Operation::Run { command } => Reply::ExitCode(self.run(host, &command)?),
                 Operation::Power { power } => Reply::Outcome(self.power(host, power, ask)?),
-                Operation::ServerFacts => Reply::Facts(self.server_facts(host, ask)?),
+                Operation::ServerFacts => Reply::Facts(Box::new(self.server_facts(host, ask)?)),
                 Operation::NetworkStatus => Reply::Interfaces(self.network_status(host)?),
                 Operation::PurgePreview { remove_admins } => {
                     Reply::Lines(self.purge_preview(host, remove_admins, ask)?)

@@ -388,7 +388,7 @@ fn dispatch(
             let mut facts = server::read(session)?;
             facts.user = who.caller.user.clone();
             facts.is_root = who.caller.user == "root";
-            Reply::Facts(facts)
+            Reply::Facts(Box::new(facts))
         }
         Operation::NetworkStatus => Reply::Interfaces(netstatus::read(session)?),
         Operation::PurgePreview { remove_admins } => Reply::Lines(purge::preview(

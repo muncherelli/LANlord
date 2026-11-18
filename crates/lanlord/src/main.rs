@@ -1027,20 +1027,25 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
                 &facts.cpu_model
             }
         ),
-        format!("processors:    {}", facts.processors()),
-        format!(
-            "memory:        {} MB free of {} MB{}",
-            facts.mem_available_mb,
-            facts.mem_total_mb,
-            if facts.mem_limited {
-                " (limited by container)"
-            } else {
-                ""
-            }
-        ),
-        format!("lanlord:       {lanlord}"),
     ];
-    if let Some(when) = &facts.last_applied {
+    for (label, value) in facts.cpu_rows() {
+        lines.push(format!(
+            "{:<15}{value}",
+            format!("{}:", label.to_lowercase())
+        ));
+    }
+    lines.push(format!(
+        "memory:        {} MB free of {} MB{}",
+        facts.mem_available_mb,
+        facts.mem_total_mb,
+        if facts.mem_limited {
+            " (limited by container)"
+        } else {
+            ""
+        }
+    ));
+    lines.push(format!("lanlord:       {lanlord}"));
+    if let Some(when) = facts.last_applied_local() {
         lines.push(format!("last applied:  {when}"));
     }
     for iface in &facts.interfaces {
@@ -1748,13 +1753,15 @@ mod tests {
             is_root: true,
             cpu_model: "Example CPU @ 2.00GHz".into(),
             cpus: 2,
+            sockets: 1,
+            cores: 2,
             cpus_limited: false,
             mem_total_mb: 2_048,
             mem_available_mb: 1_024,
             mem_limited: false,
             lanlord_installed: true,
             lanlord_version: Some("0.1.0".into()),
-            last_applied: Some("2026-01-01 12:00".into()),
+            last_applied: Some("2026-01-01T12:00:00Z".into()),
             interfaces: vec![
                 Iface {
                     name: "eth0".into(),
@@ -1778,15 +1785,27 @@ mod tests {
             "signed in as:  admin (root)",
             "up for:        1 day, 1 hour, 0 minutes",
             "processor:     Example CPU @ 2.00GHz",
-            "processors:    2",
+            "cores:         2",
             "memory:        1024 MB free of 2048 MB",
             "lanlord:       installed, version 0.1.0",
-            "last applied:  2026-01-01 12:00",
             "interface:     eth0 Connected (UP, default route) 192.0.2.10/24",
             "interface:     eth1 Disconnected (DOWN) ",
         ] {
             assert!(text.contains(want), "{want:?} in\n{text}");
         }
+        assert!(text.contains("last applied:  ") && !text.contains("T12:00:00Z"));
+        // threads past the cores show both; a container's limit shows threads alone
+        facts.cpus = 4;
+        let text = fact_lines(&facts).join("\n");
+        assert!(text.contains("cores:         2\n") && text.contains("threads:       4\n"));
+        facts.cpus_limited = true;
+        let text = fact_lines(&facts).join("\n");
+        assert!(
+            text.contains("threads:       4 (limited by container)") && !text.contains("cores:")
+        );
+        facts.cpus_limited = false;
+        facts.sockets = 2;
+        assert!(fact_lines(&facts).join("\n").contains("processors:    2\n"));
         facts.cpu_model.clear();
         assert!(fact_lines(&facts)
             .join("\n")

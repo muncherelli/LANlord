@@ -633,7 +633,8 @@ fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
     assert!(bar.contains("_ ×") && !bar.contains('□'), "{bar}");
     for needle in [
         "Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz",
-        "Processors   4",
+        "Cores        2",
+        "Threads      4",
         "Memory       4096 MB, 3328 MB free",
     ] {
         assert!(text.contains(needle), "{needle}:\n{text}");

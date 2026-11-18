@@ -283,7 +283,7 @@ pub enum Reply {
     Text(Option<String>),
     ExitCode(i32),
     Outcome(Outcome),
-    Facts(ServerFacts),
+    Facts(Box<ServerFacts>),
     Interfaces(Vec<InterfaceStatus>),
     /// what the server said, one line each.
     Lines(Vec<String>),
@@ -525,6 +525,8 @@ mod tests {
             is_root: false,
             cpu_model: "Example CPU @ 2.00GHz".into(),
             cpus: 2,
+            sockets: 1,
+            cores: 2,
             cpus_limited: false,
             mem_total_mb: 2_048,
             mem_available_mb: 1_024,
@@ -559,7 +561,7 @@ mod tests {
             Reply::Text(Some("echo hi".into())),
             Reply::ExitCode(3),
             Reply::Outcome(Outcome::Dropped),
-            Reply::Facts(facts),
+            Reply::Facts(Box::new(facts)),
             Reply::Interfaces(crate::netstatus::demo()),
             Reply::Lines(vec!["done".into()]),
             Reply::Clock(ClockState {
