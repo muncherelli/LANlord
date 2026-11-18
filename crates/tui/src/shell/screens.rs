@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use lanlord_app::console::Console;
 use lanlord_app::gateway::Fake;
 use lanlord_app::login::fake::FakeAuth;
-use lanlord_app::menu::{Action, Row};
+use lanlord_app::menu::Action;
 use lanlord_app::networks_window::{self, NetworksWindow};
 use lanlord_core::update::{Source, Update};
 
@@ -46,6 +46,8 @@ fn draw(shell: &mut Shell, size: (u16, u16)) -> Buffer {
     let started = Instant::now();
     let (mut last, mut steady) = (String::new(), 0);
     loop {
+        // scenes change a window's state directly, with no event to say so
+        shell.refit_due = true;
         shell.poll();
         let mut buf = Buffer::empty(area);
         shell.render(area, &mut buf);
@@ -126,15 +128,6 @@ pub(super) fn news() -> Update {
     }
 }
 
-/// the row of the LANlord menu that opens the Developer submenu.
-pub(super) fn developer_row(shell: &Shell) -> usize {
-    shell
-        .menu_state()
-        .iter()
-        .position(|row| matches!(row, Row::Item(item) if item.action == Action::Developer))
-        .expect("a development build has a Developer row")
-}
-
 /// the logon box, the first-administrator screen, the desktop, its menu and boxes, then every
 /// window.
 fn scenes() -> Vec<Scene> {
@@ -181,7 +174,7 @@ fn scenes() -> Vec<Scene> {
         scene("desktop", desktop),
         scene("menu", |size| {
             let mut shell = desktop(size);
-            shell.menu = Some(0);
+            shell.open_menu();
             shell
         }),
         scene("about", |size| {
@@ -245,7 +238,7 @@ fn maintenance_scenes() -> Vec<Scene> {
         scene("developer-menu", |size| {
             let mut shell = desktop(size);
             develop(&mut shell);
-            shell.menu = Some(developer_row(&shell));
+            shell.menu = Some(Action::Developer);
             shell.submenu = Some(0);
             shell
         }),
@@ -435,7 +428,9 @@ fn every_screen_looks_like_its_snapshot() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
-/// is the window frame at `rect` whole, apart from cells a window above it covers?
+/// what is wrong with the frame at `rect`: the corners, the sides and the bottom edge that are
+/// not drawn, apart from cells a window above it covers. the top line carries the title and the
+/// controls, so only its corners are checked.
 fn broken_frame(buf: &Buffer, rect: Rect, above: &[Rect]) -> Vec<String> {
     let mut broken = Vec::new();
     let mut expect = |x: u16, y: u16, glyph: &str| {

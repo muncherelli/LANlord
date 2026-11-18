@@ -543,8 +543,9 @@ impl<'a> Painter<'a> {
     }
 
     /// the height of each of `nodes` stacked in `room` rows: every node takes what it needs,
-    /// except that the ones that fill (a console, a list) share what the rest leave, and never
-    /// get less than 4 rows nor more than are left. with no `room` they take what they need.
+    /// except that the ones that fill (a console, a list) share what the rest leave. each gets
+    /// 4 rows or more while that fits; when it does not, they split what is left, so the total
+    /// never passes the room. with no `room` they take what they need.
     fn stack_heights<M>(
         &self,
         nodes: &[Node<M>],
@@ -566,11 +567,9 @@ impl<'a> Painter<'a> {
             .map(|(_, h)| *h)
             .sum();
         let count = nodes.iter().filter(|n| fills(n)).count() as u16;
-        // a filling node gets at least 4 rows, but never more than the rows left
-        let share = room.and_then(|room| {
-            let left = room.saturating_sub(fixed);
-            left.checked_div(count).map(|rows| rows.max(4).min(left))
-        });
+        // filling nodes split the rows left; that is 4 or more each unless there are too many of
+        // them for that, and the total never passes the rows left
+        let share = room.and_then(|room| room.saturating_sub(fixed).checked_div(count));
         nodes
             .iter()
             .zip(natural)
@@ -856,13 +855,7 @@ impl<'a> Painter<'a> {
                 let rect = Rect::new(area.x, area.y, size_cells(size, area.width), 1);
                 self.field(value, !shown, rect, buf, path);
             }
-            Node::Spin {
-                text,
-                width,
-                enabled,
-                ..
-            } => {
-                let _ = width;
+            Node::Spin { text, enabled, .. } => {
                 let w = spin_cells(text);
                 let field = Rect::new(area.x, area.y, w.min(area.width), 1).intersection(buf.area);
                 if field.is_empty() {
@@ -1136,8 +1129,7 @@ impl<'a> Painter<'a> {
                     self.draw(body, inner, buf, path);
                 }
             }
-            Node::Choice { current, width, .. } => {
-                let _ = width;
+            Node::Choice { current, .. } => {
                 let w = (current.chars().count() as u16 + 4).min(area.width);
                 let rect = Rect::new(area.x, area.y, w, 1).intersection(buf.area);
                 if rect.width >= 3 {

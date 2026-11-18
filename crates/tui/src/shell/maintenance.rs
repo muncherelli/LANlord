@@ -328,10 +328,7 @@ impl Shell {
     fn key_submenu(&mut self, key: KeyEvent) -> bool {
         let Some(hover) = self.submenu else {
             // Right opens the submenu from its row
-            let on_developer = self.menu.is_some_and(|n| {
-                matches!(self.menu_state().get(n),
-                    Some(Row::Item(item)) if item.action == Action::Developer)
-            });
+            let on_developer = self.menu == Some(Action::Developer);
             if on_developer && key.code == KeyCode::Right {
                 self.submenu = Some(0);
                 return true;

@@ -42,6 +42,11 @@ impl Services {
         self.tasks.next_request()
     }
 
+    /// how many task outcomes have been taken so far; it only grows.
+    pub fn finished(&self) -> u64 {
+        self.tasks.finished()
+    }
+
     /// is a task running against `host`?
     pub fn busy(&self, host: &str) -> bool {
         self.tasks.busy(host)

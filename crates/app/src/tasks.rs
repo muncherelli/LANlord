@@ -3,6 +3,7 @@
 //! through a channel.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 
@@ -24,16 +25,22 @@ pub struct PasswordRequest {
 /// the result of a task that is still running or has just finished.
 pub struct Job<T> {
     result: Receiver<Result<T, String>>,
+    /// the count of the [`Tasks`] this came from, which goes up as an outcome is taken.
+    finished: Arc<AtomicU64>,
 }
 
 impl<T> Job<T> {
     /// the outcome once the task is done; the error is a message to show.
     pub fn poll(&self) -> Option<Result<T, String>> {
-        match self.result.try_recv() {
+        let outcome = match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => Some(Err("the task stopped unexpectedly".into())),
+        };
+        if outcome.is_some() {
+            self.finished.fetch_add(1, Ordering::Relaxed);
         }
+        outcome
     }
 }
 
@@ -56,6 +63,8 @@ pub struct Tasks {
     busy: Arc<Mutex<HashSet<String>>>,
     requests: Sender<PasswordRequest>,
     asked: Receiver<PasswordRequest>,
+    /// how many outcomes have been taken from jobs.
+    finished: Arc<AtomicU64>,
 }
 
 impl Default for Tasks {
@@ -65,11 +74,18 @@ impl Default for Tasks {
             busy: Arc::default(),
             requests,
             asked,
+            finished: Arc::default(),
         }
     }
 }
 
 impl Tasks {
+    /// how many task outcomes have been taken so far; it only grows, so a front end can tell that what it
+    /// shows may have changed without asking every window.
+    pub fn finished(&self) -> u64 {
+        self.finished.load(Ordering::Relaxed)
+    }
+
     /// is a task running against `host`?
     pub fn busy(&self, host: &str) -> bool {
         self.busy.lock().is_ok_and(|hosts| hosts.contains(host))
@@ -93,7 +109,10 @@ impl Tasks {
             let _ = done.send(work().map_err(|err| err.to_string()));
             wake.wake();
         });
-        Job { result }
+        Job {
+            result,
+            finished: self.finished.clone(),
+        }
     }
 
     /// run `work` against `host` in the background; `None` when that host
@@ -124,7 +143,10 @@ impl Tasks {
             let _ = done.send(outcome);
             wake.wake();
         });
-        Some(Job { result })
+        Some(Job {
+            result,
+            finished: self.finished.clone(),
+        })
     }
 }
 
@@ -159,7 +181,10 @@ impl Tasks {
             let _ = done.send(outcome);
             wake.wake();
         });
-        Some(Job { result })
+        Some(Job {
+            result,
+            finished: self.finished.clone(),
+        })
     }
 
     /// like [`Tasks::quiet`], for a gateway whose ops go over http.
@@ -176,7 +201,10 @@ impl Tasks {
             let _ = done.send(outcome.map_err(|err| err.to_string()));
             wake.wake();
         });
-        Job { result }
+        Job {
+            result,
+            finished: self.finished.clone(),
+        }
     }
 }
 
@@ -254,6 +282,15 @@ mod tests {
         let job = tasks.spawn(&wake, "a@b", |_| Ok(41 + 1)).unwrap();
         assert_eq!(wait(&job), Ok(42));
         assert!(!tasks.busy("a@b"));
+    }
+
+    #[test]
+    fn the_count_of_finished_tasks_goes_up_as_outcomes_are_taken() {
+        let (tasks, wake) = (Tasks::default(), Wake::none());
+        assert_eq!(tasks.finished(), 0);
+        let job = tasks.quiet(&wake, || Ok(1));
+        assert_eq!(wait(&job), Ok(1));
+        assert_eq!(tasks.finished(), 1);
     }
 
     #[test]

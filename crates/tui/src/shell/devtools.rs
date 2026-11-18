@@ -103,6 +103,7 @@ impl Shell {
     /// forget what the windows showed, so the next desktop starts clean.
     fn reset_session(&mut self) {
         self.windows.clear();
+        self.views.clear();
         self.active = None;
         self.selected = None;
         self.menu = None;

@@ -54,6 +54,10 @@ use crate::view::{self, Input, Painter, Part, Region, ViewState};
 /// the warning item in the taskbar (F8 opens it too).
 const COMPAT_ALERT: &str = "! Compatibility (F8)";
 
+/// the desktop, and for each window its target, whether it is minimised and whether it is
+/// maximised, as they were when the windows were last fitted.
+type Fitted = (Rect, Vec<(Target, bool, bool)>);
+
 /// one open window: where it is and whether it is tucked into the taskbar.
 struct Win {
     target: Target,
@@ -267,8 +271,9 @@ pub struct Shell {
     /// bottom to top; the last visible one has the keyboard.
     windows: Vec<Win>,
     active: Option<Target>,
-    /// the LANlord menu is open, with the keyboard on this row.
-    menu: Option<usize>,
+    /// the LANlord menu is open, with the keyboard on the row of this action. the row is found
+    /// again each frame, so the rows changing under it (the components arriving) keep it put.
+    menu: Option<Action>,
     /// the Developer submenu is open beside it, with the keyboard on this row.
     submenu: Option<usize>,
     /// the update notice: the background check, what it found and the updater.
@@ -283,6 +288,12 @@ pub struct Shell {
     devtools: devtools::State,
     modal: Option<Modal>,
     views: HashMap<&'static str, ViewState>,
+    /// the desktop and the windows as they were when they were last fitted to their content.
+    fitted: Option<Fitted>,
+    /// an input event may have changed what a window shows, so the next frame fits again.
+    refit_due: bool,
+    /// the count of finished background tasks at the last fit.
+    fitted_tasks: u64,
     dialog_view: ViewState,
     /// the box the dialog view belongs to, so a new box starts fresh.
     dialog_id: Option<&'static str>,
@@ -301,8 +312,23 @@ pub struct Shell {
     pub quit: bool,
 }
 
-/// the console, hearing the log. tests share one log between all that run at once, so there a
-/// desktop hears nothing unless the test asks to.
+/// the actions of the menu's item rows, top to bottom.
+fn menu_actions(rows: &[Row]) -> impl Iterator<Item = &Action> {
+    rows.iter().filter_map(|row| match row {
+        Row::Item(item) => Some(&item.action),
+        Row::Separator => None,
+    })
+}
+
+/// the row holding the highlighted action; the first row when it is gone.
+fn menu_row_of(rows: &[Row], action: &Action) -> usize {
+    rows.iter()
+        .position(|row| matches!(row, Row::Item(item) if item.action == *action))
+        .unwrap_or(0)
+}
+
+/// the console, hearing the log. tests detach it as plain hardening, so a desktop hears nothing
+/// unless the test asks to.
 fn listening() -> Console {
     if cfg!(test) {
         Console::detached()
@@ -355,6 +381,9 @@ impl Shell {
             devtools: devtools::State::new(),
             modal: None,
             views: HashMap::new(),
+            fitted: None,
+            refit_due: false,
+            fitted_tasks: 0,
             dialog_view: ViewState::default(),
             dialog_id: None,
             drag: None,
@@ -594,6 +623,20 @@ impl Shell {
 
     /// resize every window that has not been maximised to its content, keeping its corner.
     fn refit_windows(&mut self, desktop: Rect) {
+        let now = (
+            desktop,
+            self.windows
+                .iter()
+                .map(|w| (w.target, w.minimized, w.restore.is_some()))
+                .collect::<Vec<_>>(),
+        );
+        // what a window shows can change with a keypress or when a background task finishes
+        let tasks = self.services.finished();
+        let moved = std::mem::replace(&mut self.fitted_tasks, tasks) != tasks;
+        if !std::mem::take(&mut self.refit_due) && !moved && self.fitted.as_ref() == Some(&now) {
+            return;
+        }
+        self.fitted = Some(now);
         for i in 0..self.windows.len() {
             let (target, rect, hidden) = {
                 let win = &self.windows[i];
@@ -1530,8 +1573,8 @@ impl Shell {
 
         self.outline_windows(buf);
         self.render_taskbar(area, buf);
-        match self.menu {
-            Some(hover) => self.render_menu(hover, buf),
+        match self.menu.clone() {
+            Some(action) => self.render_menu(&action, buf),
             None => self.submenu = None,
         }
         self.render_dialog(desktop, buf);
@@ -1591,8 +1634,9 @@ impl Shell {
         taskbar.render(bar, buf);
     }
 
-    fn render_menu(&mut self, hover: usize, buf: &mut Buffer) {
+    fn render_menu(&mut self, action: &Action, buf: &mut Buffer) {
         let rows = self.menu_state();
+        let hover = menu_row_of(&rows, action);
         let items = maintenance::menu_rows(&rows);
         let menu = Menu {
             rows: &items,
@@ -1769,6 +1813,7 @@ impl Shell {
 
     /// handle one terminal event.
     pub fn on_event(&mut self, event: Event, now: std::time::Instant) {
+        self.refit_due = true;
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => {
@@ -1903,7 +1948,7 @@ impl Shell {
         }
         if let Some(bar) = self.hits.taskbar.clone() {
             if bar.menu.contains(at) {
-                self.menu = Some(0);
+                self.open_menu();
                 return;
             }
             if bar.alert.is_some_and(|a| a.contains(at)) {
@@ -2152,6 +2197,27 @@ impl Shell {
         }
     }
 
+    /// open the menu with the keyboard on its first row.
+    fn open_menu(&mut self) {
+        self.menu = menu_actions(&self.menu_state()).next().cloned();
+    }
+
+    /// move the highlight one item up or down, wrapping and skipping the separators.
+    fn step_menu(&mut self, forward: bool) {
+        let rows = self.menu_state();
+        let actions: Vec<&Action> = menu_actions(&rows).collect();
+        let Some(current) = self.menu.as_ref() else {
+            return;
+        };
+        let at = actions.iter().position(|a| *a == current).unwrap_or(0);
+        let next = if forward {
+            (at + 1) % actions.len()
+        } else {
+            at.checked_sub(1).unwrap_or(actions.len() - 1)
+        };
+        self.menu = Some(actions[next].clone());
+    }
+
     fn pick_menu(&mut self, n: usize) {
         let rows = self.menu_state();
         if let Some(Row::Item(item)) = rows.get(n) {
@@ -2175,16 +2241,22 @@ impl Shell {
             return;
         }
         if key.code == KeyCode::F(10) && !self.before_desktop() {
-            self.menu = if self.menu.is_some() { None } else { Some(0) };
+            if self.menu.is_some() {
+                self.menu = None;
+            } else {
+                self.open_menu();
+            }
             return;
         }
-        if let Some(hover) = self.menu {
-            let count = self.menu_state().len();
+        if let Some(action) = self.menu.clone() {
             match key.code {
                 KeyCode::Esc => self.menu = None,
-                KeyCode::Up => self.menu = Some(hover.checked_sub(1).unwrap_or(count - 1)),
-                KeyCode::Down => self.menu = Some((hover + 1) % count),
-                KeyCode::Enter => self.pick_menu(hover),
+                KeyCode::Up => self.step_menu(false),
+                KeyCode::Down => self.step_menu(true),
+                KeyCode::Enter => {
+                    let row = menu_row_of(&self.menu_state(), &action);
+                    self.pick_menu(row);
+                }
                 _ => {}
             }
             return;
