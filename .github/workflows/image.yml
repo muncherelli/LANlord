@@ -372,8 +372,11 @@ jobs:
       - name: check the released tag
         run: |
           set -eu
-          have=$(tools/ghcr-own-versions.sh "$IMAGE" | sed -n "s/^$VERSION //p")
-          if [ "$have" != "$REVISION" ]; then
-            echo "::error::$IMAGE:$VERSION is missing or not from $REVISION; run the image workflow again with tag v$VERSION"
-            exit 1
-          fi
+          # the packages api can lag a moment behind the push, so look a few times
+          for attempt in 1 2 3 4 5; do
+            have=$(tools/ghcr-own-versions.sh "$IMAGE" | sed -n "s/^$VERSION //p")
+            [ "$have" != "$REVISION" ] || exit 0
+            [ "$attempt" = 5 ] || sleep 10
+          done
+          echo "::error::$IMAGE:$VERSION is missing or not from $REVISION; run the image workflow again with tag v$VERSION"
+          exit 1

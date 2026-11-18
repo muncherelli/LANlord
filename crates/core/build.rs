@@ -33,7 +33,8 @@ fn main() {
     if let Some(common) = git(&["rev-parse", "--git-common-dir"]).map(resolve) {
         watch(&common.join("packed-refs"));
         watch(&common.join("refs/tags"));
-        // a commit on a branch moves the branch ref, not HEAD
+        // a commit on a branch moves the branch ref, not HEAD. a ref that is only in packed-refs is
+        // not watched until it becomes a loose ref (the first commit on it does that)
         if let Some(head) = git(&["symbolic-ref", "-q", "HEAD"]) {
             watch(&common.join(head));
         }
