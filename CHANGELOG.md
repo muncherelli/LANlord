@@ -82,7 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Linux builds now start on glibc 2.17 and newer (the desktop window also needs the system's display and graphics libraries)
+- My Server is a fixed-size dialog (minimise and close only) that shows the CPU and memory the container allows (cgroup limits, marked as limited by the container) and the CPU model name; the network interfaces moved to the Networks window. This applies to the window, browser and terminal desktops (#138)
+- Linux builds now start on glibc 2.17 and newer (the desktop window also needs the system's display and graphics libraries) (#135)
 - Settings are checked on the server when saved and again before Apply: a top-level section LANlord does not know, or (in a component's settings that have no fixed type) text that is just yes, no, on, off, true or false, is refused with an error naming the field; yes/no/on/off in on/off fields are read as true/false (#132)
 - The terminal desktop uses one layout system: windows sized to their contents and clamped to the screen, one column of padding, equal-width buttons, a navy selection and wrapped text (#126, #130)
 - The terminal desktop restores the terminal when it gets SIGTERM or SIGHUP (#130)
@@ -93,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `lanlord doctor` reports container nesting correctly (the check ran inside the operations service's sandbox and said no), and the web interface shows the real signed-in login instead of root for a sudo user (#137)
 - A save whose secret path does not fit what is stored (such as `docker[a].token` over a section) is refused instead of wiping the stored secrets (#123)
 - The firewall drops NTP (udp 123) on the uplink, and the Time Server health check works on a host without `ss` (#122)
 - The taskbar start button shows the logo with no separator after it (#106)
