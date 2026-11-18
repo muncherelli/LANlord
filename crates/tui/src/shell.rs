@@ -301,6 +301,16 @@ pub struct Shell {
     pub quit: bool,
 }
 
+/// the console, hearing the log. tests share one log between all that run at once, so there a
+/// desktop hears nothing unless the test asks to.
+fn listening() -> Console {
+    if cfg!(test) {
+        Console::detached()
+    } else {
+        Console::new(Wake::none())
+    }
+}
+
 impl Shell {
     /// a desktop that talks to gateways through `gateway` and keeps its hosts in `hosts`.
     pub fn new(gateway: Arc<dyn Gateway>, hosts: HostList, palette: Palette) -> Self {
@@ -308,7 +318,7 @@ impl Shell {
             palette,
             services: Services::new(gateway, Wake::none()),
             hosts,
-            console: Console::new(Wake::none()),
+            console: listening(),
             epoch: std::time::Instant::now(),
             my_server: MyServer::default(),
             settings: SettingsWindow::default(),

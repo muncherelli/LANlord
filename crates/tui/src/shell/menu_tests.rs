@@ -198,6 +198,8 @@ fn the_update_box_buttons_drive_the_updater() {
 #[test]
 fn install_opens_the_console_and_restart_asks_the_rebuild_to_verify() {
     let mut shell = checking(true);
+    // this one reads the console, so it listens to the log
+    shell.console = lanlord_app::console::Console::new(lanlord_app::wake::Wake::none());
     shell.updates.arrived(Some(news()));
     shell.updates.open_dialog();
     shell.answer_update(Msg::Choose(Choice::Install));
@@ -554,4 +556,19 @@ fn a_release_build_has_no_bug_and_no_debug_keys() {
     assert!(!shell.leave_demo());
     let text = frame(&mut shell);
     assert!(!text.contains("Demo desktop"), "{text}");
+}
+
+#[test]
+fn a_desktop_under_test_does_not_hear_what_other_work_logs() {
+    // the log is shared by the whole process: an apply that started elsewhere used to open the
+    // Progress window here and close the open menu, whenever another test happened to run it
+    let mut shell = developing();
+    key(&mut shell, KeyCode::F(10));
+    lanlord_app::log::emit(lanlord_app::log::Kind::Event, r#"{"event":"total","n":2}"#);
+    for _ in 0..20 {
+        frame(&mut shell);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(shell.menu.is_some(), "the menu is still open");
+    assert!(shell.windows.is_empty(), "no Progress window opened");
 }
