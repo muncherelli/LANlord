@@ -1,11 +1,11 @@
 //! drawing blocks that make the terminal look like the gui: the teal desktop with its icon
-//! tiles, bevelled gray windows with navy title bars, the taskbar, menus and the common
+//! tiles, gray windows boxed in single lines with the title on a navy top line, the taskbar, menus and the common
 //! controls, plus mouse handling. each widget takes plain data, so a renderer of the shared
 //! app layer can feed them later. every widget clips to the buffer, so a window dragged
 //! partly off screen draws only what is visible.
 //!
-//! the glyphs used (edges `▔ ▁ ▏ ▕`, marks `✓ ▸ × □ •` and the icon glyphs in glyphs.rs) are one cell wide in unicode, but some are
-//! "ambiguous width": a terminal set to draw ambiguous characters wide (a common cjk setting)
+//! the glyphs used (box lines `┌ ─ │`, marks `✓ ▸ × □ •` and the icon glyphs in glyphs.rs) are one cell
+//! wide in unicode, but some are "ambiguous width": a terminal set to draw ambiguous characters wide (a common cjk setting)
 //! shifts everything after them on the row, so layouts look broken there.
 
 pub mod chrome;
@@ -43,6 +43,10 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Sty
         return;
     }
     let room = width.min(buf.area.right().saturating_sub(x));
+    #[cfg(test)]
+    if text.chars().count() > usize::from(room) {
+        cut::note(text);
+    }
     buf.set_stringn(x, y, text, room as usize, style);
 }
 
@@ -68,4 +72,37 @@ pub fn lines(buf: &Buffer) -> Vec<String> {
                 .collect()
         })
         .collect()
+}
+
+/// which texts a test frame had to cut short, so a test can say that none was.
+#[cfg(test)]
+pub mod cut {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static CUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn note(text: &str) {
+        CUT.with(|cut| cut.borrow_mut().push(text.to_string()));
+    }
+
+    /// the texts cut short since the last call.
+    pub fn take() -> Vec<String> {
+        CUT.with(|cut| std::mem::take(&mut *cut.borrow_mut()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_that_does_not_fit_is_cut_and_noted() {
+        cut::take();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        text(&mut buf, 0, 0, 4, "abcdef", Style::default());
+        text(&mut buf, 0, 0, 6, "abcdef", Style::default());
+        assert_eq!(cut::take(), ["abcdef"]);
+    }
 }

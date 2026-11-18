@@ -1,0 +1,24 @@
+┌ ◆ Users and Permissions ────────────────────────────────────────────── _ □ × ┐
+│ This window is not available in the text view yet. Open it in the LANlord    │
+│ window or the web UI.                                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+      □
+   Networks
+
+
+      ►
+   Gateway
+
+
+      ▦
+   Settings
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ] [ ◆ Users and Permissions ]                             12:00 PM

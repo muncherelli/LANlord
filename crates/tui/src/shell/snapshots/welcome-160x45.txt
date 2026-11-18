@@ -1,0 +1,45 @@
+              ┌ ◆ Welcome ───────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ Welcome to LANlord v0.1.0                                                 │
+  My Server   │ Retro networks, run from one desktop.                                     │
+              │                                                                           │
+              │ ┌ Networks ─────────────────────────────────────────────┐ [  Networks  ]  │
+      □       │ │ A LANlord network is one that LANlord serves with     │ [   People   ]  │
+   Networks   │ │ DHCP, DNS and the domain.                             │ [ My Server  ]  │
+              │ │                                                       │ [ Components ]  │
+              │ │ New networks get a random private /24, for example    │ [ Changelog  ]  │
+      ►       │ │ 192.0.2.0/24, with DHCP on and no default gateway.    │                 │
+   Gateway    │ │ Its computers have no internet unless you turn it on  │                 │
+              │ │ for the whole network or for chosen computers.        │                 │
+              │ │ [ Open Networks ]                                     │                 │
+      ▦       │ └───────────────────────────────────────────────────────┘                 │
+   Settings   │ ───────────────────────────────────────────────────────────────────────── │
+              │ [✓] Show this Welcome screen each time you log on               [ Close ] │
+              └───────────────────────────────────────────────────────────────────────────┘
+      >
+   Console
+
+
+      ▣
+    Hosts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ ◆ Welcome ]                                                                                                                           12:00 PM

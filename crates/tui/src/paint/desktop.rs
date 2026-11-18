@@ -1,22 +1,21 @@
 //! the teal desktop and its icons, laid out in columns from the top-left like the gui. an
-//! icon is a small raised gray tile with its glyph in the accent colour and the label under
-//! it, wrapped to two lines like the gui wraps "Remote Cmds"; a selected icon has its label
-//! on navy.
+//! icon is one glyph in the accent colour on a small gray chip with the label under it,
+//! wrapped to two lines like the gui wraps "Remote Cmds"; a selected icon has its label on
+//! navy.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Widget;
 
-use super::chrome::Bevel;
 use super::glyphs::glyph_for;
 use super::palette::{Palette, GRAY, NAVY, TEAL, WHITE};
 use super::{bold, fill, style, text};
 
-/// the size of the raised tile: (columns, rows), edge included.
-pub const TILE: (u16, u16) = (6, 3);
+/// the size of the chip with the glyph: (columns, rows).
+pub const TILE: (u16, u16) = (3, 1);
 
-/// the space one desktop icon takes: (columns, rows): the tile, two label lines and a gap.
-pub const ICON_CELL: (u16, u16) = (12, 6);
+/// the space one desktop icon takes: (columns, rows): the chip, two label lines and a gap.
+pub const ICON_CELL: (u16, u16) = (12, 4);
 
 /// the plain teal background.
 pub struct Desktop {
@@ -66,7 +65,7 @@ fn wrap(label: &str, width: usize) -> Vec<String> {
     }
 }
 
-/// one desktop icon: a raised tile with the id's glyph, the label centred under it.
+/// one desktop icon: a chip with the id's glyph, the label centred under it.
 pub struct GlyphTile<'a> {
     pub id: &'a str,
     pub label: &'a str,
@@ -75,7 +74,7 @@ pub struct GlyphTile<'a> {
 }
 
 impl GlyphTile<'_> {
-    /// where the tile itself sits inside the icon's `area`: centred at the top.
+    /// where the chip itself sits inside the icon's `area`: centred at the top.
     pub fn tile(area: Rect) -> Rect {
         Rect::new(
             area.x + area.width.saturating_sub(TILE.0) / 2,
@@ -90,20 +89,14 @@ impl Widget for GlyphTile<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
         let tile = GlyphTile::tile(area);
-        Bevel {
-            sunken: false,
-            palette,
-        }
-        .render(tile, buf);
         let glyph = glyph_for(self.id);
-        let face = Bevel::inner(tile);
-        let width = glyph.tile.chars().count() as u16;
+        fill(buf, tile, palette, GRAY);
         text(
             buf,
-            face.x + face.width.saturating_sub(width) / 2,
-            face.y,
-            face.width,
-            glyph.tile,
+            tile.x + 1,
+            tile.y,
+            tile.width.saturating_sub(1),
+            glyph.cell,
             bold(style(palette, glyph.accent, GRAY)),
         );
         let bg = if self.selected { NAVY } else { TEAL };
@@ -133,11 +126,11 @@ mod tests {
     #[test]
     fn icons_fill_columns_from_the_top_left() {
         let area = Rect::new(0, 0, 80, 24);
-        assert_eq!(icon_rect(area, 0), Rect::new(1, 1, 12, 6));
-        assert_eq!(icon_rect(area, 1), Rect::new(1, 7, 12, 6));
-        assert_eq!(icon_rect(area, 2), Rect::new(1, 13, 12, 6));
-        // three fit in 24 rows; the fourth starts the next column
-        assert_eq!(icon_rect(area, 3), Rect::new(13, 1, 12, 6));
+        assert_eq!(icon_rect(area, 0), Rect::new(1, 1, 12, 4));
+        assert_eq!(icon_rect(area, 1), Rect::new(1, 5, 12, 4));
+        assert_eq!(icon_rect(area, 4), Rect::new(1, 17, 12, 4));
+        // five fit in 24 rows; the sixth starts the next column
+        assert_eq!(icon_rect(area, 5), Rect::new(13, 1, 12, 4));
     }
 
     #[test]
@@ -151,8 +144,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_shows_the_glyph_on_a_raised_face_with_the_label_under_it() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 6));
+    fn a_tile_shows_the_glyph_on_a_chip_with_the_label_under_it() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 12, 4));
         Desktop { palette: palette() }.render(buf.area, &mut buf);
         GlyphTile {
             id: "remote-commands",
@@ -164,21 +157,19 @@ mod tests {
         assert_eq!(
             lines(&buf),
             [
-                "   ▔▔▔▔▔▕   ",
-                "   ▏ ▶_ ▕   ",
-                "   ▏▁▁▁▁▁   ",
+                "     ▶      ",
                 "Remote Cmds ",
                 "            ",
-                "            ",
+                "            "
             ]
         );
-        // the glyph in its accent colour on the gray face, bold
-        assert_eq!(buf[(5, 1)].fg, Color::Rgb(0, 128, 0));
-        assert_eq!(buf[(5, 1)].bg, Color::Rgb(192, 192, 192));
-        assert!(buf[(5, 1)].modifier.contains(Modifier::BOLD));
+        // the glyph in its accent colour on the gray chip, bold
+        assert_eq!(buf[(5, 0)].fg, Color::Rgb(0, 128, 0));
+        assert_eq!(buf[(5, 0)].bg, Color::Rgb(192, 192, 192));
+        assert!(buf[(5, 0)].modifier.contains(Modifier::BOLD));
         // selected: the label sits on navy, the desktop stays teal
-        assert_eq!(buf[(4, 3)].bg, Color::Rgb(0, 0, 128));
-        assert_eq!(buf[(11, 3)].bg, Color::Rgb(0, 128, 128));
+        assert_eq!(buf[(4, 1)].bg, Color::Rgb(0, 0, 128));
+        assert_eq!(buf[(11, 1)].bg, Color::Rgb(0, 128, 128));
     }
 
     #[test]

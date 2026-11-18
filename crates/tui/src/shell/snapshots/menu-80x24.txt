@@ -1,0 +1,24 @@
+┌─────────────────────────────┐
+│   Server: demo@gateway      │
+│ ─────────────────────────── │
+│   Gateway                   │
+│   My Server                 │
+│   Networks                  │
+│   Settings                  │
+│   Console                   │
+│   Task Manager              │
+│   Add/Remove Components...  │
+│ ─────────────────────────── │
+│   My Account...             │
+│   Users and Permissions...  │
+│ ─────────────────────────── │
+│   Reboot server...          │
+│   Shut down server...       │
+│ ─────────────────────────── │
+│   Automatic updates         │
+│ ─────────────────────────── │
+│   Welcome...                │
+│   About LANlord             │
+│   Quit LANlord              │
+└─────────────────────────────┘
+[ L LANlord ]                                                         12:00 PM

@@ -3,6 +3,7 @@
 //! window's messages. nothing here knows what a window is for: every window that describes
 //! itself as a tree shows up in the terminal through this one file.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{Datelike, NaiveDate};
@@ -13,9 +14,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 use zeroize::Zeroizing;
 
-use crate::paint::chrome::{row_button, Bevel};
+use crate::layout::INSET;
+use crate::paint::chrome::{row_button, Frame};
 use crate::paint::controls::{self, Checkbox, TextField};
-use crate::paint::desktop::GlyphTile;
 use crate::paint::glyphs::chip;
 use crate::paint::palette::{Palette, Rgb, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use crate::paint::{bold, fill, style, text};
@@ -411,6 +412,21 @@ pub struct Painter<'a> {
     /// the window has the keyboard, so its focus shows.
     pub active: bool,
     pub regions: Vec<Region>,
+    /// the width of the label column of the form being measured or drawn: its longest label
+    /// and one column of gap.
+    label_column: Cell<u16>,
+}
+
+/// the label column of `nodes`: the longest label of a field or labelled row, and a gap.
+fn label_column<M>(nodes: &[Node<M>]) -> u16 {
+    let width = |node: &Node<M>| match node {
+        Node::Field { label, .. } | Node::Labelled { label, .. } => label.chars().count() as u16,
+        _ => 0,
+    };
+    match nodes.iter().map(width).max() {
+        Some(0) | None => 0,
+        Some(longest) => longest + 1,
+    }
 }
 
 impl<'a> Painter<'a> {
@@ -420,7 +436,13 @@ impl<'a> Painter<'a> {
             state,
             active,
             regions: Vec::new(),
+            label_column: Cell::new(0),
         }
+    }
+
+    /// makes the labels of `nodes` the label column; gives back the one to put back after.
+    fn enter_labels<M>(&self, nodes: &[Node<M>]) -> u16 {
+        self.label_column.replace(label_column(nodes))
     }
 
     fn focused(&self, path: &[usize], part: Part) -> bool {
@@ -432,8 +454,70 @@ impl<'a> Painter<'a> {
         self.regions.push(Region::new(rect, path, part, focusable));
     }
 
+    /// the colours of the selected row of the list at `path`: navy while the list has the
+    /// keyboard, a dim gray when it does not.
+    fn selection(&self, path: &[usize]) -> (Rgb, Rgb) {
+        if self.focused(path, Part::List) {
+            (WHITE, NAVY)
+        } else {
+            (BLACK, GRAY)
+        }
+    }
+
     fn st(&self, fg: Rgb, bg: Rgb) -> Style {
         style(self.palette, fg, bg)
+    }
+
+    /// how many columns `nodes` want when nothing limits them: the widest line of text, the
+    /// widest row. text is counted on one line, so a long paragraph asks for a lot and the
+    /// caller caps it.
+    pub fn natural_width<M>(&self, nodes: &[Node<M>]) -> u16 {
+        let before = self.enter_labels(nodes);
+        let width = nodes.iter().map(|n| self.node_width(n)).max().unwrap_or(0);
+        self.label_column.set(before);
+        width
+    }
+
+    fn node_width<M>(&self, node: &Node<M>) -> u16 {
+        let longest =
+            |text: &str| text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+        match node {
+            Node::Text(t) | Node::Heading(t) | Node::Warning(t) | Node::FieldError(t) => longest(t),
+            Node::Bullet(t) => longest(t) + BULLET,
+            Node::Alert(t) => longest(t) + 5,
+            Node::Field { label, value } => {
+                self.label_column
+                    .get()
+                    .max(label.chars().count() as u16 + 1)
+                    + longest(value)
+            }
+            Node::Labelled { body, .. } => self.label_column.get() + self.natural_width(body),
+            Node::Group { title, body } => {
+                self.natural_width(body).max(title.chars().count() as u16) + BOXED
+            }
+            Node::Danger(body) => self.natural_width(body) + BOXED,
+            Node::Button(b) => single_width(b),
+            Node::Buttons(bs) => buttons_width(bs),
+            Node::Toolbar(bs) => toolbar_width(bs),
+            Node::Check { label, .. } => label.chars().count() as u16 + 4,
+            Node::Input {
+                size: Size::Points(w),
+                ..
+            }
+            | Node::Secret {
+                size: Size::Points(w),
+                ..
+            } => cols(*w),
+            Node::Input { .. } | Node::Secret { .. } => 32,
+            Node::Row(body) => {
+                body.iter().map(|n| self.node_width(n)).sum::<u16>()
+                    + body.len().saturating_sub(1) as u16
+            }
+            Node::Description(t) | Node::Code(t) => longest(t) + 2 * INSET,
+            Node::TextArea { hint, .. } => longest(hint) + 2 * INSET,
+            Node::Disabled(body) => self.natural_width(body),
+            _ => 0,
+        }
     }
 
     /// how many rows `nodes` take at `width`, giving a console whatever `room` is left.
@@ -448,21 +532,46 @@ impl<'a> Painter<'a> {
         room: Option<u16>,
         path: &[usize],
     ) -> u16 {
-        let fixed: u16 = nodes
+        self.stack_heights(nodes, width, room, path).iter().sum()
+    }
+
+    /// the height of each of `nodes` stacked in `room` rows: every node takes what it needs,
+    /// except that the ones that fill (a console, a list) share what the rest leave, and never
+    /// get less than 4 rows nor more than are left. with no `room` they take what they need.
+    fn stack_heights<M>(
+        &self,
+        nodes: &[Node<M>],
+        width: u16,
+        room: Option<u16>,
+        path: &[usize],
+    ) -> Vec<u16> {
+        let before = self.enter_labels(nodes);
+        let natural: Vec<u16> = nodes
             .iter()
             .enumerate()
-            .filter(|(_, n)| !fills(n))
             .map(|(i, n)| self.node_height(n, width, &child(path, i)))
+            .collect();
+        self.label_column.set(before);
+        let fixed: u16 = nodes
+            .iter()
+            .zip(&natural)
+            .filter(|(n, _)| !fills(n))
+            .map(|(_, h)| *h)
             .sum();
-        let logs = nodes.iter().filter(|n| fills(n)).count() as u16;
-        let log = match room {
-            Some(room) => room
-                .saturating_sub(fixed)
-                .checked_div(logs)
-                .map_or(0, |rows| rows.max(4)),
-            None => 8,
-        };
-        fixed + logs * log
+        let count = nodes.iter().filter(|n| fills(n)).count() as u16;
+        // a filling node gets at least 4 rows, but never more than the rows left
+        let share = room.and_then(|room| {
+            let left = room.saturating_sub(fixed);
+            left.checked_div(count).map(|rows| rows.max(4).min(left))
+        });
+        nodes
+            .iter()
+            .zip(natural)
+            .map(|(n, height)| match (fills(n), share) {
+                (true, Some(rows)) => rows,
+                _ => height,
+            })
+            .collect()
     }
 
     fn node_height<M>(&self, node: &Node<M>, width: u16, path: &[usize]) -> u16 {
@@ -471,20 +580,23 @@ impl<'a> Painter<'a> {
             Node::Text(text) => wrap(text, width).len() as u16,
             Node::Bullet(text) => wrap(text, width.saturating_sub(BULLET)).len() as u16,
             Node::Gap(height) => rows(*height),
-            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(4)),
-            Node::Table(table) => rows(table.height).max(3) + 2,
-            Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(4)),
-            Node::Danger(body) => 2 + inner(body, width.saturating_sub(4)),
-            Node::Lines { height, .. } => rows(*height).max(2) + 2,
-            Node::Log { height, .. } => height.map_or(8, |h| rows(h).max(3) + 2),
+            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(BOXED)),
+            Node::Table(table) => rows(table.height).max(3),
+            Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(2)),
+            Node::Danger(body) => 2 + inner(body, width.saturating_sub(BOXED)),
+            Node::Lines { height, .. } => rows(*height).max(2),
+            Node::Log { height, .. } => height.map_or(6, |h| rows(h).max(3)),
             Node::List {
                 items, min_height, ..
             } => {
                 let least = rows(*min_height).max(2);
-                (items.len() as u16).clamp(least, least.max(8)) + 2
+                (items.len() as u16).clamp(least, least.max(8))
             }
-            Node::Header { lines, .. } => (1 + lines.len() as u16).max(3) + 1,
-            Node::Code(text) => text.lines().count() as u16 + 2,
+            Node::Header { title, lines, .. } => {
+                let wrapped: usize = lines.iter().map(|l| wrap(l, width).len()).sum();
+                u16::from(!title.is_empty()) + wrapped as u16 + 1
+            }
+            Node::Code(text) => text.lines().count() as u16,
             Node::Row(body) => self
                 .row_lines(body, width)
                 .iter()
@@ -495,10 +607,10 @@ impl<'a> Painter<'a> {
                         .unwrap_or(0)
                 })
                 .sum(),
-            Node::TextArea { height, .. } => rows(*height).max(3) + 2,
+            Node::TextArea { height, .. } => rows(*height).max(2),
             Node::Scroll {
                 max_height, body, ..
-            } => inner(body, width.saturating_sub(2)).min(rows(*max_height).max(3)) + 2,
+            } => inner(body, width).min(rows(*max_height).max(2)),
             Node::Fold { body, .. } => {
                 if self.state.open.contains(&fold_key(path)) {
                     1 + inner(body, width.saturating_sub(2))
@@ -507,16 +619,23 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Disabled(body) => inner(body, width),
-            Node::Labelled { body, .. } => inner(body, width.saturating_sub(LABEL)).max(1),
+            Node::Labelled { body, .. } => {
+                inner(body, width.saturating_sub(self.label_column.get())).max(1)
+            }
             Node::Alert(text) => wrap(text, width.saturating_sub(5)).len() as u16,
+            Node::Field { value, .. } => {
+                let room = width.saturating_sub(self.label_column.get().min(width / 2));
+                (wrap(value, room).len() as u16).max(1)
+            }
             Node::Spin { .. } => 1,
             Node::Bar { .. } => 1,
             Node::ClockFace { .. } => 1,
             Node::KeyedInput(_) => 1,
             Node::Banner(_) => 3,
-            Node::CheckList(list) => rows(list.height).max(3) + 2,
-            Node::Description(text) => wrap(text, width.saturating_sub(2)).len() as u16 + 2,
-            Node::Calendar { .. } => 9,
+            Node::CheckList(list) => rows(list.height).max(2),
+            Node::Description(text) => wrap(text, width.saturating_sub(2 * INSET)).len() as u16,
+            Node::Status { text, .. } => u16::from(!text.is_empty()),
+            Node::Calendar { .. } => 7,
             Node::Columns(columns) => {
                 let widths = self.column_widths(columns, width);
                 columns
@@ -533,30 +652,15 @@ impl<'a> Painter<'a> {
 
     /// draw `nodes` top to bottom inside `area`.
     pub fn draw<M>(&mut self, nodes: &[Node<M>], area: Rect, buf: &mut Buffer, path: &[usize]) {
-        let logs = nodes.iter().filter(|n| fills(n)).count() as u16;
-        let without: u16 = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| !fills(n))
-            .map(|(i, n)| self.node_height(n, area.width, &child(path, i)))
-            .sum();
-        let log_rows = area
-            .height
-            .saturating_sub(without)
-            .checked_div(logs)
-            .map_or(0, |rows| rows.max(4));
+        let heights = self.stack_heights(nodes, area.width, Some(area.height), path);
+        let before = self.enter_labels(nodes);
         let mut y = area.y;
-        for (i, node) in nodes.iter().enumerate() {
-            let here = child(path, i);
-            let height = if fills(node) {
-                log_rows
-            } else {
-                self.node_height(node, area.width, &here)
-            };
+        for (i, (node, height)) in nodes.iter().zip(heights).enumerate() {
             let rect = Rect::new(area.x, y, area.width, height);
-            self.node(node, rect, buf, &here);
+            self.node(node, rect, buf, &child(path, i));
             y = y.saturating_add(height);
         }
+        self.label_column.set(before);
     }
 
     fn node<M>(&mut self, node: &Node<M>, area: Rect, buf: &mut Buffer, path: &[usize]) {
@@ -608,7 +712,7 @@ impl<'a> Painter<'a> {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
             Node::Field { label, value } => {
-                let label_width = LABEL.min(area.width / 2);
+                let label_width = self.label_column.get().min(area.width / 2);
                 text(
                     buf,
                     area.x,
@@ -617,27 +721,22 @@ impl<'a> Painter<'a> {
                     label,
                     self.st(BLACK, GRAY),
                 );
-                text(
-                    buf,
-                    area.x + label_width,
-                    area.y,
-                    area.width.saturating_sub(label_width),
-                    value,
-                    self.st(BLACK, GRAY),
-                );
+                // a long value wraps in its own column rather than being cut off
+                let room = area.width.saturating_sub(label_width);
+                for (n, line) in wrap(value, room).iter().enumerate() {
+                    text(
+                        buf,
+                        area.x + label_width,
+                        area.y + n as u16,
+                        room,
+                        line,
+                        self.st(BLACK, GRAY),
+                    );
+                }
             }
             Node::Status { text: t, error } => {
                 let fg = if *error { RED } else { BLACK };
-                fill(buf, area, p, GRAY);
-                edges(buf, area, p);
-                text(
-                    buf,
-                    area.x + 1,
-                    area.y,
-                    area.width.saturating_sub(2),
-                    t,
-                    self.st(fg, GRAY),
-                );
+                text(buf, area.x, area.y, area.width, t, self.st(fg, GRAY));
             }
             Node::Bar { fraction, text: t } => {
                 fill(buf, area, p, WHITE);
@@ -673,25 +772,14 @@ impl<'a> Painter<'a> {
             }
             Node::Group { title, body } => {
                 frame_box(buf, area, p, SHADOW, Some(title));
-                let inner = Rect::new(
-                    area.x + 2,
-                    area.y + 1,
-                    area.width.saturating_sub(4),
-                    area.height.saturating_sub(2),
-                );
-                self.draw(body, inner, buf, path);
+                self.draw(body, boxed(area), buf, path);
             }
             Node::Danger(body) => {
                 frame_box(buf, area, p, RED, None);
-                let inner = Rect::new(
-                    area.x + 2,
-                    area.y + 1,
-                    area.width.saturating_sub(4),
-                    area.height.saturating_sub(2),
-                );
-                self.draw(body, inner, buf, path);
+                self.draw(body, boxed(area), buf, path);
             }
             Node::Buttons(buttons) => {
+                // each button as wide as its label, the first at the right edge
                 let mut right = area.right();
                 for (n, button) in buttons.iter().enumerate() {
                     let width = button_width(&button.label).min(right.saturating_sub(area.x));
@@ -701,16 +789,17 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Toolbar(buttons) => {
+                let each = equal_width(buttons);
                 let mut x = area.x;
                 for (n, button) in buttons.iter().enumerate() {
-                    let width = button_width(&button.label).min(area.right().saturating_sub(x));
+                    let width = each.min(area.right().saturating_sub(x));
                     let rect = Rect::new(x, area.y, width, 1);
                     self.button(button, rect, buf, path, n);
                     x = rect.right().saturating_add(1);
                 }
             }
             Node::Button(button) => {
-                let width = button_width(&button.label).min(area.width);
+                let width = single_width(button).min(area.width);
                 self.button(button, Rect::new(area.x, area.y, width, 1), buf, path, 0);
             }
             Node::Check {
@@ -829,30 +918,29 @@ impl<'a> Painter<'a> {
                 ..
             } => {
                 // a day is as wide as the room allows, from 5 cells down to 3
-                let cell_w = (area.width.saturating_sub(2) / 7).clamp(3, CELL_W);
+                let cell_w = (area.width / 7).clamp(3, CELL_W);
                 let grid = Rect::new(
                     area.x,
                     area.y,
-                    (7 * cell_w + 2).min(area.width),
-                    9.min(area.height),
+                    (7 * cell_w).min(area.width),
+                    7.min(area.height),
                 );
                 self.sunken(grid, buf, WHITE);
-                let top = grid.y + 1;
+                let top = grid.y;
                 for (i, name) in lanlord_app::clock_window::WEEKDAYS.iter().enumerate() {
-                    let x = grid.x + 1 + i as u16 * cell_w;
+                    let x = grid.x + i as u16 * cell_w;
                     text_at(buf, x + cell_w / 2, top, 1, name, self.st(SHADOW, WHITE));
                 }
-                let focused = self.focused(path, Part::Days);
                 for (i, day) in month_days(*year, *month).into_iter().enumerate() {
-                    let x = grid.x + 1 + (i % 7) as u16 * cell_w;
+                    let x = grid.x + (i % 7) as u16 * cell_w;
                     let y = top + 1 + (i / 7) as u16;
-                    if y >= grid.bottom().saturating_sub(1) {
+                    if y >= grid.bottom() {
                         break;
                     }
                     let cell = Rect::new(x, y, cell_w, 1).intersection(buf.area);
                     let (is_selected, in_month) = (day == *selected, day.month() == *month);
                     let (fg, bg) = match (is_selected, in_month) {
-                        (true, _) => (WHITE, if focused { NAVY } else { SHADOW }),
+                        (true, _) => (WHITE, NAVY),
                         (false, true) => (BLACK, WHITE),
                         (false, false) => (SHADOW, WHITE),
                     };
@@ -926,7 +1014,6 @@ impl<'a> Painter<'a> {
             Node::CheckList(list) => {
                 let inner = self.sunken(area, buf, WHITE);
                 self.push(inner, path, Part::List, true);
-                let focused = self.focused(path, Part::List);
                 let offset = controls::List::offset(list.selected, inner.height);
                 for (n, row) in list
                     .rows
@@ -938,11 +1025,12 @@ impl<'a> Painter<'a> {
                     let y = inner.y + (n - offset) as u16;
                     let line = Rect::new(inner.x, y, inner.width, 1);
                     let (fg, bg) = if list.selected == Some(n) {
-                        (WHITE, if focused { NAVY } else { SHADOW })
+                        self.selection(path)
                     } else {
                         (BLACK, WHITE)
                     };
                     fill(buf, line, p, bg);
+                    let inner = padded(inner);
                     let mark = match (row.partial, row.checked) {
                         (true, _) => "[-]",
                         (_, true) => "[x]",
@@ -978,7 +1066,7 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Description(description) => {
-                let inner = self.sunken(area, buf, WHITE);
+                let inner = padded(self.sunken(area, buf, WHITE));
                 for (n, line) in wrap(description, inner.width).iter().enumerate() {
                     if n as u16 >= inner.height {
                         break;
@@ -995,7 +1083,7 @@ impl<'a> Painter<'a> {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
             }
             Node::Labelled { label, body } => {
-                let width = LABEL.min(area.width / 2);
+                let width = self.label_column.get().min(area.width / 2);
                 text(buf, area.x, area.y, width, label, self.st(BLACK, GRAY));
                 let rest = Rect::new(area.x + width, area.y, area.width - width, area.height);
                 self.draw(body, rest, buf, path);
@@ -1040,9 +1128,8 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::Choice { current, width, .. } => {
-                let w = cols(*width)
-                    .max(current.chars().count() as u16 + 4)
-                    .min(area.width);
+                let _ = width;
+                let w = (current.chars().count() as u16 + 4).min(area.width);
                 let rect = Rect::new(area.x, area.y, w, 1).intersection(buf.area);
                 if rect.width >= 3 {
                     let focused = self.focused(path, Part::Open);
@@ -1079,9 +1166,9 @@ impl<'a> Painter<'a> {
                         (title.chars().count() as u16 + 4).min(area.right().saturating_sub(x));
                     let rect = Rect::new(x, area.y, width, 1).intersection(buf.area);
                     if !rect.is_empty() {
-                        row_button(buf, rect, None, title, n != *current, p);
-                        if n == *current {
-                            recolour_text(buf, rect, if bar_focus { NAVY } else { BLACK }, p, true);
+                        row_button(buf, rect, None, title, n == *current, p);
+                        if bar_focus && n == *current {
+                            underline(buf, rect);
                         }
                         self.push(rect, path, Part::Tab(n), false);
                     }
@@ -1095,18 +1182,9 @@ impl<'a> Painter<'a> {
                 );
                 let page = page.intersection(buf.area);
                 if page.height >= 2 {
-                    Bevel {
-                        sunken: false,
-                        palette: p,
-                    }
-                    .render(page, buf);
+                    Frame { palette: p }.render(page, buf);
                 }
-                let inner = Rect::new(
-                    area.x + 2,
-                    area.y + 2,
-                    area.width.saturating_sub(4),
-                    area.height.saturating_sub(3),
-                );
+                let inner = Frame::inner(page);
                 self.draw(body, inner, buf, path);
             }
             Node::Table(table) => {
@@ -1114,20 +1192,21 @@ impl<'a> Painter<'a> {
                 if inner.height == 0 {
                     return;
                 }
+                let body = padded(inner);
                 let widths: Vec<u16> = table.widths.iter().map(|w| cols(*w)).collect();
                 let header = self.st(BLACK, GRAY);
                 fill(buf, Rect::new(inner.x, inner.y, inner.width, 1), p, GRAY);
-                let mut x = inner.x;
+                let mut x = body.x;
                 for (n, heading) in table.headings.iter().enumerate() {
                     let w = widths
                         .get(n)
                         .copied()
-                        .unwrap_or(inner.right().saturating_sub(x));
+                        .unwrap_or(body.right().saturating_sub(x));
                     text(
                         buf,
                         x,
                         inner.y,
-                        w.min(inner.right().saturating_sub(x)),
+                        w.min(body.right().saturating_sub(x)),
                         heading,
                         bold(header),
                     );
@@ -1136,7 +1215,6 @@ impl<'a> Painter<'a> {
                 let shown = inner.height.saturating_sub(1);
                 let offset = controls::List::offset(table.selected, shown);
                 self.push(inner, path, Part::List, true);
-                let focused = self.focused(path, Part::List);
                 for (n, row) in table
                     .rows
                     .iter()
@@ -1148,19 +1226,19 @@ impl<'a> Painter<'a> {
                     let selected = table.selected == Some(n);
                     let bad = table.bad.get(n).copied().unwrap_or(false);
                     let (fg, bg) = match (selected, bad) {
-                        (true, _) => (WHITE, if focused { NAVY } else { SHADOW }),
+                        (true, _) => self.selection(path),
                         (false, true) => (RED, WHITE),
                         (false, false) => (BLACK, WHITE),
                     };
                     let line = Rect::new(inner.x, y, inner.width, 1);
                     fill(buf, line, p, bg);
-                    let mut x = inner.x;
+                    let mut x = body.x;
                     for (c, cell) in row.iter().enumerate() {
                         let w = widths
                             .get(c)
                             .copied()
-                            .unwrap_or(inner.right().saturating_sub(x));
-                        let room = w.min(inner.right().saturating_sub(x));
+                            .unwrap_or(body.right().saturating_sub(x));
+                        let room = w.min(body.right().saturating_sub(x));
                         match lanlord_app::compat::parse_mark(cell) {
                             Some((status, rest)) => {
                                 let mark = lanlord_app::compat::mark(status);
@@ -1199,17 +1277,17 @@ impl<'a> Painter<'a> {
                 let inner = self.sunken(area, buf, WHITE);
                 self.push(inner, path, Part::List, true);
                 if items.is_empty() {
+                    let body = padded(inner);
                     text(
                         buf,
-                        inner.x,
-                        inner.y,
-                        inner.width,
+                        body.x,
+                        body.y,
+                        body.width,
                         empty,
                         self.st(SHADOW, WHITE),
                     );
                     return;
                 }
-                let focused = self.focused(path, Part::List);
                 let offset = controls::List::offset(*selected, inner.height);
                 for (n, item) in items
                     .iter()
@@ -1220,16 +1298,18 @@ impl<'a> Painter<'a> {
                     let y = inner.y + (n - offset) as u16;
                     let line = Rect::new(inner.x, y, inner.width, 1);
                     let (fg, bg) = if *selected == Some(n) {
-                        (WHITE, if focused { NAVY } else { SHADOW })
+                        self.selection(path)
                     } else {
                         (BLACK, WHITE)
                     };
                     fill(buf, line, p, bg);
-                    text(buf, inner.x, y, inner.width, item, self.st(fg, bg));
+                    let body = padded(inner);
+                    text(buf, body.x, y, body.width, item, self.st(fg, bg));
                     self.push(line, path, Part::Row(n), false);
                 }
             }
             Node::Lines { lines, .. } => {
+                // no inset: the lines may be columns under buttons, and nothing is selected
                 let inner = self.sunken(area, buf, WHITE);
                 let key = scroll_key(path);
                 self.scrolled_lines(
@@ -1244,6 +1324,7 @@ impl<'a> Painter<'a> {
             }
             Node::Log { lines, .. } => {
                 let inner = self.sunken(area, buf, BLACK);
+                let inner = padded(inner);
                 let key = scroll_key(path);
                 self.scrolled_lines(
                     lines.iter().map(|(k, l)| (l.as_str(), log_colour(*k))),
@@ -1256,7 +1337,7 @@ impl<'a> Painter<'a> {
                 self.push(inner, path, Part::Scroll, false);
             }
             Node::Code(code) => {
-                let inner = self.sunken(area, buf, WHITE);
+                let inner = padded(self.sunken(area, buf, WHITE));
                 for (n, line) in code.lines().enumerate().take(usize::from(inner.height)) {
                     text(
                         buf,
@@ -1269,7 +1350,7 @@ impl<'a> Painter<'a> {
                 }
             }
             Node::TextArea { value, hint, .. } => {
-                let inner = self.sunken(area, buf, WHITE);
+                let inner = padded(self.sunken(area, buf, WHITE));
                 let focused = self.focused(path, Part::Field);
                 if value.is_empty() && !focused {
                     text(
@@ -1296,41 +1377,28 @@ impl<'a> Painter<'a> {
                 if focused {
                     let last = lines.last().map_or(0, |l| l.chars().count()) as u16;
                     let y = inner.y + (lines.len() - 1 - first) as u16;
-                    text(
-                        buf,
-                        inner.x + last.min(inner.width.saturating_sub(1)),
-                        y,
-                        1,
-                        "▏",
-                        self.st(BLACK, WHITE),
-                    );
+                    let at = inner.x + last.min(inner.width.saturating_sub(1));
+                    text(buf, at, y, 1, " ", self.st(WHITE, BLACK));
                 }
                 self.push(inner, path, Part::Field, true);
             }
-            Node::Header { icon, title, lines } => {
-                // the window's own icon as a desktop tile, its label left out
-                let tile = Rect::new(area.x, area.y, 6, 3).intersection(buf.area);
-                if !tile.is_empty() {
-                    GlyphTile {
-                        id: icon,
-                        label: "",
-                        selected: false,
-                        palette: p,
-                    }
-                    .render(tile, buf);
-                }
-                let x = area.x + 8;
-                let room = area.right().saturating_sub(x);
-                text(buf, x, area.y, room, title, bold(self.st(BLACK, GRAY)));
-                for (n, line) in lines.iter().enumerate() {
+            Node::Header { title, lines, .. } => {
+                // the window's own title bar carries its icon, so the text starts at the edge
+                let first = u16::from(!title.is_empty());
+                if first == 1 {
                     text(
                         buf,
-                        x,
-                        area.y + 1 + n as u16,
-                        room,
-                        line,
-                        self.st(BLACK, GRAY),
+                        area.x,
+                        area.y,
+                        area.width,
+                        title,
+                        bold(self.st(BLACK, GRAY)),
                     );
+                }
+                let wrapped = lines.iter().flat_map(|line| wrap(line, area.width));
+                for (n, line) in wrapped.enumerate() {
+                    let y = area.y + first + n as u16;
+                    text(buf, area.x, y, area.width, &line, self.st(BLACK, GRAY));
                 }
             }
             Node::Row(body) => {
@@ -1339,9 +1407,14 @@ impl<'a> Painter<'a> {
                 for line in self.row_lines(body, area.width) {
                     let mut x = area.x;
                     let mut tallest = 1;
+                    let several = line.len() > 1;
                     for (n, width) in line {
                         let here = child(path, n);
                         let height = self.node_height(&body[n], width, &here);
+                        // buttons that end a row sit at its right edge, like a button row
+                        if several && n + 1 == body.len() && matches!(body[n], Node::Buttons(_)) {
+                            x = area.right().saturating_sub(width).max(x);
+                        }
                         let rect = Rect::new(x, y, width, height);
                         self.node(&body[n], rect, buf, &here);
                         tallest = tallest.max(height);
@@ -1496,10 +1569,9 @@ impl<'a> Painter<'a> {
                     Some(t.chars().count() as u16)
                 }
                 Node::Gap(units) => Some(cols(*units)),
-                Node::Button(b) => Some(button_width(&b.label)),
-                Node::Buttons(bs) | Node::Toolbar(bs) => {
-                    Some(bs.iter().map(|b| button_width(&b.label) + 1).sum())
-                }
+                Node::Button(b) => Some(single_width(b)),
+                Node::Buttons(bs) => Some(buttons_width(bs)),
+                Node::Toolbar(bs) => Some(toolbar_width(bs)),
                 Node::Check { label, .. } => Some(label.chars().count() as u16 + 4),
                 Node::Input {
                     size: Size::Points(w),
@@ -1513,9 +1585,7 @@ impl<'a> Painter<'a> {
                 Node::Spin { text, .. } => Some(spin_cells(text) + 4),
                 Node::ClockFace { .. } => Some(8),
                 Node::KeyedInput(input) => Some(cols(input.width)),
-                Node::Choice { current, width, .. } => {
-                    Some(cols(*width).max(current.chars().count() as u16 + 4))
-                }
+                Node::Choice { current, .. } => Some(current.chars().count() as u16 + 4),
                 Node::Field { label, value } => Some((label.len() + value.len()) as u16 + 2),
                 _ => None,
             })
@@ -1541,10 +1611,11 @@ impl<'a> Painter<'a> {
         if rect.is_empty() {
             return;
         }
+        let focused = self.focused(path, Part::Press(n));
         controls::Button {
             label: &button.label,
-            pressed: false,
-            default: self.focused(path, Part::Press(n)),
+            pressed: button.selected || focused,
+            default: focused,
             enabled: button.enabled,
             palette: self.palette,
         }
@@ -1569,20 +1640,12 @@ impl<'a> Painter<'a> {
         self.push(rect, path, Part::Field, true);
     }
 
-    /// a sunken box filled with `bg`; the area inside its edge.
+    /// a box filled with `bg`, the lighter patch that marks a list, log or field: no frame, so
+    /// the area it fills is the area it returns.
     fn sunken(&self, area: Rect, buf: &mut Buffer, bg: Rgb) -> Rect {
         let area = area.intersection(buf.area);
-        if area.width < 3 || area.height < 3 {
-            return Rect::default();
-        }
-        Bevel {
-            sunken: true,
-            palette: self.palette,
-        }
-        .render(area, buf);
-        let inner = Bevel::inner(area);
-        fill(buf, inner, self.palette, bg);
-        inner
+        fill(buf, area, self.palette, bg);
+        area
     }
 
     /// lines in a box, scrolled by the wheel; `follow` keeps the newest line in view unless the
@@ -1661,12 +1724,13 @@ fn text_at(buf: &mut Buffer, x: u16, y: u16, width: u16, s: &str, st: Style) {
 /// the columns a bullet takes before its text.
 const BULLET: u16 = 4;
 
-/// the width of the label column in a form row, like the gui's.
-const LABEL: u16 = 18;
-
-/// a console without a height of its own takes the rest of the window.
+/// a console, a list, or a box holding one, takes the rest of the window.
 fn fills<M>(node: &Node<M>) -> bool {
-    matches!(node, Node::Log { height: None, .. })
+    match node {
+        Node::Log { height: None, .. } | Node::List { .. } | Node::TextArea { .. } => true,
+        Node::Group { body, .. } => body.iter().any(fills),
+        _ => false,
+    }
 }
 
 /// `path` with `i` added.
@@ -1688,7 +1752,55 @@ pub fn scroll_key(path: &[usize]) -> String {
 
 /// a button's width in cells: its label with room for the edges, never tiny.
 fn button_width(label: &str) -> u16 {
-    (label.chars().count() as u16 + 4).max(8)
+    label.chars().count() as u16 + 4
+}
+
+/// the width of a lone button: the one it asks for, so a stack of them lines up.
+fn single_width<M>(button: &Button<M>) -> u16 {
+    button.width.map_or_else(
+        || button_width(&button.label),
+        |w| cols(w).max(button_width(&button.label)),
+    )
+}
+
+/// the width every button of a row shares: the widest label's.
+fn equal_width<M>(buttons: &[Button<M>]) -> u16 {
+    buttons.iter().map(single_width).max().unwrap_or(0)
+}
+
+/// how wide a row of buttons is: each as wide as its label, with a cell between.
+fn buttons_width<M>(buttons: &[Button<M>]) -> u16 {
+    let labels: u16 = buttons.iter().map(|b| button_width(&b.label)).sum();
+    labels + (buttons.len() as u16).saturating_sub(1)
+}
+
+/// how wide a toolbar is: equal buttons with a cell between.
+fn toolbar_width<M>(buttons: &[Button<M>]) -> u16 {
+    let count = buttons.len() as u16;
+    equal_width(buttons) * count + count.saturating_sub(1)
+}
+
+/// the columns a group box takes beside its content: the border and the inset, both sides.
+const BOXED: u16 = 2 + 2 * INSET;
+
+/// where the content of a group box drawn in `area` goes.
+fn boxed(area: Rect) -> Rect {
+    Rect::new(
+        area.x + 1 + INSET,
+        area.y + 1,
+        area.width.saturating_sub(BOXED),
+        area.height.saturating_sub(2),
+    )
+}
+
+/// the inside of a light box less the inset its text keeps from the edge.
+fn padded(inner: Rect) -> Rect {
+    Rect::new(
+        inner.x.saturating_add(INSET),
+        inner.y,
+        inner.width.saturating_sub(2 * INSET),
+        inner.height,
+    )
 }
 
 /// the console colours, like the gui's.
@@ -1699,20 +1811,6 @@ fn log_colour(kind: Kind) -> Rgb {
         Kind::Info => (85, 255, 255),
         Kind::Debug | Kind::Event => SHADOW,
     }
-}
-
-/// the thin sunken edges of a one-row box.
-fn edges(buf: &mut Buffer, area: Rect, palette: Palette) {
-    let area = area.intersection(buf.area);
-    if area.width < 2 {
-        return;
-    }
-    buf[(area.x, area.y)]
-        .set_symbol("▕")
-        .set_style(style(palette, SHADOW, GRAY));
-    buf[(area.right() - 1, area.y)]
-        .set_symbol("▏")
-        .set_style(style(palette, WHITE, GRAY));
 }
 
 /// an etched frame (a group box) or a coloured one, with an optional caption on its top edge.
@@ -1757,14 +1855,11 @@ fn recolour(buf: &mut Buffer, rect: Rect, s: Style) {
     }
 }
 
-/// make the label of a tab stand out: the current tab's text bold in `fg`.
-fn recolour_text(buf: &mut Buffer, rect: Rect, fg: Rgb, palette: Palette, strong: bool) {
-    let mut s = style(palette, fg, GRAY);
-    if strong {
-        s = bold(s);
-    }
+/// underline the cells of `rect`, the mark of the tab the keyboard is on.
+fn underline(buf: &mut Buffer, rect: Rect) {
     for x in rect.left() + 1..rect.right().saturating_sub(1) {
-        buf[(x, rect.y)].set_style(s);
+        let cell = &mut buf[(x, rect.y)];
+        cell.set_style(cell.style().add_modifier(Modifier::UNDERLINED));
     }
 }
 

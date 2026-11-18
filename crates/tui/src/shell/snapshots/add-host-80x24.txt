@@ -1,0 +1,24 @@
+
+      ≡           ▣
+  My Server     Hosts
+
+
+      □
+   Networks
+
+                    ┌ Add a host ─────────────────── _ □ × ┐
+      ►             │ Gateway as user@host:                │
+   Gateway          │ Host                                 │
+                    │                                      │
+                    │                    [ OK ] [ Cancel ] │
+      ▦             └──────────────────────────────────────┘
+   Settings
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ]                                                         12:00 PM
