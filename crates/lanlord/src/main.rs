@@ -385,7 +385,7 @@ enum Command {
         host: String,
         #[command(flatten)]
         web: WebFiles,
-        /// skip the prompt
+        /// skip the prompt, and go ahead even when the services are already not answering
         #[arg(long)]
         yes: bool,
     },
@@ -772,7 +772,13 @@ fn print_install(event: lanlord_core::install::Event) {
 /// print an upgrade's steps and what the server says while it runs.
 fn print_upgrade(event: lanlord_core::upgrade::Event) {
     use lanlord_core::upgrade::{Event, Step};
-    let number = |step: Step| Step::ALL.iter().position(|s| *s == step).unwrap_or(0) + 1;
+    let number = |step: Step| {
+        Step::ALL
+            .iter()
+            .position(|candidate| *candidate == step)
+            .unwrap_or(0)
+            + 1
+    };
     match event {
         Event::StepStarted(step) => {
             println!("[{}/{}] {}", number(step), Step::ALL.len(), step.title())
@@ -789,14 +795,14 @@ fn print_upgrade(event: lanlord_core::upgrade::Event) {
 fn upgrade(host: &str, web: lanlord_core::webinstall::WebSource, yes: bool) -> Result<()> {
     if !yes {
         let typed = confirmed(
-            "type the host name to upgrade lanlord on it (nothing is removed): ",
+            "this restarts the lanlord services, and restarting lanlord-operations interrupts any operation that is running (nothing is removed). type the host name to go on: ",
             None,
         )?;
         if typed != host {
             bail!("the host name does not match; nothing was changed");
         }
     }
-    lanlord_core::upgrade::run(host, &web, &mut ask, &mut print_upgrade)
+    lanlord_core::upgrade::run(host, &web, yes, &mut ask, &mut print_upgrade)
 }
 
 /// the host name typed at a prompt, or the one given with --confirm.
