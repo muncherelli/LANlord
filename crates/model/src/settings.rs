@@ -194,12 +194,30 @@ pub fn merge(plain: &Value, secrets: &Value) -> Value {
 /// the paths of every secret value in `value`, like
 /// `nt4-domain.admin_password` or `nt4-domain.users[dana].password`.
 pub fn secret_paths(value: &Value) -> Vec<String> {
+    secret_values(value)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// every secret in `value` with its path and its text, for sending a whole settings file to
+/// a gateway as secret updates.
+pub fn secret_values(value: &Value) -> Vec<(String, String)> {
     let mut found = Vec::new();
-    collect_secret_paths(value, "", &mut found);
+    collect_secret_values(value, "", &mut found);
     found
 }
 
-fn collect_secret_paths(value: &Value, prefix: &str, found: &mut Vec<String>) {
+fn scalar_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn collect_secret_values(value: &Value, prefix: &str, found: &mut Vec<(String, String)>) {
     match value {
         Value::Mapping(map) => {
             for (key, item) in map {
@@ -210,16 +228,16 @@ fn collect_secret_paths(value: &Value, prefix: &str, found: &mut Vec<String>) {
                     format!("{prefix}.{key}")
                 };
                 if is_secret_key(key) && is_scalar(item) {
-                    found.push(path);
+                    found.push((path, scalar_text(item)));
                 } else {
-                    collect_secret_paths(item, &path, found);
+                    collect_secret_values(item, &path, found);
                 }
             }
         }
         Value::Sequence(items) => {
             for (i, item) in items.iter().enumerate() {
                 let entry = name_of(item).map_or_else(|| i.to_string(), String::from);
-                collect_secret_paths(item, &format!("{prefix}[{entry}]"), found);
+                collect_secret_values(item, &format!("{prefix}[{entry}]"), found);
             }
         }
         _ => {}
@@ -403,6 +421,10 @@ pub struct Document {
     /// true when only the old all-in-one encrypted file exists; the next
     /// save moves its secrets to the encrypted file and the rest to the plain one.
     pub legacy: bool,
+    /// true when the stored secrets are sealed to a key this gateway does not hold (an older
+    /// client's key sealed them): move them to the gateway once, with the old key, to use them.
+    #[serde(default)]
+    pub needs_move: bool,
 }
 
 impl Document {

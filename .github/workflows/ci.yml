@@ -81,6 +81,17 @@ jobs:
         run: |
           sudo "$(cat bin.path)" --ignored --exact ops::tests::root_a_local_run_is_the_callers_uid_and_groups_in_a_clean_environment --nocapture | tee out
           grep -q "test result: ok. 1 passed" out
+      # the operations service serves the accounts of the gateway itself on a local socket, each as
+      # the account its uid belongs to: this needs root to make an account and connect as it
+      - name: build the operations service test binary
+        run: |
+          cargo test -p lanlord --no-default-features --features webui --locked --no-run --message-format=json > service.json
+          jq -r 'select(.profile.test and .target.name=="lanlord") | .executable // empty' service.json | tail -1 > service.path
+          test -x "$(cat service.path)"
+      - name: run the local socket test as root
+        run: |
+          sudo "$(cat service.path)" --ignored --exact operations_service::tests::root_a_local_peer_is_served_as_its_own_account_and_cannot_name_root --nocapture | tee service.out
+          grep -q "test result: ok. 1 passed" service.out
 
   wasm:
     name: model builds for the browser

@@ -53,6 +53,8 @@ pub struct SettingsWindow {
     updates: Vec<Update>,
     /// the gateway still has everything in the old single encrypted file.
     legacy: bool,
+    /// the secrets are sealed to a key an older client kept; they move to the gateway once.
+    needs_move: bool,
     /// the host `text` came from.
     source: Option<String>,
     /// a host whose load failed, so it is not retried every frame.
@@ -185,6 +187,7 @@ impl SettingsWindow {
         self.text = document.plain;
         self.secrets_set = document.secrets_set;
         self.legacy = document.legacy;
+        self.needs_move = document.needs_move;
         self.updates.clear();
         self.say(false, format!("loaded from {host}"));
         self.source = Some(host);
@@ -289,6 +292,12 @@ impl SettingsWindow {
             (None, None) if stale && self.source.is_some() => (
                 false,
                 "The text is from another host; Reload to switch.".to_string(),
+            ),
+            (None, None) if self.needs_move => (
+                true,
+                "The secrets are sealed to an old key kept on a client. Run `lanlord move-secrets` \
+                 for this server from the machine that has ~/.config/lanlord/identity, once."
+                    .to_string(),
             ),
             (None, None) if self.legacy => (
                 false,

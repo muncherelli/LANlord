@@ -142,6 +142,10 @@ pub struct Session {
 
 impl Session {
     pub fn new(host: &str) -> Result<Self> {
+        // the logon box's "This server": this machine, reached without ssh
+        if crate::operate::is_this_server(host) {
+            return Ok(Self::local());
+        }
         if host.is_empty() || host.starts_with('-') || host.chars().any(char::is_whitespace) {
             bail!("invalid host: {host:?}");
         }
@@ -154,7 +158,7 @@ impl Session {
     }
 
     /// a session on this machine: the commands run directly as the current user, with no ssh.
-    /// the gateway's own privileged service uses it.
+    /// the gateway's own privileged service uses it, and so does the logon box's "This server".
     pub fn local() -> Self {
         Self {
             host: "localhost".to_string(),

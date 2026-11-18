@@ -776,6 +776,7 @@ mod fake {
                     Reply::Done
                 }
                 Op::LoadDocument => Reply::Document(self.load_document(host, ask)?),
+                Op::MoveSecrets { .. } => Reply::Done,
                 Op::SaveDocument { plain, updates } => {
                     let updates: Vec<(String, String)> = updates
                         .iter()
@@ -915,6 +916,7 @@ mod fake {
                     .map(|(p, _)| p.clone())
                     .collect(),
                 legacy: false,
+                needs_move: false,
             })
         }
 

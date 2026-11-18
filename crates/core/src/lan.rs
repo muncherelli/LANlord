@@ -323,6 +323,11 @@ pub fn edit_settings(plain: &str, edit: &Edit) -> Result<String> {
     Ok(settings.text())
 }
 
+/// the networks in the plain settings text.
+pub fn read_networks(plain: &str) -> Result<Networks> {
+    lan_networks::read(&Settings::parse(plain)?)
+}
+
 /// the networks stored on the server.
 pub fn networks_on(
     session: &Session,

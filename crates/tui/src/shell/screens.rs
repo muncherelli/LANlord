@@ -98,6 +98,31 @@ fn scenes() -> Vec<Scene> {
             shell.require_login(Arc::new(FakeAuth::default()));
             shell
         }),
+        scene("logon-this-server", |_| {
+            let auth = FakeAuth::default();
+            *auth.here.lock().unwrap() = Some("ann@this-server.localhost".into());
+            let mut shell = Shell::new(
+                Arc::new(Fake::new()),
+                HostList::new(None),
+                Palette::default(),
+            );
+            shell.require_login(Arc::new(auth));
+            shell
+        }),
+        scene("logon-another-server", |_| {
+            let auth = FakeAuth::default();
+            *auth.here.lock().unwrap() = Some("ann@this-server.localhost".into());
+            let mut shell = Shell::new(
+                Arc::new(Fake::new()),
+                HostList::new(None),
+                Palette::default(),
+            );
+            shell.require_login(Arc::new(auth));
+            if let Some(login) = shell.login.as_mut() {
+                login.update(lanlord_app::login::Msg::Where(1), &[]);
+            }
+            shell
+        }),
         scene("first-administrator", |size| {
             let mut shell = desktop(size);
             shell.admin_setup = Some(AdminSetup::new());

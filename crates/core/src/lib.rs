@@ -27,6 +27,7 @@ pub use lanlord_model::modules;
 pub mod monitor;
 pub mod netstatus;
 pub mod network;
+pub mod operate;
 pub use lanlord_model::networks;
 pub mod install;
 pub mod nt4;
@@ -37,6 +38,7 @@ pub mod payload;
 pub mod power;
 pub mod prefs;
 pub mod purge;
+pub mod remote;
 #[cfg(test)]
 mod render_tests;
 pub mod server;

@@ -69,12 +69,17 @@ pub fn set_software(
     ask_password: AskPassword,
 ) -> Result<()> {
     change_section(session, host, identity, ask_password, |plain| {
-        let mut settings = Settings::parse(plain)?;
-        let mut nt4 = Nt4Settings::from_settings(&settings)?;
-        nt4.software = on;
-        nt4.apply_to(&mut settings);
-        Ok(settings.text())
+        software_edit(plain, on)
     })
+}
+
+/// the plain settings with the software share on or off.
+pub fn software_edit(plain: &str, on: bool) -> Result<String> {
+    let mut settings = Settings::parse(plain)?;
+    let mut nt4 = Nt4Settings::from_settings(&settings)?;
+    nt4.software = on;
+    nt4.apply_to(&mut settings);
+    Ok(settings.text())
 }
 
 /// edit the plain settings with `edit`, store them and apply the nt4-domain module.
