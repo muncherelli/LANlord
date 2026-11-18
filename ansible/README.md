@@ -10,6 +10,7 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 | `playbooks/nt4-domain.yml` | The NT4 Domain module. The `nt4-domain/` folder holds the Samba image and `smb.conf.j2`. |
 | `playbooks/web-proxy.yml` | The Web Proxy module. The `web-proxy/` folder holds the `Caddyfile.j2`. |
 | `playbooks/dns.yml` | The DNS module. The `dns/` folder holds `dnsmasq.conf.j2` and the dnsmasq image. |
+| `playbooks/time.yml` | The Time Server module. The `time/` folder holds `chrony.conf.j2` and the chrony image; `time-facts.yml` works out which networks it serves. |
 | `playbooks/replace-container.yml` | The shared tasks that replace a container and roll back when the new one is unhealthy. |
 | `playbooks/status/lanlord-status.sh` | The status page generator, run every 30 seconds by a systemd timer that the Web Proxy module installs. |
 
@@ -21,10 +22,10 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 
 ## Replacing a container safely
 
-The NT4 Domain, DNS and Web Proxy modules replace their container through the shared `playbooks/replace-container.yml` whenever its image or configuration changes:
+The NT4 Domain, DNS, Time Server and Web Proxy modules replace their container through the shared `playbooks/replace-container.yml` whenever its image or configuration changes:
 
 1. The old container `<name>` is renamed `<name>-prev` and stopped (not removed). With host networking the two cannot listen on the same ports at once.
-2. The new container starts and must stay healthy for 3 checks in a row, 2 seconds apart: running, not restarting, and the module's check passing (`smbcontrol smbd ping` for Samba, the running state for dnsmasq and Caddy).
+2. The new container starts and must stay healthy for 3 checks in a row, 2 seconds apart: running, not restarting, and the module's check passing (`smbcontrol smbd ping` for Samba, the running state for dnsmasq, chrony and Caddy).
 3. When it does, `<name>-prev` is removed. When it does not, the failed container's last 40 log lines are printed as a debug message, it is removed, `<name>-prev` is renamed back and started, and the run fails with the reason and a note that the previous container was restored.
 
 The first run on a fresh gateway has no previous container, so a failure just fails. A leftover `<name>-prev` from an interrupted run is handled at the start of the next run: it is removed when `<name>` is running, and restored when `<name>` is missing or stopped.
@@ -66,22 +67,39 @@ Settings from before there was a list still work: a `dns:` section, `docker.inte
 
 ## The server component images
 
-CI publishes two images, one package each, tagged with the LANlord release version:
+CI publishes three images, one package each, tagged with the LANlord release version:
 
 - `ghcr.io/muncherelli/lanlord-nt4-server-components`: samba built from the signature-checked source tarball as a classic (non-AD) server, with SMB1/NT1 still allowed. Its Dockerfile is in `playbooks/nt4-domain/image/`, next to the samba release key it checks the tarball against.
 - `ghcr.io/muncherelli/lanlord-network-server-components`: dnsmasq on Alpine, from `playbooks/dns/image/`.
+- `ghcr.io/muncherelli/lanlord-time-server-components`: chrony on Alpine, from `playbooks/time/image/`. It runs `chronyd -x -u chrony` in the foreground and logs to stdout, so it serves time and never sets the host's clock (no `CAP_SYS_TIME`).
 
-Tags are versions only. Both images are published under a LANlord version: an `X.Y.Z` tag plus rolling `X.Y`, `X` and `latest` tags that move only when a release is published (development builds publish just their exact `X.Y.Z`, which is what the playbooks pin). The upstream versions are not tags: they are labels (`org.opencontainers.image.version` is the LANlord version; `io.lanlord.samba.version` and `io.lanlord.dnsmasq.version` are the upstream ones, set from the `ARG` in the Dockerfile).
+Tags are versions only. All three images are published under a LANlord version: an `X.Y.Z` tag plus rolling `X.Y`, `X` and `latest` tags that move only when a release is published (development builds publish just their exact `X.Y.Z`, which is what the playbooks pin). The upstream versions are not tags: they are labels (`org.opencontainers.image.version` is the LANlord version; `io.lanlord.samba.version`, `io.lanlord.dnsmasq.version` and `io.lanlord.chrony.version` are the upstream ones, set from the `ARG` in the Dockerfile).
 
-The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf` and `dnsmasq.conf` are mounted into the container when it runs. LANlord passes the image version its build was made for to the playbooks (the `lanlord_image_version` extra var) and they pin that `X.Y.Z` (never `latest`), so a release keeps running the images of its own release and a trunk build the development images. Each apply pulls that tag; if the pull fails it builds the same Dockerfile on the gateway instead.
+The images hold only upstream software. LANlord's own `entrypoint.sh`, `lanlord-user`, `smb.conf`, `dnsmasq.conf` and `chrony.conf` are mounted into the container when it runs. LANlord passes the image version its build was made for to the playbooks (the `lanlord_image_version` extra var) and they pin that `X.Y.Z` (never `latest`), so a release keeps running the images of its own release and a trunk build the development images. Each apply pulls that tag; if the pull fails it builds the same Dockerfile on the gateway instead.
 
 The version is the one in development: the next patch after the latest `v*` release tag (or the workspace version when that is already ahead), worked out by `tools/image-version.sh`. LANlord's `crates/core/build.rs` runs the same script, and the release workflow sets `LANLORD_IMAGE_VERSION` from the tag, so a build always pins the images CI published for its version. When git or the tags are not available the build falls back to the crate version. The workflow is `.github/workflows/image.yml`, with the images listed in `.github/images.json`:
 
 - A push to trunk that changes image files builds and publishes the development version, overwriting that `X.Y.Z` while `v<X.Y.Z>` is not released.
 - Once `v<X.Y.Z>` is released its images are frozen: never rebuilt or overwritten. The next publish goes to the next version.
-- A release dispatches the workflow with its tag and makes sure both images have the released `X.Y.Z`. When none changed during the cycle, the newest older version's manifest is retagged (no rebuild); with no older version the image is built from the sources at the tag. A published release is never overwritten. The same run can be started by hand with a `tag` input (like `v0.2.0`). A release run ends by checking that the tag is there and fails when it is not (a waiting run can be replaced by a newer one), so run it again by hand with the same `tag`; an image is skipped for a tag from before its files existed. Without `tag` it publishes the development version. An `image` input picks one image.
+- A release dispatches the workflow with its tag and makes sure every image has the released `X.Y.Z`. When none changed during the cycle, the newest older version's manifest is retagged (no rebuild); with no older version the image is built from the sources at the tag. A published release is never overwritten. The same run can be started by hand with a `tag` input (like `v0.2.0`). A release run ends by checking that the tag is there and fails when it is not (a waiting run can be replaced by a newer one), so run it again by hand with the same `tag`; an image is skipped for a tag from before its files existed. Without `tag` it publishes the development version. An `image` input picks one image.
 - A pull request that touches image files builds them (for amd64 and arm64, without pushing).
 - Each architecture is built natively (amd64 and arm64 runners, no emulation) and merged into one multi-arch tag. `X.Y`, `X` and `latest` move only on a release, and only to a version that is the newest in their range. Each image records its commit in `org.opencontainers.image.revision`; a tag counts as published only when the image has that label and a matching version label, and a release reuses or retags an image only when its image files are unchanged since that commit (otherwise it builds from the tag).
+
+## The time server
+
+The Time Server (NTP) component runs one chrony container, `lanlord-time`, that serves the time to the LANlord networks it is ticked for in the Components window (the `components` entry `time-server`, with an `attach` list of networks; an entry without one serves every network, and an old `time-server:` section alone switches it on for every network). It takes its time from public pools and passes it on:
+
+```yaml
+time-server:
+  pools: [pool.ntp.org]     # default: pool.ntp.org
+  servers: [192.0.2.123]    # single upstream servers, optional (at most eight in all)
+```
+
+`chrony.conf` is written to `/opt/lanlord/time/chrony.conf`: it allows only the served networks' subnets (`allow`; chrony takes one `bindaddress` per address family, so none is set and it listens on udp 123 of the host network and answers only those subnets), and serves the host's clock at stratum 10 when no upstream is reachable (an isolated lab). The container runs with `-x`, so the host keeps its time as before (systemd-timesyncd, `gateway.ntp`).
+
+Where Network Services also serves a network with DHCP, dnsmasq hands out the gateway's address there as DHCP option 42 (ntp-server). Clients on a network without the time server get no option 42. The option follows the settings, not the running container: if the time server fails to start, or is not started yet on a first apply (dns runs before it), clients are still told its address.
+
+UDP 123 must be free on the host. `lanlord doctor` and the Compatibility tab have an `ntp port (udp 123)` check that fails when a host chronyd or ntpd listens on udp 123 on any address, and the Components window will not switch the time server on until it passes. Stop and disable the host daemon (`systemctl disable --now chrony`, `chronyd` or `ntpd`). systemd-timesyncd only asks for time and never conflicts. When the time server is switched off, its container and `/opt/lanlord/time` are removed on the next apply.
 
 ## Joining NT4 machines
 

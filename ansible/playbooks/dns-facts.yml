@@ -1,5 +1,9 @@
 # included by dns.yml (needs lanlord_networks from networks.yml, and label_re): which networks get a
 # dnsmasq, and the names every network answers for. nothing here changes the machine.
+# the networks the time server serves, for dhcp option 42
+- name: work out which networks the time server serves
+  ansible.builtin.include_tasks: time-facts.yml
+
 - name: pick the networks that get a dnsmasq
   ansible.builtin.set_fact:
     dns_networks: "{{ lanlord_networks | default([]) | selectattr('dns_enabled') | list }}"

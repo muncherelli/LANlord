@@ -183,6 +183,14 @@ const HARNESS: &str = r#"
     - ansible.builtin.include_tasks: dns-render.yml
       loop: "{{ dns_networks }}"
       loop_control: {loop_var: net, label: "{{ net.name }}"}
+    - ansible.builtin.file:
+        path: "{{ out }}/time"
+        state: directory
+      when: time_networks | length > 0
+    - ansible.builtin.template:
+        src: time/chrony.conf.j2
+        dest: "{{ out }}/time/chrony.conf"
+      when: time_networks | length > 0
     - ansible.builtin.template:
         src: docker/firewall.nft.j2
         dest: "{{ out }}/firewall.nft"
@@ -319,11 +327,75 @@ fn ansible_renders_three_networks_each_pinned_to_its_own_address() {
     for drop in [
         "    iifname \"eth0\" udp dport { 137, 138 } drop",
         "    iifname \"eth0\" tcp dport { 139, 445 } drop",
-        "    iifname \"eth0\" udp dport { 53, 67 } drop",
+        "    iifname \"eth0\" udp dport { 53, 67, 123 } drop",
         "    iifname \"eth0\" tcp dport 53 drop",
         "    oifname \"eth0\" udp sport 67 drop",
     ] {
         assert!(has(&firewall, drop), "{drop} in\n{firewall:#?}");
+    }
+}
+
+#[test]
+fn ansible_serves_time_on_the_ticked_networks_and_hands_out_option_42_there() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    // retronet and lab are ticked; lone is not
+    let ticked = format!(
+        "{THREE}components:\n  time-server:\n    attach: [{{network: retronet}}, {{network: lab}}]\ntime-server:\n  pools: [pool.example.net]\n  servers: [192.0.2.123]\n"
+    );
+    let out = render("time", &ticked).unwrap();
+    let chrony = lines(&out.join("time/chrony.conf"));
+    for want in [
+        "pool pool.example.net iburst maxsources 4",
+        "server 192.0.2.123 iburst",
+        "allow 172.16.120.0/22",
+        "allow 192.168.50.0/24",
+        "local stratum 10",
+    ] {
+        assert!(has(&chrony, want), "{want} in\n{chrony:#?}");
+    }
+    assert!(!chrony.iter().any(|l| l.contains("10.77.0")), "{chrony:#?}");
+    // chrony keeps only one bindaddress per family, so none is written
+    assert!(
+        !chrony.iter().any(|l| l.starts_with("bindaddress")),
+        "{chrony:#?}"
+    );
+    for (network, want) in [("retronet", true), ("lab", true), ("lone", false)] {
+        let conf = lines(&out.join(format!("dns/{network}/dnsmasq.conf")));
+        let option = conf.iter().find(|l| l.starts_with("dhcp-option=42"));
+        assert_eq!(option.is_some(), want, "{network}: {conf:#?}");
+    }
+    let retronet = lines(&out.join("dns/retronet/dnsmasq.conf"));
+    assert!(has(&retronet, "dhcp-option=42,172.16.120.1"));
+    let lab = lines(&out.join("dns/lab/dnsmasq.conf"));
+    assert!(has(&lab, "dhcp-option=42,192.168.50.1"));
+
+    // an entry without attach serves every network, and the pool defaults
+    let all = format!("{THREE}components:\n  time-server: {{}}\n");
+    let out = render("time-all", &all).unwrap();
+    let chrony = lines(&out.join("time/chrony.conf"));
+    assert!(has(&chrony, "pool pool.ntp.org iburst maxsources 4"));
+    assert!(has(&chrony, "allow 10.77.0.0/24"));
+    // the old way: a time-server section alone switches it on everywhere
+    let section = format!("{THREE}time-server: {{}}\n");
+    assert!(render("time-section", &section)
+        .unwrap()
+        .join("time/chrony.conf")
+        .exists());
+    // switched off, or not asked for: nothing is served and no option 42
+    for (name, yaml) in [
+        (
+            "time-off",
+            format!("{THREE}components:\n  time-server: {{enabled: false}}\n"),
+        ),
+        ("time-none", THREE.to_string()),
+    ] {
+        let out = render(name, &yaml).unwrap();
+        assert!(!out.join("time").exists(), "{name}");
+        let conf = lines(&out.join("dns/retronet/dnsmasq.conf"));
+        assert!(!conf.iter().any(|l| l.starts_with("dhcp-option=42")));
     }
 }
 

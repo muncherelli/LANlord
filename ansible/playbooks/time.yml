@@ -1,0 +1,153 @@
+# the time server module: one chronyd in docker that serves time to the lanlord networks it is
+# ticked for, on the host network; it answers only those networks' subnets (`allow`). it runs with -x, so
+# it never sets the host's clock (no CAP_SYS_TIME); the host keeps its own time as before. the docker
+# module must have been applied first. udp 123 must be free on the host: a host chronyd or
+# ntpd that listens on any address has to be stopped (systemd-timesyncd only asks, so it is fine).
+#
+# which networks it serves is in the components list, as for network services; without a components
+# entry the `time-server:` section switches it on for every network. its settings:
+#
+#   time-server:
+#     pools: [pool.ntp.org]       # upstream pools; default: pool.ntp.org
+#     servers: []                 # single upstream servers, such as 192.0.2.123 or ntp.example.net
+#
+# the container is lanlord-time and its folder /opt/lanlord/time, with chrony.conf. when no network
+# is served any more the container and the folder are removed. when dhcp is on for a network that
+# network services also serves, dnsmasq hands out the time server's address as dhcp option 42. that
+# option follows the settings, not the container: when this module fails, clients are still told.
+- name: lanlord time server
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: true
+  tags: [time-server]
+  vars:
+    image_dir: /opt/lanlord/playbooks/time/image
+    # the image is pinned to the lanlord release that runs this playbook (lanlord passes the image version as an extra var)
+    image_version: "{{ lanlord_image_version }}"
+    image: "ghcr.io/muncherelli/lanlord-time-server-components:{{ image_version }}"
+    state_root: /opt/lanlord/time
+    container: lanlord-time
+    host_re: '^[A-Za-z0-9:.-]{1,253}$'
+  tasks:
+    - name: work out the lanlord networks
+      ansible.builtin.include_tasks: networks.yml
+      when: networks is defined or dns is defined or components is defined or 'time-server' in vars
+
+    - name: work out which networks it serves
+      ansible.builtin.include_tasks: time-facts.yml
+
+    # these values end up in chrony.conf, so only plain host names and addresses are accepted
+    - name: check the upstream time
+      ansible.builtin.assert:
+        that:
+          - time_pools is sequence and time_pools is not string and time_servers is sequence and time_servers is not string
+          - time_pools | length + time_servers | length <= 8
+          - (time_pools + time_servers) | select('match', host_re) | list | length == (time_pools + time_servers) | length
+        fail_msg: "time-server: pools and servers are lists of at most eight host names or addresses in all"
+      when: time_networks | length > 0
+
+    - name: check that docker is installed
+      ansible.builtin.command: docker info --format '{% raw %}{{.ServerVersion}}{% endraw %}'
+      changed_when: false
+      when: time_networks | length > 0
+
+    - name: make the state directory
+      ansible.builtin.file:
+        path: "{{ state_root }}"
+        state: directory
+        mode: "0750"
+      when: time_networks | length > 0
+
+    - name: write the chrony configuration
+      ansible.builtin.template:
+        src: time/chrony.conf.j2
+        dest: "{{ state_root }}/chrony.conf"
+        mode: "0640"
+      register: chrony_conf
+      when: time_networks | length > 0
+
+    # the image holds only chrony; the configuration is mounted. pull first, and build the same
+    # Dockerfile here when it cannot be pulled
+    - name: pull the published image
+      ansible.builtin.command:
+        argv: [docker, pull, --quiet, "{{ image }}"]
+      register: image_pull
+      changed_when: false
+      failed_when: false
+      when: time_networks | length > 0
+
+    - name: build the image here when it could not be pulled
+      ansible.builtin.command:
+        argv: [docker, build, --quiet, --build-arg, "IMAGE_VERSION={{ image_version }}", -t, "{{ image }}", "{{ image_dir }}"]
+      changed_when: true
+      when: time_networks | length > 0 and image_pull.rc != 0
+
+    - name: look at the image
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{% raw %}{{.Id}}{% endraw %}', "{{ image }}"]
+      register: image_id
+      changed_when: false
+      when: time_networks | length > 0
+
+    - name: see which image the container uses
+      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Image}}{% endraw %}' {{ container }}"
+      register: current
+      changed_when: false
+      failed_when: false
+      when: time_networks | length > 0
+
+    - name: replace the container when it is new, stopped or out of date
+      when: time_networks | length > 0 and (current.stdout != 'true ' ~ image_id.stdout or chrony_conf is changed)
+      block:
+        - name: let chrony check the configuration
+          ansible.builtin.command: >-
+            docker run --rm -v {{ state_root }}/chrony.conf:/etc/chrony/chrony.conf:ro
+            {{ image }} -p
+          changed_when: false
+
+        - name: replace the container, keeping the old one until the new one is healthy
+          ansible.builtin.include_tasks: replace-container.yml
+          vars:
+            rc_name: "{{ container }}"
+            # chronyd keeps running when it cannot open udp 123, so the port must be held by chronyd too (skipped when the host has no ss)
+            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true && { ! command -v ss >/dev/null 2>&1 || ss -Hulnp 'sport = :123' | grep -q chronyd; }"
+            rc_run: >-
+              docker run -d --name {{ container }} --network host --restart unless-stopped
+              -v {{ state_root }}/chrony.conf:/etc/chrony/chrony.conf:ro
+              {{ image }}
+
+    - name: wait for chrony to run
+      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }}"
+      register: chrony_running
+      until: chrony_running.stdout == 'true'
+      retries: 10
+      delay: 2
+      changed_when: false
+      when: time_networks | length > 0
+
+    # nothing is served any more: only the container named lanlord-time and its folder go
+    - name: remove the container when no network is served
+      ansible.builtin.command: "docker rm -f {{ container }}"
+      register: time_removed
+      changed_when: time_removed.rc == 0
+      failed_when: false
+      when: time_networks | length == 0 and (components is defined or networks is defined or time_has_section | bool)
+
+    - name: remove a leftover previous container when no network is served
+      ansible.builtin.command: "docker rm -f {{ container }}-prev"
+      register: time_removed_prev
+      changed_when: time_removed_prev.rc == 0
+      failed_when: false
+      when: time_networks | length == 0 and (components is defined or networks is defined or time_has_section | bool)
+
+    - name: remove the folder when no network is served
+      ansible.builtin.file:
+        path: "{{ state_root }}"
+        state: absent
+      when: time_networks | length == 0 and (components is defined or networks is defined or time_has_section | bool)
+
+    - name: report
+      ansible.builtin.debug:
+        msg: "chrony serves time on {{ time_networks | map(attribute='ip') | join(', ') }}"
+      when: time_networks | length > 0
