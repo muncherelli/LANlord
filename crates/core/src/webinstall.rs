@@ -206,15 +206,18 @@ rm -rf "$S/dl"
         .replace("@WEB@", &assets.web)
 }
 
-/// put the staged files in place, keeping the previous binary and web folder beside them as
-/// `lanlord.prev` and `web.prev` the way tools/dev-deploy.sh does, and restart the service when
-/// it exists so it runs the new files.
+/// put the staged files in place, keeping the previous binary, login helper and web folder
+/// beside them as `lanlord.prev`, `lanlord-auth-helper.prev` and `web.prev` the way
+/// tools/dev-deploy.sh does, and restart the service when it exists so it runs the new files.
+/// the backups of an earlier swap are removed first, so every `.prev` left afterwards belongs to
+/// this swap and a rollback cannot bring back something older.
 pub fn install_script(root: &str) -> String {
     with_root(
         r#"set -eu
 S='@ROOT@@STAGE@'
 B='@ROOT@/opt/lanlord/bin'
 W='@ROOT@/opt/lanlord/web'
+rm -f "$B/.placing"
 for f in "$S/lanlord" "$S/lanlord-auth-helper" "$S/web/index.html"; do
   [ -f "$f" ] || { echo "the staged files are incomplete: $f is missing" >&2; exit 1; }
 done
@@ -228,15 +231,21 @@ chmod 0700 "$S/lanlord-auth-helper"
 chown -R root:root "$S/web"
 find "$S/web" -type d -exec chmod 0755 {} +
 find "$S/web" -type f -exec chmod 0644 {} +
+# marks the swap as begun, so that an upgrade knows a failure from here on needs a rollback
+: > "$B/.placing"
+rm -f "$B/lanlord.prev" "$B/lanlord-auth-helper.prev"
+rm -rf "$W.prev"
 if [ -f "$B/lanlord" ]; then mv -f "$B/lanlord" "$B/lanlord.prev"; fi
+if [ -f "$B/lanlord-auth-helper" ]; then mv -f "$B/lanlord-auth-helper" "$B/lanlord-auth-helper.prev"; fi
 mv -f "$S/lanlord" "$B/lanlord"
 mv -f "$S/lanlord-auth-helper" "$B/lanlord-auth-helper"
-if [ -d "$W" ]; then rm -rf "$W.prev"; mv "$W" "$W.prev"; fi
+if [ -d "$W" ]; then mv "$W" "$W.prev"; fi
 mv "$S/web" "$W"
 rm -rf "$S"
 if [ -z '@ROOT@' ] && systemctl cat lanlord-webui.service >/dev/null 2>&1; then
   systemctl restart lanlord-webui.service
 fi
+rm -f "$B/.placing"
 echo "installed the server binary, the login helper and the browser build"
 "#,
         root,
@@ -389,22 +398,21 @@ fn upload(
     Ok(())
 }
 
-/// the whole step on an open session.
-pub(crate) fn run_step(
+/// get the files onto the gateway's stage: upload a local build, or download the release.
+pub(crate) fn stage(
     session: &Session,
-    host: &str,
     source: &WebSource,
     ask: AskPassword,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<()> {
     match source {
-        WebSource::Local(local) => upload(session, local, &mut *ask, on_line)?,
+        WebSource::Local(local) => upload(session, local, &mut *ask, on_line),
         WebSource::Release { tag } => {
             let arch = asset_arch(&session.capture(&["uname".into(), "-m".into()])?)?;
             let assets = release_assets(tag, arch);
             on_line(&format!("getting the {tag} release for {arch}"));
             match root_lines(session, fetch_script("", &assets), &mut *ask, on_line)? {
-                0 => {}
+                0 => Ok(()),
                 21 => bail!(
                     "a release file does not match its sha256, so nothing was installed; \
                      {FLAGS}"
@@ -415,9 +423,27 @@ pub(crate) fn run_step(
             }
         }
     }
-    if root_lines(session, install_script(""), &mut *ask, on_line)? != 0 {
+}
+
+/// put the staged files in place, keeping the previous ones beside them.
+pub(crate) fn place(
+    session: &Session,
+    ask: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    if root_lines(session, install_script(""), ask, on_line)? != 0 {
         bail!("could not put the web ui files in place");
     }
+    Ok(())
+}
+
+/// apply the web modules with the install's settings and check that https answers.
+pub(crate) fn converge(
+    session: &Session,
+    host: &str,
+    ask: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
     apply::apply_with_settings(session, host, MODULES, SETTINGS, &mut *ask, on_line)?;
     if root_lines(session, verify_script(), ask, on_line)? != 0 {
         bail!(
@@ -428,9 +454,27 @@ pub(crate) fn run_step(
     Ok(())
 }
 
+/// the whole step on an open session.
+pub(crate) fn run_step(
+    session: &Session,
+    host: &str,
+    source: &WebSource,
+    ask: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    stage(session, source, &mut *ask, on_line)?;
+    place(session, &mut *ask, on_line)?;
+    converge(session, host, ask, on_line)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
-    use super::*;
+    use crate::webinstall::{
+        asset_arch, extract_script, fetch_script, install_script, prepare_script, release_assets,
+        sha256_file, tar_dir, upload_command, upload_commands, verify_script, Assets, WebSource,
+        MODULES, SETTINGS, STAGE,
+    };
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     /// a scratch folder that stands in for a server and for the release site.
@@ -658,6 +702,7 @@ mod tests {
         std::fs::create_dir_all(opt.join("bin")).unwrap();
         std::fs::create_dir_all(opt.join("web")).unwrap();
         std::fs::write(opt.join("bin/lanlord"), "old server").unwrap();
+        std::fs::write(opt.join("bin/lanlord-auth-helper"), "old helper").unwrap();
         std::fs::write(opt.join("web/index.html"), "old page").unwrap();
         for script in [fetch_script(&root, &assets), install_script(&root)] {
             let (code, err) = s.sh(&script);
@@ -667,6 +712,9 @@ mod tests {
         assert_eq!(read("bin/lanlord"), "server");
         assert_eq!(read("bin/lanlord.prev"), "old server");
         assert_eq!(read("bin/lanlord-auth-helper"), "helper");
+        assert_eq!(read("bin/lanlord-auth-helper.prev"), "old helper");
+        // the marker of a swap in progress is gone once the swap is done
+        assert!(!opt.join("bin/.placing").exists());
         assert_eq!(read("web/index.html"), "<html>");
         assert_eq!(read("web.prev/index.html"), "old page");
         assert!(!opt.join("web-stage").exists());

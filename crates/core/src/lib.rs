@@ -49,5 +49,6 @@ pub mod ssh;
 mod testgw;
 pub mod update;
 pub mod updater;
+pub mod upgrade;
 pub mod users;
 pub mod webinstall;
