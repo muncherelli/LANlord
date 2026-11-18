@@ -77,6 +77,8 @@ jobs:
           tools/pam-stub.sh "$ARCH" "$RUNNER_TEMP/pam"
           export RUSTFLAGS="-L native=$RUNNER_TEMP/pam"
           target="$ARCH-unknown-linux-gnu"
+          # FLAGS is a list of cargo flags
+          # shellcheck disable=SC2086
           cargo zigbuild --release --locked --target "$target.2.17" -p lanlord $FLAGS
           files="target/$target/release/lanlord"
           case "$MATRIX_NAME" in
@@ -88,6 +90,8 @@ jobs:
           # the packaged binaries are the ones checked
           mkdir -p target/release
           for f in $files; do cp "$f" target/release/; done
+          # files is a list of paths without spaces
+          # shellcheck disable=SC2086
           tools/check-glibc.sh 2.17 $files
           case "$MATRIX_NAME" in
             *-headless) tools/check-helper-linkage.sh "target/$target/release/lanlord-auth-helper" ;;

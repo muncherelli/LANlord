@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# opt in with: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/tools/lint-shell.sh"

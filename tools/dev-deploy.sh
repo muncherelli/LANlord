@@ -47,6 +47,7 @@ done
 # the host goes to ssh and into prompts: letters, digits and . _ @ : - only, and not an option
 case "$host" in
   -* | *[!A-Za-z0-9._@:-]*) echo "that does not look like a host: $host" >&2; exit 2 ;;
+  *) ;;
 esac
 case "$arch" in x86_64 | aarch64) ;; *) echo "--target must be x86_64 or aarch64" >&2; exit 2 ;; esac
 
@@ -122,7 +123,7 @@ esac
 sock=$(get socket)
 # the installed unit gives the socket relative to its working directory, which is /
 case "$sock" in /* | "") ;; *) sock="/$sock" ;; esac
-case "$sock" in /*[!A-Za-z0-9._/-]* | "") echo "the service reports an odd socket path: $sock" >&2; exit 1 ;; esac
+case "$sock" in /*[!A-Za-z0-9._/-]* | "") echo "the service reports an odd socket path: $sock" >&2; exit 1 ;; *) ;; esac
 
 if [ "$rollback" = 1 ]; then
   [ "$(get prev_bin)" = yes ] || [ "$(get prev_web)" = yes ] || { echo "nothing to roll back to: there is no previous version on $host" >&2; exit 1; }
