@@ -1260,7 +1260,7 @@ impl Desktop {
                 growable: target.growable(),
                 height,
                 // an empty list would open as a strip: the hosts list opens at its usual height
-                floor: if target == Target::Hosts { size.y } else { 0.0 },
+                floor: target.floor(),
             };
             let shown = windows::show(
                 ctx,

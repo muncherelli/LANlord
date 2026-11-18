@@ -86,6 +86,15 @@ impl Target {
         }
     }
 
+    /// the least height a growable window opens at, for contents that are near empty: the hosts
+    /// list is not a one line strip. 0 for the rest, which are as tall as their contents.
+    pub fn floor(self) -> f32 {
+        match self {
+            Self::Hosts => self.size().1,
+            _ => 0.0,
+        }
+    }
+
     /// a dialog has only a close button, cannot be resized and is as tall as its contents.
     pub fn is_dialog(self) -> bool {
         matches!(self, Self::Welcome | Self::DateTime | Self::Components)
