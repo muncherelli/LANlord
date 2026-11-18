@@ -65,6 +65,7 @@ jobs:
         if: steps.release_pr.outputs.pr != ''
         env:
           PR: ${{ steps.release_pr.outputs.pr }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           branch=$(echo "$PR" | jq -r '.head_branch // empty')
           [ -n "$branch" ] || exit 0
@@ -78,7 +79,11 @@ jobs:
           if git diff --quiet; then
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "docs(changelog): promote unreleased to $version"
-          git push origin "$branch"
+          # commit through the contents api so github signs it; a plain
+          # git push from the runner would be unsigned
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md?ref=$branch" --jq .sha)
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/CHANGELOG.md" \
+            -f message="docs(changelog): promote unreleased to $version" \
+            -f content="$(base64 -w0 CHANGELOG.md)" \
+            -f sha="$sha" \
+            -f branch="$branch" > /dev/null
