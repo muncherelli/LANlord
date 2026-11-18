@@ -315,22 +315,22 @@ fn set_at(value: &mut Value, steps: &[Step], secret: &str) -> Result<()> {
     };
     match step {
         Step::Key(key) => {
-            if !value.is_mapping() {
+            if value.is_null() {
                 *value = Value::Mapping(Mapping::new());
             }
-            let map = value
-                .as_mapping_mut()
-                .ok_or_else(|| anyhow!("not a mapping"))?;
+            let map = value.as_mapping_mut().ok_or_else(|| {
+                anyhow!("{key:?} is not a section here: a list or value is stored there")
+            })?;
             let entry = map.entry(Value::String(key.clone())).or_insert(Value::Null);
             set_at(entry, rest, secret)
         }
         Step::Item(name) => {
-            if !value.is_sequence() {
+            if value.is_null() {
                 *value = Value::Sequence(Vec::new());
             }
-            let list = value
-                .as_sequence_mut()
-                .ok_or_else(|| anyhow!("not a list"))?;
+            let list = value.as_sequence_mut().ok_or_else(|| {
+                anyhow!("[{name}] is not a list entry here: a section or value is stored there")
+            })?;
             let at = match list.iter().position(|item| name_of(item) == Some(name)) {
                 Some(at) => at,
                 None => {
@@ -382,9 +382,15 @@ pub fn remove_secret(secrets: &mut Value, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// write `secret` at `path` in the secrets document, creating what is missing.
+/// write `secret` at `path` in the secrets document, creating what is missing. a path that
+/// does not fit what is stored (a key over a list, an item over a mapping, either over a
+/// value) is refused and the document is left as it was.
 pub fn set_secret(secrets: &mut Value, path: &str, secret: &str) -> Result<()> {
-    set_at(secrets, &parse_path(path)?, secret)
+    let steps = parse_path(path)?;
+    let mut next = secrets.clone();
+    set_at(&mut next, &steps, secret).map_err(|e| anyhow!("cannot set {path:?}: {e}"))?;
+    *secrets = next;
+    Ok(())
 }
 
 /// the settings as stored on a gateway, as the editor needs them.
@@ -1311,13 +1317,37 @@ web-proxy:
         for ok in SECRET_KEYS {
             set_secret(&mut secrets, &format!("s.{ok}"), "x").unwrap();
         }
-        // a path that runs through a scalar replaces it
+        // a path that runs through a stored value is refused, not written over it
         let mut odd = yaml("a: 1\n");
-        set_secret(&mut odd, "a.password", "x").unwrap();
-        assert_eq!(odd["a"]["password"], Value::String("x".into()));
-        let mut odd = yaml("a: 1\n");
-        set_secret(&mut odd, "a[x].password", "x").unwrap();
-        assert_eq!(odd["a"][0]["name"], Value::String("x".into()));
+        assert!(set_secret(&mut odd, "a.password", "x").is_err());
+        assert!(set_secret(&mut odd, "a[x].password", "x").is_err());
+        assert_eq!(odd, yaml("a: 1\n"));
+        // nothing stored there yet: the containers are created
+        let mut fresh = yaml("a: ~\n");
+        set_secret(&mut fresh, "a.password", "x").unwrap();
+        assert_eq!(fresh["a"]["password"], Value::String("x".into()));
+        let mut fresh = yaml("a: ~\n");
+        set_secret(&mut fresh, "a[x].password", "x").unwrap();
+        assert_eq!(fresh["a"][0]["name"], Value::String("x".into()));
+    }
+
+    #[test]
+    fn a_path_that_does_not_fit_the_stored_value_is_refused_and_changes_nothing() {
+        let stored =
+            "docker:\n  token: keep\nnt4-domain:\n  users:\n    - name: dana\n      password: pw\n";
+        let mut secrets = yaml(stored);
+        let err = set_secret(&mut secrets, "docker[a].token", "x").unwrap_err();
+        assert!(err.to_string().contains("docker[a].token"), "{err}");
+        assert!(set_secret(&mut secrets, "nt4-domain.users.0.password", "x").is_err());
+        assert!(set_secret(&mut secrets, "docker.token.password", "x").is_err());
+        assert_eq!(secrets, yaml(stored));
+        // valid paths still work next to what is stored
+        set_secret(&mut secrets, "nt4-domain.users[dana].password", "new").unwrap();
+        assert_eq!(
+            secrets["nt4-domain"]["users"][0]["password"],
+            Value::String("new".into())
+        );
+        assert_eq!(secrets["docker"]["token"], Value::String("keep".into()));
     }
 
     #[test]
