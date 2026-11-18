@@ -28,20 +28,32 @@ for k in 'model name' Hardware Model; do
   cpu=$(sed -n "s/^$k[[:space:]]*:[[:space:]]*//p" /proc/cpuinfo 2>/dev/null | head -n 1)
   if [ -n "$cpu" ]; then break; fi
 done
-if [ -z "$cpu" ]; then cpu=$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1); fi
+if [ -z "$cpu" ]; then
+  cpu=$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
+fi
 echo "cpu_model=$cpu"
 "#;
 
 /// the shell that reads what a container's cgroup allows: memory (v2, then v1), the cpu quota
 /// and the cpus the container may run on. a value that is not there is left empty.
-const CGROUP_SNIPPET: &str = r#"for f in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes; do
+const CGROUP_SNIPPET: &str = r#"for f in /sys/fs/cgroup/memory.max \
+    /sys/fs/cgroup/memory/memory.limit_in_bytes; do
   if [ -r "$f" ]; then echo "cgroup_mem_max=$(cat "$f" 2>/dev/null)"; break; fi
 done
-for f in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory/memory.usage_in_bytes; do
+for f in /sys/fs/cgroup/memory.current \
+    /sys/fs/cgroup/memory/memory.usage_in_bytes; do
   if [ -r "$f" ]; then echo "cgroup_mem_current=$(cat "$f" 2>/dev/null)"; break; fi
 done
 echo "cgroup_cpu_max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null)"
-for f in /sys/fs/cgroup/cpuset.cpus.effective /sys/fs/cgroup/cpuset/cpuset.effective_cpus; do
+for d in /sys/fs/cgroup/cpu /sys/fs/cgroup/cpu,cpuacct; do
+  if [ -r "$d/cpu.cfs_quota_us" ]; then
+    echo "cgroup_cpu_v1=$(cat "$d/cpu.cfs_quota_us" 2>/dev/null) \
+$(cat "$d/cpu.cfs_period_us" 2>/dev/null)"
+    break
+  fi
+done
+for f in /sys/fs/cgroup/cpuset.cpus.effective \
+    /sys/fs/cgroup/cpuset/cpuset.effective_cpus; do
   if [ -r "$f" ]; then echo "cgroup_cpuset=$(cat "$f" 2>/dev/null)"; break; fi
 done
 "#;
@@ -137,10 +149,8 @@ mod tests {
     }
 
     fn limited(extra: &str) -> ServerFacts {
-        parse(&format!(
-            "hostname=h\ncpus=8\nmem_total_kb=8388608\nmem_available_kb=6291456\n{extra}---link\n---addr\n---route\n"
-        ))
-        .unwrap()
+        let head = "hostname=h\ncpus=8\nmem_total_kb=8388608\nmem_available_kb=6291456\n";
+        parse(&format!("{head}{extra}---link\n---addr\n---route\n")).unwrap()
     }
 
     #[test]
@@ -154,9 +164,10 @@ mod tests {
         assert!(!open.cpus_limited && !open.mem_limited);
         let huge = limited("cgroup_mem_max=9223372036854771712\n");
         assert_eq!(huge.mem_total_mb, 8192);
-        let box_ = limited(
-            "cgroup_mem_max=2147483648\ncgroup_mem_current=1073741824\ncgroup_cpu_max=150000 100000\ncgroup_cpuset=0-3\n",
-        );
+        let box_ = limited(concat!(
+            "cgroup_mem_max=2147483648\ncgroup_mem_current=1073741824\n",
+            "cgroup_cpu_max=150000 100000\ncgroup_cpuset=0-3\n"
+        ));
         assert_eq!((box_.mem_total_mb, box_.mem_available_mb), (2048, 1024));
         assert_eq!(
             box_.memory(),
@@ -165,6 +176,13 @@ mod tests {
         // the lower of the quota (1.5 rounds up to 2) and the cpuset (4)
         assert_eq!((box_.cpus, box_.cpus_limited), (2, true));
         assert_eq!(box_.processors(), "2 processors (limited by container)");
+        // cgroup v1: a quota over a period, and -1 for none
+        let v1 = limited("cgroup_cpu_v1=200000 100000\n");
+        assert_eq!((v1.cpus, v1.cpus_limited), (2, true));
+        assert!(!limited("cgroup_cpu_v1=-1 100000\n").cpus_limited);
+        // a cpuset that cannot be counted limits nothing, and does not panic
+        assert!(!limited("cgroup_cpuset=0-4294967295\n").cpus_limited);
+        assert!(!limited("cgroup_cpuset=5-1\n").cpus_limited);
         let one = limited("cgroup_cpuset=3\n");
         assert_eq!(one.processors(), "1 processor (limited by container)");
         let set = limited("cgroup_cpuset=0-1,4,6-7\n");

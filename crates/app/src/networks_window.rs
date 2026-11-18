@@ -174,7 +174,7 @@ impl NetworksWindow {
             interfaces: Vec::new(),
         });
         if rows.is_empty() {
-            return vec![view::status(&self.rows)];
+            return self.without_networks(&interfaces);
         }
         self.selected = self.selected.min(rows.len() - 1);
         let titles = rows.iter().map(|r| r.name.clone()).collect();
@@ -208,6 +208,18 @@ impl NetworksWindow {
             Node::Gap(4.0),
             view::status(&self.rows),
         ]
+    }
+
+    /// the page of a server with no network of its own to show: its interfaces, when it has any,
+    /// and the status.
+    fn without_networks(&self, interfaces: &[Iface]) -> Vec<Node<Msg>> {
+        let mut nodes = Vec::new();
+        if interfaces.iter().any(|i| !i.loopback()) {
+            nodes.push(interface_list(interfaces));
+            nodes.push(Node::Gap(4.0));
+        }
+        nodes.push(view::status(&self.rows));
+        nodes
     }
 
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str, now: f64) -> Option<Ask> {
@@ -423,6 +435,20 @@ fn local_time(secs: i64) -> String {
 mod tests {
     use super::*;
     use lanlord_model::server::demo;
+
+    #[test]
+    fn a_server_with_no_networks_still_lists_its_interfaces() {
+        let window = NetworksWindow::default();
+        // nothing read yet: only the status
+        assert_eq!(window.without_networks(&[]).len(), 1);
+        let nodes = window.without_networks(&demo().interfaces);
+        assert!(matches!(&nodes[0], Node::Group { title, body }
+            if title == "Network interfaces" && body.len() == 2));
+        assert!(matches!(nodes.last(), Some(Node::Status { .. })));
+        // only the loopback: nothing to list
+        let lo = &demo().interfaces[..1];
+        assert_eq!(window.without_networks(lo).len(), 1);
+    }
 
     #[test]
     fn the_interface_list_has_every_interface_but_the_loopback() {

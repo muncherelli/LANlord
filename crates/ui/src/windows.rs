@@ -349,7 +349,7 @@ pub fn show(
     } else {
         let window = window.constrain_to(place.area).default_pos(place.start);
         match place.height.filter(|_| fixed) {
-            Some(h) => window.fixed_size(Vec2::new(place.width, h.min(max_height - 2.0 * FRAME))),
+            Some(h) => window.fixed_size(Vec2::new(place.width, h.min(max_height))),
             None => open_size(window, place, least, before, fit, floor),
         }
     };
@@ -459,12 +459,18 @@ mod tests {
 
     #[test]
     fn a_fixed_window_is_the_size_it_is_given_whatever_its_contents() {
-        for inner in [10.0, 100.0, 900.0] {
+        // the last screen is shorter than the window: the outer size is held to the screen
+        for (inner, screen, want) in [
+            (10.0, 640.0, 250.0),
+            (100.0, 640.0, 250.0),
+            (900.0, 640.0, 250.0),
+            (100.0, 200.0, 200.0),
+        ] {
             let ctx = egui::Context::default();
             let mut rect = None;
             for _ in 0..4 {
                 testkit::run(&ctx, vec![], |ui| {
-                    let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0));
+                    let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, screen));
                     let place = Placement {
                         start: Pos2::new(100.0, 100.0),
                         width: 300.0,
@@ -482,7 +488,7 @@ mod tests {
             }
             let size = rect.expect("shown").size();
             assert!(
-                (size - Vec2::new(300.0, 250.0)).abs().max_elem() <= 1.0,
+                (size - Vec2::new(300.0, want)).abs().max_elem() <= 1.0,
                 "{inner}: {size:?}"
             );
         }

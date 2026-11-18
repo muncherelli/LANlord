@@ -1017,7 +1017,14 @@ fn fact_lines(facts: &lanlord_core::server::ServerFacts) -> Vec<String> {
         format!("kernel:        {}", facts.kernel),
         format!("up for:        {}", facts.uptime()),
         format!("signed in as:  {}{root}", facts.user),
-        format!("processor:     {}", facts.cpu_model),
+        format!(
+            "processor:     {}",
+            if facts.cpu_model.is_empty() {
+                "unknown"
+            } else {
+                &facts.cpu_model
+            }
+        ),
         format!("processors:    {}", facts.processors()),
         format!(
             "memory:        {} MB free of {} MB{}",
@@ -1768,6 +1775,10 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want:?} in\n{text}");
         }
+        facts.cpu_model.clear();
+        assert!(fact_lines(&facts)
+            .join("\n")
+            .contains("processor:     unknown"));
         facts.is_root = false;
         facts.lanlord_version = None;
         facts.last_applied = None;

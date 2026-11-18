@@ -62,15 +62,16 @@ pub struct ServerFacts {
 
 /// how many cpus a cpuset list like `0-1,4` names.
 fn cpuset_count(list: &str) -> Option<u32> {
-    let mut count = 0;
+    let mut count = 0u32;
     for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        count += match part.split_once('-') {
+        let named = match part.split_once('-') {
             Some((a, b)) => {
                 let (a, b) = (a.parse::<u32>().ok()?, b.parse::<u32>().ok()?);
-                b.checked_sub(a)? + 1
+                b.checked_sub(a)?.checked_add(1)?
             }
             None => part.parse::<u32>().map(|_| 1).ok()?,
         };
+        count = count.checked_add(named)?;
     }
     (count > 0).then_some(count)
 }
@@ -80,7 +81,7 @@ fn quota_cpus(text: &str) -> Option<u32> {
     let mut words = text.split_whitespace();
     let quota = words.next()?.parse::<u64>().ok()?;
     let period = words.next()?.parse::<u64>().ok().filter(|p| *p > 0)?;
-    Some(quota.div_ceil(period).max(1) as u32)
+    u32::try_from(quota.div_ceil(period).max(1)).ok()
 }
 
 impl ServerFacts {
@@ -199,6 +200,7 @@ pub fn parse(output: &str) -> Result<ServerFacts> {
     let host_cpus = number(&head, "cpus") as u32;
     let cpu_limit = [
         quota_cpus(field(&head, "cgroup_cpu_max")),
+        quota_cpus(field(&head, "cgroup_cpu_v1")),
         cpuset_count(field(&head, "cgroup_cpuset")),
     ]
     .into_iter()
