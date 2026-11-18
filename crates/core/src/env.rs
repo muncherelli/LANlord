@@ -41,7 +41,12 @@ pub fn blocking(report: &Report, modules: &[&str]) -> Option<String> {
     if seen.is_empty() {
         return None;
     }
-    let mut msg = String::from("this server cannot run docker yet:");
+    // only the time server's port in the way: docker is not the problem
+    let mut msg = String::from(if seen.iter().all(|c| c.id == "ntp-port") {
+        "the time server cannot start on this server yet:"
+    } else {
+        "this server cannot run docker yet:"
+    });
     for c in &seen {
         let _ = write!(msg, "\n  - {}", c.detail);
         if let Some(fix) = &c.fix {
@@ -147,7 +152,7 @@ pub(crate) fn note(session: &Session, ask_password: AskPassword) {
 mod tests {
     use super::*;
 
-    const UNPRIVILEGED_LXC: &str = "hostname=lanlord\nkernel=6.8.12-4-pve\ninit=systemd\ndistro=debian\ndistro_version=13\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\nnesting=yes\nkeyctl=yes\ntun=ok\nfuse=no\nnft=ok\nlink_bridge=ok\nlink_vxlan=ok\nlink_gretap=ok\nlink_wireguard=ok\ndocker_installed=yes\ndocker_running=yes\ndocker_version=29.1.2\ndocker_storage=overlayfs\n";
+    const UNPRIVILEGED_LXC: &str = "hostname=lanlord\nkernel=6.8.12-4-pve\ninit=systemd\ndistro=debian\ndistro_version=13\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\nnesting=yes\nkeyctl=yes\ntun=ok\nfuse=no\nnft=ok\nlink_bridge=ok\nlink_vxlan=ok\nlink_gretap=ok\nlink_wireguard=ok\ndocker_installed=yes\ndocker_running=yes\ndocker_version=29.1.2\ndocker_storage=overlayfs\nntp_port=free\n";
 
     fn with(replace: &[(&str, &str)]) -> Report {
         let mut lines: Vec<String> = UNPRIVILEGED_LXC.lines().map(str::to_string).collect();
@@ -166,7 +171,7 @@ mod tests {
     #[test]
     fn an_unprivileged_container_with_both_features_is_fine() {
         let report = with(&[]);
-        for module in ["docker", "nt4-domain", "web-proxy", "dns"] {
+        for module in ["docker", "nt4-domain", "web-proxy", "dns", "time-server"] {
             assert!(problems_for(&report, module).is_empty(), "{module}");
         }
         assert_eq!(blocking(&report, DOCKER_MODULES), None);
@@ -198,6 +203,26 @@ mod tests {
         // a module that does not use docker is not held up
         assert!(problems_for(&report, "gateway").is_empty());
         assert_eq!(blocking(&report, &["gateway"]), None);
+    }
+
+    #[test]
+    fn a_host_ntp_daemon_stops_only_the_time_server() {
+        let report = with(&[("ntp_port", "busy:chronyd")]);
+        let msg = blocking(&report, &["time-server"]).unwrap();
+        assert!(msg.starts_with("the time server cannot start"), "{msg}");
+        assert!(msg.contains("udp 123 is already used by chronyd"), "{msg}");
+        assert!(msg.contains("fix: stop it"), "{msg}");
+        assert_eq!(blocking(&report, &["dns", "docker", "nt4-domain"]), None);
+        // with a docker problem too, the general message is used
+        let both = with(&[("ntp_port", "busy:ntpd"), ("nesting", "no")]);
+        let msg = blocking(&both, &["time-server"]).unwrap();
+        assert!(
+            msg.starts_with("this server cannot run docker yet:"),
+            "{msg}"
+        );
+        // an untried probe never blocks
+        let unknown = with(&[("ntp_port", "unknown")]);
+        assert_eq!(blocking(&unknown, &["time-server"]), None);
     }
 
     #[test]
