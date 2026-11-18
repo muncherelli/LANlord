@@ -960,7 +960,7 @@ mod tests {
         runtime().block_on(async {
             let rig = rig();
             let admin = session_for(&rig, "admin").await;
-            let other = session_for(&rig, "other").await;
+            let other = session_for(&rig, "carol").await;
             assert_eq!(rig.auth.revoke_user("admin"), 1);
             assert_eq!(rig.auth.revoke_user("admin"), 0);
             assert_eq!(post_op(&rig, Some(&admin)).await, StatusCode::UNAUTHORIZED);
