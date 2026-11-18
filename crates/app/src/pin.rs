@@ -33,6 +33,7 @@ impl Drop for Pin {
 }
 
 /// pins the version and the changelog on this thread until the guard drops.
+#[doc(hidden)]
 pub fn pin(version: &'static str, changelog: &'static str) -> Pin {
     PINNED.with(|p| p.set(Some((version, changelog))));
     Pin(())
