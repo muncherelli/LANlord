@@ -441,6 +441,13 @@ mod tests {
         assert_eq!(subscription(topic::MONITOR), Need::view(Area::Status));
         assert_eq!(subscription(topic::PROCS), Need::view(Area::Status));
         assert_eq!(subscription(topic::APPLY), Need::view(Area::Services));
+        // no op needs `Hidden`, which every account has
+        for op in every_op() {
+            assert!(
+                !matches!(op.requires(), Need::Area(_, Level::Hidden)),
+                "{op:?}"
+            );
+        }
         // nothing that changes something needs less than Manage
         for op in every_op() {
             if matches!(op, Op::Apply { .. } | Op::Power { .. } | Op::Run { .. }) {

@@ -191,7 +191,10 @@ async fn session_now() -> Result<Option<Identity>> {
             .get("admin")
             .and_then(|v| v.as_bool())
             .ok_or_else(|| field("admin"))?,
-        grants: None,
+        // the server reads the account's roles now; an answer without them leaves the fallback
+        grants: value
+            .get("grants")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()),
     }))
 }
 

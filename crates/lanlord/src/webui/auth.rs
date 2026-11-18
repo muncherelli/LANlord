@@ -560,22 +560,6 @@ pub async fn logout(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Respon
     response
 }
 
-/// GET /api/session: who is logged in, and whether they are an admin.
-pub async fn session(State(auth): State<Arc<Auth>>, headers: HeaderMap) -> Response {
-    match require(&auth, &headers) {
-        Ok((user, admin)) => (
-            StatusCode::OK,
-            [
-                (header::CONTENT_TYPE, "application/json"),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-            serde_json::json!({ "user": user, "admin": admin }).to_string(),
-        )
-            .into_response(),
-        Err(unauthorized) => unauthorized,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -777,10 +761,20 @@ mod tests {
             let carol = session_for(&rig, "carol").await;
             let (status, body) = get_session(&rig, &admin).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, r#"{"admin":true,"user":"admin"}"#);
+            let told: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                (told["user"].as_str(), told["admin"].as_bool()),
+                (Some("admin"), Some(true))
+            );
             let (status, body) = get_session(&rig, &carol).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(body, r#"{"admin":false,"user":"carol"}"#);
+            let told: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(
+                (told["user"].as_str(), told["admin"].as_bool()),
+                (Some("carol"), Some(false))
+            );
+            // what they may do comes with it
+            assert!(told["grants"].is_object());
         });
     }
 

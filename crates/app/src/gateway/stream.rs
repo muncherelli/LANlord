@@ -26,7 +26,7 @@ pub enum Update {
     Down(String),
     /// the server has no session for this page any more; the stream stopped.
     SignedOut,
-    /// the server refuses this stream for good (not allowed, too many open), and why; the
+    /// the server refuses this stream for good (not allowed), and why; the
     /// stream stopped, and trying again would not change the answer.
     Refused(String),
 }
@@ -103,10 +103,9 @@ pub enum Verdict {
 impl Verdict {
     pub fn of(status: u16) -> Self {
         match status {
-            200 => Self::Connect,
+            200 | 204 => Self::Connect,
             401 => Self::SignedOut,
             403 => Self::Refused("Your account may not follow live updates here."),
-            429 => Self::Refused("Too many live connections are open to this server."),
             _ => Self::Retry,
         }
     }
@@ -278,15 +277,14 @@ mod browser {
         s.retry = Some(retry);
     }
 
-    /// the status the server gives a request for the stream, with the connection closed again as
-    /// soon as the answer's headers are in (a stream's body never ends). neither this nor the
-    /// stream counts as activity on the session.
+    /// the status the server gives a request for the stream with `check=1`: the answer to "would
+    /// I be served", with no stream opened and no place taken. it does not count as activity.
     async fn probe(topic: &str) -> Option<u16> {
         let window = web_sys::window()?;
         let controller = web_sys::AbortController::new().ok()?;
         let init = web_sys::RequestInit::new();
         init.set_signal(Some(&controller.signal()));
-        let pending = window.fetch_with_str_and_init(&url(topic), &init);
+        let pending = window.fetch_with_str_and_init(&format!("{}&check=1", url(topic)), &init);
         let answer = wasm_bindgen_futures::JsFuture::from(pending).await.ok();
         let status = answer
             .and_then(|a| a.dyn_into::<web_sys::Response>().ok())
@@ -355,10 +353,11 @@ mod tests {
     #[test]
     fn a_refusal_is_final_and_a_dropped_line_is_not() {
         assert_eq!(Verdict::of(200), Verdict::Connect);
+        assert_eq!(Verdict::of(204), Verdict::Connect);
         assert_eq!(Verdict::of(401), Verdict::SignedOut);
         assert!(matches!(Verdict::of(403), Verdict::Refused(_)));
-        assert!(matches!(Verdict::of(429), Verdict::Refused(_)));
-        for status in [500, 502, 503, 408] {
+        // too many open streams passes: another tab or an old connection lets go
+        for status in [429, 500, 502, 503, 408] {
             assert_eq!(Verdict::of(status), Verdict::Retry, "{status}");
         }
     }

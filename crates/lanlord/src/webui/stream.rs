@@ -15,7 +15,6 @@
 //! of streams is capped, per user and in all.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -29,16 +28,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
 use futures_core::Stream;
-use lanlord_core::admins::ADMINS_GROUP;
 use lanlord_core::monitor::Sampler;
-use lanlord_model::access::{Access, Grants, Level};
 use lanlord_model::apply::ApplyEvent;
 use lanlord_model::ops::{topic, Op};
-use lanlord_model::settings::Settings;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
 use super::auth::{require_peek, Auth};
+use super::roster::Roster;
 
 /// events a stream may hold for a client that is slow to read; one more and it is dropped.
 const QUEUE: usize = 8;
@@ -85,79 +82,6 @@ fn same_origin_get(headers: &HeaderMap) -> Result<(), Response> {
         None => Ok(()),
         Some(origin) if origin == format!("https://{host}") => Ok(()),
         Some(_) => Err(forbidden()),
-    }
-}
-
-/// where the web server learns what an account may do: the gateway's role assignments in the
-/// plain settings (which the unprivileged `lanlord` account owns) and the live membership of the
-/// admins group, the same inputs the operations path reads. nothing here needs root, ssh or a
-/// network.
-pub struct Roster {
-    settings: PathBuf,
-    group: PathBuf,
-    passwd: PathBuf,
-}
-
-impl Roster {
-    pub fn system() -> Arc<Self> {
-        Arc::new(Self {
-            settings: "/opt/lanlord/config/settings.yml".into(),
-            group: "/etc/group".into(),
-            passwd: "/etc/passwd".into(),
-        })
-    }
-
-    /// is `user` in the admins group now, as a member or by primary group?
-    fn is_admin(&self, user: &str) -> bool {
-        let fields = |line: &str| line.split(':').map(str::to_string).collect::<Vec<_>>();
-        let group = std::fs::read_to_string(&self.group).unwrap_or_default();
-        let Some(admins) = group
-            .lines()
-            .map(fields)
-            .find(|f| f.first().map(String::as_str) == Some(ADMINS_GROUP) && f.len() >= 4)
-        else {
-            return false;
-        };
-        if admins[3].split(',').any(|member| member == user) {
-            return true;
-        }
-        std::fs::read_to_string(&self.passwd)
-            .unwrap_or_default()
-            .lines()
-            .map(fields)
-            .any(|f| f.len() >= 4 && f[0] == user && f[3] == admins[2])
-    }
-
-    /// the stored assignments: none when the gateway never saved any, an error when they cannot
-    /// be read.
-    fn access(&self) -> anyhow::Result<Option<Access>> {
-        let text = match std::fs::read_to_string(&self.settings) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        Access::from_settings(&Settings::parse(&text)?).map_err(|e| anyhow::anyhow!(e))
-    }
-
-    /// what `user` may do: administrators everything, the others what their roles give. what
-    /// cannot be read gives nothing, so a damaged settings file closes streams rather than
-    /// opening them.
-    pub fn grants(&self, user: &str) -> Grants {
-        if self.is_admin(user) {
-            return Grants::all(Level::Manage);
-        }
-        match self.access() {
-            Ok(access) => access.unwrap_or_default().grants(user, false),
-            Err(_) => Grants::default(),
-        }
-    }
-
-    /// as `grants`, off the async threads.
-    async fn grants_of(self: &Arc<Self>, user: &str) -> Grants {
-        let (roster, user) = (self.clone(), user.to_string());
-        tokio::task::spawn_blocking(move || roster.grants(&user))
-            .await
-            .unwrap_or_default()
     }
 }
 
@@ -275,6 +199,18 @@ async fn stream(
     if !roster.grants_of(&user).await.allows(need) {
         return refuse(StatusCode::FORBIDDEN, "your account may not follow this");
     }
+    // a page asking only whether it would be served (after a dropped connection) gets the
+    // answer without taking a place among the open streams
+    if uri
+        .query()
+        .is_some_and(|q| q.split('&').any(|p| p == "check=1"))
+    {
+        return (
+            StatusCode::NO_CONTENT,
+            [(header::CACHE_CONTROL, "no-store")],
+        )
+            .into_response();
+    }
     let Some(slot) = Slot::take(&user) else {
         return refuse(StatusCode::TOO_MANY_REQUESTS, "too many open streams");
     };
@@ -353,11 +289,14 @@ async fn feed(
 mod tests {
     use super::*;
     use crate::webui::auth::{Check, Limits, Verifier};
+    use crate::webui::roster::Roster;
     use axum::body::Body;
     use axum::http::Request;
-    use lanlord_model::access::{Area, Role};
+    use lanlord_model::access::{Access, Area, Level, Role};
+    use lanlord_model::settings::Settings;
     use std::future::Future;
     use std::net::IpAddr;
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
     use tower::ServiceExt;
@@ -376,7 +315,9 @@ mod tests {
             _ip: Option<IpAddr>,
         ) -> Pin<Box<dyn Future<Output = Check> + Send>> {
             let answer = match (user, password) {
-                ("admin" | "carol" | "olive" | "viewer", b"right") => Check::Ok { admin: false },
+                ("admin" | "carol" | "olive" | "pat" | "viewer", b"right") => {
+                    Check::Ok { admin: false }
+                }
                 _ => Check::Denied,
             };
             Box::pin(async move { answer })
@@ -728,6 +669,65 @@ mod tests {
             assert_eq!(
                 status_of(&rig, "monitor", Some(&cookie)).await,
                 StatusCode::UNAUTHORIZED
+            );
+        });
+    }
+
+    #[test]
+    fn a_probe_takes_no_place_and_a_full_user_is_told_so() {
+        runtime().block_on(async {
+            let rig = app();
+            let role = Role {
+                name: "Watcher".into(),
+                grants: [(Area::Status, Level::View)].into_iter().collect(),
+            };
+            let mut access = Access {
+                roles: vec![role],
+                ..Access::default()
+            };
+            access.members.insert("pat".into(), vec!["Watcher".into()]);
+            rig.settings(&access);
+            let cookie = cookie_for(&rig.app, "pat").await;
+            let held: Vec<_> = (0..PER_USER).map(|_| Slot::take("pat").unwrap()).collect();
+            // every place is taken: a stream is turned away, a probe is still answered
+            assert_eq!(
+                status_of(&rig, "monitor", Some(&cookie)).await,
+                StatusCode::TOO_MANY_REQUESTS
+            );
+            let probe = |topic: &str, cookie: Option<&str>| {
+                let mut request = subscribe(topic, cookie);
+                *request.uri_mut() = format!("/api/events?topic={topic}&check=1")
+                    .parse()
+                    .unwrap();
+                request
+            };
+            let answer = rig
+                .app
+                .clone()
+                .oneshot(probe("monitor", Some(&cookie)))
+                .await
+                .unwrap();
+            assert_eq!(answer.status(), StatusCode::NO_CONTENT);
+            // a probe is checked like a stream: no login, or no permission, is no 204
+            let answer = rig
+                .app
+                .clone()
+                .oneshot(probe("monitor", None))
+                .await
+                .unwrap();
+            assert_eq!(answer.status(), StatusCode::UNAUTHORIZED);
+            let answer = rig
+                .app
+                .clone()
+                .oneshot(probe("apply", Some(&cookie)))
+                .await
+                .unwrap();
+            assert_eq!(answer.status(), StatusCode::FORBIDDEN);
+            // and it left nothing behind: freeing one place lets one stream in
+            drop(held);
+            assert_eq!(
+                status_of(&rig, "monitor", Some(&cookie)).await,
+                StatusCode::OK
             );
         });
     }
