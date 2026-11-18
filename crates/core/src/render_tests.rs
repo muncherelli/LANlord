@@ -350,15 +350,18 @@ fn ansible_serves_time_on_the_ticked_networks_and_hands_out_option_42_there() {
     for want in [
         "pool pool.example.net iburst maxsources 4",
         "server 192.0.2.123 iburst",
-        "bindaddress 172.16.120.1",
         "allow 172.16.120.0/22",
-        "bindaddress 192.168.50.1",
         "allow 192.168.50.0/24",
         "local stratum 10",
     ] {
         assert!(has(&chrony, want), "{want} in\n{chrony:#?}");
     }
     assert!(!chrony.iter().any(|l| l.contains("10.77.0")), "{chrony:#?}");
+    // chrony keeps only one bindaddress per family, so none is written
+    assert!(
+        !chrony.iter().any(|l| l.starts_with("bindaddress")),
+        "{chrony:#?}"
+    );
     for (network, want) in [("retronet", true), ("lab", true), ("lone", false)] {
         let conf = lines(&out.join(format!("dns/{network}/dnsmasq.conf")));
         let option = conf.iter().find(|l| l.starts_with("dhcp-option=42"));
@@ -374,7 +377,7 @@ fn ansible_serves_time_on_the_ticked_networks_and_hands_out_option_42_there() {
     let out = render("time-all", &all).unwrap();
     let chrony = lines(&out.join("time/chrony.conf"));
     assert!(has(&chrony, "pool pool.ntp.org iburst maxsources 4"));
-    assert!(has(&chrony, "bindaddress 10.77.0.1"));
+    assert!(has(&chrony, "allow 10.77.0.0/24"));
     // the old way: a time-server section alone switches it on everywhere
     let section = format!("{THREE}time-server: {{}}\n");
     assert!(render("time-section", &section)

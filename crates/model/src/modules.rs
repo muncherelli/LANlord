@@ -96,7 +96,7 @@ pub const MODULES: &[Module] = &[
         "time-server",
         "Time Server (NTP)",
         ["┌─────┐", "│ NTP │", "└─────┘"],
-        "chrony in Docker: serves the time to the networks you pick, taking it from public pools. It never sets the server's own clock, and dnsmasq hands its address out as DHCP option 42.",
+        "chrony in Docker: serves the time to the networks you pick, taking it from public pools. It never sets the server's own clock, and dnsmasq hands its address out as DHCP option 42 (set from the settings, whether or not it is running).",
         "time-server:\n  pools: [pool.ntp.org]\n  servers: [192.0.2.123]",
         Status::Available,
     ),

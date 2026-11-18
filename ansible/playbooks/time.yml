@@ -1,8 +1,8 @@
 # the time server module: one chronyd in docker that serves time to the lanlord networks it is
-# ticked for, on the host network but bound to those networks' addresses only. it runs with -x, so
+# ticked for, on the host network; it answers only those networks' subnets (`allow`). it runs with -x, so
 # it never sets the host's clock (no CAP_SYS_TIME); the host keeps its own time as before. the docker
-# module must have been applied first. udp 123 must be free on those addresses: a host chronyd or
-# ntpd that listens on every address has to be stopped (systemd-timesyncd only asks, so it is fine).
+# module must have been applied first. udp 123 must be free on the host: a host chronyd or
+# ntpd that listens on any address has to be stopped (systemd-timesyncd only asks, so it is fine).
 #
 # which networks it serves is in the components list, as for network services; without a components
 # entry the `time-server:` section switches it on for every network. its settings:
@@ -13,7 +13,8 @@
 #
 # the container is lanlord-time and its folder /opt/lanlord/time, with chrony.conf. when no network
 # is served any more the container and the folder are removed. when dhcp is on for a network that
-# network services also serves, dnsmasq hands out the time server's address as dhcp option 42.
+# network services also serves, dnsmasq hands out the time server's address as dhcp option 42. that
+# option follows the settings, not the container: when this module fails, clients are still told.
 - name: lanlord time server
   hosts: localhost
   connection: local
@@ -109,7 +110,8 @@
           ansible.builtin.include_tasks: replace-container.yml
           vars:
             rc_name: "{{ container }}"
-            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true"
+            # chronyd keeps running when it cannot open udp 123, so the port must be held by chronyd too
+            rc_health: "test \"$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' {{ container }})\" = true && ss -Hulnp 'sport = :123' | grep -q chronyd"
             rc_run: >-
               docker run -d --name {{ container }} --network host --restart unless-stopped
               -v {{ state_root }}/chrony.conf:/etc/chrony/chrony.conf:ro
@@ -129,6 +131,13 @@
       ansible.builtin.command: "docker rm -f {{ container }}"
       register: time_removed
       changed_when: time_removed.rc == 0
+      failed_when: false
+      when: time_networks | length == 0 and (components is defined or networks is defined or time_has_section | bool)
+
+    - name: remove a leftover previous container when no network is served
+      ansible.builtin.command: "docker rm -f {{ container }}-prev"
+      register: time_removed_prev
+      changed_when: time_removed_prev.rc == 0
       failed_when: false
       when: time_networks | length == 0 and (components is defined or networks is defined or time_has_section | bool)
 

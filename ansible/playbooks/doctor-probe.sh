@@ -189,13 +189,13 @@ else:
   if have vde_switch; then say vde_switch "$(version vde_switch --version)"; else say vde_switch missing; fi
   if have vde_plug; then say vde_plug "$(version vde_plug --version)"; else say vde_plug missing; fi
 
-  # does something on the host listen on udp 123 on every address? a host chronyd or ntpd would stop
-  # the time server from starting. systemd-timesyncd only asks and never listens. a listener whose
+  # does something on the host listen on udp 123, on any address? chronyd binds the port on every
+  # address, so a host chronyd or ntpd (even on one address) would stop the time server from starting. systemd-timesyncd only asks and never listens. a listener whose
   # process is in a container (docker) is not the host's and is left out
   ntp=unknown
   if have ss; then
     ntp=free
-    ss -H -ulnp 2>/dev/null | awk '$4 ~ /^(\*|0\.0\.0\.0|\[::\]|::):123$/ { print }' > "/tmp/$n.ntp"
+    ss -H -ulnp 2>/dev/null | awk '$4 ~ /:123$/ { print }' > "/tmp/$n.ntp"
     while read -r line; do
       who=$(printf '%s\n' "$line" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p')
       pid=$(printf '%s\n' "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')

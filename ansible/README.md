@@ -95,11 +95,11 @@ time-server:
   servers: [192.0.2.123]    # single upstream servers, optional (at most eight in all)
 ```
 
-`chrony.conf` is written to `/opt/lanlord/time/chrony.conf`: it binds the gateway's address on each served network (`bindaddress`), allows only those subnets (`allow`), and serves the host's clock at stratum 10 when no upstream is reachable (an isolated lab). The container runs with `-x`, so the host keeps its time as before (systemd-timesyncd, `gateway.ntp`).
+`chrony.conf` is written to `/opt/lanlord/time/chrony.conf`: it allows only the served networks' subnets (`allow`; chrony takes one `bindaddress` per address family, so none is set and it listens on udp 123 of the host network and answers only those subnets), and serves the host's clock at stratum 10 when no upstream is reachable (an isolated lab). The container runs with `-x`, so the host keeps its time as before (systemd-timesyncd, `gateway.ntp`).
 
-Where Network Services also serves a network with DHCP, dnsmasq hands out the gateway's address there as DHCP option 42 (ntp-server). Clients on a network without the time server get no option 42.
+Where Network Services also serves a network with DHCP, dnsmasq hands out the gateway's address there as DHCP option 42 (ntp-server). Clients on a network without the time server get no option 42. The option follows the settings, not the running container: if the time server fails to start, or is not started yet on a first apply (dns runs before it), clients are still told its address.
 
-UDP 123 must be free on the host. `lanlord doctor` and the Compatibility tab have an `ntp port (udp 123)` check that fails when a host chronyd or ntpd listens on every address, and the Components window will not switch the time server on until it passes. Stop and disable the host daemon (`systemctl disable --now chrony`, `chronyd` or `ntpd`). systemd-timesyncd only asks for time and never conflicts. When the time server is switched off, its container and `/opt/lanlord/time` are removed on the next apply.
+UDP 123 must be free on the host. `lanlord doctor` and the Compatibility tab have an `ntp port (udp 123)` check that fails when a host chronyd or ntpd listens on udp 123 on any address, and the Components window will not switch the time server on until it passes. Stop and disable the host daemon (`systemctl disable --now chrony`, `chronyd` or `ntpd`). systemd-timesyncd only asks for time and never conflicts. When the time server is switched off, its container and `/opt/lanlord/time` are removed on the next apply.
 
 ## Joining NT4 machines
 
