@@ -209,6 +209,8 @@ impl Demo {
             buttons: &buttons,
             clock: &clock,
             alert: None,
+            shield: None,
+            bug: false,
             palette,
         };
         let layout = taskbar.layout(bar);

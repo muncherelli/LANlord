@@ -1,0 +1,45 @@
+
+      ≡
+  My Server
+
+
+      □
+   Networks
+
+
+      ►
+   Gateway
+
+
+      ▦
+   Settings
+
+
+      >
+   Console
+
+
+      ▣
+    Hosts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                        ┌─────────────────────────┐
+                                                                                                                        │ ✓ Demo desktop          │
+                                                                                                                        │   Window manager debug  │
+                                                                                                                        │   Open all windows      │
+                                                                                                                        └─────────────────────────┘
+[ L LANlord ]                                                                                                                           [ Ж Debug ]   12:00 PM

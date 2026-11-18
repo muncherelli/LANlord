@@ -45,6 +45,8 @@ use lanlord_app::login::WebSession;
 use lanlord_app::monitor::{self, Backend, Monitor};
 use lanlord_app::networks_window::{self, NetworksWindow};
 use lanlord_app::permissions_window::PermissionsWindow;
+#[cfg(feature = "native")]
+use lanlord_app::rebuild::{Rebuild, Started, Takeover};
 use lanlord_app::remote::Remote;
 use lanlord_app::services::Services;
 use lanlord_app::tasks::PasswordRequest;
@@ -140,16 +142,10 @@ pub struct Desktop {
     /// the update notice beside the clock.
     #[cfg(feature = "native")]
     updates: Updates,
-    /// the checkout a development build rebuilds from, and the build that is running.
-    dev: Option<PathBuf>,
+    /// the checkout a development build rebuilds from, the build that is running and the rebuild
+    /// in progress.
     #[cfg(feature = "native")]
-    exe: Option<PathBuf>,
-    /// a rebuild in progress; it answers once: `Ok` only when the new build is up and still running.
-    #[cfg(feature = "native")]
-    rebuilding: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
-    /// how long the new build must stay alive before this window may close.
-    #[cfg(feature = "native")]
-    relaunch_grace: update::Grace,
+    rebuild: Rebuild,
     /// the Developer submenu is open.
     dev_open: bool,
     /// the title the window has been given, so it is only sent when it changes.
@@ -216,13 +212,8 @@ impl Desktop {
             admin_setup: None,
             #[cfg(feature = "native")]
             updates: Updates::quiet(),
-            dev: None,
             #[cfg(feature = "native")]
-            exe: None,
-            #[cfg(feature = "native")]
-            rebuilding: None,
-            #[cfg(feature = "native")]
-            relaunch_grace: update::Grace::default(),
+            rebuild: Rebuild::new(Takeover::Window),
             dev_open: false,
             window_title: "LANlord".into(),
             demo: false,
@@ -238,8 +229,7 @@ impl Desktop {
         if let (Some(repo), Some(exe)) = (&dev, &exe) {
             self.updates.watch_checkout(repo.clone(), exe.clone());
         }
-        self.dev = dev;
-        self.exe = exe;
+        self.rebuild.watch(dev, exe);
     }
 
     /// this desktop shows the made-up demo server (the browser demo); say so in the title and
@@ -908,24 +898,9 @@ impl Desktop {
     /// start the build that was just installed and quit, once it is up and still running; the
     /// same checks as a rebuild, so a build that dies at once leaves this window open.
     fn restart_into_new_build(&mut self) {
-        let Some(exe) = self.exe.clone() else {
-            emit(Kind::Err, "this build cannot be restarted from here");
-            return;
-        };
-        if self.is_rebuilding() {
-            return;
-        }
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
-        let grace = self.relaunch_grace;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let result = update::verify_built(&exe)
-                .and_then(|()| update::relaunch(&exe, host.as_deref(), grace));
-            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
-            ctx.request_repaint();
-        });
-        self.rebuilding = Some(rx);
+        self.rebuild
+            .restart(host.as_deref(), &crate::wake(&self.ctx));
     }
 
     /// install what the notice found: rebuild from trunk, or open the release page.
@@ -950,38 +925,19 @@ impl Desktop {
         }
     }
 
-    /// is a rebuild running?
-    pub(super) fn is_rebuilding_native(&self) -> bool {
-        self.rebuilding.is_some()
-    }
-
     /// rebuild this build in the background, with its output in the console. this window only
     /// closes once the new build has started and is still running; every other outcome leaves
     /// it open with the reason in the console and in a box.
     pub(super) fn start_rebuild(&mut self, pull: bool) {
-        let (Some(repo), Some(exe)) = (self.dev.clone(), self.exe.clone()) else {
-            emit(Kind::Err, "this build cannot be rebuilt from here");
-            return;
-        };
-        if self.is_rebuilding() {
-            return;
-        }
-        // before anything is touched: is the checkout still there, and can the tools be found?
-        if let Err(error) = update::preflight(&repo, &exe, pull) {
-            self.rebuild_failed(&format!("{error:#}"));
-            return;
-        }
-        self.open(Target::Console);
         let host = self.signed_in.as_ref().map(|s| s.target.clone());
-        let grace = self.relaunch_grace;
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let result = update::install_build(&repo, &exe, host.as_deref(), pull, grace);
-            let _ = tx.send(result.map_err(|e| format!("{e:#}")));
-            ctx.request_repaint();
-        });
-        self.rebuilding = Some(rx);
+        match self
+            .rebuild
+            .start(pull, host.as_deref(), &crate::wake(&self.ctx))
+        {
+            Started::Running => self.open(Target::Console),
+            Started::Failed(error) => self.rebuild_failed(&error),
+            Started::Ignored => {}
+        }
     }
 
     /// say that a rebuild did not work, in the console and in a box, and carry on.
@@ -996,20 +952,10 @@ impl Desktop {
 
     /// once a frame: when the rebuild answered, quit if the new build is running, or say why not.
     fn poll_rebuild(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.rebuilding else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("the rebuild stopped unexpectedly".into())
-            }
-        };
-        self.rebuilding = None;
-        match result {
-            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Err(error) => self.rebuild_failed(&error),
+        match self.rebuild.poll() {
+            Some(Ok(())) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(Err(error)) => self.rebuild_failed(&error),
+            None => {}
         }
     }
 }
@@ -1291,9 +1237,25 @@ impl Desktop {
     /// is a rebuild running?
     pub(super) fn is_rebuilding(&self) -> bool {
         #[cfg(feature = "native")]
-        return self.is_rebuilding_native();
+        return self.rebuild.busy();
         #[cfg(not(feature = "native"))]
         false
+    }
+
+    /// is this a development build, which has a Developer submenu?
+    pub(super) fn is_dev(&self) -> bool {
+        #[cfg(feature = "native")]
+        return self.rebuild.repo().is_some();
+        #[cfg(not(feature = "native"))]
+        false
+    }
+
+    /// the words of the box asking before a rebuild; `None` in a build that cannot rebuild.
+    pub(super) fn rebuild_question(&self) -> Option<String> {
+        #[cfg(feature = "native")]
+        return self.rebuild.question();
+        #[cfg(not(feature = "native"))]
+        None
     }
 
     /// are automatic updates on? `None` where there are no updates to turn on (the browser).

@@ -44,6 +44,18 @@ impl Console {
         }
     }
 
+    /// a console that hears nothing, for pictures that must not depend on what other work logs.
+    pub fn detached() -> Self {
+        let (_gone, incoming) = std::sync::mpsc::channel();
+        Self {
+            apply: ApplyProgress::default(),
+            lines: Vec::new(),
+            incoming,
+            #[cfg(target_arch = "wasm32")]
+            feed: None,
+        }
+    }
+
     /// in the browser there are no threads to forward lines with, so the frame reads the log
     /// directly in [`Console::drain`]; new lines show at the next repaint.
     #[cfg(target_arch = "wasm32")]
@@ -168,6 +180,14 @@ mod tests {
             .find(|l| l.text.starts_with("console-test-"))
             .unwrap();
         assert_eq!(last.text, format!("console-test-{}", KEEP + 4));
+    }
+
+    #[test]
+    fn a_detached_console_hears_nothing() {
+        let mut console = Console::detached();
+        crate::log::emit(Kind::Err, "detached-test");
+        console.drain();
+        assert!(console.lines().is_empty());
     }
 
     #[test]

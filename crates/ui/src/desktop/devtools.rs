@@ -8,7 +8,7 @@ use std::sync::Arc;
 use eframe::egui::{
     self, Align2, Area, Color32, Frame, Id, Margin, Pos2, Rect, Sense, Stroke, Vec2,
 };
-use lanlord_app::desktop::Target;
+use lanlord_app::devtools;
 use lanlord_app::gateway::Fake;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::login::WebSession;
@@ -101,14 +101,7 @@ impl Desktop {
 
     /// open every window there is, for looking at the window manager.
     pub fn open_all(&mut self) {
-        let mut targets = self.icons.clone();
-        targets.extend([
-            Target::DateTime,
-            Target::Components,
-            Target::Welcome,
-            Target::Changelog,
-        ]);
-        for target in targets {
+        for target in devtools::open_all(&self.icons) {
             self.open(target);
         }
     }
@@ -171,13 +164,13 @@ impl Desktop {
                     .fill(GRAY)
                     .inner_margin(Margin::same(6))
                     .show(ui, |ui| {
-                        crate::controls::check(ui, &mut demo, "Demo desktop");
+                        crate::controls::check(ui, &mut demo, devtools::DEMO_DESKTOP);
                         crate::controls::check(
                             ui,
                             &mut self.devtools.wm_debug,
-                            "Window manager debug",
+                            devtools::WINDOW_DEBUG,
                         );
-                        open_all = theme::button(ui, "Open all windows", false).clicked();
+                        open_all = theme::button(ui, devtools::OPEN_ALL, false).clicked();
                     });
                 theme::bevel(ui.painter(), framed.response.rect, true);
             });
@@ -270,6 +263,7 @@ fn paint_bug(painter: &egui::Painter, c: Pos2) {
 mod tests {
     use super::super::harness::*;
     use super::*;
+    use lanlord_app::desktop::Target;
 
     #[test]
     fn the_bug_opens_a_menu_and_open_all_windows_opens_them_all() {

@@ -17,7 +17,7 @@ for f in .github/workflows/release.yml .github/workflows/image.yml .github/workf
 done
 
 # 2. no crate turns the feature on by default, so a plain build never has it
-for pkg in lanlord lanlord-ui lanlord-web; do
+for pkg in lanlord lanlord-ui lanlord-tui lanlord-web; do
   # a failing `cargo tree` is a failed check, not a pass
   tree=$(cargo tree -p "$pkg" -e features -i "$pkg" --prefix none --locked) || {
     echo "cargo tree failed for $pkg" >&2

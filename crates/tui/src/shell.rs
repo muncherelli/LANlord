@@ -3,6 +3,7 @@
 //! places them, routes the mouse and keyboard to them and hands their messages back.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use lanlord_app::account_window::AccountWindow;
@@ -24,9 +25,11 @@ use lanlord_app::my_server::MyServer;
 use lanlord_app::networks_window::{self, NetworksWindow};
 use lanlord_app::nt4_panel::Nt4Panel;
 use lanlord_app::permissions_window::PermissionsWindow;
+use lanlord_app::rebuild::{Rebuild, Takeover};
 use lanlord_app::services::Services;
 use lanlord_app::settings_window::SettingsWindow;
 use lanlord_app::tasks::PasswordRequest;
+use lanlord_app::updates::Notice;
 use lanlord_app::users_panel::UsersPanel;
 use lanlord_app::view::{Dialog, Node};
 use lanlord_app::wake::Wake;
@@ -41,9 +44,7 @@ use ratatui::widgets::Widget;
 use zeroize::Zeroizing;
 
 use crate::layout;
-use crate::paint::chrome::{
-    Menu, MenuRow, TaskButton, Taskbar, TaskbarLayout, WindowFrame, WindowLayout,
-};
+use crate::paint::chrome::{Menu, TaskButton, Taskbar, TaskbarLayout, WindowFrame, WindowLayout};
 use crate::paint::desktop::{icon_rect, Desktop as Teal, GlyphTile};
 use crate::paint::mouse::{Gesture, Mouse};
 use crate::paint::palette::{Palette, BLACK, GRAY, NAVY, WHITE};
@@ -69,6 +70,10 @@ enum Modal {
     Password(PasswordRequest, Form),
     AddHost(Form),
     Secret(Form),
+    /// rebuild this build and start it again, with a tick for pulling trunk first.
+    Rebuild(Form),
+    /// a rebuild that did not work; the box only says why.
+    Failure(Form),
 }
 
 /// who a region or a keystroke belongs to.
@@ -89,6 +94,8 @@ struct Hits {
     taskbar: Option<TaskbarLayout>,
     task_targets: Vec<Target>,
     menu: Option<(Rect, Vec<(Rect, usize)>)>,
+    /// the Developer submenu beside it.
+    submenu: Option<(Rect, Vec<(Rect, usize)>)>,
     /// bottom to top.
     windows: Vec<(Target, Rect, WindowLayout, Vec<Region>)>,
     dialog: Option<(Rect, Vec<Region>)>,
@@ -262,6 +269,18 @@ pub struct Shell {
     active: Option<Target>,
     /// the LANlord menu is open, with the keyboard on this row.
     menu: Option<usize>,
+    /// the Developer submenu is open beside it, with the keyboard on this row.
+    submenu: Option<usize>,
+    /// the update notice: the background check, what it found and the updater.
+    updates: Notice,
+    /// the checkout a development build rebuilds from, and the rebuild in progress.
+    rebuild: Rebuild,
+    /// the new build to start in this terminal once the tui has ended, and the server it signs
+    /// in to again.
+    restart: Option<(PathBuf, Option<String>)>,
+    /// the developer tools of a development build; nothing in a release build.
+    #[cfg_attr(not(feature = "devtools"), allow(dead_code))]
+    devtools: devtools::State,
     modal: Option<Modal>,
     views: HashMap<&'static str, ViewState>,
     dialog_view: ViewState,
@@ -282,6 +301,16 @@ pub struct Shell {
     pub quit: bool,
 }
 
+/// the console, hearing the log. tests share one log between all that run at once, so there a
+/// desktop hears nothing unless the test asks to.
+fn listening() -> Console {
+    if cfg!(test) {
+        Console::detached()
+    } else {
+        Console::new(Wake::none())
+    }
+}
+
 impl Shell {
     /// a desktop that talks to gateways through `gateway` and keeps its hosts in `hosts`.
     pub fn new(gateway: Arc<dyn Gateway>, hosts: HostList, palette: Palette) -> Self {
@@ -289,7 +318,7 @@ impl Shell {
             palette,
             services: Services::new(gateway, Wake::none()),
             hosts,
-            console: Console::new(Wake::none()),
+            console: listening(),
             epoch: std::time::Instant::now(),
             my_server: MyServer::default(),
             settings: SettingsWindow::default(),
@@ -319,6 +348,11 @@ impl Shell {
             windows: Vec::new(),
             active: None,
             menu: None,
+            submenu: None,
+            updates: Notice::quiet(),
+            rebuild: Rebuild::new(Takeover::Terminal),
+            restart: None,
+            devtools: devtools::State::new(),
             modal: None,
             views: HashMap::new(),
             dialog_view: ViewState::default(),
@@ -401,6 +435,23 @@ impl Shell {
         self.networks = NetworksWindow::default();
         self.account = AccountWindow::default();
         self.permissions = PermissionsWindow::default();
+        self.my_server = MyServer::default();
+        self.settings = SettingsWindow::default();
+        self.components = Components::default();
+        self.users = UsersPanel::default();
+        self.nt4 = Nt4Panel::default();
+        self.nt4_tab = 0;
+        self.logon = LogonPanel::default();
+        self.dns = DnsPanel::default();
+        self.commands = CommandPanel::default();
+        self.clock_panel = ClockPanel::default();
+        self.feed = ClockFeed::default();
+        self.monitor = Monitor::default();
+        self.top_order = monitor::Order::default();
+        self.drag = None;
+        self.close_requests.clear();
+        self.open_next.clear();
+        self.compat_next = false;
     }
 
     /// keep the Welcome screen's tick box in the preferences file at `path`.
@@ -447,6 +498,9 @@ impl Shell {
 
     /// show the logon box again with `last` filled in and `note` in its status bar.
     fn return_to_login(&mut self, last: Option<String>, note: Option<String>) {
+        if self.leave_demo() {
+            return;
+        }
         let Some(auth) = self.auth.clone() else {
             return;
         };
@@ -641,14 +695,20 @@ impl Shell {
             switch_server: true,
             grants: self.grants(),
             ready: host.as_deref().is_some_and(|h| !self.services.busy(h)),
-            updates: Some(false),
-            developer: false,
+            updates: Some(self.updates.enabled()),
+            developer: self.rebuild.repo().is_some(),
             modules: desktop::modules(self.enabled().as_ref()),
         })
     }
 
     fn do_action(&mut self, action: Action) {
+        if action == Action::Developer {
+            // the submenu opens beside the row; the menu stays up
+            self.submenu = self.submenu.is_none().then_some(0);
+            return;
+        }
         self.menu = None;
+        self.submenu = None;
         match action {
             Action::Open(target) => self.open(target),
             Action::Power(power) => {
@@ -670,8 +730,10 @@ impl Shell {
             }
             Action::Quit => self.quit = true,
             Action::SwitchServer | Action::LogOff => self.log_off(),
-            // the logon box, updates and the developer menu live in the gui for now
-            _ => {}
+            Action::ToggleUpdates => self.toggle_updates(),
+            Action::CheckUpdates => self.check_updates(),
+            Action::Rebuild => self.ask_rebuild(),
+            Action::Developer | Action::ServerLine => {}
         }
     }
 }
@@ -698,6 +760,7 @@ impl Shell {
                 );
             }
         }
+        self.poll_maintenance();
         self.console.drain();
         self.console.apply.tick(self.epoch.elapsed().as_secs_f64());
         if self.console.apply.take_started() {
@@ -788,6 +851,9 @@ impl Shell {
         state: &ViewState,
         escape: bool,
     ) -> Option<(String, Answer)> {
+        if let Some(found) = self.update_dialog(pass, state, escape) {
+            return Some(found);
+        }
         let palette = self.palette;
         let host = self.host();
         if let Some(dialog) = self.networks.dialog() {
@@ -1156,6 +1222,18 @@ impl Shell {
         }
     }
 
+    /// the id of the open box of the update, Networks, My Account or Permissions window.
+    fn window_dialog_id(&mut self) -> Option<&'static str> {
+        if self.update_dialog_open() {
+            return Some("update-box");
+        }
+        self.networks
+            .dialog()
+            .map(|dialog| dialog.id)
+            .or_else(|| self.account.dialog().map(|dialog| dialog.id))
+            .or_else(|| self.permissions.dialog().map(|dialog| dialog.id))
+    }
+
     /// the box on top of everything, if there is one: the desktop's own, then a window's.
     fn dialog_id(&mut self) -> Option<&'static str> {
         if let Some(modal) = &self.modal {
@@ -1165,6 +1243,8 @@ impl Shell {
                 Modal::Password(..) => "password",
                 Modal::AddHost(_) => "add-host",
                 Modal::Secret(_) => "secret",
+                Modal::Rebuild(_) => "rebuild",
+                Modal::Failure(_) => "rebuild-failed",
             });
         }
         if let Some(login) = &self.login {
@@ -1176,14 +1256,8 @@ impl Shell {
         if let Some(dialog) = self.users.dialog() {
             return Some(dialog.id);
         }
-        if let Some(dialog) = self.networks.dialog() {
-            return Some(dialog.id);
-        }
-        if let Some(dialog) = self.account.dialog() {
-            return Some(dialog.id);
-        }
-        if let Some(dialog) = self.permissions.dialog() {
-            return Some(dialog.id);
+        if let Some(id) = self.window_dialog_id() {
+            return Some(id);
         }
         if let Some(dialog) = self.nt4.dialog() {
             return Some(dialog.id);
@@ -1221,7 +1295,9 @@ impl Shell {
                 | Modal::About(f)
                 | Modal::Password(_, f)
                 | Modal::AddHost(f)
-                | Modal::Secret(f) => f,
+                | Modal::Secret(f)
+                | Modal::Rebuild(f)
+                | Modal::Failure(f) => f,
             };
             let dialog = form.view();
             let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
@@ -1353,6 +1429,7 @@ impl Shell {
                     self.modal = Some(Modal::AddHost(form));
                 }
             }
+            (Modal::Rebuild(form), FormAnswer::Ok) => self.start_rebuild(form.checked(0)),
             (Modal::Secret(form), answer) => {
                 let value =
                     (answer == FormAnswer::Ok).then(|| Zeroizing::new(form.value(0).to_string()));
@@ -1382,6 +1459,7 @@ impl Shell {
     /// draw the whole desktop into `buf`.
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
         let palette = self.palette;
+        self.devtools_begin();
         let desktop = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));
         self.hits = Hits {
             desktop,
@@ -1393,6 +1471,8 @@ impl Shell {
             Teal { palette }.render(area, buf);
             self.hits.desktop = area;
             self.render_dialog(area, buf);
+            self.render_corner_bug(area, buf);
+            self.render_debug_menu(buf);
             self.render_dropdown(buf);
             return;
         }
@@ -1448,11 +1528,14 @@ impl Shell {
                 .push((target, rect, layout, answer.regions));
         }
 
+        self.outline_windows(buf);
         self.render_taskbar(area, buf);
-        if let Some(hover) = self.menu {
-            self.render_menu(hover, buf);
+        match self.menu {
+            Some(hover) => self.render_menu(hover, buf),
+            None => self.submenu = None,
         }
         self.render_dialog(desktop, buf);
+        self.render_debug_menu(buf);
         self.render_dropdown(buf);
     }
 
@@ -1491,6 +1574,7 @@ impl Shell {
             })
             .collect();
         let bar = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
+        let shield = self.update_label();
         let taskbar = Taskbar {
             menu_label: "LANlord",
             menu_icon: Some("lanlord"),
@@ -1498,6 +1582,8 @@ impl Shell {
             buttons: &buttons,
             clock: &clock,
             alert: self.compat_alert().then_some(COMPAT_ALERT),
+            shield: shield.as_deref(),
+            bug: self.bug_shown(),
             palette: self.palette,
         };
         self.hits.taskbar = Some(taskbar.layout(bar));
@@ -1507,19 +1593,7 @@ impl Shell {
 
     fn render_menu(&mut self, hover: usize, buf: &mut Buffer) {
         let rows = self.menu_state();
-        let items: Vec<MenuRow> = rows
-            .iter()
-            .map(|row| match row {
-                Row::Item(item) => MenuRow::Item {
-                    label: &item.label,
-                    ticked: item.ticked,
-                    arrow: item.arrow,
-                    enabled: item.enabled,
-                    header: item.header,
-                },
-                Row::Separator => MenuRow::Separator,
-            })
-            .collect();
+        let items = maintenance::menu_rows(&rows);
         let menu = Menu {
             rows: &items,
             selected: Some(hover),
@@ -1533,8 +1607,9 @@ impl Shell {
             w.min(desktop.width),
             h.min(desktop.height),
         );
-        let row_rects = menu.row_rects(rect).into_iter().zip(0..).collect();
+        let row_rects: Vec<(Rect, usize)> = menu.row_rects(rect).into_iter().zip(0..).collect();
         menu.render(rect, buf);
+        self.render_submenu(&rows, &row_rects, rect, buf);
         self.hits.menu = Some((rect, row_rects));
     }
 
@@ -1791,6 +1866,9 @@ impl Shell {
     }
 
     fn click(&mut self, at: Position) {
+        if self.click_extras(at) {
+            return;
+        }
         // an open drop-down takes the click, or closes
         if let Some((owner, path, rows)) = self.hits.dropdown.take() {
             self.view_mut(owner).dropdown = None;
@@ -2089,6 +2167,9 @@ impl Shell {
             self.quit = true;
             return;
         }
+        if self.key_extras(key) {
+            return;
+        }
         if key.code == KeyCode::F(8) && !self.before_desktop() && self.compat_alert() {
             self.open_compat();
             return;
@@ -2318,11 +2399,21 @@ fn focus_key(path: &[usize], part: &str) -> String {
     key
 }
 
+#[cfg(feature = "devtools")]
+mod devtools;
+#[cfg(not(feature = "devtools"))]
+#[path = "shell/devtools_off.rs"]
+mod devtools;
+mod maintenance;
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 mod screens;
+
+#[cfg(test)]
+mod menu_tests;
 
 #[cfg(test)]
 mod window_tests;

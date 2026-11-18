@@ -604,6 +604,10 @@ pub fn relaunch_command(exe: &Path, host: Option<&str>) -> Command {
     if let Some(host) = host {
         command.env("LANLORD_LAST_HOST", host);
         command.env("LANLORD_RELAUNCHED", "1");
+    } else {
+        // never sign a stale server in again
+        command.env_remove("LANLORD_LAST_HOST");
+        command.env_remove("LANLORD_RELAUNCHED");
     }
     command
 }
@@ -690,6 +694,50 @@ pub fn relaunch(exe: &Path, host: Option<&str>, grace: Grace) -> Result<()> {
     result
 }
 
+/// check first, build, and check the result, without starting anything: the terminal ui
+/// restarts itself in place once this says `Ok`.
+pub fn build(repo: &Path, exe: &Path, pull: bool) -> Result<()> {
+    preflight(repo, exe, pull)?;
+    rebuild(&rebuild_steps(repo, exe, pull))?;
+    verify_built(exe)
+}
+
+/// the command that starts the rebuilt build at `exe` in this terminal with the arguments this
+/// one was started with, signing in again to `host` on its own when the agent allows it.
+pub fn terminal_command(exe: &Path, args: &[OsString], host: Option<&str>) -> Command {
+    let mut command = Command::new(exe);
+    command.args(args);
+    if let Some(host) = host {
+        command.env("LANLORD_LAST_HOST", host);
+        command.env("LANLORD_RELAUNCHED", "1");
+    } else {
+        // never sign a stale server in again
+        command.env_remove("LANLORD_LAST_HOST");
+        command.env_remove("LANLORD_RELAUNCHED");
+    }
+    command
+}
+
+/// replace this process with the build at `exe`, which takes over the terminal. only returns
+/// when it could not be started (and where the system cannot replace a process, when the new
+/// build has ended).
+pub fn restart_in_terminal(exe: &Path, args: &[OsString], host: Option<&str>) -> Result<()> {
+    let mut command = terminal_command(exe, args, host);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(anyhow::Error::new(command.exec()))
+            .with_context(|| format!("could not start {}", exe.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        command
+            .status()
+            .with_context(|| format!("could not start {}", exe.display()))
+            .map(|_| ())
+    }
+}
+
 /// the whole rebuild and relaunch: check first, build, check the result, start it and watch it.
 /// the caller quits only when this says `Ok`.
 pub fn install_build(
@@ -699,9 +747,7 @@ pub fn install_build(
     pull: bool,
     grace: Grace,
 ) -> Result<()> {
-    preflight(repo, exe, pull)?;
-    rebuild(&rebuild_steps(repo, exe, pull))?;
-    verify_built(exe)?;
+    build(repo, exe, pull)?;
     relaunch(exe, host, grace)?;
     emit(Kind::Info, "the new build is running; closing this window");
     Ok(())
@@ -939,11 +985,37 @@ mod tests {
         assert!(envs.contains(&("LANLORD_LAST_HOST".into(), Some("me@gw".into()))));
         assert!(envs.contains(&("LANLORD_RELAUNCHED".into(), Some("1".into()))));
         assert_eq!(command.get_args().next().unwrap(), "gui");
-        assert_eq!(
-            relaunch_command(Path::new("/x"), None).get_envs().count(),
-            0
-        );
+        let stale = relaunch_command(Path::new("/x"), None);
+        let removed: Vec<_> = stale.get_envs().filter(|(_, v)| v.is_none()).collect();
+        assert_eq!(removed.len(), 2, "both variables are cleared: {removed:?}");
+        assert_eq!(stale.get_envs().count(), 2);
         assert!(relaunch(Path::new("/no/such/program"), None, quick()).is_err());
+    }
+
+    #[test]
+    fn the_terminal_restart_asks_for_no_window_and_fails_cleanly_without_a_program() {
+        let args = [OsString::from("-v"), OsString::from("tui")];
+        let command = terminal_command(Path::new("/x/lanlord"), &args, Some("me@gw"));
+        let passed: Vec<_> = command.get_args().collect();
+        assert_eq!(passed, ["-v", "tui"], "the original arguments, no gui");
+        assert_eq!(command.get_envs().count(), 2);
+        assert!(command.get_envs().all(|(_, v)| v.is_some()));
+        let stale = terminal_command(Path::new("/x"), &[], None);
+        assert_eq!(stale.get_args().count(), 0);
+        let removed: Vec<_> = stale.get_envs().filter(|(_, v)| v.is_none()).collect();
+        assert_eq!(removed.len(), 2, "a stale server is not signed in again");
+        let error = restart_in_terminal(Path::new("/no/such/program"), &args, None).unwrap_err();
+        assert!(error.to_string().contains("could not start"), "{error}");
+    }
+
+    #[test]
+    fn a_build_with_no_checkout_stops_before_anything_runs() {
+        let error = build(
+            Path::new("/no/such/checkout"),
+            Path::new("/x/lanlord"),
+            false,
+        );
+        assert!(error.unwrap_err().to_string().contains("is gone"));
     }
 
     /// a short grace period, so the tests do not wait for two seconds.

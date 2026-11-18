@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# the red bug and debug menu in the terminal desktop (`tools/dev.sh` turns it on)
+devtools = ["lanlord-app/fake"]
+
 [dependencies]
 anyhow.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

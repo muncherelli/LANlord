@@ -3,16 +3,12 @@
 //! nothing when it fails.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use eframe::egui::{self, Align2, Area, Color32, Frame, Id, Margin, Order, Sense, Ui, Vec2};
-use lanlord_core::prefs;
 use lanlord_core::update::{self, Runner, Update};
-use lanlord_core::updater::{
-    self, Clock, GitBackend, Pause, RealClock, State, Unsupported, Updater,
-};
+use lanlord_core::updater::{Clock, Pause, RealClock, State};
 
 use crate::icons;
 #[cfg(test)]
@@ -61,8 +57,8 @@ fn icon_for(state: &State, now: Duration, reduce_motion: bool) -> Option<&'stati
     })
 }
 
-/// what the tooltip says in `state`; `retry_in` is the wait left after losing the network.
-fn tip_text(state: &State, retry_in: Option<Duration>) -> String {
+/// what the tray says in `state`; `retry_in` is the wait left after losing the network.
+pub fn tip_text(state: &State, retry_in: Option<Duration>) -> String {
     match state {
         State::Idle | State::Available => "Updates are available for LANlord".into(),
         State::Downloading => "Downloading the update...".into(),
@@ -108,54 +104,24 @@ fn tip_opacity(since_left: Option<Duration>) -> f32 {
     }
 }
 
-/// how long work may stay quiet before it counts as stuck; LANLORD_UPDATE_WATCHDOG_SECS changes it.
-fn watchdog() -> Duration {
-    std::env::var("LANLORD_UPDATE_WATCHDOG_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map_or(updater::WATCHDOG, Duration::from_secs)
-}
-
-/// the state LANLORD_FAKE_UPDATE asks to be shown, for looking at it without doing the work.
-fn demo_state() -> Option<State> {
-    Some(match std::env::var("LANLORD_FAKE_UPDATE").ok()?.as_str() {
-        "downloading" => State::Downloading,
-        "installing" => State::Installing,
-        "paused" => State::Paused(Pause::Manual),
-        "offline" => State::Paused(Pause::Offline { attempt: 2 }),
-        "failed" => State::Failed("could not reach the update server (demo)".into()),
-        "done" => State::Done,
-        _ => return None,
-    })
-}
-
 pub use lanlord_app::update_box::Choice;
+use lanlord_app::updates::Notice;
+use lanlord_app::wake::Wake;
 
 pub struct Updates {
-    runner: Arc<dyn Runner>,
-    enabled: bool,
-    prefs_path: Option<PathBuf>,
-    found: Option<Update>,
-    pending: Option<Receiver<Option<Update>>>,
-    last_check: Option<Instant>,
-    clock: Arc<dyn Clock>,
-    /// the state of the update and the work behind it; the one source for icon, tip and buttons.
-    updater: Updater,
+    /// the check, what it found and the updater, shared with the tui.
+    notice: Notice,
     /// the window, once it exists, so the background work can ask for a redraw.
     window: Arc<OnceLock<egui::Context>>,
+    clock: Arc<dyn Clock>,
     /// show static pictures instead of moving ones (LANLORD_REDUCE_MOTION).
     reduce_motion: bool,
-    /// a state to show once for a screenshot (LANLORD_FAKE_UPDATE=<state>).
-    demo: Option<State>,
     /// when the balloon went up; `None` before it does and after it was closed or timed out.
     balloon_since: Option<Duration>,
     /// when the pointer was last over the shield, for the tooltip's fade.
     tip_seen: Option<Duration>,
     tip_over: bool,
     balloon_done: bool,
-    /// "remind me later": the shield hides until the next check finds something.
-    snoozed: bool,
-    dialog: bool,
 }
 
 impl Updates {
@@ -178,25 +144,15 @@ impl Updates {
                 ctx.request_repaint();
             }
         });
-        let updater = Updater::new(Arc::new(Unsupported), Arc::clone(&clock), watchdog(), wake);
         Self {
-            updater,
+            notice: Notice::new(runner, prefs_path, enabled, Arc::clone(&clock), wake),
             window,
             reduce_motion: std::env::var_os("LANLORD_REDUCE_MOTION").is_some(),
-            demo: demo_state(),
-            runner,
-            enabled,
-            prefs_path,
-            found: None,
-            pending: None,
-            last_check: None,
             clock,
             balloon_since: None,
             tip_seen: None,
             tip_over: false,
             balloon_done: false,
-            snoozed: false,
-            dialog: false,
         }
     }
 
@@ -223,24 +179,12 @@ impl Updates {
     }
 
     pub fn enabled(&self) -> bool {
-        self.enabled
+        self.notice.enabled()
     }
 
     /// turn the background check on or off and remember it.
     pub fn set_enabled(&mut self, on: bool) {
-        self.enabled = on;
-        if !on {
-            self.updater.gone();
-            if matches!(self.updater.state(), State::Idle) {
-                self.found = None;
-                self.dialog = false;
-            }
-        }
-        if let Some(path) = &self.prefs_path {
-            let mut prefs = prefs::load(path);
-            prefs.check_updates = on;
-            let _ = prefs::save(path, &prefs);
-        }
+        self.notice.set_enabled(on);
     }
 
     /// pretend a check found `update`, for tests.
@@ -251,136 +195,92 @@ impl Updates {
 
     /// the update that is waiting, when there is one.
     pub fn found(&self) -> Option<&Update> {
-        self.found.as_ref()
+        self.notice.found()
     }
 
     /// is the shield showing?
     pub fn visible(&self) -> bool {
-        match self.updater.state() {
-            State::Idle => false,
-            State::Available => !self.snoozed,
-            _ => true,
-        }
+        self.notice.visible()
     }
 
     #[cfg(test)]
     pub fn state(&self) -> &State {
-        self.updater.state()
+        self.notice.state()
     }
 
     /// what to do when an update is installed from here: a git checkout is rebuilt.
     pub fn watch_checkout(&mut self, repo: PathBuf, exe: PathBuf) {
-        self.updater.set_backend(Arc::new(GitBackend { repo, exe }));
+        self.notice.watch_checkout(repo, exe);
     }
 
     /// start installing; the work goes on in the background.
     pub fn install(&mut self) {
-        self.snoozed = false;
-        let _ = self.updater.start();
+        self.notice.install();
     }
 
     pub fn pause(&mut self) {
-        let _ = self.updater.pause();
+        self.notice.pause();
     }
 
     pub fn resume(&mut self) {
-        let _ = self.updater.resume();
+        self.notice.resume();
     }
 
     /// stop whatever is going on; the update stays available.
     pub fn cancel(&mut self) {
-        self.updater.cancel();
+        self.notice.cancel();
     }
 
     #[cfg(test)]
     pub fn dialog_open(&self) -> bool {
-        self.dialog
+        self.notice.dialog
     }
 
     pub fn open_dialog(&mut self) {
-        if self.found.is_some() {
-            self.dialog = true;
+        if self.notice.open_dialog() {
             self.balloon_since = None;
             self.balloon_done = true;
         }
     }
 
     pub fn remind_later(&mut self) {
-        self.snoozed = true;
-        self.dialog = false;
+        self.notice.remind_later();
     }
 
     /// look now, in the background.
     pub fn check_now(&mut self, ctx: &egui::Context) {
-        if self.pending.is_some() {
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        let runner = self.runner.clone();
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(update::check(&*runner, true));
-            ctx.request_repaint();
-        });
-        self.pending = Some(rx);
-        self.last_check = Some(Instant::now());
+        self.notice
+            .check_now(&Wake::new(move || ctx.request_repaint()));
     }
 
     /// once a frame: collect a finished check and start the next one when it is time.
     pub fn tick(&mut self, ctx: &egui::Context) {
         let _ = self.window.set(ctx.clone());
-        self.updater.poll();
+        let again = ctx.clone();
+        self.notice
+            .tick(&Wake::new(move || again.request_repaint()));
+        self.announce();
         // the one timer that is not an animation: the wait after losing the network
         let (minimized, occluded) = ctx.input(|i| (i.viewport().minimized, i.viewport().occluded));
-        if let Some(wait) = self.updater.retry_in() {
+        if let Some(wait) = self.notice.updater.retry_in() {
             if awake(minimized, occluded) {
                 ctx.request_repaint_after(wait + Duration::from_millis(50));
             }
         }
-        if !self.enabled {
-            return;
-        }
-        if let Some(rx) = &self.pending {
-            match rx.try_recv() {
-                Ok(update) => {
-                    self.pending = None;
-                    self.arrived(update);
-                }
-                Err(TryRecvError::Disconnected) => self.pending = None,
-                Err(TryRecvError::Empty) => {}
-            }
-        }
-        let due = self
-            .last_check
-            .is_none_or(|at| at.elapsed() >= update::CHECK_EVERY);
-        if due && self.pending.is_none() {
-            self.check_now(ctx);
-        }
     }
 
     /// what a check found: show the shield, and the balloon the first time.
+    #[cfg(test)]
     fn arrived(&mut self, found: Option<Update>) {
-        match found {
-            Some(update) => {
-                if self.found.is_none() {
-                    self.snoozed = false;
-                    if !self.balloon_done {
-                        self.balloon_since = Some(self.clock.now());
-                    }
-                }
-                self.found = Some(update);
-                self.updater.found();
-                if let Some(state) = self.demo.take() {
-                    self.updater.demo(state);
-                }
-            }
-            None => {
-                self.updater.gone();
-                if matches!(self.updater.state(), State::Idle) {
-                    self.found = None;
-                    self.dialog = false;
-                }
-            }
+        self.notice.arrived(found);
+        self.announce();
+    }
+
+    /// put the balloon up for an update nobody was told about yet.
+    fn announce(&mut self) {
+        if self.notice.take_fresh() && !self.balloon_done {
+            self.balloon_since = Some(self.clock.now());
         }
     }
 
@@ -392,7 +292,7 @@ impl Updates {
         theme::probe::record(ui, "shield", rect, true);
         // the picture is the state's, and it only moves while work is going on; the next frame
         // is asked for only then, and only when the window can be seen
-        let state = self.updater.state().clone();
+        let state = self.notice.updater.state().clone();
         if let Some(art) = icon_for(&state, self.clock.now(), self.reduce_motion) {
             icons::draw(
                 ui.painter(),
@@ -413,7 +313,7 @@ impl Updates {
         }
         let alpha = self.tip_alpha();
         if alpha > 0.0 {
-            let text = tip_text(&state, self.updater.retry_in());
+            let text = tip_text(&state, self.notice.updater.retry_in());
             self.tooltip(ui.ctx(), rect, alpha, &text);
             if alpha < 1.0 {
                 ui.ctx().request_repaint_after(Duration::from_millis(30));
@@ -536,15 +436,15 @@ impl Updates {
 
     /// the box listing what is new; `Some` once it was answered.
     pub fn dialog(&mut self, ctx: &egui::Context) -> Option<Choice> {
-        if !self.dialog {
+        if !self.notice.dialog {
             return None;
         }
-        let Some(update) = self.found.clone() else {
-            self.dialog = false;
+        let Some(update) = self.notice.found().cloned() else {
+            self.notice.dialog = false;
             return None;
         };
-        let state = self.updater.state().clone();
-        let mut automatic = self.enabled;
+        let state = self.notice.updater.state().clone();
+        let mut automatic = self.notice.enabled();
         let mut choice = None;
         let dialog = update_box::view(&update, &state, automatic);
         match view::dialog(ctx, &dialog) {
@@ -552,12 +452,12 @@ impl Updates {
             Some(update_box::Msg::ToggleAutomatic) => automatic = !automatic,
             None => {}
         }
-        if automatic != self.enabled {
+        if automatic != self.notice.enabled() {
             self.set_enabled(automatic);
         }
         match choice {
             Some(Choice::Later) => self.remind_later(),
-            Some(Choice::Install | Choice::Restart) => self.dialog = false,
+            Some(Choice::Install | Choice::Restart) => self.notice.dialog = false,
             _ => {}
         }
         choice
@@ -569,6 +469,7 @@ mod tests {
     use super::*;
     use crate::testkit;
     use lanlord_app::update_box::{buttons_for, label, status_text};
+    use lanlord_core::prefs;
     use lanlord_core::update::Source;
     use std::path::Path;
 
@@ -900,7 +801,7 @@ mod tests {
     #[test]
     fn a_finished_update_keeps_its_shield_after_the_next_check_finds_nothing() {
         let mut updates = found();
-        updates.updater.demo(State::Done);
+        updates.notice.updater.demo(State::Done);
         updates.arrived(None);
         assert_eq!(*updates.state(), State::Done);
         assert!(updates.visible() && updates.found().is_some());
@@ -910,7 +811,7 @@ mod tests {
     fn a_working_update_survives_a_check_that_finds_nothing() {
         // the pull moved the checkout, so the next check sees nothing new: the work goes on
         let mut updates = found();
-        updates.updater.demo(State::Downloading);
+        updates.notice.updater.demo(State::Downloading);
         updates.arrived(None);
         assert_eq!(*updates.state(), State::Downloading);
         assert!(updates.found().is_some(), "the box still has its text");
@@ -932,12 +833,12 @@ mod tests {
             }
             got
         };
-        updates.updater.demo(State::Downloading);
+        updates.notice.updater.demo(State::Downloading);
         assert_eq!(answer(&mut updates, &ctx, "Pause"), Some(Choice::Pause));
-        updates.updater.demo(State::Paused(Pause::Manual));
+        updates.notice.updater.demo(State::Paused(Pause::Manual));
         updates.open_dialog();
         assert_eq!(answer(&mut updates, &ctx, "Resume"), Some(Choice::Resume));
-        updates.updater.demo(State::Done);
+        updates.notice.updater.demo(State::Done);
         updates.open_dialog();
         assert_eq!(
             answer(&mut updates, &ctx, "Restart now"),
@@ -1037,30 +938,27 @@ mod tests {
         let ctx = egui::Context::default();
         let mut off = Updates::quiet();
         off.tick(&ctx);
-        assert!(
-            off.pending.is_none() && off.last_check.is_none(),
-            "off means no check"
-        );
+        assert!(!off.notice.checking(), "off means no check");
 
         let mut updates = Updates::new(Arc::new(Behind), None, true);
         updates.tick(&ctx);
-        assert!(updates.pending.is_some());
+        assert!(updates.notice.checking());
         for _ in 0..200 {
             updates.tick(&ctx);
-            if updates.pending.is_none() {
+            if !updates.notice.checking() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(updates.pending.is_none());
+        assert!(!updates.notice.checking());
         // the finished check either found the commit or, with no checkout here, nothing
         let _ = updates.found();
         // a second tick inside the hour starts nothing
         updates.tick(&ctx);
-        assert!(updates.pending.is_none());
+        assert!(!updates.notice.checking());
         updates.check_now(&ctx);
         updates.check_now(&ctx);
-        assert!(updates.pending.is_some());
+        assert!(updates.notice.checking());
     }
 
     #[test]

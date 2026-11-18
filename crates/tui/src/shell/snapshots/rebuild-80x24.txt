@@ -1,0 +1,24 @@
+
+      ≡           ▣
+  My Server     Hosts
+
+
+      □
+   Networks
+
+          ┌ Rebuild and relaunch ───────────────────────────── _ □ × ┐
+      ►   │ Rebuild LANlord from /srv/lanlord and start it again?    │
+   Gateway│ This ends when the build works, and the new build starts │
+          │ here.                                                    │
+          │ [ ] Pull the latest trunk first                          │
+      ▦   │                                        [ OK ] [ Cancel ] │
+   Setting└──────────────────────────────────────────────────────────┘
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ]                                                         12:00 PM

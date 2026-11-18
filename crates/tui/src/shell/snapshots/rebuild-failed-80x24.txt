@@ -1,0 +1,24 @@
+
+      ≡           ▣
+  My Server     Hosts
+
+
+      □
+   Networks
+
+
+      ►       ┌ Rebuild and relaunch ───────────────────── _ □ × ┐
+   Gateway    │ The rebuild did not work, so LANlord stays open. │
+              │ the checkout is gone                             │
+              │                                           [ OK ] │
+      ▦       └──────────────────────────────────────────────────┘
+   Settings
+
+
+      >
+   Console
+
+
+
+
+[ L LANlord ]                                                         12:00 PM

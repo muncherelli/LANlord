@@ -9,7 +9,7 @@ default = ["gui"]
 # the native window; build without it for headless servers
 gui = ["dep:lanlord-ui"]
 # the red bug and debug menu in the desktop window (`tools/dev.sh gui` turns it on)
-devtools = ["gui", "lanlord-ui/devtools"]
+devtools = ["gui", "lanlord-ui/devtools", "lanlord-tui/devtools"]
 # the web server that runs on a gateway; off for the desktop build
 webui = [
     "dep:axum",

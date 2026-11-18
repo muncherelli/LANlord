@@ -157,7 +157,7 @@ impl Desktop {
             grants: self.grants(),
             ready: host.as_ref().is_some_and(|h| !self.services.busy(h)),
             updates: self.updates_enabled(),
-            developer: self.dev.is_some(),
+            developer: self.is_dev(),
             modules: self.enabled_modules(),
         })
     }
@@ -299,11 +299,9 @@ impl Desktop {
     }
 
     fn ask_rebuild(&mut self) {
-        let Some(repo) = self.dev.clone() else { return };
-        let text = format!(
-            "Rebuild LANlord from {} and start it again?\nThis window closes when the build works, and you sign in again.",
-            repo.display()
-        );
+        let Some(text) = self.rebuild_question() else {
+            return;
+        };
         self.confirm = Some((
             Confirm::Rebuild,
             Form::new("rebuild", "Rebuild and relaunch", &text)

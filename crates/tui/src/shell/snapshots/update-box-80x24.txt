@@ -1,0 +1,24 @@
+
+      ≡           ▣
+  My Server     Hosts
+
+
+      □
+   Networks
+          ┌ LANlord Update ─────────────────────────────────── _ □ × ┐
+          │ ▼ LANlord 0.2.0                                          │
+      ►   │ The following updates are available:                     │
+   Gateway│ Adds the debug menu to the terminal.                     │
+          │ Install updates LANlord from trunk, builds it, and then  │
+          │ asks to restart.                                         │
+      ▦   │ [ ] Check for updates automatically                      │
+   Setting│                          [ Install ] [ Remind me later ] │
+          └──────────────────────────────────────────────────────────┘
+
+      >
+   Console
+
+
+
+
+[ L LANlord ]                                         Update ready    12:00 PM

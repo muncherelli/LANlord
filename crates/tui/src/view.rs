@@ -1802,8 +1802,6 @@ fn boxed(area: Rect) -> Rect {
     )
 }
 
-/// the columns a table asks for: its fixed columns, the longest text of the last one and the
-/// inset on both sides.
 /// the columns each column of `table` gets in `room`: the widths it asks for, less what the
 /// last column needs to show its longest text whole, so a narrow window keeps the text in view.
 fn column_widths<M>(table: &lanlord_app::view::Table<M>, room: u16) -> Vec<u16> {
@@ -1827,6 +1825,8 @@ fn column_widths<M>(table: &lanlord_app::view::Table<M>, room: u16) -> Vec<u16> 
     widths
 }
 
+/// the columns a table asks for: its fixed columns, the longest text of the last one and the
+/// inset on both sides.
 fn table_width<M>(table: &lanlord_app::view::Table<M>) -> u16 {
     let last = table.headings.len().saturating_sub(1);
     let fixed: u16 = table.widths.iter().take(last).map(|w| cols(*w)).sum();
