@@ -17,6 +17,7 @@ ratatui = "0.30.2"
 zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 signal-hook = "0.3"
 
 [dev-dependencies]
