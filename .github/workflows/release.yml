@@ -51,6 +51,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
+      # the binary pins the component images of this release (see tools/image-version.sh)
+      - name: set the image version
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "LANLORD_IMAGE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: install gui libraries
@@ -122,6 +128,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag }}
+      # the binary pins the component images of this release (see tools/image-version.sh)
+      - name: set the image version
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: echo "LANLORD_IMAGE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown

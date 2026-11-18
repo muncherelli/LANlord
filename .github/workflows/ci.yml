@@ -42,6 +42,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # a bash script: it needs the unix tools, so not on a windows runner
+      - if: runner.os != 'Windows'
+        run: tools/test-ghcr-own-versions.sh
 
   headless:
     name: build without gui
@@ -120,7 +123,7 @@ jobs:
         run: cargo llvm-cov report --summary-only
       - name: python tests
         run: |
-          python3 -m pip install --only-binary :all: coverage==7.17.3 ansible-core==2.22.0
+          python3 -m pip install --only-binary :all: coverage==7.17.3 ansible-core==2.22.0 jinja2==3.1.6 PyYAML==6.0.3
           export PATH="$HOME/.local/bin:$PATH"
           python3 -m coverage run --branch -m unittest discover -s ansible/tests
           python3 -m coverage xml -o coverage.xml
