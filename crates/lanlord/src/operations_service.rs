@@ -162,6 +162,15 @@ fn single_apply<T>(lock: &Mutex<()>, op: &Op, work: impl FnOnce() -> Result<T>) 
     work()
 }
 
+/// sets the flag when dropped, whether the work ended or unwound.
+struct Stop<'a>(&'a AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 /// run `work` and pass the apply events it publishes to `emit` as they happen. the log reaches
 /// every thread's lines, so only events are taken; the rest still goes to the journal.
 fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
@@ -186,8 +195,11 @@ fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
             }
             lines.try_iter().for_each(forward);
         });
-        let result = work();
-        done.store(true, Ordering::SeqCst);
+        // set even when the work panics, or the forwarder would never stop and the scope never end
+        let result = {
+            let _stop = Stop(done);
+            work()
+        };
         let _ = forwarder.join();
         result
     })
@@ -247,7 +259,15 @@ fn response_line(response: &Response) -> Option<Vec<u8>> {
     Some(line)
 }
 
-async fn handle(mut stream: tokio::net::UnixStream, allowed_uid: u32, answer: Answer) {
+/// serve one connection: a peer that is not ours is dropped at once, before it can take a slot.
+/// the work holds its slot (`workers`) for as long as its thread runs, even when we stop
+/// waiting for it.
+async fn handle(
+    mut stream: tokio::net::UnixStream,
+    allowed_uid: u32,
+    answer: Answer,
+    workers: Arc<Semaphore>,
+) {
     match stream.peer_cred() {
         Ok(cred) if served(cred.uid(), allowed_uid) => {}
         Ok(cred) => {
@@ -263,10 +283,15 @@ async fn handle(mut stream: tokio::net::UnixStream, allowed_uid: u32, answer: An
     let response = match read_line(read).await {
         Err(reason) => Response::Error(reason.into()),
         Ok(line) => {
+            // a small fixed pool: further requests wait their turn
+            let Ok(permit) = workers.acquire_owned().await else {
+                return;
+            };
             let (events, mut seen) = tokio::sync::mpsc::unbounded_channel::<ApplyEvent>();
             // the thread is not stopped when we stop waiting: it ends with the work, and holds
-            // whatever it took (the apply lock) until then
+            // whatever it took (its slot, the apply lock) until then
             let mut work = tokio::task::spawn_blocking(move || {
+                let _slot = permit;
                 answer(&line, &|event| {
                     let _ = events.send(event.clone());
                 })
@@ -287,7 +312,9 @@ async fn handle(mut stream: tokio::net::UnixStream, allowed_uid: u32, answer: An
                             Err(_) => Response::Error("the operation stopped".into()),
                         };
                     }
-                    () = &mut deadline => break Response::Error("the operation took too long".into()),
+                    () = &mut deadline => {
+                        break Response::Error("the operation took too long".into());
+                    }
                 }
             };
             // what was published just before the work ended still goes out first
@@ -318,13 +345,9 @@ async fn accept_loop(
             () = &mut shutdown => return,
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else { continue };
-                // a small fixed pool: further connections wait their turn
-                let Ok(permit) = workers.clone().acquire_owned().await else { return };
-                let answer = answer.clone();
-                tokio::spawn(async move {
-                    handle(stream, allowed_uid, answer).await;
-                    drop(permit);
-                });
+                // waiting for a slot happens in the connection's own task, so a full pool
+                // neither stops accepting nor delays shutdown
+                tokio::spawn(handle(stream, allowed_uid, answer.clone(), workers.clone()));
             }
         }
     }
@@ -633,6 +656,30 @@ mod tests {
                     .is_none()
             );
         });
+    }
+
+    #[test]
+    fn a_panicking_apply_ends_cleanly_and_frees_the_lock() {
+        let lock = Mutex::new(());
+        let apply = Op::Apply { modules: vec![] };
+        // on its own thread, so a forwarder that never stops fails the test instead of hanging it
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let panicked = std::panic::catch_unwind(|| {
+                    let _ = single_apply(&lock, &apply, || {
+                        with_events(&|_| {}, || -> Result<()> { panic!("the apply broke") })
+                    });
+                });
+                done.send(panicked.is_err()).unwrap();
+            });
+            let panicked = finished
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the panicking apply never ended");
+            assert!(panicked);
+        });
+        // the next apply is not "already running"
+        assert!(single_apply(&lock, &apply, || Ok(())).is_ok());
     }
 
     #[test]

@@ -37,13 +37,7 @@ impl Caller {
     /// `admins` is read again here, never taken from the caller. an unknown account or a name
     /// that is not a plain login name is an error.
     pub fn of_account(session: &Session, account: &str) -> Result<Self> {
-        let plain = !account.is_empty()
-            && account.len() <= 32
-            && !account.starts_with('-')
-            && account
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-        if !plain {
+        if !plain_account(account) {
             anyhow::bail!("not an account name");
         }
         let groups = session
@@ -57,6 +51,16 @@ impl Caller {
             admin,
         })
     }
+}
+
+/// whether `name` is a plain login name: safe to pass as an argument to a system tool.
+pub fn plain_account(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// the typed error for an op the caller may not run.

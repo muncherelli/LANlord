@@ -335,7 +335,7 @@
               Group=lanlord-operations
               ExecStart=/opt/lanlord/bin/lanlord operations-service --socket /run/lanlord-operations/operations.sock --allowed-uid {{ getent_passwd['lanlord'][1] }} --identity /var/lib/lanlord-operations/identity
               # its own writable state (0700 root): the settings key goes here, and what apply and
-              # ansible write goes under it, since the home folders are read-only
+              # ansible write goes under it
               StateDirectory=lanlord-operations
               StateDirectoryMode=0700
               Environment=HOME=/var/lib/lanlord-operations
@@ -347,10 +347,10 @@
               UMask=0007
               Restart=on-failure
               # it runs as root and runs sudo and setuid tools, so no NoNewPrivileges and no
-              # capability bounding; what can be closed is closed
-              ProtectHome=read-only
+              # capability bounding; home folders stay writable (creating a user's home and its
+              # authorized_keys) and kernel modules loadable (apply loads them); the rest is closed
+              ProtectHome=no
               PrivateTmp=yes
-              ProtectKernelModules=yes
               ProtectKernelLogs=yes
               ProtectClock=yes
               ProtectHostname=yes

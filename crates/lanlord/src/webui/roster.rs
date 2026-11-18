@@ -65,11 +65,13 @@ impl Roster {
             .unwrap_or_default()
     }
 
-    /// what `user` may do now. an account that is gone or cannot be looked up may do nothing.
-    pub(super) async fn grants_of(self: &Arc<Self>, user: &str) -> Grants {
+    /// what `user` may do now: nothing for an account that is gone, and `None` when the account
+    /// could not be looked up (which is worth trying again, not a refusal).
+    pub(super) async fn grants_of(self: &Arc<Self>, user: &str) -> Option<Grants> {
         match self.auth.standing(user).await {
-            Standing::Account { admin } => self.grants_given(user, admin).await,
-            Standing::Unknown | Standing::Failed => Grants::default(),
+            Standing::Account { admin } => Some(self.grants_given(user, admin).await),
+            Standing::Unknown => Some(Grants::default()),
+            Standing::Failed => None,
         }
     }
 }

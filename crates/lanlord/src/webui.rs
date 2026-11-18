@@ -339,7 +339,8 @@ fn affected(op: &Op, caller: &str) -> Vec<(String, bool)> {
 /// and anything else the `Response` json of `lanlord op`. after an op that changes a password or
 /// a user's permissions, even one that failed half way, the affected users' sessions end (see
 /// `Auth::revoke_user`). no sudo password travels: the service is root. live streams are not
-/// served yet. the body is read already so the size limit applies.
+/// operations: they are served on `/api/events`. the body is read already so the size limit
+/// applies.
 async fn operations(
     State(app): State<App>,
     headers: HeaderMap,
@@ -359,11 +360,27 @@ async fn operations(
     if matches!(request.op, Op::Subscribe { .. }) {
         return refusal(
             StatusCode::NOT_IMPLEMENTED,
-            "live streams are not available yet",
+            "live streams are served on /api/events, not here",
         );
     }
     let changed = affected(&request.op, &user);
-    let answer = (app.run)(user, request.op, apply_events()).await;
+    // the operation and the sessions it ends run in their own task: a browser that goes away
+    // drops this handler, and the sessions must still end
+    match tokio::spawn(settle(app, headers, user, request.op, changed)).await {
+        Ok(response) => response,
+        Err(_) => refusal(StatusCode::INTERNAL_SERVER_ERROR, "the operation stopped"),
+    }
+}
+
+/// run `op` for `user`, end the sessions of those it affects, and make the answer.
+async fn settle(
+    app: App,
+    headers: HeaderMap,
+    user: String,
+    op: Op,
+    changed: Vec<(String, bool)>,
+) -> Response {
+    let answer = (app.run)(user, op, apply_events()).await;
     let revoke = |app: &App| {
         for (name, keep_own) in &changed {
             if *keep_own {
@@ -623,7 +640,8 @@ mod tests {
 
     #[test]
     fn operations_are_refused_without_the_pages_origin() {
-        // (with a session they still get their answer from the operations service; see the session tests in auth.rs)
+        // (with a session they still get their answer from the operations service; see the
+        // session tests in auth.rs)
         let (status, kind, _) = runtime().block_on(call(router(None), "POST", "/api/operations"));
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(kind, "application/json");

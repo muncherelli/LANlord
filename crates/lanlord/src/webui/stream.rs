@@ -198,8 +198,15 @@ async fn stream(
         topic: topic.into(),
     }
     .requires();
-    if !roster.grants_of(&user).await.allows(need) {
-        return refuse(StatusCode::FORBIDDEN, "your account may not follow this");
+    match roster.grants_of(&user).await {
+        Some(grants) if grants.allows(need) => {}
+        Some(_) => return refuse(StatusCode::FORBIDDEN, "your account may not follow this"),
+        None => {
+            return refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the account could not be checked",
+            )
+        }
     }
     // a page asking only whether it would be served (after a dropped connection) gets the
     // answer without taking a place among the open streams
@@ -257,8 +264,9 @@ async fn feed(
                     return;
                 };
                 // roles and groups change while a stream is open
-                if !roster.grants_of(&user).await.allows(need) {
-                    return;
+                match roster.grants_of(&user).await {
+                    Some(grants) if grants.allows(need) => {}
+                    _ => return,
                 }
                 continue;
             }
@@ -309,6 +317,8 @@ mod tests {
     /// test changes, as a change of group would.
     struct Fake {
         admins: Arc<Mutex<Vec<String>>>,
+        /// when set, the account lookup fails
+        failing: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl Verifier for Fake {
@@ -329,7 +339,14 @@ mod tests {
 
         fn admin(&self, user: &str) -> Lookup {
             let admin = self.admins.lock().unwrap().iter().any(|a| a == user);
-            Box::pin(async move { Standing::Account { admin } })
+            let failing = self.failing.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if failing {
+                    Standing::Failed
+                } else {
+                    Standing::Account { admin }
+                }
+            })
         }
     }
 
@@ -339,6 +356,7 @@ mod tests {
         folder: PathBuf,
         offset: Arc<AtomicU64>,
         admins: Arc<Mutex<Vec<String>>>,
+        failing: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl Rig {
@@ -366,11 +384,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
         let admins = Arc::new(Mutex::new(vec!["admin".to_string()]));
+        let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let offset = Arc::new(AtomicU64::new(0));
         let (base, seen) = (Instant::now(), offset.clone());
         let auth = Auth::with_clock(
             Box::new(Fake {
                 admins: admins.clone(),
+                failing: failing.clone(),
             }),
             Limits {
                 fail_delay: Duration::ZERO,
@@ -389,6 +409,7 @@ mod tests {
             folder,
             offset,
             admins,
+            failing,
         }
     }
 
@@ -654,6 +675,24 @@ mod tests {
             assert_eq!(
                 status_of(&rig, "apply", Some(&cookie)).await,
                 StatusCode::FORBIDDEN
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_account_lookup_is_retryable_not_a_refusal() {
+        runtime().block_on(async {
+            let rig = app();
+            let cookie = cookie_for(&rig.app, "admin").await;
+            rig.failing.store(true, Ordering::SeqCst);
+            assert_eq!(
+                status_of(&rig, "apply", Some(&cookie)).await,
+                StatusCode::SERVICE_UNAVAILABLE
+            );
+            rig.failing.store(false, Ordering::SeqCst);
+            assert_eq!(
+                status_of(&rig, "apply", Some(&cookie)).await,
+                StatusCode::OK
             );
         });
     }

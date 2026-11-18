@@ -55,12 +55,36 @@ pub fn execute_in(
             bootstrap::bootstrap(&options, ask)?;
             Ok(Reply::Done)
         }
-        Op::Run { command } => Ok(Reply::ExitCode(session.stream(command)?)),
+        Op::Run { command } => {
+            let command = run_as(session, caller, command)?;
+            Ok(Reply::ExitCode(session.stream(&command)?))
+        }
         _ => {
             let who = Who { caller, grants };
             dispatch(session, host, &who, op, ask, crypto::load_default)
         }
     })
+}
+
+/// the command a `Run` executes. over ssh it runs as the account that signed in; on the gateway
+/// the service is root, so a local session runs it as the caller's own account, with that
+/// account's groups, and never as root. only the caller's name, checked to be a plain login name,
+/// is added to the command.
+fn run_as(session: &Session, caller: &Caller, command: &[String]) -> Result<Vec<String>> {
+    if !session.is_local() {
+        return Ok(command.to_vec());
+    }
+    if command.is_empty() {
+        bail!("nothing to run");
+    }
+    if !access::plain_account(&caller.user) {
+        bail!("not an account name");
+    }
+    let mut argv = ["runuser", "-u", caller.user.as_str(), "--"]
+        .map(String::from)
+        .to_vec();
+    argv.extend(command.iter().cloned());
+    Ok(argv)
 }
 
 /// who asks and what they may do.
@@ -652,5 +676,73 @@ esac"#,
     fn a_bad_host_is_refused_before_anything_runs() {
         let err = execute("-oProxyCommand=x", &Op::Leases, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("invalid host"), "{err:#}");
+    }
+
+    fn commander(user: &str) -> Caller {
+        Caller {
+            user: user.into(),
+            admin: false,
+        }
+    }
+
+    #[test]
+    fn a_local_run_is_the_callers_own_account_never_root() {
+        let local = Session::local();
+        let command = vec!["id".to_string(), "-u".to_string()];
+        let argv = run_as(&local, &commander("dana"), &command).unwrap();
+        assert_eq!(argv, ["runuser", "-u", "dana", "--", "id", "-u"]);
+        // a name that is not a plain login name is never put in the command
+        for bad in ["", "-u", "a b", "x;y", "root\n"] {
+            assert!(
+                run_as(&local, &commander(bad), &command).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(run_as(&local, &commander("dana"), &[]).is_err());
+        // over ssh the command is the caller's as it was: the login is the account
+        let remote = Session::new("gw").unwrap();
+        assert_eq!(
+            run_as(&remote, &commander("dana"), &command).unwrap(),
+            command
+        );
+    }
+
+    #[test]
+    fn a_non_admin_with_commands_runs_as_their_uid_not_root() {
+        use std::os::unix::fs::MetadataExt;
+        // switching accounts takes root, which is how the service runs
+        if std::fs::metadata("/proc/self")
+            .map(|m| m.uid())
+            .unwrap_or(1)
+            != 0
+        {
+            return;
+        }
+        let Some(uid) = ["nobody", "daemon"].into_iter().find_map(|name| {
+            let out = Session::local()
+                .capture(&["id".into(), "-u".into(), name.into()])
+                .ok()?;
+            Some((name, out.trim().parse::<i32>().ok()?))
+        }) else {
+            return;
+        };
+        let caller = commander(uid.0);
+        let op = Op::Run {
+            command: vec!["sh".into(), "-c".into(), "exit $(id -u)".into()],
+        };
+        // the grants of the account are the fallback ones, so give it the Commands role
+        let session = Session::local();
+        let reply = guarded_run(&session, &caller, &op);
+        assert_eq!(reply, Reply::ExitCode(uid.1));
+        assert_ne!(uid.1, 0);
+    }
+
+    /// run `op` as `caller` through core's run path, with a role that allows commands.
+    fn guarded_run(session: &Session, caller: &Caller, op: &Op) -> Reply {
+        let Op::Run { command } = op else {
+            unreachable!()
+        };
+        let argv = run_as(session, caller, command).unwrap();
+        Reply::ExitCode(session.stream(&argv).unwrap())
     }
 }

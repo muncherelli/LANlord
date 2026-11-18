@@ -521,8 +521,9 @@ pub fn same_origin_json(headers: &HeaderMap) -> Result<(), Response> {
     Ok(())
 }
 
-/// a request that needs a login: the user and the admin state read from the account now. the 401 says `session`, which
-/// is what the page takes to mean "sign in again"; an account that cannot be looked up is a 503.
+/// a request that needs a login: the user and the admin state read from the account now. the
+/// 401 says `session`, which is what the page takes to mean "sign in again"; an account that
+/// cannot be looked up is a 503.
 #[allow(clippy::result_large_err)]
 pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
     match auth.current(headers).await {
@@ -535,8 +536,9 @@ pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String
     }
 }
 
-/// as `require_current`, without a lookup, for a request the page makes on its own (a live meter): the session must be
-/// valid, but the request does not count as activity, so the idle logout still fires.
+/// as `require_current`, without a lookup, for a request the page makes on its own (a live
+/// meter): the session must be valid, but the request does not count as activity, so the idle
+/// logout still fires.
 #[allow(clippy::result_large_err)]
 pub fn require_peek(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
     auth.peek(headers)
@@ -1199,6 +1201,37 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_that_leaves_mid_operation_still_has_the_sessions_ended() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let rig = rig();
+            let admin = session_for(&rig, "admin").await;
+            let carol = session_for(&rig, "carol").await;
+            rig.faults.slow.store(60, Ordering::SeqCst);
+            let change = r#"{"op":{"op":"change_users","changes":[{"change":"set_password","name":"carol","password":"x"}]}}"#;
+            // the browser gives up after a second, which drops the handler
+            let left = tokio::time::timeout(
+                Duration::from_secs(1),
+                post_body(&rig, &admin, change),
+            )
+            .await;
+            assert!(left.is_err());
+            // the operation goes on and ends; carol's old session ends with it
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            rig.faults.slow.store(0, Ordering::SeqCst);
+            assert_eq!(
+                post_body(&rig, &carol, FACTS).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(rig.ran.lock().unwrap().len(), 1);
+        });
+    }
+
+    #[test]
     fn apply_progress_reaches_a_browser_following_applies() {
         use axum::body::HttpBody;
         runtime().block_on(async {
@@ -1303,10 +1336,18 @@ mod tests {
                 post_body(&rig, &cookie, RESET).await.0,
                 StatusCode::FORBIDDEN
             );
-            assert_eq!(
-                get_session(&rig, &cookie).await.1,
-                r#"{"admin":false,"user":"admin"}"#
-            );
+            // the page is told what the account may do now: what everyone sees, nothing more
+            let (_, text) = get_session(&rig, &cookie).await;
+            let session: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(session["admin"], false);
+            assert_eq!(session["user"], "admin");
+            let grants: lanlord_model::access::Grants =
+                serde_json::from_value(session["grants"].clone()).unwrap();
+            use lanlord_model::access::{Area, Level};
+            assert_eq!(grants.level(Area::Clock), Level::View);
+            assert_eq!(grants.level(Area::Status), Level::View);
+            assert_eq!(grants.level(Area::Users), Level::Hidden);
+            assert_eq!(grants.level(Area::Services), Level::Hidden);
             // and an account that is gone loses the session altogether
             rig.roles.lock().unwrap().remove("admin");
             assert_eq!(
