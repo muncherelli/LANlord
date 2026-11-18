@@ -66,6 +66,10 @@ pub fn execute_in(
     })
 }
 
+/// how long an operation may run: the longest ones (an apply, a purge) take minutes. the
+/// operations service stops waiting then, and a command started in a transient unit is stopped.
+pub const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(16 * 60);
+
 /// how a command is started as another account on the gateway.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Launch {
@@ -91,7 +95,8 @@ impl Launch {
         }
     }
 
-    /// `command` as the account with this uid and gid (and its other groups).
+    /// `command` as the account with this uid and gid (and its other groups). a command that
+    /// cannot start gives systemd's 203 on the unit path (127 under a shell).
     fn argv(self, uid: u32, gid: u32, command: &[String]) -> Vec<String> {
         let mut argv: Vec<String> = match self {
             Self::Unit => [
@@ -102,6 +107,7 @@ impl Launch {
                 "--wait".into(),
                 "--collect".into(),
                 "--quiet".into(),
+                format!("--property=RuntimeMaxSec={}", RUN_LIMIT.as_secs()),
                 "--".into(),
             ]
             .into(),
@@ -121,9 +127,12 @@ impl Launch {
 }
 
 /// the uids of ordinary login accounts here: `UID_MIN` to `UID_MAX` of `login.defs`, or 1000 to
-/// 60000. root, the system accounts and `nobody` are outside it.
+/// 60000. whatever that file says, never root, a system account (below 1000) or `nobody`.
 fn login_uids() -> std::ops::RangeInclusive<u32> {
-    let defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();
+    login_uids_in(&std::fs::read_to_string("/etc/login.defs").unwrap_or_default())
+}
+
+fn login_uids_in(defs: &str) -> std::ops::RangeInclusive<u32> {
     let value = |key: &str, default: u32| {
         defs.lines()
             .find_map(|line| {
@@ -132,7 +141,7 @@ fn login_uids() -> std::ops::RangeInclusive<u32> {
             })
             .unwrap_or(default)
     };
-    value("UID_MIN", 1000)..=value("UID_MAX", 60000)
+    value("UID_MIN", 1000).max(1000)..=value("UID_MAX", 60000).min(65533)
 }
 
 /// the uid and primary gid of the account on the machine `session` runs on.
@@ -791,6 +800,7 @@ esac"#,
                 "--wait",
                 "--collect",
                 "--quiet",
+                "--property=RuntimeMaxSec=960",
                 "--",
                 "id",
                 "-u"
@@ -824,6 +834,17 @@ esac"#,
             run_as(&remote, &commander("dana"), &command).unwrap(),
             command
         );
+    }
+
+    #[test]
+    fn login_defs_never_lets_in_root_system_accounts_or_nobody() {
+        assert_eq!(login_uids_in(""), 1000..=60000);
+        assert_eq!(login_uids_in("UID_MIN 500\nUID_MAX 70000\n"), 1000..=65533);
+        let wide = login_uids_in("UID_MIN\t0\nUID_MAX 65534\n");
+        assert!(!wide.contains(&0) && !wide.contains(&999) && !wide.contains(&65534));
+        assert!(wide.contains(&1000));
+        assert!(login_uids_in("UID_MIN 2000").contains(&2000));
+        assert!(!login_uids_in("UID_MIN 2000").contains(&1500));
     }
 
     #[test]

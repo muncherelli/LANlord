@@ -36,7 +36,7 @@ pub const ANSWER_LIMIT: u64 = 16 * 1024 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// how long an operation may run: the longest ones (an apply, a purge) take minutes.
-pub const RUN_TIMEOUT: Duration = Duration::from_secs(16 * 60);
+pub const RUN_TIMEOUT: Duration = lanlord_core::ops::RUN_LIMIT;
 
 /// how many operations run at the same time.
 const WORKERS: usize = 4;

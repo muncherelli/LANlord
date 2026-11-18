@@ -70,8 +70,17 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # the gateway's operations service is root, and a command it runs for a signed-in account
       # must run as that account: this test needs root to make an account and switch to it
-      - run: cargo test -p lanlord-core --locked --no-run
-      - run: sudo -E env "PATH=$PATH" cargo test -p lanlord-core --locked -- --ignored root_ --nocapture
+      # build as the runner (root has no rustup toolchain), then run the test binary as root
+      - name: build the test binary
+        run: |
+          cargo test -p lanlord-core --locked --no-run --message-format=json > build.json
+          jq -r 'select(.profile.test and .target.name=="lanlord_core") | .executable // empty' build.json | tail -1 > bin.path
+          test -x "$(cat bin.path)"
+      # the grep fails loudly if the test is renamed or filtered out
+      - name: run the root-only test as root
+        run: |
+          sudo "$(cat bin.path)" --ignored --exact ops::tests::root_a_local_run_is_the_callers_uid_and_groups_in_a_clean_environment --nocapture | tee out
+          grep -q "test result: ok. 1 passed" out
 
   wasm:
     name: model builds for the browser
