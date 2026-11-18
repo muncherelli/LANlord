@@ -161,7 +161,7 @@ fn a_release_build_has_no_developer_menu() {
 #[cfg(unix)]
 #[test]
 fn the_developer_submenu_opens_beside_its_row_and_closes_with_the_menu() {
-    let (mut desktop, ctx, _) = dev("submenu", true);
+    let (mut desktop, ctx, repo) = dev("submenu", true);
     open_menu(&mut desktop, &ctx);
     assert!(desktop.dev_item_at(screen(), &Action::Rebuild).is_none());
     choose(&mut desktop, &ctx, &Action::Developer);
@@ -174,6 +174,7 @@ fn the_developer_submenu_opens_beside_its_row_and_closes_with_the_menu() {
     }
     click_at(&mut desktop, &ctx, egui::Pos2::new(900.0, 300.0));
     assert!(!desktop.start_open && !desktop.dev_open);
+    let _ = std::fs::remove_dir_all(repo);
 }
 
 #[cfg(unix)]

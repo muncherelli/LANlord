@@ -28,6 +28,10 @@ pub struct Signin {
     program: Vec<String>,
     /// the program ssh starts to ask for a password: this program, in askpass mode.
     askpass: Option<PathBuf>,
+    /// the fake ssh script, removed when the signer is dropped.
+    #[cfg(all(test, unix))]
+    #[allow(dead_code)]
+    fake_script: Option<tempfile::TempPath>,
 }
 
 impl Signin {
@@ -35,6 +39,8 @@ impl Signin {
         Self {
             program: vec!["ssh".into()],
             askpass: std::env::current_exe().ok(),
+            #[cfg(all(test, unix))]
+            fake_script: None,
         }
     }
 
@@ -319,18 +325,17 @@ pub fn askpass_main() -> Option<i32> {
 impl Signin {
     /// a signer that runs `script` instead of ssh, to test without a server.
     fn fake(script: &str) -> Signin {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "lanlord-fake-signin-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, format!("{script}\n")).unwrap();
+        let path = tempfile::Builder::new()
+            .prefix("lanlord-fake-signin-")
+            .tempfile()
+            .unwrap();
+        std::fs::write(path.path(), format!("{script}\n")).unwrap();
+        let path = path.into_temp_path();
         Signin {
             // run it through sh so we never exec a file we just wrote (ETXTBSY)
             program: vec!["sh".into(), path.to_string_lossy().into_owned()],
             askpass: Some(PathBuf::from("/opt/lanlord/askpass-test")),
+            fake_script: Some(path),
         }
     }
 }
@@ -531,6 +536,8 @@ mod tests {
         let signin = Signin {
             program: vec!["/nonexistent/ssh".into()],
             askpass: None,
+            #[cfg(all(test, unix))]
+            fake_script: None,
         };
         assert_eq!(
             signin.attempt("alice@gw", &Attempt::default()),
