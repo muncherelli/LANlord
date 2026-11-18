@@ -195,7 +195,11 @@ pub fn show(
     let sized = growable && !fit;
     let contents_least = match before {
         Some(r) if r.claimed > 0.0 => r.natural - r.claimed + r.claimed.min(controls::FILL_MIN),
-        _ => controls::FILL_MIN,
+        // nothing grows, so the contents scroll when the window is smaller: no smaller than
+        // they are, or than a part that fills would be
+        Some(r) => (r.natural - 2.0 * MARGIN).min(controls::FILL_MIN),
+        // not measured yet: no floor, so a window that is small can open small
+        None => 0.0,
     } + 2.0 * MARGIN;
     // never more than the desktop, whose room the contents then scroll in
     let mut least = least_size(ctx, title, contents_least);
@@ -447,5 +451,32 @@ mod tests {
                 "dialog {dialog}: left {left}, right {right}, bottom {bottom}"
             );
         }
+    }
+
+    #[test]
+    fn a_growable_window_with_nothing_to_fill_is_as_tall_as_its_contents() {
+        let ctx = egui::Context::default();
+        let mut rect = None;
+        for _ in 0..12 {
+            testkit::run(&ctx, vec![], |ui| {
+                let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 690.0));
+                let place = Placement {
+                    start: Pos2::new(110.0, 12.0),
+                    width: 380.0,
+                    area,
+                    growable: true,
+                    height: None,
+                };
+                rect = show(ui.ctx(), "g", "G", place, true, false, |ui| {
+                    ui.allocate_space(Vec2::new(10.0, 20.0));
+                })
+                .map(|s| s.rect);
+            });
+        }
+        let rect = rect.unwrap();
+        assert!(
+            rect.height() < CHROME + 20.0 + 2.0 * MARGIN + 2.0,
+            "{rect:?}"
+        );
     }
 }
