@@ -19,5 +19,5 @@ tar = "0.4.46"
 sha2 = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# timedate1, for the clock ops the bridge runs on a gateway
+# timedate1, for the clock operations the bridge runs on a gateway
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }

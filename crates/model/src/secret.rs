@@ -3,10 +3,10 @@
 //! it is wiped from memory when dropped and never shows in debug output. it (de)serializes as a
 //! plain string, because it only travels where the connection itself is protected: in the https
 //! request body the web ui posts to `/api/operations`, and from there over the gateway's local socket or
-//! the stdin of `lanlord op`. it is never logged or stored.
+//! the stdin of `lanlord operation`. it is never logged or stored.
 //!
-//! `lanlord op` runs what it is given as is: purge, power and run ask for no confirmation there,
-//! by design, because the front end that sent the op already asked.
+//! `lanlord operation` runs what it is given as is: purge, power and run ask for no confirmation there,
+//! by design, because the front end that sent the operation already asked.
 
 use std::fmt;
 

@@ -134,7 +134,7 @@ pub struct Session {
     host: String,
     /// the ssh program and any leading arguments.
     program: Vec<String>,
-    /// set once the gateway turned out to have no usable `lanlord bridge`; later ops skip it.
+    /// set once the gateway turned out to have no usable `lanlord bridge`; later operations skip it.
     pub(crate) no_bridge: std::sync::atomic::AtomicBool,
     /// run the commands on this machine, as the current user, instead of through ssh.
     local: bool,

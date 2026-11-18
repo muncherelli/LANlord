@@ -1,10 +1,10 @@
-//! the sudo password round trip of a front end that cannot answer a prompt while an op runs
-//! (the web ui): send the op, and when the server answers [`Reply::NeedsPassword`], ask the
+//! the sudo password round trip of a front end that cannot answer a prompt while an operation runs
+//! (the web ui): send the operation, and when the server answers [`Reply::NeedsPassword`], ask the
 //! person once and send it again with the password. a second request for it means the password
 //! was wrong; there is no third try.
 
 use anyhow::{anyhow, Result};
-use lanlord_model::ops::{Op, Reply, Response};
+use lanlord_model::operations::{Operation, Reply, Response};
 use lanlord_model::secret::Secret;
 
 /// what a retry with a password that still did not work says.
@@ -13,12 +13,12 @@ pub const WRONG_PASSWORD: &str = "wrong password";
 /// what a cancelled password dialog says.
 pub const CANCELLED: &str = "cancelled";
 
-/// what to do with the first answer to an op.
+/// what to do with the first answer to an operation.
 #[derive(Debug)]
 pub enum Step {
-    /// the op is finished, for better or worse.
+    /// the operation is finished, for better or worse.
     Done(Result<Reply>),
-    /// ask the person for the sudo password with this prompt, then send the op again.
+    /// ask the person for the sudo password with this prompt, then send the operation again.
     Ask(String),
 }
 
@@ -51,16 +51,16 @@ impl std::fmt::Display for SessionEnded {
 
 impl std::error::Error for SessionEnded {}
 
-/// how long one request may take before it is given up, in milliseconds: the ops that run for
+/// how long one request may take before it is given up, in milliseconds: the operations that run for
 /// minutes get longer than the server's own 15 minute limit, so its answer is the one shown.
-pub fn timeout_ms(op: &Op) -> i32 {
-    match op {
-        Op::Apply { .. }
-        | Op::Power { .. }
-        | Op::ClockApply { .. }
-        | Op::Purge { .. }
-        | Op::Run { .. }
-        | Op::Bootstrap => 16 * 60 * 1000,
+pub fn timeout_ms(operation: &Operation) -> i32 {
+    match operation {
+        Operation::Apply { .. }
+        | Operation::Power { .. }
+        | Operation::ClockApply { .. }
+        | Operation::Purge { .. }
+        | Operation::Run { .. }
+        | Operation::Bootstrap => 16 * 60 * 1000,
         _ => 30_000,
     }
 }
@@ -96,7 +96,7 @@ fn is_session_error(body: &str) -> bool {
 }
 
 /// the answer to the retry that carried `given`, and the password to keep for the task's later
-/// ops: only one the server did not ask for again, so a wrong one is never sent twice.
+/// operations: only one the server did not ask for again, so a wrong one is never sent twice.
 pub fn after_retry(given: Secret, again: Result<Reply>) -> (Option<Secret>, Result<Reply>) {
     let keep = !matches!(again, Ok(Reply::NeedsPassword { .. }));
     (keep.then_some(given), retried(again))
@@ -107,12 +107,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_wrong_password_is_not_kept_for_later_ops() {
+    fn a_wrong_password_is_not_kept_for_later_operations() {
         let asked = || Ok(Reply::NeedsPassword { prompt: "x".into() });
         let (kept, answer) = after_retry(Secret::from("bad"), asked());
         assert!(kept.is_none());
         assert_eq!(answer.unwrap_err().to_string(), WRONG_PASSWORD);
-        // the next op has no password, so it asks again
+        // the next operation has no password, so it asks again
         assert!(matches!(first(asked()), Step::Ask(_)));
         let (kept, answer) = after_retry(Secret::from("good"), Ok(Reply::Done));
         assert_eq!(kept, Some(Secret::from("good")));
@@ -161,23 +161,23 @@ mod tests {
     }
 
     #[test]
-    fn long_ops_wait_longer() {
-        let short = timeout_ms(&Op::Leases);
+    fn long_operations_wait_longer() {
+        let short = timeout_ms(&Operation::Leases);
         assert_eq!(short, 30_000);
-        for op in [
-            Op::Apply { modules: vec![] },
-            Op::Power {
+        for operation in [
+            Operation::Apply { modules: vec![] },
+            Operation::Power {
                 power: lanlord_model::power::Power::Reboot,
             },
-            Op::Purge {
+            Operation::Purge {
                 remove_admins: false,
             },
-            Op::Run {
+            Operation::Run {
                 command: vec!["true".into()],
             },
-            Op::Bootstrap,
+            Operation::Bootstrap,
         ] {
-            assert!(timeout_ms(&op) > 15 * 60 * 1000);
+            assert!(timeout_ms(&operation) > 15 * 60 * 1000);
         }
     }
 

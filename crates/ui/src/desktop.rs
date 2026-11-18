@@ -574,8 +574,8 @@ impl Desktop {
         // only an account that may see apply output asks for it
         let follows = self.web.is_some()
             && self.grants().allows(
-                lanlord_model::ops::Op::Subscribe {
-                    topic: lanlord_model::ops::topic::APPLY.into(),
+                lanlord_model::operations::Operation::Subscribe {
+                    topic: lanlord_model::operations::topic::APPLY.into(),
                 }
                 .requires(),
             );

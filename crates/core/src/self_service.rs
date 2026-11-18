@@ -1,4 +1,4 @@
-//! the ops about accounts and permissions: a person's own account, password changes across
+//! the operations about accounts and permissions: a person's own account, password changes across
 //! linked accounts, and the role assignments.
 
 use std::collections::BTreeMap;
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 
 use lanlord_model::identity::{AccountInfo, PasswordReport};
-use lanlord_model::ops::Reply;
+use lanlord_model::operations::Reply;
 use lanlord_model::secret::Secret;
 
 use crate::access::{self, Access, Area, Caller, Grants, Profile};

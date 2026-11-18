@@ -3,7 +3,7 @@
 //! monitor samples (the Task Manager and the tray) or the progress of an apply pushed to it.
 //!
 //! the rules are those of `/api/operations`: a login, a request that comes from the page itself and the
-//! permission the subscription needs (`Op::requires`), read from the account's real roles and
+//! permission the subscription needs (`Operation::requires`), read from the account's real roles and
 //! its live group membership (see [`Roster`]) when the stream opens and at every recheck. a
 //! stream keeps checking, so ending the session (logout, idle, a revoked user) or losing the
 //! permission ends the stream within a few seconds. nothing in the stream path counts as
@@ -30,7 +30,7 @@ use axum::Extension;
 use futures_core::Stream;
 use lanlord_core::monitor::Sampler;
 use lanlord_model::apply::ApplyEvent;
-use lanlord_model::ops::{topic, Op};
+use lanlord_model::operations::{topic, Operation};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -194,7 +194,7 @@ async fn stream(
     let Some(topic) = topic_in(&uri) else {
         return refuse(StatusCode::BAD_REQUEST, "no such stream");
     };
-    let need = Op::Subscribe {
+    let need = Operation::Subscribe {
         topic: topic.into(),
     }
     .requires();
@@ -249,7 +249,7 @@ async fn feed(
 ) {
     let mut recheck = interval(RECHECK);
     recheck.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let need = Op::Subscribe {
+    let need = Operation::Subscribe {
         topic: topic.into(),
     }
     .requires();

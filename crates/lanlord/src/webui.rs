@@ -21,7 +21,9 @@ use axum::routing::{get, post};
 use axum::Router;
 use base64::Engine as _;
 use lanlord_core::log::{self, Kind};
-use lanlord_core::ops::{Op, Request as OpRequest, Response as OpResponse, UserChange};
+use lanlord_core::operations::{
+    Operation, Request as OperationRequest, Response as OperationResponse, UserChange,
+};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -272,13 +274,18 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
 
 /// sends one operation for an account to whatever runs it; the apply events it reports on the
 /// way go to the `Events` it is given.
-type Runner =
-    Arc<dyn Fn(String, Op, operations_service::Events) -> operations_service::Asking + Send + Sync>;
+type Runner = Arc<
+    dyn Fn(String, Operation, operations_service::Events) -> operations_service::Asking
+        + Send
+        + Sync,
+>;
 
 /// the real runner: the root operations service on its unix socket, which checks what the
 /// account may do itself.
 fn service_runner(socket: PathBuf) -> Runner {
-    Arc::new(move |account, op, events| operations_service::ask(&socket, account, op, events))
+    Arc::new(move |account, operation, events| {
+        operations_service::ask(&socket, account, operation, events)
+    })
 }
 
 /// where the apply events of an operation go: to the browsers following applies.
@@ -312,14 +319,14 @@ fn refusal(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
-/// the accounts whose sessions an op leaves out of date, and whether the caller's own session
+/// the accounts whose sessions an operation leaves out of date, and whether the caller's own session
 /// may stay: a password change keeps the window it was made in, a permission change does not.
-fn affected(op: &Op, caller: &str) -> Vec<(String, bool)> {
+fn affected(operation: &Operation, caller: &str) -> Vec<(String, bool)> {
     let own = |name: &str| name == caller;
-    match op {
-        Op::ChangePassword { .. } => vec![(caller.to_string(), true)],
-        Op::ResetPassword { user, .. } => vec![(user.clone(), own(user))],
-        Op::ChangeUsers { changes } => changes
+    match operation {
+        Operation::ChangePassword { .. } => vec![(caller.to_string(), true)],
+        Operation::ResetPassword { user, .. } => vec![(user.clone(), own(user))],
+        Operation::ChangeUsers { changes } => changes
             .iter()
             .map(|change| match change {
                 UserChange::SetPassword { name, .. } => (name.clone(), own(name)),
@@ -334,9 +341,9 @@ fn affected(op: &Op, caller: &str) -> Vec<(String, bool)> {
 
 /// the operations endpoint. it needs a page-origin json request and a login, and takes the same
 /// `Request` body the browser sends. the account's admin state is read again on every request,
-/// and the op goes to the operations service, which checks `Op::requires` for the account itself:
+/// and the operation goes to the operations service, which checks `Operation::requires` for the account itself:
 /// a refusal is a 403, a body that is not an operation a 400, a service that is not there a 503,
-/// and anything else the `Response` json of `lanlord op`. after an op that changes a password or
+/// and anything else the `Response` json of `lanlord operation`. after an operation that changes a password or
 /// a user's permissions, even one that failed half way, the affected users' sessions end (see
 /// `Auth::revoke_user`). no sudo password travels: the service is root. live streams are not
 /// operations: they are served on `/api/events`. the body is read already so the size limit
@@ -353,34 +360,34 @@ async fn operations(
         Ok(who) => who,
         Err(unauthorized) => return unauthorized,
     };
-    let Ok(request) = serde_json::from_slice::<OpRequest>(&body) else {
+    let Ok(request) = serde_json::from_slice::<OperationRequest>(&body) else {
         return refusal(StatusCode::BAD_REQUEST, "not an operation");
     };
     drop(body);
-    if matches!(request.op, Op::Subscribe { .. }) {
+    if matches!(request.operation, Operation::Subscribe { .. }) {
         return refusal(
             StatusCode::NOT_IMPLEMENTED,
             "live streams are served on /api/events, not here",
         );
     }
-    let changed = affected(&request.op, &user);
+    let changed = affected(&request.operation, &user);
     // the operation and the sessions it ends run in their own task: a browser that goes away
     // drops this handler, and the sessions must still end
-    match tokio::spawn(settle(app, headers, user, request.op, changed)).await {
+    match tokio::spawn(settle(app, headers, user, request.operation, changed)).await {
         Ok(response) => response,
         Err(_) => refusal(StatusCode::INTERNAL_SERVER_ERROR, "the operation stopped"),
     }
 }
 
-/// run `op` for `user`, end the sessions of those it affects, and make the answer.
+/// run `operation` for `user`, end the sessions of those it affects, and make the answer.
 async fn settle(
     app: App,
     headers: HeaderMap,
     user: String,
-    op: Op,
+    operation: Operation,
     changed: Vec<(String, bool)>,
 ) -> Response {
-    let answer = (app.run)(user, op, apply_events()).await;
+    let answer = (app.run)(user, operation, apply_events()).await;
     let revoke = |app: &App| {
         for (name, keep_own) in &changed {
             if *keep_own {
@@ -391,7 +398,7 @@ async fn settle(
         }
     };
     let response = match answer {
-        Ok(OpResponse::Denied(message)) => return refusal(StatusCode::FORBIDDEN, &message),
+        Ok(OperationResponse::Denied(message)) => return refusal(StatusCode::FORBIDDEN, &message),
         Ok(response) => {
             // a failed batch may have changed some of it: end the sessions either way
             revoke(&app);
