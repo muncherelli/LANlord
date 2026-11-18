@@ -45,6 +45,7 @@ pub fn art(id: &str) -> &'static [&'static str] {
         "folder" => &data::FOLDER,
         "my-server" => &data::MYSERVER,
         "networks" => &data::NETWORKS,
+        "lanlord" => &data::LOGO,
         _ => &data::HOSTS,
     }
 }
@@ -63,7 +64,7 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "folder" => &data::SMALL_FOLDER,
         "my-server" => &data::SMALL_MYSERVER,
         "networks" => &data::SMALL_NETWORKS,
-        "lanlord" => &data::SMALL_LANLORD,
+        "lanlord" | "welcome" => &data::SMALL_LOGO,
         "update" => &data::SMALL_UPDATE,
         "datetime" => &SMALL_CLOCK,
         "taskmgr" => &SMALL_TASKMGR,
@@ -170,11 +171,7 @@ pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
 /// a 16 by 16 icon at `pos` by id: the logo for "lanlord" and "welcome", the other hand-drawn
 /// art for the rest.
 pub fn draw_small(painter: &Painter, pos: Pos2, id: &str) {
-    if matches!(id, "lanlord" | "welcome") {
-        draw(painter, pos, &data::SMALL_LOGO, 1.0);
-    } else {
-        draw(painter, pos, small(id), 1.0);
-    }
+    draw(painter, pos, small(id), 1.0);
 }
 
 #[cfg(test)]
@@ -269,6 +266,24 @@ mod tests {
     #[test]
     fn the_logo_art_is_16_and_32_square_and_uses_palette_colours() {
         check("logo", &data::SMALL_LOGO, 16);
+        check("logo32", art("lanlord"), 32);
+    }
+
+    #[test]
+    fn the_lanlord_and_welcome_icons_are_the_hat_logo() {
+        assert_eq!(small("lanlord"), &data::SMALL_LOGO);
+        assert_eq!(small("welcome"), &data::SMALL_LOGO);
+    }
+
+    #[test]
+    fn the_favicon_holds_a_16_and_a_32_pixel_image() {
+        let ico = include_bytes!("../assets/favicon.ico");
+        assert_eq!(u16::from_le_bytes([ico[0], ico[1]]), 0, "reserved");
+        assert_eq!(u16::from_le_bytes([ico[2], ico[3]]), 1, "type is icon");
+        assert_eq!(u16::from_le_bytes([ico[4], ico[5]]), 2, "two entries");
+        // a width or height byte of 0 would mean 256
+        assert_eq!((ico[6], ico[7]), (16, 16));
+        assert_eq!((ico[22], ico[23]), (32, 32));
     }
 
     #[test]

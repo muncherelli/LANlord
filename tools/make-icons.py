@@ -565,18 +565,6 @@ def s_folder():
     return g
 
 
-def s_lanlord():
-    """the menu button tile: a navy square with a white L."""
-    g = Grid(16)
-    g.rect(1, 1, 14, 14, "k")
-    g.rect(2, 2, 12, 12, "n")
-    g.rect(2, 2, 12, 1, "b")
-    g.rect(2, 2, 1, 12, "b")
-    g.rect(5, 4, 2, 8, "w")
-    g.rect(5, 10, 6, 2, "w")
-    return g
-
-
 # ---------------------------------------------------------------- the logo
 #
 # a black top hat with a gold band on a short red box, drawn bold so it reads at 1x on the
@@ -1074,12 +1062,12 @@ def update_sheet(path):
 BIG = {
     "GATEWAY": gateway, "DOCKER": docker, "NT4": tower, "WEB": globe, "COMMANDS": remote,
     "CONSOLE": console, "DNS": dns, "SETTINGS": settings, "HOSTS": hosts, "FOLDER": folder,
-    "MYSERVER": my_server, "NETWORKS": networks,
+    "MYSERVER": my_server, "NETWORKS": networks, "LOGO": logo32,
 }
 SMALL = {
     "GATEWAY": s_gateway, "DOCKER": s_docker, "NT4": s_tower, "WEB": s_globe,
     "COMMANDS": lambda: s_window(False), "CONSOLE": lambda: s_window(True), "DNS": s_dns,
-    "SETTINGS": s_settings, "HOSTS": s_hosts, "FOLDER": s_folder, "LANLORD": s_lanlord, "LOGO": s_logo,
+    "SETTINGS": s_settings, "HOSTS": s_hosts, "FOLDER": s_folder, "LOGO": s_logo,
     "MYSERVER": s_my_server, "NETWORKS": s_networks,
     "UPDATE": s_update,
 }
