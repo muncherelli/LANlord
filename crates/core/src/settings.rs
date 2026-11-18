@@ -128,6 +128,7 @@ pub(crate) fn save_changes_with(
     removed: &[String],
     ask: AskPassword,
 ) -> Result<()> {
+    lanlord_model::validate::settings_document(plain_text)?;
     let leaked = secret_paths(&parse_value(plain_text.as_bytes())?);
     if !leaked.is_empty() {
         bail!(
@@ -318,16 +319,25 @@ mod gateway_tests {
             &gw.session,
             "gw",
             &id,
-            "a:\n  password: x\n",
+            "nt4-domain:\n  admin_password: x\n",
             &[],
             &mut no_password,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("a.password"), "{err}");
-        let bad = vec![("a.name".to_string(), "x".to_string())];
         assert!(
-            save_document_with(&gw.session, "gw", &id, "a: 1\n", &bad, &mut no_password).is_err()
+            err.to_string().contains("nt4-domain.admin_password"),
+            "{err}"
         );
+        let bad = vec![("a.name".to_string(), "x".to_string())];
+        assert!(save_document_with(
+            &gw.session,
+            "gw",
+            &id,
+            "gateway:\n  ntp_enabled: true\n",
+            &bad,
+            &mut no_password
+        )
+        .is_err());
         assert!(
             save_document_with(&gw.session, "gw", &id, "a: [oops", &[], &mut no_password).is_err()
         );

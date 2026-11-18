@@ -9,6 +9,7 @@ anyhow.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json.workspace = true
+saphyr-parser = "0.3.4"
 serde_yaml_ng = "0.10.0"
 zeroize = "1.9.1"
 

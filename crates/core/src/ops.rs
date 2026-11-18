@@ -218,8 +218,40 @@ fn guarded(
         Err(e) => return Err(e),
     };
     access::authorize(&grants, op)?;
+    // whatever the client checked, nothing runs on an argument that fails the shared rules
+    op.validate()?;
+    if session.is_local() {
+        known_zones(op, ZONEINFO)?;
+    }
     let reply = run(&grants, ask)?;
     Ok(access::redact(&grants, caller, reply))
+}
+
+/// where this machine keeps its time zone database.
+const ZONEINFO: &str = "/usr/share/zoneinfo";
+
+/// the time zones an op names must be in the zone database of the machine it runs on. when the
+/// machine has no database (a minimal container) the name rules alone apply.
+fn known_zones(op: &Op, zoneinfo: &str) -> Result<()> {
+    let root = std::path::Path::new(zoneinfo);
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let named = match op {
+        Op::ClockZoneNow { zone } => Some(("zone", zone.clone())),
+        Op::ClockApply { change } => change.timezone.clone().map(|zone| ("timezone", zone)),
+        Op::SaveDocument { plain, .. } => serde_yaml_ng::from_str::<serde_yaml_ng::Value>(plain)
+            .ok()
+            .and_then(|settings| settings["gateway"]["timezone"].as_str().map(str::to_string))
+            .map(|zone| ("gateway.timezone", zone)),
+        _ => None,
+    };
+    match named {
+        Some((field, zone)) if !root.join(&zone).is_file() => {
+            bail!("{field}: {zone} is not a time zone this machine knows")
+        }
+        _ => Ok(()),
+    }
 }
 
 /// where the key that decrypts the settings comes from; `None` when there is none yet.
@@ -410,6 +442,74 @@ mod tests {
     use crate::clock::Change as ClockChange;
     use crate::power::{Outcome, Power};
     use crate::testgw::{identity, no_password, Gateway};
+
+    #[test]
+    fn a_time_zone_must_be_in_the_zone_database() {
+        let root = std::env::temp_dir().join(format!("lanlord-zoneinfo-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Europe")).unwrap();
+        std::fs::write(root.join("Europe/Berlin"), b"").unwrap();
+        let dir = root.to_str().unwrap();
+        let zone = |zone: &str| Op::ClockZoneNow { zone: zone.into() };
+        assert!(known_zones(&zone("Europe/Berlin"), dir).is_ok());
+        let error = known_zones(&zone("Europe/Nowhere"), dir).unwrap_err();
+        assert!(error.to_string().starts_with("zone: "), "{error}");
+        let save = |text: &str| Op::SaveDocument {
+            plain: text.into(),
+            updates: vec![],
+        };
+        assert!(known_zones(&save("gateway:\n  timezone: Europe/Berlin\n"), dir).is_ok());
+        assert!(known_zones(&save("gateway:\n  timezone: Mars/Base\n"), dir).is_err());
+        assert!(known_zones(&save("dns: {}\n"), dir).is_ok());
+        assert!(known_zones(&Op::LoadDocument, dir).is_ok());
+        let change = ClockChange {
+            timezone: Some("Mars/Base".into()),
+            ..ClockChange::default()
+        };
+        assert!(known_zones(&Op::ClockApply { change }, dir).is_err());
+        // no database on the machine: the name rules alone apply
+        assert!(known_zones(&zone("Mars/Base"), "/nonexistent-zoneinfo").is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn guarded_refuses_an_invalid_op_before_anything_runs() {
+        let server = quiet_server();
+        let grants_ran = std::cell::Cell::new(false);
+        let go = |op: Op| {
+            grants_ran.set(false);
+            let result = guarded(&server, &admin(), &op, &mut no_password, |_, _| {
+                grants_ran.set(true);
+                Ok(Reply::Done)
+            });
+            (result, grants_ran.get())
+        };
+        let save = |plain: &str| Op::SaveDocument {
+            plain: plain.into(),
+            updates: vec![],
+        };
+        let bomb = format!("a: &a [x]\nb: *a\n{}", "c: *a\n".repeat(1000));
+        let hostile = [
+            (
+                save("nt4-domain:\n  log_level: \"1\\n root preexec = id\"\n"),
+                "log_level",
+            ),
+            (
+                save("dns:\n  zone: \"{{ lookup('pipe', 'id') }}\"\n"),
+                "dns.zone",
+            ),
+            (save(&bomb), "anchors"),
+            (save("image: evil\n"), "image"),
+        ];
+        for (op, word) in hostile {
+            let (result, ran) = go(op);
+            let message = format!("{:#}", result.unwrap_err());
+            assert!(message.contains(word), "{message}");
+            assert!(!message.contains('\n'), "one line: {message:?}");
+            assert!(!ran, "{word}: the op must not run");
+        }
+        let (result, ran) = go(save("gateway:\n  timezone: UTC\n"));
+        assert!(result.is_ok() && ran);
+    }
 
     /// one key for every test, so settings sealed by a test can be read by the executor.
     fn key() -> Result<Option<crypto::Identity>> {

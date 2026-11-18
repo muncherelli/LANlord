@@ -15,7 +15,15 @@ use crate::ssh::Session;
 /// the shell script that unpacks the playbooks and runs them as lanlord;
 /// `settings` is decrypted yaml that lives in /run only for the duration.
 fn script(settings: Option<&[u8]>, tags: &[&str]) -> Result<String> {
-    let (stage, vars) = match settings {
+    // the playbooks get the settings only after the shared checks, with every string marked
+    // unsafe so ansible never runs a value through jinja
+    let checked = match settings {
+        Some(plain) => {
+            Some(lanlord_model::validate::for_ansible(std::str::from_utf8(plain)?)?.into_bytes())
+        }
+        None => None,
+    };
+    let (stage, vars) = match checked.as_deref() {
         Some(plain) => (
             format!(
                 r#"install -d -o lanlord -g lanlord -m 0700 /run/lanlord
@@ -325,7 +333,7 @@ esac"#,
 
     #[test]
     fn script_stages_settings_in_run_and_removes_them() {
-        let s = script(Some(b"motd: hi\n"), &[]).unwrap();
+        let s = script(Some(b"gateway:\n  motd: hi\n"), &[]).unwrap();
         assert!(s.contains("install -d -o lanlord -g lanlord -m 0700 /run/lanlord"));
         assert!(s.contains("trap 'rm -f /run/lanlord/settings.yml' EXIT"));
         assert!(s.contains("chmod 0600 /run/lanlord/settings.yml"));
@@ -337,6 +345,32 @@ esac"#,
     }
 
     #[test]
+    fn the_staged_settings_mark_strings_unsafe_and_refuse_jinja_and_bad_values() {
+        use base64::Engine;
+        let staged = |settings: &[u8]| -> Result<String> {
+            let s = script(Some(settings), &[])?;
+            let body: String = s
+                .lines()
+                .skip_while(|l| !l.contains("<<'LANLORD_SETTINGS'"))
+                .skip(1)
+                .take_while(|l| *l != "LANLORD_SETTINGS")
+                .collect();
+            let bytes = base64::engine::general_purpose::STANDARD.decode(body)?;
+            Ok(String::from_utf8(bytes)?)
+        };
+        let written = staged(b"gateway:\n  motd: \"{{ lookup('pipe', 'id') }}\"\n").unwrap();
+        assert!(written.contains("!unsafe"), "{written}");
+        for bad in [
+            &b"gateway:\n  timezone: ../../etc\n"[..],
+            b"image: evil\n",
+            b"nt4-domain:\n  users:\n    - name: \"x\\ny\"\n",
+            b"\xff\xfe",
+        ] {
+            assert!(script(Some(bad), &[]).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn the_image_version_is_x_y_z() {
         let parts: Vec<_> = env!("LANLORD_IMAGE_VERSION").split('.').collect();
         assert_eq!(parts.len(), 3);
@@ -345,7 +379,7 @@ esac"#,
 
     #[test]
     fn script_passes_the_version_after_the_settings() {
-        let s = script(Some(b"a: 1\n"), &[]).unwrap();
+        let s = script(Some(b"gateway:\n  ntp_enabled: true\n"), &[]).unwrap();
         let settings = s.find("-e @/run/lanlord/settings.yml").unwrap();
         let version = s.find("-e lanlord_image_version=").unwrap();
         assert!(settings < version, "settings must not override the version");
@@ -355,7 +389,7 @@ esac"#,
     fn scripts_are_valid_sh() {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        for settings in [None, Some(&b"a: 1\n"[..])] {
+        for settings in [None, Some(&b"gateway:\n  ntp_enabled: true\n"[..])] {
             let mut child = Command::new("sh")
                 .arg("-n")
                 .stdin(Stdio::piped())
@@ -409,7 +443,7 @@ esac"#,
     #[test]
     fn apply_sends_the_decrypted_settings_for_the_run() {
         let id = identity("settings");
-        let sealed = crypto::encrypt(&id, b"motd: hello\n").unwrap();
+        let sealed = crypto::encrypt(&id, b"gateway:\n  motd: hello\n").unwrap();
         let cipher = base64::engine::general_purpose::STANDARD.encode(sealed);
         let record = temp("withsettings");
         let session = gateway_with_settings(&cipher, &record, 0);
@@ -425,7 +459,8 @@ esac"#,
         let plain = base64::engine::general_purpose::STANDARD
             .decode(body)
             .unwrap();
-        assert_eq!(plain, b"motd: hello\n");
+        let plain = String::from_utf8(plain).unwrap();
+        assert_eq!(plain, "gateway:\n  motd: !unsafe hello\n");
         let _ = std::fs::remove_file(record);
     }
 
@@ -502,7 +537,7 @@ esac"#,
     fn modules_become_tags() {
         let s = script(None, &["gateway", "docker"]).unwrap();
         assert!(s.contains(" --tags gateway,docker /opt/lanlord/playbooks/site.yml"));
-        let with_settings = script(Some(b"a: 1\n"), &["gateway"]).unwrap();
+        let with_settings = script(Some(b"gateway:\n  ntp_enabled: true\n"), &["gateway"]).unwrap();
         assert!(with_settings.contains(" --tags gateway /opt/lanlord/playbooks/site.yml"));
     }
 
