@@ -130,14 +130,21 @@ esac"#
         /// `id -u` prints, `unshare` and `systemd_run` are the stubs' shell bodies.
         fn nesting_with(uid: &str, invocation: bool, unshare: &str, systemd_run: &str) -> String {
             use std::os::unix::fs::PermissionsExt;
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "lanlord-nesting-{}-{:p}",
+                "lanlord-nesting-{}-{}",
                 std::process::id(),
-                &uid
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             ));
             std::fs::create_dir_all(&dir).unwrap();
+            let real_path = std::env::var("PATH").unwrap();
+            // `cat` is stubbed so the host's max_user_namespaces never decides the answer
+            let cat = format!(
+                "if [ \"$1\" = /proc/sys/user/max_user_namespaces ]; then echo 31000; else PATH='{real_path}' exec cat \"$@\"; fi"
+            );
             for (name, body) in [
                 ("id", format!("echo {uid}")),
+                ("cat", cat),
                 ("unshare", unshare.to_string()),
                 ("systemd-run", systemd_run.to_string()),
             ] {
@@ -145,7 +152,7 @@ esac"#
                 std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
-            let path_var = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
+            let path_var = format!("{}:{real_path}", dir.display());
             let mut cmd = std::process::Command::new("sh");
             cmd.arg("-c").arg(PROBE).env("PATH", path_var);
             cmd.env_remove("INVOCATION_ID");
@@ -168,6 +175,8 @@ esac"#
             assert_eq!(nesting_with("0", true, DENIED, "exit 0"), "yes");
             // a refusal from the unit itself is a real no
             assert_eq!(nesting_with("0", true, DENIED, DENIED), "no");
+            // root outside a service (a shell, or ssh) takes the same road
+            assert_eq!(nesting_with("0", false, "exit 0", "exit 0"), "yes");
         }
 
         #[test]
@@ -177,6 +186,8 @@ esac"#
             assert_eq!(nesting_with("0", true, DENIED, broken), "unknown");
             // not root, inside a service: the direct test may be the sandbox talking
             assert_eq!(nesting_with("1000", true, DENIED, "exit 1"), "unknown");
+            // a unit that hit the time limit (timeout exits 124 with no word) is unknown too
+            assert_eq!(nesting_with("0", true, DENIED, "exit 124"), "unknown");
         }
 
         #[test]

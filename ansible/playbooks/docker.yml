@@ -50,9 +50,19 @@
         that: lxc_missing == ''
         fail_msg: >-
           this server cannot run docker yet: this lxc container is missing {{ lxc_missing }}.
-          fix: on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1`
+          fix: {{ pct_fix if 'pve_marker=1' in lines else incus_fix if 'pve_marker=0' in lines else 'on proxmox: ' ~ pct_fix ~ ' on incus or lxd: ' ~ incus_fix }}
+      vars:
+        lines: "{{ doctor.stdout_lines | default([]) }}"
+        pct_fix: >-
+          on the proxmox host run `pct set <CTID> --features nesting=1,keyctl=1`
           (replace <CTID> with this container's number) and restart the container with
           `pct reboot <CTID>`; lanlord cannot do this from inside the container
+        incus_fix: >-
+          on the incus or lxd host run `incus config set <name> security.nesting=true`
+          (replace <name> with this container's name; lxd uses `lxc config set`) and restart
+          it with `incus restart <name>`; incus allows keyctl by default, so if keyctl is
+          missing check `incus config show <name>` for a seccomp setting that blocks it;
+          lanlord cannot do this from inside the container
 
     # with settings, the shared network tasks work out the host network and the lanlord networks.
     # without, only the host network is read (the base firewall needs it) and nothing else is

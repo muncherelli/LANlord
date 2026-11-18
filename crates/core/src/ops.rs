@@ -376,6 +376,7 @@ fn dispatch(
         Op::NetworkStatus => Reply::Interfaces(netstatus::read(session)?),
         Op::PurgePreview { remove_admins } => Reply::Lines(purge::preview(
             session,
+            &who.caller.user,
             PurgeOptions {
                 remove_admins: *remove_admins,
             },
@@ -383,6 +384,7 @@ fn dispatch(
         )?),
         Op::Purge { remove_admins } => Reply::Lines(purge::purge(
             session,
+            &who.caller.user,
             host,
             PurgeOptions {
                 remove_admins: *remove_admins,
@@ -883,6 +885,21 @@ esac"#,
         };
         assert_eq!(facts.user, "alice");
         assert!(!facts.is_root);
+        let root = Caller {
+            user: "root".into(),
+            admin: true,
+        };
+        let Ok(Reply::Facts(facts)) = execute_with(
+            &session,
+            "gw",
+            &root,
+            &Op::ServerFacts,
+            &mut no_password,
+            key,
+        ) else {
+            panic!("no facts");
+        };
+        assert_eq!((facts.user.as_str(), facts.is_root), ("root", true));
     }
 
     #[test]

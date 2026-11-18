@@ -130,9 +130,11 @@ say "kept: the docker engine, /etc/motd and the accounts of people"
 if [ "$DRY" = 1 ]; then say "dry run: nothing was changed"; else say "done"; fi
 "#;
 
-fn check(session: &Session, options: PurgeOptions) -> Result<String> {
+/// `caller` is the account that asked, which the operations service learns from the kernel or
+/// the web session; the session's own account is root there and says nothing about the asker.
+fn check(session: &Session, caller: &str, options: PurgeOptions) -> Result<String> {
     let me = login_user(session)?;
-    if options.remove_admins && !me.is_root {
+    if options.remove_admins && caller != "root" {
         bail!("removing the administrator accounts needs a root login, because you cannot remove the account you are signed in with");
     }
     Ok(me.name)
@@ -140,11 +142,12 @@ fn check(session: &Session, options: PurgeOptions) -> Result<String> {
 
 fn run(
     session: &Session,
+    caller: &str,
     dry: bool,
     options: PurgeOptions,
     ask_password: AskPassword,
 ) -> Result<Vec<String>> {
-    let admin = check(session, options)?;
+    let admin = check(session, caller, options)?;
     let out = capture_as_root(session, &admin, script("", dry, options), ask_password)?;
     Ok(out.lines().map(str::to_string).collect())
 }
@@ -152,21 +155,23 @@ fn run(
 /// what a purge would remove; nothing is changed.
 pub fn preview(
     session: &Session,
+    caller: &str,
     options: PurgeOptions,
     ask_password: AskPassword,
 ) -> Result<Vec<String>> {
-    run(session, true, options, ask_password)
+    run(session, caller, true, options, ask_password)
 }
 
 /// remove lanlord from `host`. callers confirm the preview first.
 pub fn purge(
     session: &Session,
+    caller: &str,
     host: &str,
     options: PurgeOptions,
     ask_password: AskPassword,
 ) -> Result<Vec<String>> {
     emit(Kind::Info, format!("purging lanlord from {host}"));
-    let lines = run(session, false, options, ask_password)?;
+    let lines = run(session, caller, false, options, ask_password)?;
     if lines.iter().any(|l| l.contains("lanlord is busy")) {
         bail!("lanlord is busy on {host}; try again in a moment");
     }
@@ -536,21 +541,29 @@ esac"#
     #[test]
     fn preview_and_purge_return_what_the_server_said() {
         let session = server("root", "0", "remove /opt/lanlord");
-        let lines = preview(&session, OPTIONS, &mut no_password).unwrap();
+        let lines = preview(&session, "root", OPTIONS, &mut no_password).unwrap();
         assert_eq!(lines, ["remove /opt/lanlord"]);
-        let lines = purge(&session, "gw", OPTIONS, &mut no_password).unwrap();
+        let lines = purge(&session, "root", "gw", OPTIONS, &mut no_password).unwrap();
         assert_eq!(lines, ["remove /opt/lanlord"]);
     }
 
     #[test]
     fn removing_admins_needs_a_root_login() {
-        let session = server("olive", "1000", "x");
         let options = PurgeOptions {
             remove_admins: true,
         };
-        let err = preview(&session, options, &mut no_password).unwrap_err();
+        let session = server("olive", "1000", "x");
+        let err = preview(&session, "olive", options, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("root login"), "{err}");
-        assert!(preview(&session, OPTIONS, &mut no_password).is_ok());
+        // the operations service's own session is root's: a sudo-capable caller is still
+        // refused, for the preview and the purge, and the root caller is let through
+        let session = server("root", "0", "x");
+        let err = preview(&session, "olive", options, &mut no_password).unwrap_err();
+        assert!(err.to_string().contains("root login"), "{err}");
+        let err = purge(&session, "olive", "gw", options, &mut no_password).unwrap_err();
+        assert!(err.to_string().contains("root login"), "{err}");
+        assert!(preview(&session, "root", options, &mut no_password).is_ok());
+        assert!(preview(&session, "root", OPTIONS, &mut no_password).is_ok());
     }
 
     #[test]
@@ -570,7 +583,7 @@ esac"#
             "0",
             "lanlord is busy (an apply is running); try again in a moment",
         );
-        let err = purge(&session, "gw", OPTIONS, &mut no_password).unwrap_err();
+        let err = purge(&session, "root", "gw", OPTIONS, &mut no_password).unwrap_err();
         assert!(err.to_string().contains("busy"), "{err}");
     }
 }

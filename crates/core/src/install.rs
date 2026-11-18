@@ -296,8 +296,10 @@ pub(crate) fn reinstall_with(
     if let Some(why) = env::blocking(&report, BASE_MODULES) {
         bail!("{why}\nnothing was removed");
     }
+    // an ssh session: the account it signs in as is the one asking
     let lines = purge::purge(
         session,
+        &login_user(session)?.name,
         &options.host,
         PurgeOptions::default(),
         &mut *ask_password,
