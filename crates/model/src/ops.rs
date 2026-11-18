@@ -38,6 +38,10 @@ pub enum Op {
         plain: String,
         updates: Vec<SecretUpdate>,
     },
+    /// seal the stored secrets to the gateway's own key, once, when an older client's key sealed
+    /// them. `key` is that client's old key file; it is used for this one request and dropped,
+    /// and the client stops using it afterwards.
+    MoveSecrets { key: Secret },
     /// the internal interface and address, read without sudo.
     Probe,
     /// change logins and apply the nt4-domain module.
@@ -111,7 +115,7 @@ impl Op {
             Op::Bootstrap => Need::manage(Area::Updates),
             Op::Apply { .. } => Need::manage(Area::Services),
             Op::LoadDocument => Need::view(Area::Services),
-            Op::SaveDocument { .. } => Need::manage(Area::Services),
+            Op::SaveDocument { .. } | Op::MoveSecrets { .. } => Need::manage(Area::Services),
             Op::Probe => Need::view(Area::Network),
             Op::ChangeUsers { .. } => Need::manage(Area::Domain),
             Op::ResetMachine { .. } => Need::manage(Area::Domain),
@@ -152,6 +156,20 @@ pub mod topic {
 }
 
 impl Op {
+    /// does the op touch the stored secrets? those run only where the gateway's key is: the root
+    /// operations service, or `lanlord operate` under sudo. no client decrypts anything.
+    pub fn needs_gateway_key(&self) -> bool {
+        matches!(
+            self,
+            Op::Apply { .. }
+                | Op::LoadDocument
+                | Op::SaveDocument { .. }
+                | Op::MoveSecrets { .. }
+                | Op::ChangeUsers { .. }
+                | Op::ClockApply { .. }
+        )
+    }
+
     /// does the op change the server, so that the bridge that runs it must be root?
     pub fn needs_root(&self) -> bool {
         matches!(self, Op::ClockApply { .. } | Op::ClockUpdateNow)
@@ -330,6 +348,9 @@ mod tests {
                     value: Secret::new("s3cret"),
                 }],
             },
+            Op::MoveSecrets {
+                key: Secret::new("AGE-SECRET-KEY-s3cret"),
+            },
             Op::Probe,
             Op::ChangeUsers {
                 changes: vec![
@@ -465,7 +486,7 @@ mod tests {
     fn every_op_survives_the_wire() {
         let ops = every_op();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(ops.len(), 32);
+        assert_eq!(ops.len(), 33);
         for op in &ops {
             round_trip(op);
         }

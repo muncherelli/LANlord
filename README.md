@@ -34,13 +34,14 @@ Planned: Let's Encrypt certificates through Cloudflare, a Cloudflare tunnel, run
 ## Quick start
 
 ```sh
-lanlord keygen                              # Create the key that encrypts your settings.
 lanlord bootstrap user@gateway              # Create the lanlord account and install Ansible on the gateway.
-lanlord config push user@gateway my.yml     # Encrypt your settings and store them on the gateway.
+lanlord config push user@gateway my.yml     # Send your settings; the gateway seals the secrets with its own key.
 lanlord apply user@gateway                  # Apply everything, or add --module nt4-domain for one module.
 lanlord                                     # The terminal UI.
 lanlord gui                                 # The desktop window.
 ```
+
+Secrets never leave the gateway: it makes its own key on first start (root only, in `/var/lib/lanlord-operations`), and a client can set a secret but never read it back. A settings folder sealed by an older version to a key in `~/.config/lanlord/identity` moves over once with `lanlord move-secrets user@gateway`. On the gateway itself, the terminal UI and the desktop window offer "This server" in the logon box: no ssh, signed in as the account you are using.
 
 The user you connect as needs `sudo` on the gateway. LANlord uses your own `ssh` client, so your `~/.ssh/config`, jump hosts and SSH agent (including 1Password) all work.
 

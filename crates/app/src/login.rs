@@ -9,7 +9,9 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
-use lanlord_core::signin::{Attempt, Signin};
+use lanlord_core::operate::{is_this_server, offered_at, this_server_target, LOCAL_SOCKET};
+#[cfg(feature = "native")]
+use lanlord_core::signin::{local_identity, Attempt, Signin};
 use lanlord_model::signin::{Identity, SigninError};
 use zeroize::Zeroizing;
 
@@ -29,6 +31,11 @@ pub trait Auth: Send + Sync {
     fn fingerprint(&self, target: &str) -> Result<String, SigninError>;
     /// close the connection kept open for `target`.
     fn sign_out(&self, target: &str);
+    /// the target that means "this server, signed in as whoever runs this program", when the
+    /// gateway's operations socket is here to carry it; `None` on any other machine.
+    fn this_server(&self) -> Option<String> {
+        None
+    }
 }
 
 /// a future that runs on the page's one thread.
@@ -103,6 +110,10 @@ impl Auth for SystemAuth {
         password: Option<&str>,
         trust_new_host: bool,
     ) -> Result<Identity, SigninError> {
+        // this machine: the account is the one running this program, no ssh
+        if is_this_server(target) {
+            return local_identity();
+        }
         self.0.attempt(
             target,
             &Attempt {
@@ -117,7 +128,18 @@ impl Auth for SystemAuth {
     }
 
     fn sign_out(&self, target: &str) {
-        self.0.sign_out(target);
+        if !is_this_server(target) {
+            self.0.sign_out(target);
+        }
+    }
+
+    fn this_server(&self) -> Option<String> {
+        if !offered_at(std::path::Path::new(LOCAL_SOCKET)) {
+            return None;
+        }
+        local_identity()
+            .ok()
+            .map(|identity| this_server_target(&identity.user))
     }
 }
 
@@ -140,6 +162,8 @@ pub enum Outcome {
 pub enum Msg {
     /// the recent server at this index.
     Recent(usize),
+    /// where to sign in: 0 is this server, 1 another one over ssh.
+    Where(usize),
     User(String),
     Host(String),
     Password(Zeroizing<String>),
@@ -198,6 +222,9 @@ pub struct LoginBox {
     status: String,
     status_is_error: bool,
     focus: bool,
+    /// `user@this-server` when the operations socket is here, and whether it is the choice.
+    here: Option<String>,
+    local: bool,
 }
 
 impl LoginBox {
@@ -208,7 +235,10 @@ impl LoginBox {
             .map_or((String::new(), String::new()), |(u, h)| {
                 (u.to_string(), h.to_string())
             });
+        let here = auth.this_server();
         Self {
+            local: here.is_some(),
+            here,
             backend: Backend::Ssh(auth),
             wake,
             user,
@@ -228,9 +258,16 @@ impl LoginBox {
     pub fn web(session: Rc<dyn WebSession>, wake: Wake, last: Option<&str>) -> Self {
         let mut login = Self::new(Arc::new(NoSsh), wake, None);
         login.backend = Backend::Web(session);
+        login.here = None;
+        login.local = false;
         login.user = last.unwrap_or_default().to_string();
         login.stage = Stage::Password;
         login
+    }
+
+    /// whether the choice is this server, signed in as the account running this program.
+    pub fn is_local(&self) -> bool {
+        self.local && self.here.is_some()
     }
 
     fn is_web(&self) -> bool {
@@ -296,6 +333,9 @@ impl LoginBox {
                 user => Ok(user.to_string()),
             };
         }
+        if let Some(target) = self.here.as_ref().filter(|_| self.local) {
+            return Ok(target.clone());
+        }
         let (user, host) = (self.user.trim(), self.host.trim());
         if user.is_empty() {
             return match host.split_once('@') {
@@ -345,7 +385,7 @@ impl LoginBox {
             self.say("Type a password.", true);
             return;
         }
-        let password = (self.stage == Stage::Password).then(|| {
+        let password = (self.stage == Stage::Password && !self.is_local()).then(|| {
             // the field is emptied now; the attempt owns the only copy
             Zeroizing::new(std::mem::take(&mut *self.password))
         });
@@ -518,6 +558,7 @@ impl LoginBox {
         let first = !self.focus;
         self.focus = true;
         let web = self.is_web();
+        let local = self.is_local();
         let password_stage = self.stage == Stage::Password;
         let mut nodes = vec![
             Node::Header {
@@ -525,12 +566,37 @@ impl LoginBox {
                 title: String::new(),
                 lines: vec![if web {
                     "Type your name and password for this gateway.".into()
+                } else if local {
+                    "You are signed in to this server with the account you are using.".into()
                 } else {
                     "Type the name you use on the gateway and its hostname or address.".into()
                 }],
             },
             Node::Gap(8.0),
         ];
+        if let Some(target) = &self.here {
+            let user = target
+                .split_once('@')
+                .map_or(target.as_str(), |(user, _)| user);
+            let options = vec![
+                (0, format!("This server (signed in as {user})")),
+                (1, "Another server (ssh)".to_string()),
+            ];
+            nodes.push(Node::Labelled {
+                label: "Sign in to:".into(),
+                body: vec![Node::Choice {
+                    id: "logon-where",
+                    current: options[usize::from(!local)].1.clone(),
+                    width: 240.0,
+                    options,
+                    pick: Msg::Where,
+                }],
+            });
+            nodes.push(Node::Gap(4.0));
+        }
+        if local {
+            return self.finish_view(busy, nodes);
+        }
         if !known.is_empty() && !web {
             nodes.push(Node::Labelled {
                 label: "Server:".into(),
@@ -593,6 +659,12 @@ impl LoginBox {
                 }],
             });
         }
+        self.finish_view(busy, nodes)
+    }
+
+    /// the buttons and the status line under the fields.
+    fn finish_view(&self, busy: bool, mut nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
+        let web = self.is_web();
         // the browser has nothing to shut down
         let mut buttons = vec![
             Button::new("Cancel", !busy, Msg::Cancel),
@@ -620,6 +692,12 @@ impl LoginBox {
                 if let Some(server) = known.get(i) {
                     self.choose(server);
                 }
+            }
+            Msg::Where(index) => {
+                self.local = index == 0 && self.here.is_some();
+                self.stage = Stage::Credentials;
+                self.password = Zeroizing::new(String::new());
+                self.focus = false;
             }
             Msg::User(text) => self.user = text,
             Msg::Host(text) => self.host = text,
@@ -662,6 +740,7 @@ impl LoginBox {
 
     /// pick a recent server: it fills both boxes.
     pub fn choose(&mut self, server: &str) {
+        self.local = false;
         if let Some((user, host)) = server.split_once('@') {
             self.user = user.to_string();
             self.host = host.to_string();
@@ -699,6 +778,8 @@ pub mod fake {
         pub fingerprints: Mutex<VecDeque<Result<String, SigninError>>>,
         /// every call, as `attempt target password-or-none trust`.
         pub calls: Mutex<Vec<String>>,
+        /// the target for "this server", when the machine offers it.
+        pub here: Mutex<Option<String>>,
     }
 
     impl FakeAuth {
@@ -814,6 +895,10 @@ pub mod fake {
                 .lock()
                 .unwrap()
                 .push(format!("sign_out {target}"));
+        }
+
+        fn this_server(&self) -> Option<String> {
+            self.here.lock().unwrap().clone()
         }
     }
 }
@@ -936,5 +1021,62 @@ mod tests {
         assert_eq!(login.update(Msg::Recent(0), &known), None);
         assert_eq!(login.target().unwrap(), "bob@other");
         assert_eq!(login.update(Msg::ShutDown, &known), Some(Outcome::ShutDown));
+    }
+
+    fn choice_labels(login: &mut LoginBox) -> Vec<String> {
+        login
+            .view(&[])
+            .iter()
+            .filter_map(|node| match node {
+                Node::Labelled { body, .. } => Some(body),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|node| match node {
+                Node::Choice { options, .. } => Some(options.iter().map(|o| o.1.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn this_server_is_offered_only_when_the_machine_has_the_socket() {
+        let auth = Arc::new(FakeAuth::default());
+        let mut without = LoginBox::new(auth.clone(), Wake::none(), None);
+        assert!(!without.is_local());
+        assert!(choice_labels(&mut without).is_empty());
+        *auth.here.lock().unwrap() = Some("ann@this-server.localhost".into());
+        let mut with = LoginBox::new(auth, Wake::none(), None);
+        assert!(with.is_local(), "the default when it is there");
+        assert_eq!(
+            choice_labels(&mut with),
+            ["This server (signed in as ann)", "Another server (ssh)"]
+        );
+    }
+
+    #[test]
+    fn this_server_signs_in_without_a_host_or_a_password_and_ssh_stays_a_choice() {
+        let auth = Arc::new(FakeAuth::default());
+        *auth.here.lock().unwrap() = Some("ann@this-server.localhost".into());
+        auth.push(Ok(id("ann", 1000)));
+        let mut login = LoginBox::new(auth.clone(), Wake::none(), None);
+        login.submit();
+        // the attempt runs on its own thread
+        let signed = (0..500)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                login.poll()
+            })
+            .expect("signed in");
+        assert_eq!(signed.target, "ann@this-server.localhost");
+        assert_eq!(auth.calls(), ["attempt ann@this-server.localhost - false"]);
+        // choosing the other server brings the fields back
+        login.update(Msg::Where(1), &[]);
+        assert!(!login.is_local());
+        assert!(login.target().is_err());
+        login.user = "bob".into();
+        login.host = "gw".into();
+        assert_eq!(login.target().unwrap(), "bob@gw");
     }
 }

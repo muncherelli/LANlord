@@ -13,8 +13,8 @@ use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
 use lanlord_core::exec::{exec, Target};
 use lanlord_core::ops::{execute, Op, Reply, Request, Response};
+use lanlord_core::paths;
 use lanlord_core::users::Change;
-use lanlord_core::{crypto, paths};
 
 #[derive(Parser)]
 #[command(name = "lanlord", version, about = "all your LAN are belong to you")]
@@ -287,10 +287,17 @@ enum Command {
             default_value = "/run/lanlord-operations/operations.sock"
         )]
         socket: PathBuf,
+        /// the unix socket the accounts of this machine connect to, each as itself
+        #[arg(
+            long,
+            value_name = "PATH",
+            default_value = "/run/lanlord-operations/local.sock"
+        )]
+        local_socket: PathBuf,
         /// the uid of the web server's account; only it and root may connect
         #[arg(long, value_name = "UID")]
         allowed_uid: u32,
-        /// the settings key; when there is none, operations that read secrets say so
+        /// the gateway's settings key, made here on first start (root only)
         #[arg(
             long,
             value_name = "PATH",
@@ -424,8 +431,16 @@ enum Command {
         #[command(subcommand)]
         action: AdminCommand,
     },
-    /// create the key that encrypts your settings
-    Keygen,
+    /// seal your settings to the gateway's own key, once, when an older version of this
+    /// program sealed them to a key kept on this machine
+    MoveSecrets {
+        /// the server's address
+        host: String,
+    },
+    /// carry out one operation as the account that ran sudo; the gateway's own door for the
+    /// operations that need its key (not meant to be run by hand)
+    #[command(hide = true)]
+    Operate,
     /// store and read the encrypted settings on a gateway
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -451,10 +466,6 @@ fn ask(what: &str) -> Result<String> {
     Ok(rpassword::prompt_password(format!("{what}: "))?)
 }
 
-fn identity_path() -> Result<PathBuf> {
-    paths::identity_path().ok_or_else(|| anyhow::anyhow!("could not find a config directory"))
-}
-
 /// ask for a new password twice.
 fn new_password(name: &str) -> Result<String> {
     let first = rpassword::prompt_password(format!("new password for {name}: "))?;
@@ -466,10 +477,9 @@ fn new_password(name: &str) -> Result<String> {
 }
 
 fn users(host: &str, action: UsersCommand) -> Result<()> {
-    let identity = crypto::load(&identity_path()?)?;
     let change = match action {
         UsersCommand::List => {
-            for user in lanlord_core::users::list_on(host, &identity, &mut ask)? {
+            for user in lanlord_core::remote::users_on(host, &mut ask)? {
                 match user.roles().join(", ") {
                     roles if roles.is_empty() => println!("{}", user.name),
                     roles => println!("{} ({roles})", user.name),
@@ -486,8 +496,7 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
             if admin {
                 changes.push(Change::SetAdmin { name, admin: true });
             }
-            return lanlord_core::users::change_all(host, &identity, &changes, &mut ask)
-                .map(|_| ());
+            return lanlord_core::remote::change_users(host, &changes, &mut ask).map(|_| ());
         }
         UsersCommand::Passwd { name } => {
             let password = new_password(&name)?;
@@ -501,25 +510,40 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
         },
         UsersCommand::Remove { name } => Change::Remove { name },
     };
-    lanlord_core::users::change(host, &identity, &change, &mut ask).map(|_| ())
+    lanlord_core::remote::change_users(host, &[change], &mut ask).map(|_| ())
 }
 
 fn machines(host: &str, action: MachinesCommand) -> Result<()> {
-    use lanlord_core::nt4::{change_machine, machines_on, MachineChange};
-    use lanlord_core::ssh::Session;
-    let identity = crypto::load(&identity_path()?)?;
+    use lanlord_core::nt4::{edit_machines, valid_machine, MachineChange, Nt4Settings};
+    use lanlord_core::ops::{execute, Op, Reply};
     let change = match action {
         MachinesCommand::List => {
-            for name in machines_on(&Session::new(host)?, host, &identity, &mut ask)? {
+            let document = lanlord_core::remote::document(host, &mut ask)?;
+            let settings = lanlord_core::settings::Settings::parse(&document.plain)?;
+            for name in Nt4Settings::from_settings(&settings)?.machines {
                 println!("{name}");
             }
             return Ok(());
         }
         MachinesCommand::Add { name } => MachineChange::Add(name),
         MachinesCommand::Remove { name } => MachineChange::Remove(name),
-        MachinesCommand::Reset { name } => MachineChange::Reset(name),
+        MachinesCommand::Reset { name } => {
+            if !valid_machine(&name) {
+                bail!("{name} is not a valid machine name (up to 15 letters, digits or -)");
+            }
+            return match execute(host, &Op::ResetMachine { name }, &mut ask)? {
+                Reply::Done => Ok(()),
+                _ => bail!("unexpected answer"),
+            };
+        }
     };
-    change_machine(&Session::new(host)?, host, &identity, &change, &mut ask)
+    let modules = ["nt4-domain".to_string()];
+    lanlord_core::remote::edit(
+        host,
+        &modules,
+        |plain| edit_machines(plain, &change),
+        &mut ask,
+    )
 }
 
 fn networks(host: &str, action: NetworksCommand) -> Result<()> {
@@ -531,16 +555,15 @@ fn networks(host: &str, action: NetworksCommand) -> Result<()> {
 
 fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
     use lanlord_core::lan::{
-        add_edit, change, networks_on, render_list, set_edit, AddArgs, Edit, SetArgs,
+        add_edit, edit_settings, read_networks, render_list, set_edit, AddArgs, Edit, SetArgs,
+        MODULES,
     };
     use lanlord_core::settings::StaticLease;
-    use lanlord_core::ssh::Session;
-    let identity = crypto::load(&identity_path()?)?;
-    let session = Session::new(host)?;
     let edit = match action {
         NetworksCommand::Status { .. } => unreachable!("shown by `networks`"),
         NetworksCommand::List => {
-            for line in render_list(&networks_on(&session, host, &identity, &mut ask)?) {
+            let document = lanlord_core::remote::document(host, &mut ask)?;
+            for line in render_list(&read_networks(&document.plain)?) {
                 println!("{line}");
             }
             return Ok(());
@@ -601,7 +624,13 @@ fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
             },
         },
     };
-    change(&session, host, &identity, &edit, &mut ask)?;
+    let modules = MODULES.map(String::from);
+    lanlord_core::remote::edit(
+        host,
+        &modules,
+        |plain| edit_settings(plain, &edit),
+        &mut ask,
+    )?;
     println!("{}; applied the docker and dns modules", edit.describe());
     Ok(())
 }
@@ -666,8 +695,14 @@ fn clock(host: &str, action: ClockCommand) -> Result<()> {
             ..Change::default()
         },
     };
-    let identity = crypto::load_default()?;
-    let (said, stored) = clock::apply_stored(&session, host, identity.as_ref(), &change, &mut ask)?;
+    let change = lanlord_core::ops::Op::ClockApply { change };
+    let lanlord_core::ops::Reply::ClockApplied {
+        lines: said,
+        stored,
+    } = lanlord_core::ops::execute(host, &change, &mut ask)?
+    else {
+        bail!("unexpected answer");
+    };
     for line in said {
         println!("{line}");
     }
@@ -1085,12 +1120,79 @@ fn admin(host: &str, action: AdminCommand) -> Result<()> {
     change(host, &action, &mut ask)
 }
 
-fn keygen() -> Result<()> {
-    let path = identity_path()?;
-    let recipient = crypto::generate(&path)?;
-    println!("created {}", path.display());
-    println!("public key: {recipient}");
-    println!("back this file up: without it your settings cannot be read");
+/// the gateway's own door over ssh: run one operation that needs the settings key, as root, for
+/// the account that ran sudo. the account comes from sudo's environment, never from the request,
+/// so a login can only act as itself. the answer is one `{"response": ..}` line.
+fn operate() -> Result<()> {
+    use lanlord_core::access::{plain_account, Caller};
+    use lanlord_core::ops::{execute_in, Response};
+    use lanlord_core::ssh::Session;
+    use std::os::unix::fs::MetadataExt;
+
+    if std::fs::metadata("/proc/self")?.uid() != 0 {
+        bail!("this runs through sudo on the gateway");
+    }
+    let mut line = zeroize::Zeroizing::new(String::new());
+    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
+    let session = Session::local();
+    let account = std::env::var("SUDO_USER")
+        .ok()
+        .filter(|name| plain_account(name));
+    let response = match (account, lanlord_core::operate::read_request(&line)) {
+        (None, _) => Response::Denied("run this through sudo from your own account".into()),
+        (_, Err(_)) => Response::Error("not an operation".into()),
+        (Some(account), Ok(op)) => {
+            lanlord_core::crypto::use_gateway_key(lanlord_core::crypto::GATEWAY_KEY.into())?;
+            let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: this is root") };
+            let ran = Caller::of_account(&session, &account)
+                .and_then(|caller| execute_in(&session, "localhost", &caller, &op, &mut ask));
+            match ran {
+                Ok(reply) => Response::Ok(reply),
+                Err(error) => {
+                    let first = error
+                        .to_string()
+                        .lines()
+                        .next()
+                        .unwrap_or("failed")
+                        .to_string();
+                    let refused = error
+                        .downcast_ref::<lanlord_core::access::Denied>()
+                        .is_some()
+                        || error
+                            .downcast_ref::<lanlord_core::access::Refused>()
+                            .is_some();
+                    if refused {
+                        Response::Denied(first)
+                    } else {
+                        Response::Error(first)
+                    }
+                }
+            }
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({ "response": response }))?
+    );
+    Ok(())
+}
+
+/// hand the old client key to the gateway once, so the settings are sealed to the gateway's own
+/// key, and stop using the key here.
+fn move_secrets(host: &str) -> Result<()> {
+    let Some(path) = paths::identity_path().filter(|path| path.exists()) else {
+        bail!("there is no old key on this machine; nothing to move");
+    };
+    let key = std::fs::read_to_string(&path)?;
+    let moving = lanlord_core::ops::Op::MoveSecrets { key: key.into() };
+    lanlord_core::ops::execute(host, &moving, &mut ask)?;
+    let retired = path.with_extension("moved-to-gateway");
+    std::fs::rename(&path, &retired)?;
+    println!("the settings are sealed to the gateway's key now");
+    println!(
+        "the old key was kept as {}; delete it when you are sure",
+        retired.display()
+    );
     Ok(())
 }
 
@@ -1128,10 +1230,12 @@ fn main() -> Result<()> {
         #[cfg(feature = "webui")]
         Some(Command::OperationsService {
             socket,
+            local_socket,
             allowed_uid,
             identity,
         }) => operations_service::run(operations_service::Options {
             socket,
+            local_socket,
             allowed_uid,
             identity,
         }),
@@ -1160,9 +1264,8 @@ fn main() -> Result<()> {
             &mut ask,
         ),
         Some(Command::Apply { host, modules }) => {
-            // no key yet just means no settings; a damaged key is an error
-            let identity = crypto::load_default()?;
-            lanlord_core::apply::apply(&host, identity.as_ref(), &modules, &mut ask)
+            let apply = lanlord_core::ops::Op::Apply { modules };
+            lanlord_core::ops::execute(&host, &apply, &mut ask).map(|_| ())
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
@@ -1195,25 +1298,32 @@ fn main() -> Result<()> {
         Some(Command::Op { host }) => op(&host),
         Some(Command::Bridge { mode }) => bridge(mode),
         Some(Command::Software { host, state }) => {
-            let identity = crypto::load(&identity_path()?)?;
-            let session = lanlord_core::ssh::Session::new(&host)?;
             let on = matches!(state, Switch::On);
-            lanlord_core::nt4::set_software(&session, &host, &identity, on, &mut ask)
+            let modules = ["nt4-domain".to_string()];
+            lanlord_core::remote::edit(
+                &host,
+                &modules,
+                |plain| lanlord_core::nt4::software_edit(plain, on),
+                &mut ask,
+            )
         }
         Some(Command::Admin { host, action }) => admin(&host, action),
-        Some(Command::Keygen) => keygen(),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {
-            let identity = crypto::load(&identity_path()?)?;
-            let settings = std::fs::read(&file)?;
-            lanlord_core::config::push(&host, &identity, &settings, &mut ask)
+            lanlord_core::remote::push_file(&host, &std::fs::read(&file)?, &mut ask)
         }
         Some(Command::Config(ConfigCommand::Show { host })) => {
-            let identity = crypto::load(&identity_path()?)?;
-            match lanlord_core::config::pull(&host, &identity, &mut ask)? {
-                Some(settings) => Ok(std::io::stdout().write_all(&settings)?),
-                None => bail!("no settings on {host}; run lanlord config push first"),
+            let (plain, secrets) = lanlord_core::remote::show(&host, &mut ask)?;
+            print!("{plain}");
+            if !secrets.is_empty() {
+                println!("# secrets set (their values are kept on the gateway): ");
+                for path in secrets {
+                    println!("#   {path}");
+                }
             }
+            Ok(())
         }
+        Some(Command::MoveSecrets { host }) => move_secrets(&host),
+        Some(Command::Operate) => operate(),
         Some(Command::Run {
             target,
             via,

@@ -10,19 +10,28 @@ use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
-use crate::{access, save_guard, self_service, settings, users};
+use crate::{access, operate, save_guard, self_service, settings, users};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
 };
 
-/// the message when there is no key to decrypt the secrets with.
-pub const NO_KEY: &str = "no key yet; run `lanlord keygen` in a terminal first";
+/// the message when the gateway has no key to decrypt the secrets with.
+pub const NO_KEY: &str = "the gateway has no settings key; operations that read secrets need one";
 
 /// run `op` on `host` as the account the session signs in as, asking for the sudo password
-/// through `ask` when the server needs it.
+/// through `ask` when the server needs it. a client holds no key: an op that touches secrets
+/// runs where the key is, through the gateway's local socket when `host` is this machine
+/// (the kernel says who is asking) and through `sudo lanlord operate` over ssh otherwise.
 pub fn execute(host: &str, op: &Op, ask: AskPassword) -> Result<Reply> {
-    let caller = Caller::of_session(&Session::new(host)?)?;
-    execute_as(host, &caller, op, ask)
+    if operate::is_this_server(host) {
+        return operate::through_socket(std::path::Path::new(operate::LOCAL_SOCKET), op);
+    }
+    let session = Session::new(host)?;
+    if op.needs_gateway_key() {
+        return operate::through_sudo(&session, op, ask);
+    }
+    let caller = Caller::of_session(&session)?;
+    execute_in(&session, host, &caller, op, ask)
 }
 
 /// run `op` on `host` for `caller`: refused with [`Denied`] when the caller's roles do not
@@ -128,7 +137,7 @@ impl Launch {
 
 /// the uids of ordinary login accounts here: `UID_MIN` to `UID_MAX` of `login.defs`, or 1000 to
 /// 60000. whatever that file says, never root, a system account (below 1000) or `nobody`.
-fn login_uids() -> std::ops::RangeInclusive<u32> {
+pub fn login_uids() -> std::ops::RangeInclusive<u32> {
     login_uids_in(&std::fs::read_to_string("/etc/login.defs").unwrap_or_default())
 }
 
@@ -258,6 +267,12 @@ fn dispatch(
             Reply::Done
         }
         Op::LoadDocument => Reply::Document(settings::load_document_with(session, &key()?, ask)?),
+        Op::MoveSecrets { key: old_key } => {
+            let moved = crypto::parse(old_key.expose())
+                .and_then(|old| settings::move_secrets_with(session, host, &key()?, &old, ask));
+            moved?;
+            Reply::Done
+        }
         Op::SaveDocument { plain, updates } => {
             let updates: Vec<(String, String)> = updates
                 .iter()
@@ -552,6 +567,116 @@ esac"#,
         assert_eq!(run(&gw.session, op).unwrap(), Reply::Done);
         assert!(gw.sealed(&key).unwrap().contains("s3cret"));
         assert!(!gw.plain().unwrap().contains("s3cret"));
+    }
+
+    const MARKER: &str = "zq-marker-7731";
+
+    /// the text of a key file, as a client would send it.
+    fn key_text(identity: &crypto::Identity) -> lanlord_model::secret::Secret {
+        use age::secrecy::ExposeSecret;
+        lanlord_model::secret::Secret::new(identity.to_string().expose_secret().to_string())
+    }
+
+    fn save_marked(gw: &Gateway) {
+        let op = Op::SaveDocument {
+            plain: "nt4-domain:\n  mode: domain\n  name: EXAMPLE\n".into(),
+            updates: vec![SecretUpdate {
+                path: "nt4-domain.admin_password".into(),
+                value: MARKER.into(),
+            }],
+        };
+        assert_eq!(run(&gw.session, op).unwrap(), Reply::Done);
+    }
+
+    #[test]
+    fn a_secret_is_set_write_only_and_every_read_path_redacts_it() {
+        let gw = Gateway::new("ops-redact");
+        let sealed_with = key().unwrap().unwrap();
+        gw.seed_sealed(
+            &sealed_with,
+            "nt4-domain:\n  mode: domain\n  name: EXAMPLE\n",
+        );
+        save_marked(&gw);
+        // on the gateway it is sealed, and nowhere in the clear
+        assert!(gw.sealed(&sealed_with).unwrap().contains(MARKER));
+        assert!(!gw.plain().unwrap().contains(MARKER));
+        let ciphertext = std::fs::read(gw.dir.join("age")).unwrap();
+        assert!(!String::from_utf8_lossy(&ciphertext).contains(MARKER));
+        // what a client reads back says "set", never the value, as an administrator or not
+        for caller in [
+            admin(),
+            Caller {
+                user: "dana".into(),
+                admin: false,
+            },
+        ] {
+            let reads = [Op::LoadDocument, Op::LoadAccess, Op::AccountInfo];
+            for read in reads {
+                let reply = execute_with(&gw.session, "gw", &caller, &read, &mut no_password, key);
+                if let Ok(reply) = reply {
+                    let wire = serde_json::to_string(&reply).unwrap();
+                    assert!(!wire.contains(MARKER), "{read:?}: {wire}");
+                    assert!(!format!("{reply:?}").contains(MARKER), "{read:?}");
+                }
+            }
+        }
+        let Reply::Document(document) = run(&gw.session, Op::LoadDocument).unwrap() else {
+            panic!("not a document")
+        };
+        assert!(document
+            .secrets_set
+            .contains(&"nt4-domain.admin_password".to_string()));
+        assert!(!document.needs_move);
+    }
+
+    #[test]
+    fn a_client_machine_holds_no_key_and_never_decrypts() {
+        // nothing in this process was told where a gateway key is
+        let Err(err) = crypto::load_default() else {
+            panic!("a client found a key")
+        };
+        assert_eq!(err.to_string(), crypto::CLIENT_HAS_NO_KEY);
+    }
+
+    #[test]
+    fn secrets_sealed_to_an_old_client_key_move_to_the_gateway_once() {
+        let gw = Gateway::new("ops-move");
+        let gateway_key = key().unwrap().unwrap();
+        let old = identity("ops-move-old");
+        gw.seed_sealed(&old, "nt4-domain:\n  admin_password: oldsecret\n");
+        // the gateway cannot read them yet, and says so
+        let Reply::Document(before) = run(&gw.session, Op::LoadDocument).unwrap() else {
+            panic!("not a document")
+        };
+        assert!(before.needs_move);
+        // a save does not quietly overwrite what it cannot read
+        assert!(run(
+            &gw.session,
+            Op::SaveDocument {
+                plain: String::new(),
+                updates: vec![]
+            }
+        )
+        .is_err());
+        // a wrong key moves nothing
+        let wrong = Op::MoveSecrets {
+            key: key_text(&identity("ops-move-wrong")),
+        };
+        assert!(run(&gw.session, wrong).is_err());
+        assert!(gw.sealed(&old).is_some());
+        // the right one seals them to the gateway's key
+        let mv = Op::MoveSecrets {
+            key: key_text(&old),
+        };
+        assert_eq!(run(&gw.session, mv.clone()).unwrap(), Reply::Done);
+        assert!(gw.sealed(&gateway_key).unwrap().contains("oldsecret"));
+        let Reply::Document(after) = run(&gw.session, Op::LoadDocument).unwrap() else {
+            panic!("not a document")
+        };
+        assert!(!after.needs_move);
+        // moving again changes nothing
+        assert_eq!(run(&gw.session, mv).unwrap(), Reply::Done);
+        assert!(gw.sealed(&gateway_key).unwrap().contains("oldsecret"));
     }
 
     #[test]

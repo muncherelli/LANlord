@@ -11,15 +11,6 @@ use crate::users::cached;
 
 pub use lanlord_model::settings::*;
 
-/// read both stores of `host` (needs your key for the secrets).
-pub fn load_document(
-    host: &str,
-    identity: &age::x25519::Identity,
-    ask: AskPassword,
-) -> Result<Document> {
-    load_document_with(&Session::new(host)?, identity, ask)
-}
-
 pub(crate) fn load_document_with(
     session: &Session,
     identity: &age::x25519::Identity,
@@ -27,7 +18,19 @@ pub(crate) fn load_document_with(
 ) -> Result<Document> {
     let mut ask = cached(ask);
     let plain = config::pull_plain_with(session, &mut ask)?;
-    let sealed = config::pull_with(session, identity, &mut ask)?;
+    let sealed = match config::pull_with(session, identity, &mut ask) {
+        Ok(sealed) => sealed,
+        // sealed to an older client's key: the plain settings still show, and the document says
+        // the secrets have to be moved before they can be used
+        Err(error) if error.is::<crate::crypto::NotOurKey>() => {
+            return Ok(Document {
+                plain: plain.map(text_of_bytes).transpose()?.unwrap_or_default(),
+                needs_move: true,
+                ..Document::default()
+            });
+        }
+        Err(error) => return Err(error),
+    };
     match (plain, sealed) {
         (Some(plain), sealed) => Ok(Document {
             plain: text_of_bytes(plain)?,
@@ -36,6 +39,7 @@ pub(crate) fn load_document_with(
                 None => Vec::new(),
             },
             legacy: false,
+            needs_move: false,
         }),
         (None, Some(bytes)) => {
             let (kept, secrets) = split(&parse_value(&bytes)?);
@@ -49,10 +53,34 @@ pub(crate) fn load_document_with(
                 plain,
                 secrets_set,
                 legacy: true,
+                needs_move: false,
             })
         }
         (None, None) => Ok(Document::default()),
     }
+}
+
+/// seal the stored secrets to the gateway's key instead of the key `old` (an older client's):
+/// the one-time move. what is already sealed to the gateway's key is left as it is. it returns
+/// whether anything was moved. the old key travels only over the caller's authenticated channel
+/// and is dropped with the request.
+pub(crate) fn move_secrets_with(
+    session: &Session,
+    host: &str,
+    gateway: &age::x25519::Identity,
+    old: &age::x25519::Identity,
+    ask: AskPassword,
+) -> Result<bool> {
+    let mut ask = cached(ask);
+    let Some(sealed) = config::pull_sealed_with(session, &mut ask)? else {
+        return Ok(false);
+    };
+    if crate::crypto::decrypt(gateway, &sealed).is_ok() {
+        return Ok(false);
+    }
+    let plaintext = crate::crypto::decrypt(old, &sealed)?;
+    config::push_with(session, host, gateway, &plaintext, &mut ask)?;
+    Ok(true)
 }
 
 /// the settings the playbooks get: the plain settings with the secrets laid
@@ -79,23 +107,6 @@ pub(crate) fn merged_with(
 
 /// store `plain_text` as the plain settings and apply `updates` (secret
 /// path, new value) to the encrypted ones; blank values leave a secret as it is.
-pub fn save_document(
-    host: &str,
-    identity: &age::x25519::Identity,
-    plain_text: &str,
-    updates: &[(String, String)],
-    ask: AskPassword,
-) -> Result<()> {
-    save_document_with(
-        &Session::new(host)?,
-        host,
-        identity,
-        plain_text,
-        updates,
-        ask,
-    )
-}
-
 pub(crate) fn save_document_with(
     session: &Session,
     host: &str,
@@ -321,12 +332,5 @@ mod gateway_tests {
             save_document_with(&gw.session, "gw", &id, "a: [oops", &[], &mut no_password).is_err()
         );
         assert!(gw.plain().is_none() && gw.sealed(&id).is_none());
-    }
-
-    #[test]
-    fn the_public_functions_refuse_bad_hosts() {
-        let id = identity("hosts");
-        assert!(load_document("-bad", &id, &mut no_password).is_err());
-        assert!(save_document("-bad", &id, "a: 1", &[], &mut no_password).is_err());
     }
 }

@@ -2115,7 +2115,8 @@ mod tests {
     #[test]
     fn a_missing_key_shows_in_the_settings_window() {
         let (mut desktop, ctx, fake) = desktop();
-        *fake.fail.lock().unwrap() = Some("no key yet; run `lanlord keygen`".into());
+        *fake.fail.lock().unwrap() =
+            Some("the gateway has no settings key; operations that read secrets need one".into());
         with_host(&mut desktop, &ctx);
         desktop.open(Target::Settings);
         until(&mut desktop, &ctx, |d| {
@@ -2127,7 +2128,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .1
-            .contains("keygen"));
+            .contains("settings key"));
         frames(&mut desktop, &ctx, 3);
         assert_eq!(
             fake.calls().len(),

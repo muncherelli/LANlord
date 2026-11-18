@@ -302,6 +302,13 @@
         # the web ui is sandboxed (no network, no privileges), so the operations it forwards are
         # run by a root service on its own socket. only the lanlord account is in the socket's
         # group, and the service checks the connecting uid as well.
+        #
+        # a second socket, local.sock, serves the accounts of the gateway itself (the terminal UI
+        # and desktop window run there, signed in as the account using them). it is connectable
+        # by anyone, in a folder anyone can search, because the kernel's word on who connected
+        # decides: the service drops any peer that is not an ordinary login account (uid 1000 up)
+        # and serves the rest as the account their uid belongs to, never as one they name. that
+        # needs no group to keep in step with the logins. the web socket stays 0660 in the group.
         - name: make the operations socket group
           ansible.builtin.group:
             name: lanlord-operations
@@ -333,8 +340,9 @@
               [Service]
               User=root
               Group=lanlord-operations
-              ExecStart=/opt/lanlord/bin/lanlord operations-service --socket /run/lanlord-operations/operations.sock --allowed-uid {{ getent_passwd['lanlord'][1] }} --identity /var/lib/lanlord-operations/identity
-              # its own writable state (0700 root): the settings key goes here, and what apply and
+              ExecStart=/opt/lanlord/bin/lanlord operations-service --socket /run/lanlord-operations/operations.sock --local-socket /run/lanlord-operations/local.sock --allowed-uid {{ getent_passwd['lanlord'][1] }} --identity /var/lib/lanlord-operations/identity
+              # its own writable state (0700 root): the gateway's settings key (made on first start,
+              # root only) goes here, and what apply and
               # ansible write goes under it
               StateDirectory=lanlord-operations
               StateDirectoryMode=0700
@@ -342,7 +350,9 @@
               Environment=ANSIBLE_HOME=/var/lib/lanlord-operations/.ansible
               Environment=ANSIBLE_LOCAL_TEMP=/var/lib/lanlord-operations/.ansible/tmp
               RuntimeDirectory=lanlord-operations
-              RuntimeDirectoryMode=0750
+              # searchable by all so login accounts reach local.sock; operations.sock is 0660 in
+              # the group, so the folder's mode does not open it
+              RuntimeDirectoryMode=0755
               RuntimeDirectoryPreserve=yes
               UMask=0007
               Restart=on-failure
