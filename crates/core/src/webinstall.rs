@@ -389,22 +389,21 @@ fn upload(
     Ok(())
 }
 
-/// the whole step on an open session.
-pub(crate) fn run_step(
+/// get the files onto the gateway's stage: upload a local build, or download the release.
+pub(crate) fn stage(
     session: &Session,
-    host: &str,
     source: &WebSource,
     ask: AskPassword,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<()> {
     match source {
-        WebSource::Local(local) => upload(session, local, &mut *ask, on_line)?,
+        WebSource::Local(local) => upload(session, local, &mut *ask, on_line),
         WebSource::Release { tag } => {
             let arch = asset_arch(&session.capture(&["uname".into(), "-m".into()])?)?;
             let assets = release_assets(tag, arch);
             on_line(&format!("getting the {tag} release for {arch}"));
             match root_lines(session, fetch_script("", &assets), &mut *ask, on_line)? {
-                0 => {}
+                0 => Ok(()),
                 21 => bail!(
                     "a release file does not match its sha256, so nothing was installed; \
                      {FLAGS}"
@@ -415,9 +414,27 @@ pub(crate) fn run_step(
             }
         }
     }
-    if root_lines(session, install_script(""), &mut *ask, on_line)? != 0 {
+}
+
+/// put the staged files in place, keeping the previous ones beside them.
+pub(crate) fn place(
+    session: &Session,
+    ask: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    if root_lines(session, install_script(""), ask, on_line)? != 0 {
         bail!("could not put the web ui files in place");
     }
+    Ok(())
+}
+
+/// apply the web modules with the install's settings and check that https answers.
+pub(crate) fn converge(
+    session: &Session,
+    host: &str,
+    ask: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
     apply::apply_with_settings(session, host, MODULES, SETTINGS, &mut *ask, on_line)?;
     if root_lines(session, verify_script(), ask, on_line)? != 0 {
         bail!(
@@ -426,6 +443,19 @@ pub(crate) fn run_step(
         );
     }
     Ok(())
+}
+
+/// the whole step on an open session.
+pub(crate) fn run_step(
+    session: &Session,
+    host: &str,
+    source: &WebSource,
+    ask: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    stage(session, source, &mut *ask, on_line)?;
+    place(session, &mut *ask, on_line)?;
+    converge(session, host, ask, on_line)
 }
 
 #[cfg(all(test, unix))]

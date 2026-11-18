@@ -379,6 +379,16 @@ enum Command {
         #[command(flatten)]
         web: WebFiles,
     },
+    /// upgrade lanlord on an installed server in place: the server binary, the browser build
+    /// and the playbooks, then restart the services that changed; nothing is removed
+    Upgrade {
+        host: String,
+        #[command(flatten)]
+        web: WebFiles,
+        /// skip the prompt
+        #[arg(long)]
+        yes: bool,
+    },
     /// purge a server and install lanlord on it again
     Reinstall {
         host: String,
@@ -757,6 +767,36 @@ fn print_install(event: lanlord_core::install::Event) {
             eprintln!("[{}/{}] failed", number(step), Step::ALL.len())
         }
     }
+}
+
+/// print an upgrade's steps and what the server says while it runs.
+fn print_upgrade(event: lanlord_core::upgrade::Event) {
+    use lanlord_core::upgrade::{Event, Step};
+    let number = |step: Step| Step::ALL.iter().position(|s| *s == step).unwrap_or(0) + 1;
+    match event {
+        Event::StepStarted(step) => {
+            println!("[{}/{}] {}", number(step), Step::ALL.len(), step.title())
+        }
+        Event::Line(line) => println!("  {line}"),
+        Event::StepDone(step) => println!("[{}/{}] done", number(step), Step::ALL.len()),
+        // the error itself is printed once, by the caller
+        Event::Failed { step, .. } => {
+            eprintln!("[{}/{}] failed", number(step), Step::ALL.len())
+        }
+    }
+}
+
+fn upgrade(host: &str, web: lanlord_core::webinstall::WebSource, yes: bool) -> Result<()> {
+    if !yes {
+        let typed = confirmed(
+            "type the host name to upgrade lanlord on it (nothing is removed): ",
+            None,
+        )?;
+        if typed != host {
+            bail!("the host name does not match; nothing was changed");
+        }
+    }
+    lanlord_core::upgrade::run(host, &web, &mut ask, &mut print_upgrade)
 }
 
 /// the host name typed at a prompt, or the one given with --confirm.
@@ -1368,6 +1408,7 @@ fn main() -> Result<()> {
         Some(Command::Install { host, web }) => {
             lanlord_core::install::run(&host, &web.source()?, &mut ask, &mut print_install)
         }
+        Some(Command::Upgrade { host, web, yes }) => upgrade(&host, web.source()?, yes),
         Some(Command::Reinstall { host, confirm, web }) => lanlord_core::install::reinstall(
             &host,
             &confirm,
@@ -1940,5 +1981,37 @@ mod tests {
         };
         assert_eq!(socket, PathBuf::from("/run/lanlord-web/web.sock"));
         assert!(!socket.starts_with("/run/lanlord/"));
+    }
+
+    #[test]
+    fn upgrade_takes_the_web_files_and_a_prompt_skip() {
+        let Some(Command::Upgrade { host, web, yes }) = Cli::try_parse_from([
+            "lanlord",
+            "upgrade",
+            "gw",
+            "--server-binary",
+            "lanlord",
+            "--auth-helper",
+            "helper",
+            "--web-dist",
+            "dist",
+            "--yes",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("upgrade parses");
+        };
+        assert_eq!(host, "gw");
+        assert!(yes);
+        assert_eq!(web.server_binary, Some(PathBuf::from("lanlord")));
+        let Some(Command::Upgrade { yes, .. }) = Cli::try_parse_from(["lanlord", "upgrade", "gw"])
+            .unwrap()
+            .command
+        else {
+            panic!("upgrade parses");
+        };
+        assert!(!yes);
+        assert!(Cli::try_parse_from(["lanlord", "upgrade"]).is_err());
     }
 }

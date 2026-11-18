@@ -2,6 +2,8 @@
 # puts a development build of the lanlord server and its browser build onto a test server and
 # restarts the web service there. it only touches /opt/lanlord/bin/lanlord, /opt/lanlord/web and the
 # lanlord-webui service, and it keeps the previous versions beside them so a bad build can be undone.
+# it does not apply new service units or playbooks or restart the other services (the operations
+# service): for a full upgrade of an installed server run `lanlord upgrade HOST` instead.
 # nothing about a server is stored here: the host is always an argument. used by tools/dev.sh deploy.
 #
 #   tools/dev-deploy.sh HOST [--no-build] [--yes] [--dry-run] [--target x86_64|aarch64]
@@ -13,7 +15,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 host=""
 build=1
@@ -150,6 +152,13 @@ fi
 [ -f "$bin" ] || { echo "no binary at $bin; run tools/dev.sh linux-build first (or drop --no-build)" >&2; exit 1; }
 [ -f "$web/index.html" ] || { echo "no browser build in $web; run tools/dev.sh web first (or drop --no-build)" >&2; exit 1; }
 
+# a server built without the webui feature crash-loops on the server ("this build has no web server")
+if grep -aqF 'this build has no web server' "$bin"; then
+  echo "$bin was built without the webui feature, so the service would crash-loop; nothing was changed." >&2
+  echo "build it with tools/dev.sh linux-build (it enables webui), or drop --no-build." >&2
+  exit 1
+fi
+
 new_sha=$(shasum -a 256 "$bin" | cut -d' ' -f1)
 new_size=$(wc -c < "$bin" | tr -d ' ')
 echo
@@ -172,6 +181,7 @@ for f in $added; do echo "    + $f"; done | head -20 || true
 for f in $changed; do echo "    ~ $f"; done | head -20 || true
 for f in $removed; do echo "    - $f"; done | head -20 || true
 echo "  the previous binary and web folder are kept as lanlord.prev and web.prev; only $unit is restarted"
+echo "  new units, playbooks and the other services are not touched; use \`lanlord upgrade $host\` for those"
 if [ "$dry" = 1 ]; then echo "dry run: nothing was changed"; exit 0; fi
 confirm "deploy"
 
