@@ -106,6 +106,9 @@ pub struct Placement {
     /// the height a growable window opens at when it is not as tall as its contents, like a
     /// console of 24 lines. `None` opens it as tall as its contents, stopping at the desktop.
     pub height: Option<f32>,
+    /// the least height a growable window opens at, for the contents that are near empty. a
+    /// window with more than that is as tall as its contents.
+    pub floor: f32,
 }
 
 /// what a growable window's contents were, to share its room out the next frame.
@@ -193,6 +196,7 @@ pub fn show(
     // a growable window follows its contents, getting taller as they do, until the user sizes it
     let fit = growable && place.height.is_none() && !before.is_some_and(|r| r.user);
     let sized = growable && !fit;
+    let floor = place.floor.min(max_height);
     let contents_least = match before {
         Some(r) if r.claimed > 0.0 => r.natural - r.claimed + r.claimed.min(controls::FILL_MIN),
         // nothing grows, so the contents scroll when the window is smaller: no smaller than
@@ -227,7 +231,22 @@ pub fn show(
                 .default_size(Vec2::new(width, h.min(max_height)))
                 .min_size(least),
             // no height to open at: it starts at nothing and takes the height of its contents
-            (true, None) => window.default_size(Vec2::new(width, 0.0)).min_size(least),
+            (true, None) => {
+                let window = window
+                    .default_size(Vec2::new(width, floor - 2.0 * FRAME))
+                    .min_size(least);
+                match before {
+                    // until the user sizes it, it is as tall as its contents, or the floor, and
+                    // shrinks with them
+                    Some(r) if fit => window.max_size(Vec2::new(
+                        f32::INFINITY,
+                        (TITLE_BAR + r.natural)
+                            .max(floor - 2.0 * FRAME)
+                            .min(max_height - 2.0 * FRAME),
+                    )),
+                    _ => window,
+                }
+            }
             _ => window.default_width(width),
         }
     };
@@ -253,6 +272,8 @@ pub fn show(
         // the room above what the contents need on their own, for the growable part to take
         let extra = match before {
             Some(r) if sized => (room - r.natural).max(0.0),
+            // a window with less than it opens at gives the rest to its growable part
+            Some(r) if fit => (floor - CHROME - r.natural).max(0.0),
             _ => 0.0,
         };
         let from = ui.cursor().min;
@@ -278,28 +299,37 @@ pub fn show(
                             content(ui)
                         });
                     content_height = framed.response.rect.height();
+                    // near empty contents leave the window the height it is meant to open at
+                    if fit {
+                        let pad = floor - CHROME - content_height;
+                        if pad > 0.0 {
+                            ui.allocate_space(Vec2::new(0.0, pad));
+                        }
+                    }
                 });
         });
         if growable {
             let natural = content_height - (extra - spare.extra);
-            // the window is not the size of its contents (or of the desktop, when they are more),
-            // though they did not change: someone dragged its corner
-            let dragging = ctx.input(|i| i.pointer.any_down());
-            let user = !fit
-                || before.is_some_and(|r| {
-                    r.user
-                        // the window takes the size of its contents a frame or two late
-                        // with the button down it is the drag, which needs no waiting for
-                        || ((r.age >= SETTLE || dragging)
-                            && (held - r.natural.min(max_height - CHROME)).abs() > 2.0
-                            && (natural - r.natural).abs() < 0.5)
+            // the user has sized it once they press on its edge or corner
+            let grabbed = ctx
+                .memory(|m| m.area_rect(Id::unique(id)))
+                .is_some_and(|r| {
+                    ctx.input(|i| {
+                        i.pointer.primary_down()
+                            && i.pointer.press_origin().is_some_and(|p| {
+                                // not the title bar, whose buttons are not a resize
+                                p.y > r.top() + TITLE_BAR + FRAME
+                                    && r.expand(FRAME * 2.0).contains(p)
+                                    && !r.shrink(FRAME * 2.0).contains(p)
+                            })
+                    })
                 });
+            let user = !fit || grabbed || before.is_some_and(|r| r.user);
             let now = Room {
                 natural,
                 claimed: spare.claimed,
                 user,
-                // frames the contents have kept their height: the window follows them a frame
-                // or two late, which is not the user resizing it
+                // frames the contents have kept their height, for the window to catch up
                 age: before
                     .filter(|r| (r.natural - natural).abs() <= 0.5)
                     .map_or(0, |r| r.age.saturating_add(1)),
@@ -340,6 +370,7 @@ mod tests {
                     width: 300.0,
                     area,
                     growable: false,
+                    floor: 0.0,
                     height: None,
                 };
                 rect = show(ui.ctx(), "t", "T", place, true, dialog, |ui| {
@@ -392,6 +423,7 @@ mod tests {
                         width: 300.0,
                         area,
                         growable: false,
+                        floor: 0.0,
                         height: None,
                     };
                     rect = show(ui.ctx(), "doc", "Doc", place, true, false, |ui| {
@@ -436,6 +468,7 @@ mod tests {
                         width: 300.0,
                         area: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 472.0)),
                         growable: false,
+                        floor: 0.0,
                         height: None,
                     };
                     let mut inner = Rect::NOTHING;
@@ -471,6 +504,7 @@ mod tests {
                     width: 380.0,
                     area,
                     growable: true,
+                    floor: 0.0,
                     height: None,
                 };
                 rect = show(ui.ctx(), "g", "G", place, true, false, |ui| {
@@ -503,6 +537,7 @@ mod tests {
                         width: 380.0,
                         area,
                         growable: true,
+                        floor: 0.0,
                         height: None,
                     };
                     rect = show(ui.ctx(), &id, "G", place, true, false, |ui| {
@@ -515,5 +550,43 @@ mod tests {
             let wanted = CHROME + 300.0 + 2.0 * MARGIN;
             assert!((height - wanted).abs() < 2.0, "{late}: {height} {wanted}");
         }
+    }
+
+    #[test]
+    fn a_window_follows_contents_that_shrink_and_a_click_elsewhere_does_not_size_it() {
+        let ctx = egui::Context::default();
+        let mut rect = None;
+        for frame in 0..40 {
+            let inner = if frame < 12 { 300.0 } else { 100.0 };
+            // a press anywhere on the desktop in the first frames is not a resize
+            let events = if frame == 1 {
+                vec![egui::Event::PointerButton {
+                    pos: Pos2::new(900.0, 600.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }]
+            } else {
+                vec![]
+            };
+            testkit::run(&ctx, events, |ui| {
+                let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 690.0));
+                let place = Placement {
+                    start: Pos2::new(110.0, 12.0),
+                    width: 380.0,
+                    area,
+                    growable: true,
+                    floor: 0.0,
+                    height: None,
+                };
+                rect = show(ui.ctx(), "shrink", "S", place, true, false, |ui| {
+                    ui.allocate_space(Vec2::new(10.0, inner));
+                })
+                .map(|s| s.rect);
+            });
+        }
+        let height = rect.unwrap().height();
+        let wanted = CHROME + 100.0 + 2.0 * MARGIN;
+        assert!((height - wanted).abs() < 2.0, "{height} {wanted}");
     }
 }
