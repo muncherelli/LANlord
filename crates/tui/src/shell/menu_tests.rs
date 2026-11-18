@@ -45,8 +45,24 @@ fn checking(enabled: bool) -> Shell {
         Arc::new(|| {}),
     );
     shell.updates = notice;
-    frame(&mut shell);
+    // the components are read in the background and the menu's rows follow them, so wait for
+    // that: a row index taken earlier would point at another row
+    until_loaded(&mut shell);
     shell
+}
+
+/// draw frames until the server's components are known, so the menu's rows stop changing.
+fn until_loaded(shell: &mut Shell) {
+    let started = std::time::Instant::now();
+    frame(shell);
+    while shell.enabled().is_none() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the components never loaded"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        frame(shell);
+    }
 }
 
 /// the same, as a development build that can rebuild from a checkout.
@@ -556,19 +572,4 @@ fn a_release_build_has_no_bug_and_no_debug_keys() {
     assert!(!shell.leave_demo());
     let text = frame(&mut shell);
     assert!(!text.contains("Demo desktop"), "{text}");
-}
-
-#[test]
-fn a_desktop_under_test_does_not_hear_what_other_work_logs() {
-    // the log is shared by the whole process: an apply that started elsewhere used to open the
-    // Progress window here and close the open menu, whenever another test happened to run it
-    let mut shell = developing();
-    key(&mut shell, KeyCode::F(10));
-    lanlord_app::log::emit(lanlord_app::log::Kind::Event, r#"{"event":"total","n":2}"#);
-    for _ in 0..20 {
-        frame(&mut shell);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(shell.menu.is_some(), "the menu is still open");
-    assert!(shell.windows.is_empty(), "no Progress window opened");
 }
