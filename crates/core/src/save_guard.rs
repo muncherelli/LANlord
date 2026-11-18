@@ -11,7 +11,7 @@ use serde_yaml_ng::{Mapping, Value};
 use crate::access::{Caller, Refused};
 use lanlord_model::access::area_of_section;
 use lanlord_model::access::{Access, Area, Grants, Level};
-use lanlord_model::settings::Settings;
+use lanlord_model::settings::{secret_section, Settings};
 
 /// the settings to write for `sent`, given what is `stored`. administrators write what they
 /// sent; nobody else changes an area they may not manage.
@@ -50,8 +50,8 @@ pub fn check_updates(updates: &[(String, String)], grants: &Grants, caller: &Cal
         return Ok(());
     }
     for (path, _) in updates {
-        let section = path.split('.').next().unwrap_or_default();
-        let area = area_of_section(section);
+        let section = secret_section(path).map_err(|e| Refused(format!("{e}")))?;
+        let area = area_of_section(&section);
         if grants.level(area) < Level::Manage {
             return Err(Refused(format!("setting {path} needs Manage on {}", area.title())).into());
         }
@@ -207,6 +207,18 @@ mod tests {
         let err = check_updates(&one("nt4-domain.admin_password"), &g, &caller()).unwrap_err();
         assert!(err.downcast_ref::<Refused>().is_some(), "{err:#}");
         assert!(check_updates(&one("nt4-domain.users.0.password"), &g, &caller()).is_err());
+        // the writer reads these as the domain's secrets, so they are checked as such
+        for sneaky in [
+            ".nt4-domain.admin_password",
+            "nt4-domain[x].password",
+            "[x].password",
+            "",
+            "nt4-domain.name",
+        ] {
+            let err = check_updates(&one(sneaky), &g, &caller()).unwrap_err();
+            assert!(err.downcast_ref::<Refused>().is_some(), "{sneaky:?}");
+        }
+        assert!(check_updates(&one("docker[a].token"), &g, &caller()).is_ok());
         let admin = Caller {
             user: "ann".into(),
             admin: true,

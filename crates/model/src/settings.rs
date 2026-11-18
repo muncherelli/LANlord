@@ -298,6 +298,16 @@ fn parse_path(path: &str) -> Result<Vec<Step>> {
     }
 }
 
+/// the top-level section a secret `path` writes into: the first step of the very parse the
+/// writer uses, so what is checked is what is changed. a path that does not start with a key
+/// (or is not a secret path at all) has none.
+pub fn secret_section(path: &str) -> Result<String> {
+    match parse_path(path)?.into_iter().next() {
+        Some(Step::Key(key)) => Ok(key),
+        _ => bail!("{path:?} does not start with a section"),
+    }
+}
+
 fn set_at(value: &mut Value, steps: &[Step], secret: &str) -> Result<()> {
     let Some((step, rest)) = steps.split_first() else {
         *value = Value::String(secret.into());
@@ -779,6 +789,16 @@ impl Check {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_secret_path_names_the_section_it_writes_into() {
+        assert_eq!(secret_section("nt4-domain.admin_password").unwrap(), "nt4-domain");
+        assert_eq!(secret_section(".nt4-domain.admin_password").unwrap(), "nt4-domain");
+        assert_eq!(secret_section("nt4-domain[x].password").unwrap(), "nt4-domain");
+        assert!(secret_section("[x].password").is_err());
+        assert!(secret_section("").is_err());
+        assert!(secret_section("nt4-domain.name").is_err());
+    }
+
     use super::*;
 
     const GATEWAY: Ipv4Addr = Ipv4Addr::new(172, 16, 120, 1);
