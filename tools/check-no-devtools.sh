@@ -18,12 +18,16 @@ done
 
 # 2. no crate turns the feature on by default, so a plain build never has it
 for pkg in lanlord lanlord-ui lanlord-web; do
-  if cargo tree -p "$pkg" -e features -i "$pkg" --prefix none --locked 2>/dev/null | grep -q 'feature "devtools"'; then
+  # a failing `cargo tree` is a failed check, not a pass
+  tree=$(cargo tree -p "$pkg" -e features -i "$pkg" --prefix none --locked) || {
+    echo "cargo tree failed for $pkg" >&2
+    exit 1
+  }
+  if grep -q 'feature "devtools"' <<<"$tree"; then
     echo "$pkg has the devtools feature on in a default build" >&2
     bad=1
   fi
 done
-
 
 [ "$bad" = 0 ] && echo "ok: no developer tools in release builds"
 exit "$bad"

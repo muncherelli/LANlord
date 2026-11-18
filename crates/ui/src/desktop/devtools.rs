@@ -208,8 +208,11 @@ impl Desktop {
                 Stroke::new(1.0, Color32::RED),
                 egui::StrokeKind::Inside,
             );
-            let body =
-                Rect::from_min_max(rect.min + Vec2::new(3.0, 23.0), rect.max - Vec2::splat(3.0));
+            let frame = crate::windows::FRAME;
+            let body = Rect::from_min_max(
+                rect.min + Vec2::new(frame, crate::windows::CHROME - frame),
+                rect.max - Vec2::splat(frame),
+            );
             painter.rect_stroke(
                 body,
                 0.0,
@@ -217,7 +220,7 @@ impl Desktop {
                 egui::StrokeKind::Inside,
             );
             painter.rect_stroke(
-                body.shrink(8.0),
+                body.shrink(crate::windows::MARGIN),
                 0.0,
                 Stroke::new(1.0, Color32::GREEN),
                 egui::StrokeKind::Inside,
@@ -226,9 +229,9 @@ impl Desktop {
                 rect.left_bottom() + Vec2::new(4.0, -4.0),
                 Align2::LEFT_BOTTOM,
                 format!(
-                    "{}: measured {:.0}x{:.0}, actual {:.0}x{:.0}",
+                    "{}: measured {:.0}x{:.0} , actual {:.0}x{:.0}",
                     target.id(),
-                    rect.width(),
+                    rect.width() - crate::windows::chrome().x,
                     content + crate::windows::CHROME,
                     rect.width(),
                     rect.height()

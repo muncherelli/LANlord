@@ -141,7 +141,8 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
 }
 
 /// `?demo=1` starts on the demo desktop, `?wmdebug=1` turns the window-manager outlines on and
-/// `?menu=1` shows the debug menu. `?open=<ids>` opens any window by id (or `all` of them), unfiltered. true when `open` was handled.
+/// `?menu=1` shows the debug menu. `?open=all` opens every window; any other `?open=` list keeps
+/// the safe filter a release has (no purge prompt from a link). true when `all` was handled.
 /// only devtools builds look at these; a release keeps the safe list.
 #[cfg(all(target_arch = "wasm32", feature = "devtools"))]
 fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
@@ -150,11 +151,11 @@ fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
     }
     desktop.set_wm_debug(query("wmdebug").as_deref() == Some("1"));
     desktop.set_menu(query("menu").as_deref() == Some("1"));
-    let spec = query("open");
-    if let Some(spec) = &spec {
-        desktop.open_spec_after_logon(spec);
+    let all = query("open").is_some_and(|spec| spec.trim() == "all");
+    if all {
+        desktop.open_spec_after_logon("all");
     }
-    spec.is_some()
+    all
 }
 
 /// the made-up demo server in a demo build, the gateway the page came from otherwise.
