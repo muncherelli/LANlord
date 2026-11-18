@@ -138,6 +138,9 @@ pub struct Session {
     pub(crate) no_bridge: std::sync::atomic::AtomicBool,
     /// run the commands on this machine, as the current user, instead of through ssh.
     local: bool,
+    /// the fake ssh script, removed when the session is dropped.
+    #[cfg(all(test, unix))]
+    fake_script: Option<tempfile::TempPath>,
 }
 
 impl Session {
@@ -154,6 +157,8 @@ impl Session {
             program: vec!["ssh".to_string()],
             no_bridge: std::sync::atomic::AtomicBool::new(false),
             local: false,
+            #[cfg(all(test, unix))]
+            fake_script: None,
         })
     }
 
@@ -165,6 +170,8 @@ impl Session {
             program: Vec::new(),
             no_bridge: std::sync::atomic::AtomicBool::new(true),
             local: true,
+            #[cfg(all(test, unix))]
+            fake_script: None,
         }
     }
 
@@ -350,17 +357,16 @@ impl Session {
 impl Session {
     /// a session that runs `script` instead of ssh, to test without a server.
     pub(crate) fn fake(script: &str) -> Session {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "lanlord-fake-ssh-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, format!("{script}\n")).unwrap();
+        let path = tempfile::Builder::new()
+            .prefix("lanlord-fake-ssh-")
+            .tempfile()
+            .unwrap();
+        std::fs::write(path.path(), format!("{script}\n")).unwrap();
+        let path = path.into_temp_path();
         let mut session = Session::new("gw").unwrap();
         // run it through sh so we never exec a file we just wrote (ETXTBSY)
         session.program = vec!["sh".into(), path.to_string_lossy().into_owned()];
+        session.fake_script = Some(path);
         // a fake that reads stdin to its end would never greet; these tests use the scripts
         session
             .no_bridge
@@ -390,6 +396,16 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_fake_script_is_removed_when_the_session_is_dropped() {
+        let session = Session::fake("true");
+        let path = std::path::PathBuf::from(&session.program[1]);
+        assert!(path.exists());
+        drop(session);
+        assert!(!path.exists());
+    }
 
     #[cfg(unix)]
     #[test]
