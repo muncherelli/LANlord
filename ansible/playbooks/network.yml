@@ -10,8 +10,8 @@
 - name: check the interface names in your settings
   ansible.builtin.assert:
     that:
-      - (network | default({})).host_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
-      - (network | default({})).internal_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}$')
+      - (network | default({})).host_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}\\Z')
+      - (network | default({})).internal_interface | default('x') is match('^[A-Za-z0-9_.:-]{1,15}\\Z')
     fail_msg: "network settings: interface names are plain values like eth1"
 
 - name: work out the host network interface

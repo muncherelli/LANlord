@@ -1,5 +1,5 @@
 [
-  {"name": "nt4-server-components", "image": "lanlord-nt4-server-components", "dir": "ansible/playbooks/nt4-domain/image", "inputs": ["Dockerfile", "VERSION", "samba-pubkey.asc"]},
-  {"name": "dhcp-dns-components", "image": "lanlord-dhcp-dns-components", "dir": "ansible/playbooks/dns/image", "inputs": ["Dockerfile", "VERSION"]},
-  {"name": "time-server-components", "image": "lanlord-time-server-components", "dir": "ansible/playbooks/time/image", "inputs": ["Dockerfile", "VERSION"]}
+  {"name": "nt4-server-components", "image": "lanlord-nt4-server-components", "dir": "ansible/playbooks/nt4-domain/image", "inputs": ["Dockerfile", "samba-pubkey.asc"]},
+  {"name": "network-server-components", "image": "lanlord-network-server-components", "dir": "ansible/playbooks/dns/image", "inputs": ["Dockerfile"]},
+  {"name": "time-server-components", "image": "lanlord-time-server-components", "dir": "ansible/playbooks/time/image", "inputs": ["Dockerfile"]}
 ]

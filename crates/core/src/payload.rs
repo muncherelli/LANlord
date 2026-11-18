@@ -32,15 +32,14 @@ const FILES: &[(&str, &str)] = &[
     playbook!("time.yml"),
     playbook!("time-facts.yml"),
     playbook!("filter_plugins/lanlord.py"),
+    playbook!("callback_plugins/lanlord_progress.py"),
     playbook!("docker/firewall.nft.j2"),
     playbook!("replace-container.yml"),
     playbook!("webui-login.yml"),
     playbook!("dns/dnsmasq.conf.j2"),
     playbook!("dns/image/Dockerfile"),
-    playbook!("dns/image/VERSION"),
     playbook!("time/chrony.conf.j2"),
     playbook!("time/image/Dockerfile"),
-    playbook!("time/image/VERSION"),
     playbook!("web-proxy/Caddyfile.j2"),
     playbook!("status/lanlord-status.sh"),
     playbook!("nt4-domain/smb.conf.j2"),
@@ -48,7 +47,6 @@ const FILES: &[(&str, &str)] = &[
     playbook!("nt4-domain/image/entrypoint.sh"),
     playbook!("nt4-domain/image/lanlord-user"),
     playbook!("nt4-domain/image/samba-pubkey.asc"),
-    playbook!("nt4-domain/image/VERSION"),
 ];
 
 /// the playbooks as a tar archive.
@@ -208,7 +206,7 @@ mod tests {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for entry in std::fs::read_dir(src).unwrap() {
             let path = entry.unwrap().path();
-            if path.file_name().is_some_and(|n| n == "payload.rs") {
+            if path.is_dir() || path.file_name().is_some_and(|n| n == "payload.rs") {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();

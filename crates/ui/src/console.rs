@@ -10,7 +10,7 @@ pub fn colour(kind: Kind) -> Color32 {
         Kind::Out => Color32::LIGHT_GRAY,
         Kind::Err => Color32::from_rgb(255, 85, 85),
         Kind::Info => Color32::from_rgb(85, 255, 255),
-        Kind::Debug => Color32::from_rgb(128, 128, 128),
+        Kind::Debug | Kind::Event => Color32::from_rgb(128, 128, 128),
     }
 }
 

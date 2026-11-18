@@ -141,6 +141,7 @@ pub(crate) fn execute_with(
         }
         Op::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
         Op::Doctor => Reply::Doctor(doctor::run_with(session, ask)?),
+        Op::Subscribe { .. } => bail!("live streams are not available yet"),
     })
 }
 

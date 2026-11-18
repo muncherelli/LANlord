@@ -41,7 +41,7 @@ fn print_line(line: &Line) {
         Kind::Out => println!("{}", line.text),
         Kind::Err | Kind::Info => eprintln!("{}", line.text),
         Kind::Debug if VERBOSE.load(Ordering::Relaxed) => eprintln!("debug: {}", line.text),
-        Kind::Debug => {}
+        Kind::Debug | Kind::Event => {}
     }
 }
 

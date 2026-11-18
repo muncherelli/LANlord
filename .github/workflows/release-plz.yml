@@ -37,6 +37,8 @@ jobs:
           tag=$(echo "$RELEASES" | jq -r '[.[] | select(.package_name == "lanlord")][0].tag // empty')
           if [ -n "$tag" ]; then
             gh workflow run release.yml --repo "$GITHUB_REPOSITORY" -f tag="$tag"
+            # the two component images are published under the same version
+            gh workflow run image.yml --repo "$GITHUB_REPOSITORY" -f tag="$tag"
           fi
 
   pr:

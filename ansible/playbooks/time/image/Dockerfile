@@ -1,15 +1,18 @@
 # chrony for the lanlord networks, on a pinned alpine. only upstream software is in the image;
 # lanlord's chrony.conf is mounted when the container runs.
-#   docker build --build-arg IMAGE_VERSION=1.0.0 -t lanlord-time-server-components:1.0.0 .
-# VERSION is this image's X.Y.Z (the tag); the chrony version is the ARG below and a label
+#   docker build --build-arg IMAGE_VERSION=0.1.0 -t lanlord-time-server-components:0.1.0 .
+# IMAGE_VERSION is the lanlord release (the tag); the chrony version is the ARG below and a label
 # the multi-arch index digest of alpine:3.22, so a rebuild cannot pick up a moved tag
 ARG ALPINE_IMAGE=alpine@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
 FROM ${ALPINE_IMAGE}
 ARG CHRONY_VERSION=4.6.1
 ARG IMAGE_VERSION=dev
+ARG IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.title="lanlord-time-server-components" \
+      org.opencontainers.image.description="chrony for the LANlord networks (serves time only, never sets the host clock)" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
       io.lanlord.chrony.version="${CHRONY_VERSION}"
 # the chrony package creates the chrony user; fail the build if it ever stops doing so
 RUN apk add --no-cache "chrony~=${CHRONY_VERSION}" \

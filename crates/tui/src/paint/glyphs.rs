@@ -58,6 +58,8 @@ pub fn glyph_for(id: &str) -> Glyph {
         "lanlord" => glyph("L", "L", NAVY),
         "update" => glyph("▼", "▼", BLUE),
         "datetime" => glyph("◷", "◷", BLACK),
+        // a trace on a screen
+        "taskmgr" => glyph("▁▃▇", "▃", GREEN),
         _ => glyph("◆", "◆", SHADOW),
     }
 }
@@ -70,7 +72,7 @@ pub fn chip(buf: &mut Buffer, x: u16, y: u16, id: &str, palette: Palette) {
 }
 
 /// every id the gui has an icon for.
-pub const IDS: [&str; 15] = [
+pub const IDS: [&str; 16] = [
     "gateway",
     "docker",
     "nt4-domain",
@@ -86,6 +88,7 @@ pub const IDS: [&str; 15] = [
     "lanlord",
     "update",
     "datetime",
+    "taskmgr",
 ];
 
 #[cfg(test)]
