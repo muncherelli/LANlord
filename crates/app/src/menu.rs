@@ -124,10 +124,14 @@ fn power_rows(state: &State) -> Vec<Row> {
 
 /// the main menu.
 pub fn rows(state: &State) -> Vec<Row> {
-    let mut rows = vec![Row::Item(Item {
-        header: true,
-        ..Item::new(&server_line(state.host), Action::ServerLine)
-    })];
+    // the browser is always on its own server, so it gets no header
+    let mut rows = Vec::new();
+    if state.switch_server {
+        rows.push(Row::Item(Item {
+            header: true,
+            ..Item::new(&server_line(state.host), Action::ServerLine)
+        }));
+    }
     if let Some(who) = state.signed_in {
         if state.switch_server {
             rows.push(Row::Item(Item::new(
@@ -140,7 +144,9 @@ pub fn rows(state: &State) -> Vec<Row> {
             Action::LogOff,
         )));
     }
-    rows.push(Row::Separator);
+    if !rows.is_empty() {
+        rows.push(Row::Separator);
+    }
     rows.extend(
         state
             .modules
@@ -256,6 +262,8 @@ mod tests {
         assert!(has(&state(true), "Switch server..."));
         assert!(!has(&state(false), "Switch server..."));
         assert!(has(&state(false), "Log off ann..."));
+        assert!(has(&state(true), "Server: local"));
+        assert!(!has(&state(false), "Server: local"));
     }
 
     #[test]
