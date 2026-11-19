@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- every stored file now carries a format version (`settings.yml`, `settings.age`, and the client's `hosts`, `last`, `prefs` and launcher manifest); a file with no version is version 1, and older formats are brought up to date in memory when they are read
+- `lanlord upgrade` migrates the stored files once on the gateway, keeping a copy of each old file (`<file>.v<N>.<timestamp>.bak`) and putting them back if the migration fails and the upgrade is rolled back
+- a file written by a newer LANlord is refused with "written by LANlord X.Y (format N); upgrade LANlord to use it" and is never overwritten; docs/stored-formats.md says how to change a format and how to go back to an older LANlord
+
 ### Changed
 
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers

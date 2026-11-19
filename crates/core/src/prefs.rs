@@ -5,6 +5,15 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use lanlord_model::format::{render_text, Step};
+
+use crate::localfile;
+
+/// the steps that bring an older preferences file up to date: none yet. the file starts with a
+/// version line; one without is version 1. a file from a newer lanlord reads as the defaults
+/// and is never written over.
+const STEPS: &[Step<String>] = &[];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefs {
     /// look for a newer lanlord in the background.
@@ -47,7 +56,11 @@ pub fn path() -> Option<PathBuf> {
 /// read the preferences; a missing or odd file gives the defaults.
 pub fn load(path: &Path) -> Prefs {
     let mut prefs = Prefs::default();
-    for line in fs::read_to_string(path).unwrap_or_default().lines() {
+    let text = localfile::read(path, STEPS)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    for line in text.lines() {
         match line.split_once('=') {
             Some((key, value)) if key.trim() == "check_updates" => {
                 prefs.check_updates = value.trim() != "false";
@@ -62,6 +75,7 @@ pub fn load(path: &Path) -> Prefs {
 }
 
 pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
+    localfile::guard(path, STEPS)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -73,7 +87,9 @@ pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
     for user in &prefs.welcome_off {
         text.push_str(&format!("welcome_off={user}\n"));
     }
-    options.open(path)?.write_all(text.as_bytes())
+    options
+        .open(path)?
+        .write_all(render_text(&text, STEPS).as_bytes())
 }
 
 #[cfg(test)]
@@ -130,5 +146,20 @@ mod tests {
         if let Some(path) = path() {
             assert!(path.ends_with("lanlord/prefs"));
         }
+    }
+    #[test]
+    fn preferences_from_a_newer_lanlord_are_refused_and_left_alone() {
+        let dir = std::env::temp_dir().join(format!("lanlord-prefs-newer-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("prefs");
+        let newer = "# lanlord format 9, written by LANlord 7.4\ncheck_updates = false\n";
+        fs::write(&file, newer).unwrap();
+        let error = save(&file, &Prefs::default()).unwrap_err().to_string();
+        assert!(
+            error.ends_with("written by LANlord 7.4 (format 9); upgrade LANlord to use it"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), newer);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -797,7 +797,7 @@ mod fake {
                     Reply::Done
                 }
                 Operation::LoadDocument => Reply::Document(self.load_document(host, ask)?),
-                Operation::MoveSecrets { .. } => Reply::Done,
+                Operation::MoveSecrets { .. } | Operation::MigrateStored { .. } => Reply::Done,
                 Operation::SaveDocument { plain, updates } => {
                     let updates: Vec<(String, String)> = updates
                         .iter()

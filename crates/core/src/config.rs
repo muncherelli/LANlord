@@ -9,6 +9,8 @@ use crate::bootstrap::{capture_as_root, run_as_root, AskPassword};
 use crate::crypto;
 use crate::log::{emit, Kind};
 use crate::ssh::Session;
+use lanlord_model::format::{Context as Migrating, TooNew};
+use lanlord_model::stored::{self, Kind as Stored};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -145,7 +147,13 @@ pub(crate) fn push_with(
     if plaintext.iter().all(u8::is_ascii_whitespace) {
         bail!("the settings file is empty");
     }
-    let sealed = crypto::encrypt(identity, plaintext)?;
+    // what is stored from a newer lanlord is never written over. a read that fails is left to
+    // the write below, which reports its own failure.
+    if let Ok(Some(stored)) = pull_raw_with(session, identity, &mut *ask_password) {
+        refuse_newer(Stored::Sealed, &stored, "settings.age")?;
+    }
+    let plaintext = stamped(Stored::Sealed, plaintext)?;
+    let sealed = crypto::encrypt(identity, &plaintext)?;
     emit(Kind::Info, format!("storing encrypted settings on {host}"));
     let admin = admin(session)?;
     match run_as_root(session, &admin, push_script(&sealed), ask_password)? {
@@ -166,7 +174,20 @@ pub fn pull(
     pull_with(&Session::new(host)?, identity, ask_password)
 }
 
+/// the decrypted secrets, brought up to date in memory (see [`lanlord_model::format`]); a file
+/// from a newer lanlord is refused.
 pub(crate) fn pull_with(
+    session: &Session,
+    identity: &age::x25519::Identity,
+    ask_password: AskPassword,
+) -> Result<Option<Vec<u8>>> {
+    pull_raw_with(session, identity, ask_password)?
+        .map(|bytes| migrated(Stored::Sealed, bytes, "settings.age"))
+        .transpose()
+}
+
+/// the decrypted secrets exactly as stored, whatever their format.
+pub(crate) fn pull_raw_with(
     session: &Session,
     identity: &age::x25519::Identity,
     ask_password: AskPassword,
@@ -174,6 +195,34 @@ pub(crate) fn pull_with(
     pull_sealed_with(session, ask_password)?
         .map(|sealed| crypto::decrypt(identity, &sealed))
         .transpose()
+}
+
+/// `bytes` of a settings file as the current format; text that is not settings is left as it
+/// is, for whoever reads it to complain about. only a file from a newer lanlord is an error.
+fn migrated(kind: Stored, bytes: Vec<u8>, file: &str) -> Result<Vec<u8>> {
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Ok(bytes);
+    };
+    match stored::load(kind, text, &Migrating::default()) {
+        Ok(settings) => Ok(settings.text().into_bytes()),
+        Err(error) if error.is::<TooNew>() => Err(error.context(file.to_string())),
+        Err(_) => Ok(bytes),
+    }
+}
+
+fn refuse_newer(kind: Stored, bytes: &[u8], file: &str) -> Result<()> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        stored::refuse_newer(kind, text).with_context(|| file.to_string())?;
+    }
+    Ok(())
+}
+
+/// `bytes` to store, stamped with the current format.
+fn stamped(kind: Stored, bytes: &[u8]) -> Result<Vec<u8>> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Ok(stored::seal(kind, text)?.into_bytes()),
+        Err(_) => Ok(bytes.to_vec()),
+    }
 }
 
 /// the stored ciphertext as it is, for moving it to another key; `None` when nothing is stored.
@@ -203,9 +252,13 @@ pub(crate) fn push_plain_with(
     plaintext: &[u8],
     ask_password: AskPassword,
 ) -> Result<()> {
+    if let Ok(Some(stored)) = pull_plain_raw_with(session, &mut *ask_password) {
+        refuse_newer(Stored::Plain, &stored, "settings.yml")?;
+    }
+    let plaintext = stamped(Stored::Plain, plaintext)?;
     emit(Kind::Info, format!("storing plain settings on {host}"));
     let admin = admin(session)?;
-    match run_as_root(session, &admin, push_plain_script(plaintext), ask_password)? {
+    match run_as_root(session, &admin, push_plain_script(&plaintext), ask_password)? {
         0 => Ok(()),
         code => Err(failed("storing the plain settings", code)),
     }
@@ -216,8 +269,19 @@ pub fn pull_plain(host: &str, ask_password: AskPassword) -> Result<Option<Vec<u8
     pull_plain_with(&Session::new(host)?, ask_password)
 }
 
-/// admins read the file directly; sudo is the fallback for accounts not in the group yet.
+/// the plain settings, brought up to date in memory; a file from a newer lanlord is refused.
 pub(crate) fn pull_plain_with(
+    session: &Session,
+    ask_password: AskPassword,
+) -> Result<Option<Vec<u8>>> {
+    pull_plain_raw_with(session, ask_password)?
+        .map(|bytes| migrated(Stored::Plain, bytes, "settings.yml"))
+        .transpose()
+}
+
+/// the plain settings exactly as stored. admins read the file directly; sudo is the fallback for
+/// accounts not in the group yet.
+pub(crate) fn pull_plain_raw_with(
     session: &Session,
     ask_password: AskPassword,
 ) -> Result<Option<Vec<u8>>> {
@@ -252,6 +316,11 @@ mod tests {
         bail!("no password expected")
     }
 
+    /// stored settings without the version stamp.
+    fn unstamped_bytes(bytes: &[u8]) -> Vec<u8> {
+        crate::testgw::unstamped(std::str::from_utf8(bytes).unwrap()).into_bytes()
+    }
+
     /// the base64 payload inside a pushed script, decoded.
     fn payload(script: &str) -> Vec<u8> {
         let body: String = script
@@ -274,7 +343,7 @@ mod tests {
         assert!(!sent.contains("motd"), "plaintext leaked into the script");
         assert!(sent.contains("/opt/lanlord/config/settings.age"));
         assert_eq!(
-            crypto::decrypt(&id, &payload(&sent)).unwrap(),
+            unstamped_bytes(&crypto::decrypt(&id, &payload(&sent)).unwrap()),
             b"motd: hello\n"
         );
         let _ = std::fs::remove_file(record);
@@ -321,7 +390,9 @@ esac"#
             0,
         );
         assert_eq!(
-            pull_with(&session, &id, &mut no_password).unwrap(),
+            pull_with(&session, &id, &mut no_password)
+                .unwrap()
+                .map(|bytes| unstamped_bytes(&bytes)),
             Some(b"motd: hi\n".to_vec())
         );
     }
@@ -360,7 +431,7 @@ esac"#
         assert!(sent.contains("tee /opt/lanlord/config/settings.yml"));
         assert!(sent.contains("chmod 0640 /opt/lanlord/config/settings.yml"));
         assert!(sent.contains("admins"));
-        assert_eq!(payload(&sent), b"dns: {}\n");
+        assert_eq!(unstamped_bytes(&payload(&sent)), b"dns: {}\n");
         let _ = std::fs::remove_file(&record);
         let failing = Session::fake_gateway(true, &record, 4);
         let err = push_plain_with(&failing, "gw", b"a: 1\n", &mut no_password).unwrap_err();
@@ -372,7 +443,9 @@ esac"#
     fn pull_plain_reads_the_file_or_nothing() {
         let present = serving("printf 'present\\nmotd: hi\\n'", 0);
         assert_eq!(
-            pull_plain_with(&present, &mut no_password).unwrap(),
+            pull_plain_with(&present, &mut no_password)
+                .unwrap()
+                .map(|bytes| unstamped_bytes(&bytes)),
             Some(b"motd: hi\n".to_vec())
         );
         assert!(pull_plain_with(&serving("true", 0), &mut no_password)
@@ -393,7 +466,9 @@ case "$last" in
 esac"#,
         );
         assert_eq!(
-            pull_plain_with(&session, &mut no_password).unwrap(),
+            pull_plain_with(&session, &mut no_password)
+                .unwrap()
+                .map(|bytes| unstamped_bytes(&bytes)),
             Some(b"viasudo: 1\n".to_vec())
         );
     }

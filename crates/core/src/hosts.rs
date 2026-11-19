@@ -4,6 +4,15 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use lanlord_model::format::{render_text, Step};
+
+use crate::localfile;
+
+/// the steps that bring an older `hosts` or `last` file up to date: none yet. each file starts
+/// with a version line; one without is version 1. a file from a newer lanlord reads as empty and
+/// is never written over.
+const STEPS: &[Step<String>] = &[];
+
 /// ~/.config/lanlord/hosts
 pub fn config_path() -> Option<PathBuf> {
     crate::paths::config_dir().map(|d| d.join("hosts"))
@@ -11,7 +20,9 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// read the hosts, skipping blank lines and comments.
 pub fn load(path: &Path) -> Vec<String> {
-    fs::read_to_string(path)
+    localfile::read(path, STEPS)
+        .ok()
+        .flatten()
         .unwrap_or_default()
         .lines()
         .map(str::trim)
@@ -30,13 +41,21 @@ fn private_file() -> fs::OpenOptions {
 
 /// append `host` unless it is already listed.
 pub fn add(path: &Path, host: &str) -> io::Result<()> {
-    if load(path).iter().any(|h| h == host) {
+    // a file from a newer lanlord stops here, before anything is written
+    let existing = localfile::read(path, STEPS)?;
+    if existing
+        .as_deref()
+        .is_some_and(|text| text.lines().map(str::trim).any(|line| line == host))
+    {
         return Ok(());
     }
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let mut file = private_file().append(true).open(path)?;
+    if existing.is_none() {
+        write!(file, "{}", render_text("", STEPS))?;
+    }
     writeln!(file, "{host}")
 }
 
@@ -47,13 +66,14 @@ fn last_path(path: &Path) -> PathBuf {
 
 /// the target last signed in to (`user@host`, or the this-server target), if one is kept.
 pub fn load_last(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(last_path(path)).ok()?;
+    let text = localfile::read(&last_path(path), STEPS).ok()??;
     let target = text.trim();
     (!target.is_empty()).then(|| target.to_string())
 }
 
 /// keep `target` as the last sign-in; it is not a list entry.
 pub fn save_last(path: &Path, target: &str) -> io::Result<()> {
+    localfile::guard(&last_path(path), STEPS)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -61,12 +81,12 @@ pub fn save_last(path: &Path, target: &str) -> io::Result<()> {
         .write(true)
         .truncate(true)
         .open(last_path(path))?
-        .write_all(format!("{target}\n").as_bytes())
+        .write_all(render_text(&format!("{target}\n"), STEPS).as_bytes())
 }
 
 /// drop `host` from the file, keeping comments and the other hosts.
 pub fn remove(path: &Path, host: &str) -> io::Result<()> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Some(text) = localfile::read(path, STEPS)? else {
         return Ok(());
     };
     let kept: Vec<&str> = text.lines().filter(|l| l.trim() != host).collect();
@@ -74,6 +94,7 @@ pub fn remove(path: &Path, host: &str) -> io::Result<()> {
     if !body.is_empty() {
         body.push('\n');
     }
+    let body = render_text(&body, STEPS);
     private_file()
         .write(true)
         .truncate(true)
@@ -139,7 +160,13 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "# gateways\nme@gw\nme@other\n").unwrap();
         remove(&path, "me@gw").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "# gateways\nme@other\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!(
+                "{}# gateways\nme@other\n",
+                lanlord_model::format::text_header(1)
+            )
+        );
         remove(&path, "me@other").unwrap();
         assert!(load(&path).is_empty());
         remove(&path, "me@nothing").unwrap();
@@ -167,5 +194,33 @@ mod tests {
         if let Some(path) = config_path() {
             assert!(path.ends_with("lanlord/hosts"));
         }
+    }
+    #[test]
+    fn a_hosts_file_from_a_newer_lanlord_is_refused_and_left_alone() {
+        let path = temp("newer");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let newer = "# lanlord format 9, written by LANlord 7.4\nme@gw\n";
+        fs::write(&path, newer).unwrap();
+        for result in [add(&path, "me@other"), remove(&path, "me@gw")] {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.ends_with("written by LANlord 7.4 (format 9); upgrade LANlord to use it"),
+                "{error}"
+            );
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), newer);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_last_file_from_a_newer_lanlord_is_refused_and_left_alone() {
+        let path = temp("newer-last");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let last = path.parent().unwrap().join("last");
+        let newer = "# lanlord format 9, written by LANlord 7.4\nme@gw\n";
+        fs::write(&last, newer).unwrap();
+        assert!(save_last(&last, "me@other").is_err());
+        assert_eq!(fs::read_to_string(&last).unwrap(), newer);
+        cleanup(&path);
     }
 }

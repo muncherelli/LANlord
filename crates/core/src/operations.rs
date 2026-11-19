@@ -10,7 +10,7 @@ use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
-use crate::{access, operate, save_guard, self_service, settings, users};
+use crate::{access, operate, save_guard, self_service, settings, stored, users};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
 };
@@ -321,6 +321,9 @@ fn dispatch(
                 .and_then(|old| settings::move_secrets_with(session, host, &key()?, &old, ask));
             moved?;
             Reply::Done
+        }
+        Operation::MigrateStored { stamp } => {
+            Reply::Lines(stored::migrate_with(session, host, &key()?, stamp, ask)?)
         }
         Operation::SaveDocument { plain, updates } => {
             let updates: Vec<(String, String)> = updates
