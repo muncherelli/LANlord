@@ -7,7 +7,7 @@
 //! interrupted install resumes where it stopped. the purge removes the marker with the rest of
 //! `/opt/lanlord`.
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::account::login_user;
 use crate::bootstrap::{
@@ -221,9 +221,37 @@ pub(crate) fn run_with(
             capture_as_root(session, &admin.name, NEXT_FACTS.to_string(), ask_password)
         })
         .unwrap_or_default();
+    // the address the user typed to reach the server is the best one to show, when it is one
+    let facts = match reachable_address(&options.host) {
+        Some(address) => format!("ip={address}\n{facts}"),
+        None => facts,
+    };
     let name = admin.as_ref().ok().and_then(|name| name.as_deref());
     events(Event::NextSteps(next_steps(&facts, name)));
-    admin.map(|_| ())
+    admin.map(|_| ()).map_err(|err| {
+        anyhow!(
+            "{err:#}\nlanlord is installed on {host}, so do not reinstall; to set up the first \
+             administrator run `lanlord admin {host} add USER` or `lanlord admin {host} create \
+             NAME`, or sign in as root in the web UI",
+            host = options.host
+        )
+    })
+}
+
+/// the host the user gave, when a browser could use it too: an address or a dotted name, not
+/// localhost and not an ssh alias.
+fn reachable_address(host: &str) -> Option<String> {
+    let host = host.rsplit('@').next()?.trim();
+    let host = host.rsplit_once(':').map_or(host, |(name, port)| {
+        if port.chars().all(|c| c.is_ascii_digit()) {
+            name
+        } else {
+            host
+        }
+    });
+    let local =
+        host.is_empty() || host.starts_with("127.") || host.eq_ignore_ascii_case("localhost");
+    (!local && host.contains('.') && !host.contains(char::is_whitespace)).then(|| host.to_string())
 }
 
 fn do_step(
@@ -292,8 +320,8 @@ fn do_step(
 /// asks the server for its address and what state root's password is in.
 const NEXT_FACTS: &str = r#"# the address the server reaches others with: the first global one may be docker's bridge
 ip=$(ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
-[ -n "$ip" ] || ip=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1)
-[ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -n "$ip" ] || ip=$(ip -o -4 addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lxcbr|incusbr)/ {print $4}' | cut -d/ -f1 | head -n 1)
+[ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^172\.17\./) {print $i; exit}}')
 echo "ip=$ip"
 echo "root=$(passwd -S root 2>/dev/null | awk '{print $2}')"
 "#;
@@ -581,7 +609,7 @@ esac"#
         let server = Server::new("create", None, FINE);
         let choice = Choice::Create {
             name: "olive".into(),
-            password: "correct horse".into(),
+            password: zeroize::Zeroizing::new("correct horse".into()),
             ssh_public_key: None,
         };
         let (result, events) = install_choosing(&server, choice);
@@ -750,6 +778,68 @@ esac"#
             panic!("{events:?}")
         };
         assert!(lines.join("\n").contains("run `passwd` on the server"));
+    }
+
+    #[test]
+    fn the_address_fallbacks_skip_the_bridges_docker_and_friends_make() {
+        let dir = std::env::temp_dir().join(format!("lanlord-nextfacts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // a stub `ip`: no route answer, and docker0 listed before the real interface
+        let stub = dir.join("ip");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+             *route*) ;;\n\
+             *) echo '3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0'\n\
+                echo '4: br-1a2b3c    inet 172.18.0.1/16 scope global br-1a2b3c'\n\
+                echo '2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0' ;;\n\
+             esac\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:/usr/bin:/bin", dir.display());
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(NEXT_FACTS)
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        let facts = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            web_url(&facts).as_deref(),
+            Some("https://192.0.2.10:8443/"),
+            "{facts}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_host_the_user_gave_is_shown_when_a_browser_can_use_it() {
+        assert_eq!(
+            reachable_address("root@192.0.2.10").as_deref(),
+            Some("192.0.2.10")
+        );
+        assert_eq!(
+            reachable_address("gw.example.net:22").as_deref(),
+            Some("gw.example.net")
+        );
+        for host in ["localhost", "root@127.0.0.1", "gw", ""] {
+            assert_eq!(reachable_address(host), None, "{host}");
+        }
+    }
+
+    #[test]
+    fn a_failed_first_administrator_says_how_to_finish_without_reinstalling() {
+        let server = Server::new("finish", None, FINE);
+        std::fs::write(server.dir.join("sudo-answer"), "no\n").unwrap();
+        let (result, _) = install_choosing(&server, Choice::Adopt("olive".into()));
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("do not reinstall"), "{err}");
+        assert!(err.contains("lanlord admin gw add USER"), "{err}");
+        assert!(err.contains("web UI"), "{err}");
+        assert_eq!(server.marker(), "installed");
     }
 
     #[test]

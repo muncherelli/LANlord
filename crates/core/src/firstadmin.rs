@@ -6,6 +6,7 @@
 
 use anyhow::{bail, Result};
 use base64::Engine;
+use zeroize::Zeroizing;
 
 use crate::account::{self, LoginUser};
 use crate::admins;
@@ -14,7 +15,7 @@ use crate::log::{emit, Kind};
 use crate::ssh::Session;
 
 /// what to do about the first administrator.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Choice {
     /// leave it: root signs in to the web ui and sets it up there.
     Skip,
@@ -23,9 +24,29 @@ pub enum Choice {
     /// create this account as an administrator.
     Create {
         name: String,
-        password: String,
+        password: Zeroizing<String>,
         ssh_public_key: Option<String>,
     },
+}
+
+// written by hand so a password never reaches a log line or a failed assertion
+impl std::fmt::Debug for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Choice::Skip => f.write_str("Skip"),
+            Choice::Adopt(user) => f.debug_tuple("Adopt").field(user).finish(),
+            Choice::Create {
+                name,
+                ssh_public_key,
+                ..
+            } => f
+                .debug_struct("Create")
+                .field("name", name)
+                .field("password", &"<redacted>")
+                .field("ssh_public_key", ssh_public_key)
+                .finish(),
+        }
+    }
 }
 
 /// asks what to do, given who the install signed in as.
@@ -91,7 +112,7 @@ pub(crate) fn carry_out(
                 session,
                 host,
                 name,
-                password,
+                password.as_str(),
                 ssh_public_key.as_deref(),
                 false,
                 &mut *ask,
@@ -126,4 +147,24 @@ pub(crate) fn run(
         emit(Kind::Info, "no administrator was set up");
     }
     carry_out(session, host, &choice, ask)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_never_shows_the_password() {
+        let choice = Choice::Create {
+            name: "olive".into(),
+            password: Zeroizing::new("correct horse".into()),
+            ssh_public_key: None,
+        };
+        let shown = format!("{choice:?}");
+        assert!(!shown.contains("correct horse"), "{shown}");
+        assert!(
+            shown.contains("olive") && shown.contains("redacted"),
+            "{shown}"
+        );
+    }
 }

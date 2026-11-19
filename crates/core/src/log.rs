@@ -10,16 +10,44 @@ pub use lanlord_model::log::*;
 static SUBSCRIBERS: Mutex<Vec<Sender<Line>>> = Mutex::new(Vec::new());
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static QUIET_TASKS: AtomicBool = AtomicBool::new(false);
+static QUIET_HELD: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// show debug lines on the terminal when nothing is subscribed.
 pub fn set_verbose(on: bool) {
     VERBOSE.store(on, Ordering::Relaxed);
 }
 
-/// keep the per-task progress of an apply (`ok:`, `changed:`, `skipped:` lines and the
-/// playbook's own messages) off the terminal when nothing is subscribed; failures still show.
+/// keep what an apply prints (task output and the playbook's own messages) off the terminal when
+/// nothing is subscribed. nothing is lost: the lines are held, and `take_held` hands them over
+/// so a failure can show them.
 pub fn set_quiet_tasks(on: bool) {
     QUIET_TASKS.store(on, Ordering::Relaxed);
+}
+
+/// the lines held back while quiet, oldest first; empties the hold.
+pub fn take_held() -> Vec<String> {
+    std::mem::take(&mut *QUIET_HELD.lock().unwrap())
+}
+
+/// the most lines the hold keeps.
+const HELD_MAX: usize = 400;
+
+/// whether a quiet terminal keeps `line` back, and the hold it goes to.
+fn hold(quiet: bool, line: &Line, held: &Mutex<Vec<String>>) -> bool {
+    let hidden = quiet
+        && match line.kind {
+            Kind::Out => true,
+            Kind::Info => is_task_progress(&line.text),
+            _ => false,
+        };
+    if hidden {
+        let mut held = held.lock().unwrap();
+        if held.len() >= HELD_MAX {
+            held.remove(0);
+        }
+        held.push(line.text.clone());
+    }
+    hidden
 }
 
 /// a line that only reports a task that went well.
@@ -57,13 +85,7 @@ pub fn emit(kind: Kind, text: impl Into<String>) {
 }
 
 fn print_line(line: &Line) {
-    if QUIET_TASKS.load(Ordering::Relaxed)
-        && match line.kind {
-            Kind::Out => true,
-            Kind::Info => is_task_progress(&line.text),
-            _ => false,
-        }
-    {
+    if hold(QUIET_TASKS.load(Ordering::Relaxed), line, &QUIET_HELD) {
         return;
     }
     match line.kind {
@@ -90,6 +112,37 @@ mod tests {
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].kind, Kind::Debug);
         assert_eq!(seen[1].kind, Kind::Out);
+    }
+
+    #[test]
+    fn a_quiet_terminal_holds_task_output_for_a_failure_to_show() {
+        let held = Mutex::new(Vec::new());
+        let out = |text: &str| Line {
+            kind: Kind::Out,
+            text: text.into(),
+        };
+        assert!(hold(true, &out("fatal: [gw]: FAILED! => boom"), &held));
+        assert!(hold(
+            true,
+            &Line {
+                kind: Kind::Info,
+                text: "ok: [gw]".into()
+            },
+            &held
+        ));
+        assert!(!hold(
+            true,
+            &Line {
+                kind: Kind::Info,
+                text: "lanlord is installed".into()
+            },
+            &held
+        ));
+        assert!(!hold(false, &out("loud"), &held));
+        assert_eq!(
+            *held.lock().unwrap(),
+            ["fatal: [gw]: FAILED! => boom", "ok: [gw]"]
+        );
     }
 
     #[test]

@@ -323,7 +323,7 @@ fn flag_choice(
         .transpose()?;
     Ok(Some(Choice::Create {
         name: name.clone(),
-        password: password()?,
+        password: zeroize::Zeroizing::new(password()?),
         ssh_public_key,
     }))
 }
@@ -379,7 +379,7 @@ fn ask_new_admin() -> Result<lanlord_core::firstadmin::Choice> {
     }
     Ok(lanlord_core::firstadmin::Choice::Create {
         name,
-        password,
+        password: zeroize::Zeroizing::new(password),
         ssh_public_key,
     })
 }
@@ -1094,12 +1094,12 @@ fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()>
     Ok(())
 }
 
-/// print an install's steps and what the server says while it runs.
 /// an install shows its steps, not every task of the playbooks, unless `--verbose` asks.
 fn quiet_install() {
     lanlord_core::log::set_quiet_tasks(!lanlord_core::log::verbose());
 }
 
+/// print an install's steps and what the server says while it runs.
 fn print_install(event: lanlord_core::install::Event) {
     use lanlord_core::install::{Event, Step};
     // what the server printed in the step that runs: package managers and ansible are loud, so
@@ -1109,6 +1109,7 @@ fn print_install(event: lanlord_core::install::Event) {
     match event {
         Event::StepStarted(step) => {
             HELD.lock().unwrap().clear();
+            lanlord_core::log::take_held();
             println!("[{}/{}] {}", number(step), Step::ALL.len(), step.title())
         }
         Event::Line(line) if lanlord_core::log::verbose() => println!("  {line}"),
@@ -1122,7 +1123,9 @@ fn print_install(event: lanlord_core::install::Event) {
         Event::StepDone(step) => println!("[{}/{}] done", number(step), Step::ALL.len()),
         // the error itself is printed once, by the caller
         Event::Failed { step, .. } => {
-            let held = std::mem::take(&mut *HELD.lock().unwrap());
+            // the playbook's own output (held by the log) comes first, then the step's lines
+            let mut held = lanlord_core::log::take_held();
+            held.extend(std::mem::take(&mut *HELD.lock().unwrap()));
             for line in held.iter().skip(held.len().saturating_sub(40)) {
                 eprintln!("  {line}");
             }
@@ -1583,6 +1586,12 @@ fn operating_account(
 ) -> Option<String> {
     match (user, uid) {
         (None, None) => Some("root".to_string()),
+        // `sudo lanlord operate` run as root: sudo names root, and the system agrees
+        (Some("root"), Some(claimed))
+            if claimed.parse() == Ok(0u32) && uid_of("root") == Some(0) =>
+        {
+            Some("root".to_string())
+        }
         _ => sudo_account(user, uid, uid_of),
     }
 }
@@ -1991,7 +2000,7 @@ mod tests {
             super::flag_choice(&flags, || Ok("pw".into())).unwrap(),
             Some(Choice::Create {
                 name: "olive".into(),
-                password: "pw".into(),
+                password: zeroize::Zeroizing::new("pw".into()),
                 ssh_public_key: None
             })
         );
@@ -2031,7 +2040,21 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn root_over_ssh_is_let_run_operations_and_mismatched_sudo_variables_are_not() {
-        let uids = |name: &str| (name == "ann").then_some(1000);
+        let uids = |name: &str| match name {
+            "ann" => Some(1000),
+            "root" => Some(0),
+            _ => None,
+        };
+        // `sudo lanlord operate` as root: the same as no sudo, unless the variables lie
+        assert_eq!(
+            super::operating_account(Some("root"), Some("0"), uids).as_deref(),
+            Some("root")
+        );
+        assert_eq!(
+            super::operating_account(Some("root"), Some("1000"), uids),
+            None
+        );
+        assert_eq!(super::operating_account(Some("root"), None, uids), None);
         // no sudo at all: a root login over ssh
         assert_eq!(
             super::operating_account(None, None, uids).as_deref(),
