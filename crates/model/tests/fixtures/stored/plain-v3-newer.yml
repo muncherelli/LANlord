@@ -1,0 +1,4 @@
+lanlord_format: 99
+lanlord_version: "9.9"
+dns:
+  zone: lab.example

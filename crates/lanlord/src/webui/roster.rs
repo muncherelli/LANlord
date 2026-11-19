@@ -9,7 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, MethodRouter};
 use axum::Extension;
 use lanlord_model::access::{Access, Grants, Level};
-use lanlord_model::settings::Settings;
+use lanlord_model::format::Context;
+use lanlord_model::stored::{self, Kind};
 
 use super::auth::{require_current, Auth, Standing};
 
@@ -41,7 +42,10 @@ impl Roster {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        Access::from_settings(&Settings::parse(&text)?).map_err(|e| anyhow::anyhow!(e))
+        // read as the current format; a file from a newer lanlord is an error, which closes
+        // streams (see `grants`)
+        let settings = stored::load(Kind::Plain, &text, &Context::default())?;
+        Access::from_settings(&settings).map_err(|e| anyhow::anyhow!(e))
     }
 
     /// what `user` may do, given whether they are an administrator now: administrators
@@ -129,6 +133,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use lanlord_model::access::{Area, Role};
+    use lanlord_model::settings::Settings;
     use tower::ServiceExt;
 
     use super::*;
