@@ -215,19 +215,22 @@ pub const STATUS_HEIGHT: f32 = 20.0;
 
 /// a sunken panel for status text at the bottom of a window.
 pub fn status_bar(ui: &mut Ui, text: &str, error: bool) {
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), STATUS_HEIGHT),
-        Sense::hover(),
-    );
-    thin_bevel(ui, rect, false);
     let colour = if error { crate::remote::RED } else { BLACK };
-    ui.painter().with_clip_rect(rect.shrink(2.0)).text(
-        rect.left_center() + Vec2::new(6.0, 0.0),
-        Align2::LEFT_CENTER,
-        text,
+    // a long message wraps and grows the bar, so none of it is cut off
+    let width = ui.available_width();
+    let galley = ui.painter().layout(
+        text.to_string(),
         theme::font(),
         colour,
+        (width - 12.0).max(1.0),
     );
+    let height = STATUS_HEIGHT.max(galley.size().y + 6.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    thin_bevel(ui, rect, false);
+    let at = rect.left_center() + Vec2::new(6.0, -galley.size().y / 2.0);
+    ui.painter()
+        .with_clip_rect(rect.shrink(2.0))
+        .galley(at, galley, colour);
 }
 
 /// a horizontal line cut into the surface, as between groups of controls.

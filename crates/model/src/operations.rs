@@ -65,6 +65,9 @@ pub enum Operation {
         name: String,
         password: Secret,
         root_ssh: RootSsh,
+        /// the new account's first authorized ssh key, if one was given.
+        #[serde(default)]
+        ssh_key: Option<String>,
     },
     /// how root may sign in over ssh: the level lanlord set, if any.
     RootSshState,
@@ -109,6 +112,12 @@ pub enum Operation {
     /// change the caller's own password on every linked account, all or none. the old
     /// password is checked first.
     ChangePassword { old: Secret, new: Secret },
+    /// the caller's own authorized ssh keys, one public key line each.
+    MyKeys,
+    /// add a public key to the caller's own authorized keys.
+    AddMyKey { key: String },
+    /// remove a public key (the whole line) from the caller's own authorized keys.
+    RemoveMyKey { key: String },
     /// change the caller's own profile fields.
     UpdateProfile { profile: Profile },
     /// set the password of `user` on every linked account, all or none.
@@ -159,6 +168,9 @@ impl Operation {
             Operation::ClockApply { .. } | Operation::ClockUpdateNow => Need::manage(Area::Clock),
             Operation::AccountInfo
             | Operation::ChangePassword { .. }
+            | Operation::MyKeys
+            | Operation::AddMyKey { .. }
+            | Operation::RemoveMyKey { .. }
             | Operation::UpdateProfile { .. } => Need::SelfOnly,
             Operation::ResetPassword { .. } | Operation::SaveAccess { .. } => {
                 Need::manage(Area::Users)
@@ -428,6 +440,7 @@ mod tests {
                 name: "admin".into(),
                 password: Secret::new("pw"),
                 root_ssh: RootSsh::KeysOnly,
+                ssh_key: None,
             },
             Operation::RootSshState,
             Operation::SetRootSsh {
@@ -478,6 +491,13 @@ mod tests {
             Operation::ChangePassword {
                 old: Secret::new("pw"),
                 new: Secret::new("pw2"),
+            },
+            Operation::MyKeys,
+            Operation::AddMyKey {
+                key: "ssh-ed25519 AAAA example".into(),
+            },
+            Operation::RemoveMyKey {
+                key: "ssh-ed25519 AAAA example".into(),
             },
             Operation::UpdateProfile {
                 profile: Profile {
@@ -548,10 +568,34 @@ mod tests {
     }
 
     #[test]
+    fn a_person_edits_only_their_own_ssh_keys() {
+        let key: String = "ssh-ed25519 AAAA example".into();
+        for operation in [
+            Operation::MyKeys,
+            Operation::AddMyKey { key: key.clone() },
+            Operation::RemoveMyKey { key: key.clone() },
+        ] {
+            assert_eq!(operation.requires(), Need::SelfOnly, "{operation:?}");
+            assert_eq!(operation.validate(), Ok(()));
+        }
+        let bad = Operation::AddMyKey { key: "nope".into() };
+        assert_eq!(bad.validate().unwrap_err().field, "key");
+        // the wire format of an older client, without a key, still reads
+        let old: Operation = serde_json::from_str(
+            r#"{"op":"setup_first_admin","name":"pat","password":"pw","root_ssh":"off"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            old,
+            Operation::SetupFirstAdmin { ssh_key: None, .. }
+        ));
+    }
+
+    #[test]
     fn every_operation_survives_the_wire() {
         let operations = every_operation();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(operations.len(), 36);
+        assert_eq!(operations.len(), 39);
         for operation in &operations {
             round_trip(operation);
         }

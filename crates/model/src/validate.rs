@@ -985,6 +985,18 @@ pub fn ssh_key(text: &str) -> Check {
     flag(
         text.len() <= 8192 && !has_control(text, &[]),
         "must be one line of at most 8192 characters, with no control characters",
+    )?;
+    let known = ["ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-"]
+        .iter()
+        .any(|p| text.starts_with(p));
+    let data = text.split_whitespace().nth(1).unwrap_or("");
+    let base64 = !data.is_empty()
+        && data
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='));
+    flag(
+        known && base64,
+        "must be an ssh public key line, such as ssh-ed25519 AAAA... comment",
     )
 }
 
@@ -1104,7 +1116,12 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             key.as_deref()
                 .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
         }
-        Operation::SetupFirstAdmin { name, password, .. } => {
+        Operation::SetupFirstAdmin {
+            name,
+            password,
+            ssh_key: key,
+            ..
+        } => {
             named("name", login_name, name)?;
             flag(
                 !matches!(name.as_str(), "root" | "lanlord"),
@@ -1113,8 +1130,11 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             .map_err(|reason| invalid("name", reason))?;
             named("password", secret_text, password.expose())?;
             flag(!password.expose().is_empty(), "must not be empty")
-                .map_err(|reason| invalid("password", reason))
+                .map_err(|reason| invalid("password", reason))?;
+            key.as_deref()
+                .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
         }
+        Operation::AddMyKey { key } | Operation::RemoveMyKey { key } => named("key", ssh_key, key),
         Operation::ReadLogon { name } => flag(
             crate::logon::valid_script_name(name),
             "is not a script name",
@@ -1902,6 +1922,7 @@ web-proxy:
                     name: "root".into(),
                     password: password("x"),
                     root_ssh: RootSsh::KeysOnly,
+                    ssh_key: None,
                 },
                 "name",
             ),
@@ -1910,6 +1931,7 @@ web-proxy:
                     name: "Alice".into(),
                     password: password("x"),
                     root_ssh: RootSsh::KeysOnly,
+                    ssh_key: None,
                 },
                 "name",
             ),
@@ -1918,6 +1940,7 @@ web-proxy:
                     name: "alice".into(),
                     password: password(""),
                     root_ssh: RootSsh::KeysOnly,
+                    ssh_key: None,
                 },
                 "password",
             ),
@@ -1926,6 +1949,7 @@ web-proxy:
                     name: "alice".into(),
                     password: password("a\nb"),
                     root_ssh: RootSsh::KeysOnly,
+                    ssh_key: None,
                 },
                 "password",
             ),

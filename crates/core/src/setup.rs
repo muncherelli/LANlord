@@ -61,7 +61,7 @@ pub fn first_admin(
     host: &str,
     name: &str,
     password: &str,
-    root_ssh: RootSsh,
+    (root_ssh, ssh_key): (RootSsh, Option<&str>),
     ask: AskPassword,
 ) -> Result<Reply> {
     let _one = ONE_AT_A_TIME
@@ -72,12 +72,15 @@ pub fn first_admin(
             Refused("an administrator already exists: sign in as that account".into()).into(),
         );
     }
-    // the new account has no ssh key and, when sshd takes no passwords, root's ssh would be the
-    // last way in over ssh: turning it off would leave no one. refused before anything is made.
-    if root_ssh == RootSsh::Off && rootssh::passwords_refused(session, &mut *ask)? {
+    // without an ssh key for the new account and when sshd takes no passwords, root's ssh would be
+    // the last way in over ssh: turning it off would leave no one. refused before anything is made.
+    if root_ssh == RootSsh::Off
+        && ssh_key.is_none()
+        && rootssh::passwords_refused(session, &mut *ask)?
+    {
         return Err(Refused(LOCKOUT.into()).into());
     }
-    account::create_admin(session, host, name, password, None, false, &mut *ask)?;
+    account::create_admin(session, host, name, password, ssh_key, false, &mut *ask)?;
     let note = match rootssh::apply(session, root_ssh, ask) {
         Ok(()) => None,
         Err(error) => {
@@ -135,7 +138,7 @@ esac"#
             "gw",
             "pat",
             "pw",
-            RootSsh::KeysOnly,
+            (RootSsh::KeysOnly, None),
             &mut no_password,
         )
         .unwrap_err();
@@ -171,6 +174,7 @@ esac"#
             name: "root".into(),
             password: lanlord_model::secret::Secret::new("pw"),
             root_ssh: RootSsh::KeysOnly,
+            ssh_key: None,
         };
         let err = execute_setup(&session, "gw", &bad, &mut no_password).unwrap_err();
         assert!(format!("{err}").contains("name"), "{err}");
@@ -184,6 +188,7 @@ esac"#
             name: "pat".into(),
             password: lanlord_model::secret::Secret::new("pw"),
             root_ssh: RootSsh::KeysOnly,
+            ssh_key: None,
         };
         let reply = execute_setup(&session, "gw", &operation, &mut no_password).unwrap();
         assert_eq!(reply, Reply::SetupDone { note: None });
@@ -199,8 +204,15 @@ case "$last" in
   *) if grep -q 'tolower($1)=="passwordauthentication"'; then echo no; fi ;;
 esac"#,
         );
-        let err =
-            first_admin(&session, "gw", "pat", "pw", RootSsh::Off, &mut no_password).unwrap_err();
+        let err = first_admin(
+            &session,
+            "gw",
+            "pat",
+            "pw",
+            (RootSsh::Off, None),
+            &mut no_password,
+        )
+        .unwrap_err();
         assert!(err.downcast_ref::<Refused>().is_some(), "{err}");
         assert!(format!("{err}").contains("no ssh key"), "{err}");
         // keys only is allowed there (with a warning in the page)
@@ -209,7 +221,19 @@ esac"#,
             "gw",
             "pat",
             "pw",
-            RootSsh::KeysOnly,
+            (RootSsh::KeysOnly, None),
+            &mut no_password,
+        )
+        .unwrap();
+        assert!(matches!(reply, Reply::SetupDone { .. }));
+        // a key for the new account is a way in over ssh, so off is allowed with one
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoZ4HMhG4uZ pat@laptop";
+        let reply = first_admin(
+            &session,
+            "gw",
+            "pat",
+            "pw",
+            (RootSsh::Off, Some(key)),
             &mut no_password,
         )
         .unwrap();

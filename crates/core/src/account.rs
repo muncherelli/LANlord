@@ -69,7 +69,7 @@ fn check_password(password: &str) -> Result<()> {
 }
 
 /// one public key line, such as `ssh-ed25519 AAAA... comment`.
-fn check_key(key: &str) -> Result<()> {
+pub(crate) fn check_key(key: &str) -> Result<()> {
     let ok_type = ["ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-"]
         .iter()
         .any(|p| key.starts_with(p));

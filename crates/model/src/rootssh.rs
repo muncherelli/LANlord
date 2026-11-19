@@ -46,15 +46,17 @@ impl RootSsh {
         }
     }
 
-    /// the extra warning shown in the first-run setup, where the new account has no ssh key.
-    pub fn setup_warning(self) -> Option<&'static str> {
-        match self {
-            RootSsh::Allowed => None,
-            RootSsh::KeysOnly => Some(
-                "Warning: the new account has no ssh key yet. Add a key for root or for the new \
-                 account before you rely on ssh.",
+    /// the extra warning shown in the first-run setup; `has_key` says whether the new account was
+    /// given an ssh key, which is what lets it sign in over ssh when root may not.
+    pub fn setup_warning(self, has_key: bool) -> Option<&'static str> {
+        match (self, has_key) {
+            (RootSsh::Allowed, _) | (_, true) => None,
+            (RootSsh::KeysOnly, false) => Some(
+                "Warning: the new account has no ssh key, so if this server takes no ssh \
+                 passwords the administrator cannot use ssh. Add a key for it (go back to \
+                 step 1, or later in My Account) before you rely on ssh.",
             ),
-            RootSsh::Off => Some(
+            (RootSsh::Off, false) => Some(
                 "Not possible when this server accepts no ssh passwords: the new account has no \
                  ssh key, so no one could sign in over ssh. The setup says so and goes back.",
             ),
