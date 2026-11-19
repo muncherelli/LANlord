@@ -1,11 +1,11 @@
 ┌ □ Networks ─────────────────────────────────────────────────────────── _ □ × ┐
 │ [ External Network ]                                                         │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
-│ │┌ Connection ──────────────────────┐ ┌ Activity ────────────────────────┐ │ │
-│ ││ Status:    Connected             │ │           Sent      Received     │ │ │
-│ ││ Inter┌ New network ────────────────────────────────────── _ □ × ┐071  │ │ │
-│ ││ Speed│ Add a network on a card no network uses. Saving applies  │     │ │ │
-│ ││ Addre│ it to the server.                                        │─────┘ │ │
+│ │┌ Connection ──────────────────────┐ ┌ Activity ─────────────────────────┐│ │
+│ ││ Status:    Connected             │ │           Sent       Received     ││ │
+│ ││ Inter┌ New network ────────────────────────────────────── _ □ × ┐,071  ││ │
+│ ││ Speed│ Add a network on a card no network uses. Saving applies  │      ││ │
+│ ││ Addre│ it to the server.                                        │──────┘│ │
 │ │└──────│ Name                                                     │       │ │
 │ └───────│ Interface   eth1 ▼                                       │───────┘ │
 │         │ Address     172.16.120.1/22                              │efresh ] │

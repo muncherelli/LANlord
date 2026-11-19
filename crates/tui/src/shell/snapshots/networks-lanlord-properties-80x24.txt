@@ -1,11 +1,11 @@
 ┌ □ Networks ─────────────────────────────────────────────────────────── _ □ × ┐
 │ [ External Network ][ retronet ]                                             │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
-│ │┌ Connection ──────────────────────┐ ┌ Activity ────────────────────────┐ │ │
-│ ││ Status:    Connected             │ │           Sent        Received   │ │ │
-│ ││ Inter┌ retronet Properties ────────────────────────────── _ □ × ┐011  │ │ │
-│ ││ Speed│ Change this network. Saving applies it to the server.    │     │ │ │
-│ ││ Addre│ Name       retronet                                      │─────┘ │ │
+│ │┌ Connection ──────────────────────┐ ┌ Activity ─────────────────────────┐│ │
+│ ││ Status:    Connected             │ │           Sent         Received   ││ │
+│ ││ Inter┌ retronet Properties ────────────────────────────── _ □ × ┐,011  ││ │
+│ ││ Speed│ Change this network. Saving applies it to the server.    │0     ││ │
+│ ││ Addre│ Name       retronet                                      │──────┘│ │
 │ │└──────│ Interface   eth1 ▼                                       │       │ │
 │ │┌ LANlo│ Address     172.16.120.1/22                              │──────┐│ │
 │ ││ DHCP │ DHCP range  172.16.120.100    to      172.16.120.200     │      ││ │

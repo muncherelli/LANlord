@@ -146,6 +146,9 @@ fn read(gateway: &dyn Gateway, target: &str, ask: AskPassword) -> Result<Network
     })
 }
 
+/// the width of the Connection box beside the traffic.
+const CONNECTION_WIDTH: f32 = 250.0;
+
 /// how the server starts the error of a change that was stored but did not apply.
 const SAVED_NOT_APPLIED: &str = "Saved, but applying failed";
 
@@ -856,7 +859,7 @@ fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>)
         // the traffic sits beside the connection, so the page stays short enough to leave room
         // for the interface list on a small screen
         (Some(status), _) => nodes.push(Node::Columns(vec![
-            (None, vec![connection]),
+            (Some(CONNECTION_WIDTH), vec![connection]),
             (None, vec![activity(status)]),
         ])),
         (None, Some(error)) => {
