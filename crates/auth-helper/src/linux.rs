@@ -74,7 +74,7 @@ impl Groups for SystemGroups {
     }
 
     fn has_other_member(&self, gid: u32) -> Result<bool, &'static str> {
-        Ok(Self::listed(gid)?.iter().any(|n| n != "root") || Self::primary_other(gid))
+        Ok(Self::listed(gid)?.iter().any(|n| n != "root") || Self::primary_other(gid)?)
     }
 }
 
@@ -121,25 +121,34 @@ impl SystemGroups {
         Ok(names)
     }
 
-    /// whether an account other than root has `gid` as its primary group.
-    fn primary_other(gid: u32) -> bool {
+    /// whether an account not named root has `gid` as its primary group. a read error of the
+    /// passwd database is an error, never "no one": the caller must fail closed.
+    fn primary_other(gid: u32) -> Result<bool, &'static str> {
         let mut other = false;
+        let mut failed = false;
         // SAFETY: the helper is single threaded, so the shared passwd iterator is not raced.
         unsafe {
             libc::setpwent();
             loop {
+                // getpwent returns null both at the end and on an error; only errno tells
+                *libc::__errno_location() = 0;
                 let entry = libc::getpwent();
                 if entry.is_null() {
+                    failed = *libc::__errno_location() != 0;
                     break;
                 }
-                if (*entry).pw_gid == gid && (*entry).pw_uid != 0 {
+                let name = std::ffi::CStr::from_ptr((*entry).pw_name);
+                if (*entry).pw_gid == gid && name.to_bytes() != b"root" {
                     other = true;
                     break;
                 }
             }
             libc::endpwent();
         }
-        other
+        if failed {
+            return Err("groups");
+        }
+        Ok(other)
     }
 }
 

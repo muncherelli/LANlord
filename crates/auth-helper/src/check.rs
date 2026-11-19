@@ -184,7 +184,7 @@ pub fn answer(
             Ok(Some(uid)) if !reserved_uid(uid) && !named_caller => {}
             // root may sign in only to set up, while no other admin exists: asked now, at every
             // login, and only after pam accepted the password
-            Ok(Some(0)) if !named_caller => {
+            Ok(Some(0)) if !named_caller && request.user == "root" => {
                 decision = match groups.has_other_member(ADMINS_GID) {
                     Ok(false) => Decision::Setup,
                     Ok(true) => Decision::System,
@@ -314,6 +314,7 @@ mod tests {
                 "alice" => Ok(Some(10000)),
                 "root" => Ok(Some(0)),
                 "daemon" => Ok(Some(1)),
+                "toor" => Ok(Some(0)),
                 _ => Ok(None),
             }
         }
@@ -420,7 +421,7 @@ mod tests {
     #[test]
     fn other_system_accounts_never_get_setup() {
         let system = FakeSystem::default();
-        for name in ["lanlord", "daemon"] {
+        for name in ["lanlord", "daemon", "toor"] {
             let bytes = format!("{name}\0secret\0");
             let groups = FakeGroups::new(Ok(false)).with_others(Ok(false));
             let (verdict, _) = run_with(&system, &lanlord(), bytes.as_bytes(), Ok(true), groups);
