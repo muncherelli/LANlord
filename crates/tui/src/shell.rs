@@ -499,7 +499,10 @@ impl Shell {
             return;
         };
         match outcome {
-            admin_setup::Outcome::Skipped => self.admin_setup = None,
+            // the first-run setup is the web ui's; there is no other way to get one here
+            admin_setup::Outcome::Skipped | admin_setup::Outcome::FirstRun { .. } => {
+                self.admin_setup = None;
+            }
             admin_setup::Outcome::Created(name) => {
                 // forget the root entry and ask for a logon as the new account
                 self.admin_setup = None;

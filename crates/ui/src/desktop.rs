@@ -654,7 +654,12 @@ impl Desktop {
         self.services.session_restored();
         self.reset_session_ui();
         if signed_in.identity.is_root() {
-            self.admin_setup = Some(AdminSetup::new());
+            // the browser only ever gives root the first-run setup: nothing to skip
+            self.admin_setup = Some(if self.web.is_some() {
+                AdminSetup::first_run()
+            } else {
+                AdminSetup::new()
+            });
         }
         let account = signed_in.identity.user.clone();
         self.signed_in = Some(signed_in);
@@ -689,6 +694,9 @@ impl Desktop {
         match outcome {
             Some(admin_setup::Outcome::Skipped) => self.admin_setup = None,
             Some(admin_setup::Outcome::Created(name)) => self.admin_created(&name, &target),
+            Some(admin_setup::Outcome::FirstRun { name, note }) => {
+                self.first_run_done(&name, note.as_deref());
+            }
             None => {}
         }
         self.dialogs(ctx);
@@ -705,6 +713,24 @@ impl Desktop {
             Some(format!("{name}@{host}")),
             Some(format!("Created {name}. Log on with it.")),
         );
+    }
+
+    /// the first-run setup is over and the server has ended root's session: ask for a logon as
+    /// the new account, saying what did not work when root's ssh setting did not.
+    fn first_run_done(&mut self, name: &str, note: Option<&str>) {
+        self.admin_setup = None;
+        let Some(session) = self.web.clone() else {
+            return;
+        };
+        let mut text = format!("Created {name}. Log on with it.");
+        if let Some(note) = note {
+            text.push(' ');
+            text.push_str(note);
+        }
+        if let Some(signed_in) = self.signed_in.as_mut() {
+            signed_in.identity.user = name.to_string();
+        }
+        self.show_web_login(session, Some(&text));
     }
 
     /// lanlord was removed from `host`: forget it and go back to the logon box.
