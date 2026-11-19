@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the desktop stops redrawing when nothing changes: no timer on the sign-in screen, one frame a minute for the taskbar clock, no blinking text cursor, icons uploaded once as textures, the look set once, and the browser build capped at 30 frames a second without dithering
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers
 
 ## [0.1.3] - 2026-11-19
