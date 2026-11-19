@@ -550,7 +550,7 @@ mod tests {
             Operation::Leases => 15,
             Operation::LogonScripts => 16,
             Operation::ReadLogon { .. } => 17,
-            Operation::ReadGeneratedLogon { .. } => 18,
+            Operation::ReadGeneratedLogon => 18,
             Operation::WriteLogon { .. } => 19,
             Operation::Run { .. } => 20,
             Operation::Power { .. } => 21,
