@@ -16,11 +16,12 @@ add table inet lanlord
 delete table inet lanlord
 table inet lanlord {
 {% for net in some %}
-  # {{ net.name }}: the computers allowed out, each removed by nft itself when its time is up
+  # {{ net.name }}: the computers allowed out, each removed by nft itself when its time is up. the
+  # set is empty here, so a boot never reopens a grant that ended while the machine was off: the
+  # elements are added from internet-elements.nft, worked out again from the end times.
   set internet_{{ net.name | replace('-', '_') }} {
     type ether_addr
     flags timeout
-    elements = { {% for host in net.internet_allow %}{{ host.mac }}{% if host.seconds is not none %} timeout {{ host.seconds }}s{% endif %}{% if not loop.last %}, {% endif %}{% endfor %} }
   }
 {% endfor %}
   chain input {
@@ -45,7 +46,7 @@ table inet lanlord {
   chain forward {
     type filter hook forward priority -10; policy accept;
 {% if reaching | length > 0 and out != '' %}
-    ct state established,related accept
+    iifname "{{ out }}" oifname { {% for net in reaching %}"{{ net.interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } ct state established,related accept
 {% for net in whole %}
     iifname "{{ net.interface }}" oifname "{{ out }}" accept
 {% endfor %}

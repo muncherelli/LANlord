@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- internet access, off by default: per network (`lanlord networks HOST set NAME --internet on`) or per computer by MAC address, for good or for a while (`lanlord networks HOST internet NAME allow MAC --for 1h`); ended grants stop on their own, NAT and forwarding live in the lanlord firewall table, and dnsmasq hands the gateway out as the router
+- internet access, off by default: per network (`lanlord networks HOST set NAME --internet on`) or per computer by MAC address, for good or for a while (`lanlord networks HOST internet NAME allow MAC --for 1h`); ended grants stop on their own, NAT and forwarding live in the lanlord firewall table, and dnsmasq hands the gateway out as the router; any access on a network turns on upstream DNS for every computer on it, so computers that are not allowed out can still resolve names and could tunnel over DNS
 
 ### Changed
 

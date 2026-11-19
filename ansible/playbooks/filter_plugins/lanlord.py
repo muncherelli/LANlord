@@ -123,33 +123,48 @@ def _until(value, path):
     return int(parsed.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
-def _internet(item, path, now):
-    """who on the network may go out to the internet. grants that have ended at `now` are dropped,
-    the others carry the seconds they have left, which is what the nft set element times out on."""
+def _switch(item, path):
+    """the network-wide internet switch: true or false, absent meaning off."""
     enabled = item.get('internet', False)
     if enabled is None:
-        enabled = False
+        return False
     if not isinstance(enabled, bool):
         raise Error('%s.internet must be true or false' % path)
+    return enabled
+
+
+def _grant(host, where, seen):
+    """one internet_allow entry as (mac, until), checked and not seen before."""
+    if not isinstance(host, dict):
+        raise Error('%s must be a mapping with a mac' % where)
+    mac = str(host.get('mac', ''))
+    if not MAC.match(mac):
+        raise Error('%s.mac must look like aa:bb:cc:dd:ee:ff' % where)
+    if mac.lower() in seen:
+        raise Error('%s: %s is listed twice' % (where, mac))
+    seen.add(mac.lower())
+    return mac.lower(), _until(host.get('until'), where)
+
+
+def _grants(item, path, now):
+    """the computers allowed out, without the grants that have ended at `now`; the others carry
+    the seconds they have left, which is what the nft set element times out on."""
     raw = item.get('internet_allow') or []
     if not isinstance(raw, list):
         raise Error('%s.internet_allow must be a list' % path)
     allow, seen = [], set()
     for i, host in enumerate(raw):
-        where = '%s.internet_allow[%d]' % (path, i)
-        if not isinstance(host, dict):
-            raise Error('%s must be a mapping with a mac' % where)
-        mac = str(host.get('mac', ''))
-        if not MAC.match(mac):
-            raise Error('%s.mac must look like aa:bb:cc:dd:ee:ff' % where)
-        if mac.lower() in seen:
-            raise Error('%s: %s is listed twice' % (where, mac))
-        seen.add(mac.lower())
-        until = _until(host.get('until'), where)
-        if until is not None and until <= now:
-            continue
-        allow.append({'mac': mac.lower(), 'until': until,
-                      'seconds': None if until is None else until - now})
+        mac, until = _grant(host, '%s.internet_allow[%d]' % (path, i), seen)
+        if until is None or until > now:
+            allow.append({'mac': mac, 'until': until,
+                          'seconds': None if until is None else until - now})
+    return allow
+
+
+def _internet(item, path, now):
+    """who on the network may go out to the internet."""
+    enabled = _switch(item, path)
+    allow = _grants(item, path, now)
     return {
         'internet': enabled,
         'internet_allow': allow,

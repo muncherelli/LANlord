@@ -142,6 +142,7 @@
     - name: work out whether anything on the lanlord networks goes out to the internet
       ansible.builtin.set_fact:
         internet_needed: "{{ lanlord_networks | selectattr('internet_any') | list | length > 0 }}"
+        internet_machines: "{{ lanlord_networks | rejectattr('internet') | map(attribute='internet_allow') | flatten | list | length > 0 }}"
         internet_timed: "{{ lanlord_networks | map(attribute='internet_allow') | flatten | selectattr('until', 'ne', none) | list | length > 0 }}"
 
     - name: check that there is a network to go out through
@@ -161,16 +162,30 @@
       changed_when: false
       when: internet_needed
 
-    # forwarding stays on until the next boot when it goes away again; the firewall below drops
-    # what the lanlord networks forward either way
+    # lanlord's own sysctl file is how it knows forwarding was its doing: when nothing needs it any
+    # more the file goes and forwarding is switched off now, not only at the next boot. a machine
+    # that never had the file keeps whatever forwarding it had (docker turns it on for itself).
+    - name: look for lanlord's ip forwarding file
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/60-lanlord.conf
+      register: lanlord_sysctl
+      when: not internet_needed
+
     - name: stop turning ip forwarding on at boot
       ansible.builtin.file:
         path: /etc/sysctl.d/60-lanlord.conf
         state: absent
       when: not internet_needed
 
+    - name: turn ip forwarding off now
+      ansible.builtin.command: sysctl -w net.ipv4.ip_forward=0
+      changed_when: false
+      when: not internet_needed and lanlord_sysctl.stat.exists | default(false)
+
     # docker's iptables backend sets the FORWARD policy to DROP when it turns forwarding on, which
-    # silently kills the nat below even though lanlord's own table accepts the traffic
+    # silently kills the nat below even though lanlord's own table accepts the traffic. docker 28
+    # can be told not to ("ip-forward-no-drop"); the key is kept for as long as anything goes out,
+    # and taken out again only when lanlord was the one that added it.
     - name: look at the iptables FORWARD policy
       ansible.builtin.shell: iptables -S FORWARD 2>/dev/null | sed -n 's/^-P FORWARD //p' | head -n 1
       register: forward_policy
@@ -192,21 +207,73 @@
         src: /etc/docker/daemon.json
       register: daemon_json
       failed_when: false
-      when: internet_needed and forward_policy.stdout | default('') == 'DROP'
+      when: docker_version.stdout is version('28.0', '>=')
+
+    - name: work out docker's settings
+      ansible.builtin.set_fact:
+        daemon_config: "{{ (daemon_json.content | default('e30=') | b64decode | trim or '{}') | from_json }}"
+      when: docker_version.stdout is version('28.0', '>=')
+
+    - name: make a place for lanlord's firewall rules
+      ansible.builtin.file:
+        path: /etc/lanlord
+        state: directory
+        mode: "0750"
+
+    - name: see whether lanlord added the ip-forward-no-drop key
+      ansible.builtin.stat:
+        path: /etc/lanlord/ip-forward-no-drop
+      register: no_drop_marker
+      when: docker_version.stdout is version('28.0', '>=')
+
+    - name: remember that the key is lanlord's, when it was not there before
+      ansible.builtin.copy:
+        dest: /etc/lanlord/ip-forward-no-drop
+        content: "added by lanlord; removed again when no network goes out\n"
+        mode: "0640"
+      when: >-
+        internet_needed and docker_version.stdout is version('28.0', '>=')
+        and 'ip-forward-no-drop' not in daemon_config
 
     - name: tell docker to leave the FORWARD policy alone
       ansible.builtin.copy:
         dest: /etc/docker/daemon.json
-        content: "{{ ((daemon_json.content | default('e30=') | b64decode | trim or '{}') | from_json) | combine({'ip-forward-no-drop': true}) | to_nice_json }}\n"
+        content: "{{ daemon_config | combine({'ip-forward-no-drop': true}) | to_nice_json }}\n"
         mode: "0644"
       register: daemon_json_written
-      when: internet_needed and forward_policy.stdout | default('') == 'DROP'
+      when: >-
+        internet_needed and docker_version.stdout is version('28.0', '>=')
+        and daemon_config['ip-forward-no-drop'] | default(false) != true
+
+    - name: take the ip-forward-no-drop key out again, when lanlord added it
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: "{{ daemon_config | dict2items | rejectattr('key', 'eq', 'ip-forward-no-drop') | items2dict | to_nice_json }}\n"
+        mode: "0644"
+      register: daemon_json_cleaned
+      when: >-
+        not internet_needed and docker_version.stdout is version('28.0', '>=')
+        and no_drop_marker.stat.exists | default(false) and 'ip-forward-no-drop' in daemon_config
+
+    - name: forget the marker
+      ansible.builtin.file:
+        path: /etc/lanlord/ip-forward-no-drop
+        state: absent
+      when: not internet_needed
 
     - name: restart docker so it takes the setting
       ansible.builtin.systemd:
         name: docker
         state: restarted
-      when: daemon_json_written is changed
+      when: daemon_json_written is changed or daemon_json_cleaned is changed
+
+    # the restart puts docker's policy back, and a policy that was already DROP stays: take it off
+    # every run while something goes out. lanlord's forward chain still drops lan to lan.
+    - name: let forwarded traffic through docker's FORWARD policy
+      ansible.builtin.command: iptables -P FORWARD ACCEPT
+      changed_when: false
+      failed_when: false
+      when: internet_needed and forward_policy.stdout | default('') == 'DROP'
 
     - name: work out which networks get their address, mtu and firewall settings from lanlord
       ansible.builtin.set_fact:
@@ -237,12 +304,6 @@
       loop_control:
         loop_var: lan
         label: "{{ lan.name }}"
-
-    - name: make a place for lanlord's firewall rules
-      ansible.builtin.file:
-        path: /etc/lanlord
-        state: directory
-        mode: "0750"
 
     - name: keep netbios, smb, dns and dhcp off the host network
       ansible.builtin.template:
@@ -278,9 +339,45 @@
         state: "{{ 'restarted' if (firewall_rules is changed or firewall_unit is changed) else 'started' }}"
         daemon_reload: true
 
+    # the computers allowed out are added to their sets here, with the time each has left worked
+    # out now from its end time; the rules file has empty sets, so a boot starts closed
+    - name: write the computers allowed out
+      ansible.builtin.template:
+        src: docker/internet-elements.nft.j2
+        dest: /etc/lanlord/internet-elements.nft
+        mode: "0600"
+      register: internet_elements
+
+    - name: let the computers allowed out through
+      ansible.builtin.command: nft -f /etc/lanlord/internet-elements.nft
+      changed_when: false
+      when: internet_machines
+
+    # a flow that is open when a grant ends, is denied, or a network goes off would carry on, so the
+    # flows of the computers that may not go out are ended (quietly skipped without conntrack)
+    - name: end the flows of computers that may not go out
+      ansible.builtin.command:
+        argv: >-
+          {{ ['sh', '-c', cut_flows, 'sh', net.interface]
+          + (net.internet_allow | map(attribute='mac') | map('lower') | list) }}
+      vars:
+        cut_flows: |
+          command -v conntrack >/dev/null 2>&1 || exit 0
+          iface=$1; shift
+          ip -4 neigh show dev "$iface" 2>/dev/null | while read -r addr tag mac _; do
+            [ "$tag" = lladdr ] || continue
+            case " $* " in *" $mac "*) continue ;; esac
+            conntrack -D -s "$addr" >/dev/null 2>&1 || true
+          done
+          exit 0
+      loop: "{{ lanlord_networks | rejectattr('internet') | list }}"
+      loop_control:
+        loop_var: net
+        label: "{{ net.name }}"
+      changed_when: false
+
     # grants that end are dropped from the rules by nft itself; the timer takes them out of the
-    # settings (and re-renders after a boot, when the rules come back with the time they were
-    # written with). only there while a grant has an end.
+    # settings. only there while a grant has an end.
     - name: keep the settings clean of internet grants that ended
       ansible.builtin.copy:
         dest: "/etc/systemd/system/{{ item.name }}"
@@ -307,21 +404,27 @@
 
             [Install]
             WantedBy=timers.target
-        - name: lanlord-internet-boot.service
-          content: |
-            [Unit]
-            Description=write the LANlord internet grants again with the time they have left
-            After=lanlord-firewall.service
-
-            [Service]
-            Type=oneshot
-            ExecStart=/opt/lanlord/bin/lanlord internet-prune --refresh
-
-            [Install]
-            WantedBy=multi-user.target
       loop_control:
         label: "{{ item.name }}"
       when: internet_timed
+
+    # after a boot the sets are empty (closed); this puts back the grants that are still running
+    - name: write the computers allowed out again at boot
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/lanlord-internet-boot.service
+        mode: "0640"
+        content: |
+          [Unit]
+          Description=put the LANlord internet grants that are still running back
+          After=lanlord-firewall.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/opt/lanlord/bin/lanlord internet-prune --refresh
+
+          [Install]
+          WantedBy=multi-user.target
+      when: internet_machines
 
     - name: start the clean-up timer
       ansible.builtin.systemd:
@@ -336,16 +439,25 @@
         name: lanlord-internet-boot.service
         enabled: true
         daemon_reload: true
-      when: internet_timed
+      when: internet_machines
 
     - name: stop the clean-up when no grant ends
       ansible.builtin.shell: |
-        systemctl disable --now lanlord-internet-prune.timer lanlord-internet-boot.service 2>/dev/null || true
-        rm -f /etc/systemd/system/lanlord-internet-prune.service /etc/systemd/system/lanlord-internet-prune.timer /etc/systemd/system/lanlord-internet-boot.service
+        systemctl disable --now lanlord-internet-prune.timer 2>/dev/null || true
+        rm -f /etc/systemd/system/lanlord-internet-prune.service /etc/systemd/system/lanlord-internet-prune.timer
         systemctl daemon-reload
       args:
         removes: /etc/systemd/system/lanlord-internet-prune.timer
       when: not internet_timed
+
+    - name: stop the boot refresh when no computer is allowed out
+      ansible.builtin.shell: |
+        systemctl disable lanlord-internet-boot.service 2>/dev/null || true
+        rm -f /etc/systemd/system/lanlord-internet-boot.service
+        systemctl daemon-reload
+      args:
+        removes: /etc/systemd/system/lanlord-internet-boot.service
+      when: not internet_machines
 
     - name: report
       ansible.builtin.debug:

@@ -212,6 +212,11 @@ const HARNESS: &str = r#"
       vars:
         lan_interfaces: "{{ lanlord_networks | default([]) | map(attribute='interface') | list }}"
     - ansible.builtin.template:
+        src: docker/internet-elements.nft.j2
+        dest: "{{ out }}/internet-elements.nft"
+      vars:
+        lan_interfaces: "{{ lanlord_networks | default([]) | map(attribute='interface') | list }}"
+    - ansible.builtin.template:
         src: docker/sysctl.conf.j2
         dest: "{{ out }}/sysctl.conf"
       when: lanlord_networks | default([]) | selectattr('internet_any') | list | length > 0
@@ -751,7 +756,7 @@ fn a_network_with_internet_on_goes_out_through_the_host_network() {
     .unwrap();
     let firewall = forward_lines(&out);
     for want in [
-        "    ct state established,related accept",
+        "    iifname \"eth0\" oifname { \"eth2\" } ct state established,related accept",
         "    iifname \"eth2\" oifname \"eth0\" accept",
         "    oifname \"eth0\" ip saddr 192.168.50.0/24 masquerade",
         "    iifname { \"eth1\", \"eth2\" } drop",
@@ -786,13 +791,23 @@ fn an_allowed_machine_gets_a_router_and_a_timed_nft_element() {
     let firewall = forward_lines(&out);
     for want in [
         "  set internet_retronet {",
-        "    elements = { 02:00:00:00:00:01, 02:00:00:00:00:aa timeout 3600s }",
         "    iifname \"eth1\" oifname \"eth0\" ether saddr @internet_retronet accept",
         "    oifname \"eth0\" ip saddr 172.16.120.0/22 masquerade",
     ] {
         assert!(has(&firewall, want), "{want} in\n{firewall:#?}");
     }
     assert!(!firewall.iter().any(|l| l.contains("eth2\" oifname")));
+    // a boot loads the rules file alone: its set is empty, so nothing is open before the grants
+    // that are still running are put back from the elements file
+    assert!(!firewall
+        .iter()
+        .any(|l| l.contains("elements") || l.contains("timeout")));
+    let elements = lines(&out.join("internet-elements.nft"));
+    assert!(has(&elements, "flush set inet lanlord internet_retronet"));
+    assert!(
+        has(&elements, "add element inet lanlord internet_retronet { 02:00:00:00:00:01, 02:00:00:00:00:aa timeout 3600s }"),
+        "{elements:#?}"
+    );
     assert!(out.join("sysctl.conf").exists());
     let conf = lines(&out.join("dns/retronet/dnsmasq.conf"));
     for want in [
@@ -821,16 +836,22 @@ fn an_ended_grant_is_not_rendered_and_the_network_goes_back_to_off() {
     let out = render("inet-ended", &internet_settings(ended, "")).unwrap();
     let off = render("inet-ended-off", &internet_settings("", "")).unwrap();
     assert_eq!(forward_lines(&out), forward_lines(&off));
+    // a grant that ended before the boot stays closed: the elements file has nothing for it
+    let elements = fs::read_to_string(out.join("internet-elements.nft")).unwrap();
+    assert!(!elements.contains("02:00:00:00:00:aa"), "{elements}");
     assert!(!out.join("sysctl.conf").exists());
     let conf = lines(&out.join("dns/retronet/dnsmasq.conf"));
     assert_eq!(conf, lines(&off.join("dns/retronet/dnsmasq.conf")));
     // one that ended and one that has a second left: only the second is there
     let mixed = "    internet_allow:\n      - {mac: \"02:00:00:00:00:AA\", until: \"2030-03-17T17:46:39Z\"}\n      - {mac: \"02:00:00:00:00:BB\", until: \"2030-03-17T17:46:41Z\"}\n";
     let out = render("inet-mixed", &internet_settings(mixed, "")).unwrap();
-    let firewall = forward_lines(&out);
+    let elements = lines(&out.join("internet-elements.nft"));
     assert!(
-        has(&firewall, "    elements = { 02:00:00:00:00:bb timeout 1s }"),
-        "{firewall:#?}"
+        has(
+            &elements,
+            "add element inet lanlord internet_retronet { 02:00:00:00:00:bb timeout 1s }"
+        ),
+        "{elements:#?}"
     );
 }
 
