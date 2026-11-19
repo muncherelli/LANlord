@@ -209,7 +209,7 @@ fn migrated(kind: Stored, bytes: Vec<u8>, file: &str) -> Result<Vec<u8>> {
     };
     match stored::load(kind, text, &Migrating::default()) {
         Ok(settings) => Ok(settings.text().into_bytes()),
-        Err(error) if error.is::<TooNew>() => Err(error.context(file.to_string())),
+        Err(error) if error.is::<TooNew>() => Err(error).with_context(|| file.to_string()),
         Err(_) => Ok(bytes),
     }
 }
