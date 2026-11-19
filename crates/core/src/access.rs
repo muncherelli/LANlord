@@ -257,6 +257,7 @@ mod tests {
     use super::*;
     use lanlord_model::leases::Lease;
 
+    #[cfg(unix)]
     #[test]
     fn a_root_login_is_an_administrator_without_the_group() {
         let who = |user: &str, groups: &str| {
