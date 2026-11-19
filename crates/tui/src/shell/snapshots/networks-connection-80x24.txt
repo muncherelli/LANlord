@@ -9,8 +9,8 @@
 │ │└───────────│  DHCP Enabled         Yes                      │            │ │
 │ └────────────│  IPv4 Address         192.0.2.10               │────────────┘ │
 │              │  IPv4 Subnet Mask     255.255.255.0            │] [ Refresh ] │
-│              │  Lease Obtained       11/18/2026 4:06:40 AM    │ network... ] │
-│ ┌ Network int│  Lease Expires        11/19/2026 4:06:40 AM    │────────────┐ │
+│              │  Lease Obtained       2026-11-18 04:06:40 UTC  │ network... ] │
+│ ┌ Network int│  Lease Expires        2026-11-19 04:06:40 UTC  │────────────┐ │
 │ │  eth0   192│  IPv4 Default Gateway 192.0.2.1                │            │ │
 │ │  eth1   172│  IPv4 DHCP Server     192.0.2.1                │            │ │
 │ └────────────│  IPv4 DNS Server      198.51.100.53            │────────────┘ │

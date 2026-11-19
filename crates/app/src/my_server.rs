@@ -302,7 +302,7 @@ impl MyServer {
                 vec![
                     mark(c.status).to_string(),
                     c.title.clone(),
-                    compat::needed_for(&c.id).join(", "),
+                    compat::explain(&c.id),
                 ]
             })
             .collect();

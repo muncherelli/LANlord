@@ -5,6 +5,7 @@ use eframe::egui::{self, Align2, Id, Margin, Pos2, Rect, Sense, Stroke, Ui, Vec2
 use crate::controls;
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
+use crate::view;
 
 /// what the title-bar buttons asked for this frame.
 #[derive(Default)]
@@ -296,6 +297,34 @@ fn remember_room(
     }
 }
 
+/// draw the held-back status bar under the scrolling part, with its margins; how tall that took.
+fn pinned_strip(ui: &mut Ui, pinned: Option<&view::Pinned>) -> f32 {
+    let Some(pinned) = pinned else {
+        return 0.0;
+    };
+    let t = view::pinned_amount(ui, pinned);
+    let top = ui.cursor().top();
+    egui::Frame::new()
+        .inner_margin(Margin {
+            left: MARGIN as i8,
+            right: MARGIN as i8,
+            top: 0,
+            bottom: (MARGIN * t) as i8,
+        })
+        .show(ui, |ui| view::draw_pinned(ui, pinned));
+    ui.cursor().top() - top
+}
+
+/// room to add under contents of `content_height` so that a window opens at its `floor`, none
+/// when it is not a window that fits its contents.
+fn pad_to_floor(fit: bool, floor: f32, content_height: f32, reserve: f32) -> f32 {
+    if fit {
+        (floor - CHROME - content_height - reserve).max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -322,6 +351,9 @@ pub fn show(
     // tall as its contents
     let key = Id::unique(("window-room", id));
     let before: Option<Room> = ctx.data(|d| d.get_temp(key));
+    // how tall the status bar under the scrolling part was last frame
+    let pin_key = Id::unique(("window-pin", id));
+    let reserve: f32 = ctx.data(|d| d.get_temp(pin_key)).unwrap_or(0.0);
     // a growable window follows its contents, getting taller as they do, until the user sizes it
     let fit = growable && place.height.is_none() && !before.is_some_and(|r| r.user);
     let sized = growable && !fit;
@@ -374,41 +406,43 @@ pub fn show(
         };
         // the room above what the contents need on their own, for the growable part to take
         let extra = spare_room(before, sized, fit, room, floor);
+        // the status bar sits under the scrolling part, so that gets the room less its strip
+        let scroll_room = (room - reserve).max(40.0);
         let from = ui.cursor().min;
         let room_width = ui.available_width();
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_size(
                     from,
-                    Vec2::new(ui.available_width(), room),
+                    Vec2::new(ui.available_width(), scroll_room),
                 ))
                 .layout(*ui.layout()),
         );
-        let (_, spare) = controls::lend_room(ctx, extra, || {
-            egui::ScrollArea::vertical()
-                .id_salt(("window-scroll", id))
-                .max_height(room)
-                .min_scrolled_height(least.y - CHROME)
-                .auto_shrink([false, !sized && !fixed])
-                .show(&mut inner, |ui| {
-                    let framed = egui::Frame::new()
-                        .inner_margin(Margin::same(MARGIN as i8))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing = spacing;
-                            content(ui)
-                        });
-                    content_height = framed.response.rect.height();
-                    // near empty contents leave the window the height it is meant to open at
-                    if fit {
-                        let pad = floor - CHROME - content_height;
+        let ((_, spare), pinned) = view::pin_status(ctx, || {
+            controls::lend_room(ctx, extra, || {
+                egui::ScrollArea::vertical()
+                    .id_salt(("window-scroll", id))
+                    .max_height(scroll_room)
+                    .min_scrolled_height((least.y - CHROME - reserve).max(0.0))
+                    .auto_shrink([false, !sized && !fixed])
+                    .show(&mut inner, |ui| {
+                        let framed = egui::Frame::new()
+                            .inner_margin(Margin::same(MARGIN as i8))
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing = spacing;
+                                content(ui)
+                            });
+                        content_height = framed.response.rect.height();
+                        // near empty contents leave the window the height it is meant to open at
+                        let pad = pad_to_floor(fit, floor, content_height, reserve);
                         if pad > 0.0 {
                             ui.allocate_space(Vec2::new(0.0, pad));
                         }
-                    }
-                });
+                    });
+            })
         });
         if growable {
-            let natural = content_height - (extra - spare.extra);
+            let natural = content_height - (extra - spare.extra) + reserve;
             remember_room(ctx, id, key, before, natural, spare.claimed, fit);
         }
         // a fixed window keeps its width: the scroll bar takes room from the contents, and a
@@ -418,6 +452,11 @@ pub fn show(
             taken.set_width(room_width);
         }
         ui.allocate_rect(taken, Sense::hover());
+        // the status bar, if the contents end in one, sits below the scrolling part: on the
+        // bottom edge of the window, and always in view
+        let strip = pinned_strip(ui, pinned.as_ref());
+        ctx.data_mut(|d| d.insert_temp(pin_key, strip));
+        content_height += strip;
     })?;
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);
@@ -498,6 +537,69 @@ mod tests {
                 (size - Vec2::new(300.0, want)).abs().max_elem() <= 1.0,
                 "{inner}: {size:?}"
             );
+        }
+    }
+
+    /// the window and the top of the "ready" text of its status bar, after a few frames.
+    fn with_status_bar(fixed: bool, inner: f32) -> (Rect, f32) {
+        use lanlord_app::view::Node;
+        let ctx = egui::Context::default();
+        let nodes: Vec<Node<u8>> = vec![
+            Node::Gap(1.0),
+            Node::Gap(6.0),
+            Node::Status {
+                text: "ready".into(),
+                error: false,
+            },
+        ];
+        let (mut rect, mut text_top) = (Rect::NOTHING, 0.0);
+        for _ in 0..40 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, testkit::SCREEN)),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let place = Placement {
+                    start: Pos2::new(100.0, 100.0),
+                    width: 300.0,
+                    area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
+                    growable: !fixed,
+                    fixed,
+                    floor: 0.0,
+                    height: Some(300.0),
+                };
+                rect = show(ui.ctx(), "s", "S", place, true, false, |ui| {
+                    ui.allocate_space(Vec2::new(10.0, inner));
+                    crate::view::show(ui, &nodes);
+                })
+                .map(|s| s.rect)
+                .expect("shown");
+            });
+            out.textures_delta.clear();
+            for clipped in &out.shapes {
+                if let egui::epaint::Shape::Text(t) = &clipped.shape {
+                    if t.galley.text() == "ready" {
+                        text_top = t.pos.y;
+                    }
+                }
+            }
+        }
+        (rect, text_top)
+    }
+
+    #[test]
+    fn a_status_bar_sits_on_the_bottom_edge_of_a_fixed_window() {
+        let (rect, top) = with_status_bar(true, 20.0);
+        assert!(top > 0.0, "the bar was drawn");
+        assert!(rect.bottom() - top < 30.0, "{top} in {rect:?}");
+    }
+
+    #[test]
+    fn a_status_bar_stays_in_view_below_contents_that_scroll() {
+        for fixed in [true, false] {
+            let (rect, top) = with_status_bar(fixed, 2000.0);
+            assert!(top > 0.0, "the bar was drawn");
+            assert!(rect.bottom() - top < 30.0, "{fixed}: {top} in {rect:?}");
         }
     }
 

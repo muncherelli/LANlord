@@ -11,7 +11,23 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
 
+use crate::format::Context;
 use crate::settings::Settings;
+
+/// format step 2 to 3: a gateway that never stored any assignments gets them, from the
+/// administrators it has now (see [`Access::migrate`]). where the administrators are not known
+/// (a load that only reads), nothing is stored and the assignments stay not-yet-migrated, as
+/// they were.
+pub fn migrate_settings(settings: &mut Settings, context: &Context) -> anyhow::Result<()> {
+    if let Some(admins) = &context.admins {
+        if settings.section(SECTION).is_none() {
+            // a value of plain data always converts
+            let value = serde_yaml_ng::to_value(Access::migrate(admins)).unwrap_or(Value::Null);
+            settings.add_section_keeping_text(SECTION, value);
+        }
+    }
+    Ok(())
+}
 
 /// the settings section the assignments live in.
 pub const SECTION: &str = "access";

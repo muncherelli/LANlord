@@ -11,6 +11,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use lanlord_model::format::{render_text, Step};
+
+/// the steps that bring an older manifest up to date: none yet. the file starts with a version
+/// line; one without is version 1.
+const STEPS: &[Step<String>] = &[];
 
 /// the platform a plan is made for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -294,13 +299,16 @@ impl Manifest {
     fn render(&self) -> String {
         let files = self.files.iter().map(|p| format!("f {}\n", p.display()));
         let dirs = self.dirs.iter().map(|p| format!("d {}\n", p.display()));
-        files.chain(dirs).collect()
+        render_text(&files.chain(dirs).collect::<String>(), STEPS)
     }
 
+    /// a manifest from a newer lanlord is refused: it is never written over.
     fn load(path: &Path) -> Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Ok(Self::parse(&text)),
+        match lanlord_core::localfile::read(path, STEPS) {
+            Ok(Some(text)) => Ok(Self::parse(&text)),
+            Ok(None) => Ok(Self::default()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Err(anyhow!("{e}")),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
     }
@@ -384,7 +392,7 @@ pub fn install_files(files: &[Planned], manifest: &Path, force: bool) -> Result<
     if let Some(parent) = manifest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(manifest, known.render())
+    lanlord_core::localfile::write(manifest, &known.render())
         .with_context(|| format!("writing {}", manifest.display()))
 }
 
@@ -948,5 +956,20 @@ mod tests {
             assert_eq!(Os::current(), Os::Linux);
         }
         assert_eq!(Env::current().config_dir, lanlord_core::paths::config_dir());
+    }
+    #[test]
+    fn a_manifest_from_a_newer_lanlord_is_refused() {
+        let dir = scratch("manifest-newer");
+        let manifest = dir.join("manifest");
+        std::fs::write(
+            &manifest,
+            "# lanlord format 9, written by LANlord 7.4\nf /x\n",
+        )
+        .unwrap();
+        let error = Manifest::load(&manifest).unwrap_err().to_string();
+        assert!(
+            error.ends_with("written by LANlord 7.4 (format 9); upgrade LANlord to use it"),
+            "{error}"
+        );
     }
 }

@@ -111,9 +111,21 @@ pub(crate) fn merged_with(
     match (plain, sealed) {
         (Some(plain), Some(sealed)) => {
             let merged = merge(&parse_value(&plain)?, &parse_value(&sealed)?);
-            Ok(Some(dump(&merged)?.into_bytes()))
+            Ok(Some(without_stamp(dump(&merged)?).into_bytes()))
         }
-        (plain, sealed) => Ok(plain.or(sealed)),
+        (plain, sealed) => Ok(plain.or(sealed).map(without_stamp_bytes)),
+    }
+}
+
+/// the version stamp is for lanlord's own files; the playbooks do not get it.
+fn without_stamp(text: String) -> String {
+    lanlord_model::format::without_stamp(&text)
+}
+
+fn without_stamp_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    match String::from_utf8(bytes) {
+        Ok(text) => without_stamp(text).into_bytes(),
+        Err(error) => error.into_bytes(),
     }
 }
 
@@ -151,7 +163,15 @@ pub(crate) fn save_changes_with(
     let mut ask = cached(ask);
     let stored = config::pull_with(session, identity, &mut ask)?
         .map(|bytes| parse_value(&bytes))
-        .transpose()?;
+        .transpose()?
+        .map(|mut value| {
+            // the version stamp is not a secret; the push stamps the file again
+            if let Value::Mapping(map) = &mut value {
+                map.remove(lanlord_model::format::FORMAT_KEY);
+                map.remove(lanlord_model::format::WRITTEN_BY_KEY);
+            }
+            value
+        });
     let mut secrets = stored
         .as_ref()
         .map_or_else(|| Value::Mapping(Mapping::new()), |v| split(v).1);
@@ -181,7 +201,7 @@ pub(crate) fn save_changes_with(
 #[cfg(all(test, unix))]
 mod gateway_tests {
     use super::*;
-    use crate::testgw::{identity, no_password, Gateway};
+    use crate::testgw::{identity, no_password, unstamped, Gateway};
 
     const LEGACY: &str = "dns:\n  zone: lab\nnt4-domain:\n  admin_password: hunter2\n  users:\n    - name: dana\n      password: pw1\n";
 
@@ -212,7 +232,7 @@ mod gateway_tests {
         gw.seed_sealed(&id, "# note\ndns: {}\n");
         let doc = load_document_with(&gw.session, &id, &mut no_password).unwrap();
         assert_eq!(
-            (doc.plain.as_str(), doc.legacy),
+            (unstamped(&doc.plain).as_str(), doc.legacy),
             ("# note\ndns: {}\n", true)
         );
     }
@@ -232,7 +252,7 @@ mod gateway_tests {
         );
         let doc = load_document_with(&gw.session, &id, &mut no_password).unwrap();
         assert!(!doc.legacy);
-        assert_eq!(doc.plain, text);
+        assert_eq!(unstamped(&doc.plain), text);
         assert_eq!(doc.secrets_set.len(), 2);
     }
 

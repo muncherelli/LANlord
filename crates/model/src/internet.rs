@@ -418,6 +418,16 @@ fn errors_of(list: &[LanNetwork]) -> Vec<String> {
         .collect()
 }
 
+/// format step 3 to 4: networks gain the optional `internet` and `internet_allow` keys. a file
+/// without them already means "no internet", so nothing is rewritten; the step exists so that an
+/// older lanlord, which would drop the keys when it saves, refuses a file that is in this format.
+pub fn migrate_networks(
+    _: &mut crate::settings::Settings,
+    _: &crate::format::Context,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
