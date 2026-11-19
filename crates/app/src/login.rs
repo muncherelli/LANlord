@@ -9,11 +9,11 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
-use lanlord_core::operate::{is_this_server, offered_at, this_server_target, LOCAL_SOCKET};
+use lanlord_core::operate::{offered_at, this_server_target, LOCAL_SOCKET};
 #[cfg(feature = "native")]
 use lanlord_core::signin::{local_identity, Attempt, Signin};
 use lanlord_model::login_text::LoginText;
-use lanlord_model::signin::{Identity, SigninError};
+use lanlord_model::signin::{is_this_server, Identity, SigninError};
 use zeroize::Zeroizing;
 
 use crate::message::MessageBox;
