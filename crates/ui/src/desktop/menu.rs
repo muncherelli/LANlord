@@ -257,7 +257,7 @@ impl Desktop {
         }
     }
 
-    pub(super) fn do_action(&mut self, _ctx: &egui::Context, action: Action) {
+    pub(super) fn do_action(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Developer => {
                 // the submenu opens beside the row; the menu stays up
@@ -279,7 +279,9 @@ impl Desktop {
             }
             // the browser build is updated on the gateway, not from here
             #[cfg(not(feature = "native"))]
-            Action::ToggleUpdates | Action::CheckUpdates => {}
+            Action::ToggleUpdates | Action::CheckUpdates => {
+                let _ = ctx;
+            }
             Action::Rebuild => self.ask_rebuild(),
             Action::Open(target) => self.open(target),
             Action::SwitchServer | Action::LogOff => self.log_off(),
