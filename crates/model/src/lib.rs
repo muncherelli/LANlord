@@ -13,6 +13,7 @@ pub mod identity;
 pub mod lan_networks;
 pub mod leases;
 pub mod log;
+pub mod login_text;
 pub mod logon;
 pub mod modules;
 pub mod monitor;

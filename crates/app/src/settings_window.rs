@@ -1,6 +1,7 @@
 //! the Settings window: the plain settings as yaml text, and the secrets as write-only
 //! fields. nothing is stored or applied unless a button is clicked.
 
+use lanlord_model::login_text::{LoginText, TEXT_LIMIT, TITLE_LIMIT};
 use lanlord_model::modules::{Status, MODULES};
 use lanlord_model::settings::{secret_fields, Document, SecretField, Settings};
 
@@ -8,10 +9,14 @@ use zeroize::Zeroizing;
 
 use crate::services::Services;
 use crate::tasks::Job;
-use crate::view::{Button, Node};
+use crate::view::{Button, Node, Size};
 
 /// the height of the settings text box.
 const EDITOR_HEIGHT: f32 = 230.0;
+
+/// the height of the sign-in message box, and the width of the sign-in title field.
+const LOGIN_TEXT_HEIGHT: f32 = 56.0;
+const LOGIN_TITLE_WIDTH: f32 = 320.0;
 
 /// a secret value typed in the dialog, waiting for Save: (path, value).
 type Update = (String, String);
@@ -37,6 +42,10 @@ pub enum Msg {
     /// the module picker now shows the module at this index of `MODULES`.
     PickModule(usize),
     ApplyModule,
+    /// the sign-in screen's title now reads this.
+    LoginTitle(String),
+    /// the sign-in screen's message now reads this.
+    LoginMessage(String),
 }
 
 #[derive(Default)]
@@ -65,6 +74,9 @@ pub struct SettingsWindow {
     pub module: usize,
     /// the secret whose new value the front end is asking for.
     asking: Option<String>,
+    /// the signed-in account is an administrator: only then is the sign-in text offered. the
+    /// server refuses anyone else's save of it either way.
+    pub admin: bool,
 }
 
 impl SettingsWindow {
@@ -81,6 +93,21 @@ impl SettingsWindow {
                     )
                 })
             }
+        }
+    }
+
+    /// the sign-in screen's title and message in the text.
+    pub fn login_text(&self) -> LoginText {
+        LoginText::from_text(&self.text)
+    }
+
+    /// put the sign-in title or message into the text; the rest of the text stays as it was.
+    /// the fields stop taking characters at their limits, as the server would refuse more.
+    fn set_login_text(&mut self, change: impl FnOnce(&mut LoginText)) {
+        let mut now = self.login_text();
+        change(&mut now);
+        if let Ok(text) = now.put_in(&self.text) {
+            self.text = text;
         }
     }
 
@@ -305,7 +332,7 @@ impl SettingsWindow {
             ),
             (None, None) => (false, String::new()),
         };
-        vec![
+        let mut nodes = vec![
             Node::Group {
                 title: format!("Plain settings stored on {host}"),
                 body: vec![Node::TextArea {
@@ -317,6 +344,37 @@ impl SettingsWindow {
                 }],
             },
             Node::Gap(4.0),
+        ];
+        if self.admin {
+            let now = self.login_text();
+            nodes.extend([
+                Node::Group {
+                    title: "Sign-in screen (shown before anyone signs in; plain text)".into(),
+                    body: vec![
+                        Node::Text(format!("Title (up to {TITLE_LIMIT} characters):")),
+                        Node::Input {
+                            value: now.title,
+                            size: Size::Points(LOGIN_TITLE_WIDTH),
+                            focus: false,
+                            hint: "Login Information".into(),
+                            edit: Box::new(Msg::LoginTitle),
+                            enter: None,
+                        },
+                        Node::Text(format!("Message (up to {TEXT_LIMIT} characters):")),
+                        Node::TextArea {
+                            id: "settings-login-text",
+                            value: now.text,
+                            height: LOGIN_TEXT_HEIGHT,
+                            hint: "Enter a username and password that is valid for this system."
+                                .into(),
+                            edit: Msg::LoginMessage,
+                        },
+                    ],
+                },
+                Node::Gap(4.0),
+            ]);
+        }
+        nodes.extend([
             Node::Group {
                 title: "Secrets (write-only; values are never shown)".into(),
                 body: vec![Node::Scroll {
@@ -342,7 +400,8 @@ impl SettingsWindow {
             ]),
             Node::Gap(6.0),
             Node::Status { text, error },
-        ]
+        ]);
+        nodes
     }
 
     /// act on a click or keystroke for `host`.
@@ -356,11 +415,24 @@ impl SettingsWindow {
             Msg::Reload if idle => self.load(services, host),
             Msg::Apply if idle => self.apply(services, host, &[]),
             Msg::PickModule(i) => self.module = i,
+            Msg::LoginTitle(title) if self.admin => {
+                let title: String = title.chars().filter(|c| !c.is_control()).collect();
+                self.set_login_text(|now| now.title = title.chars().take(TITLE_LIMIT).collect());
+            }
+            Msg::LoginMessage(text) if self.admin => {
+                self.set_login_text(|now| now.text = text.chars().take(TEXT_LIMIT).collect());
+            }
             Msg::ApplyModule if idle => {
                 let id = MODULES[self.module].id.to_string();
                 self.apply(services, host, &[id]);
             }
-            Msg::SetSecret(_) | Msg::Save | Msg::Reload | Msg::Apply | Msg::ApplyModule => {}
+            Msg::SetSecret(_)
+            | Msg::Save
+            | Msg::Reload
+            | Msg::Apply
+            | Msg::ApplyModule
+            | Msg::LoginTitle(_)
+            | Msg::LoginMessage(_) => {}
         }
     }
 
@@ -556,6 +628,97 @@ mod tests {
         settle(&mut editor);
         assert!(editor.pending_update("a.password"), "kept for another try");
         assert!(!editor.fields().iter().any(|f| f.set));
+    }
+
+    /// the nodes of the window as text: what is labelled and what the inputs hold.
+    fn shown(editor: &mut SettingsWindow, services: &Services) -> (Vec<String>, Vec<String>) {
+        fn walk(nodes: Vec<Node<Msg>>, labels: &mut Vec<String>, values: &mut Vec<String>) {
+            for node in nodes {
+                match node {
+                    Node::Text(text) => labels.push(text),
+                    Node::Group { title, body } => {
+                        labels.push(title);
+                        walk(body, labels, values);
+                    }
+                    Node::Input { value, .. } | Node::TextArea { value, .. } => values.push(value),
+                    _ => {}
+                }
+            }
+        }
+        let (mut labels, mut values) = (Vec::new(), Vec::new());
+        walk(editor.view(services, Some("a@b")), &mut labels, &mut values);
+        (labels, values)
+    }
+
+    #[test]
+    fn an_administrator_edits_the_sign_in_text_and_nobody_else_is_offered_it() {
+        let stored = "# note\ndns: {}\ngateway:\n  timezone: UTC\n";
+        let (mut editor, services, fake) = setup(stored);
+        editor.view(&services, Some("a@b"));
+        settle(&mut editor);
+        // not an administrator: no editor, and the messages do nothing
+        let (labels, values) = shown(&mut editor, &services);
+        assert!(!labels.iter().any(|l| l.starts_with("Sign-in screen")));
+        assert_eq!(values.len(), 1, "only the settings text");
+        editor.update(Msg::LoginTitle("Lab".into()), &services, "a@b");
+        assert!(!editor.dirty());
+        // an administrator
+        editor.admin = true;
+        let (labels, values) = shown(&mut editor, &services);
+        assert!(labels.iter().any(|l| l.starts_with("Sign-in screen")));
+        assert_eq!(values.len(), 3);
+        editor.update(
+            Msg::LoginTitle("Lab <b>Gateway</b>".into()),
+            &services,
+            "a@b",
+        );
+        editor.update(
+            Msg::LoginMessage("Line one\nLine two".into()),
+            &services,
+            "a@b",
+        );
+        assert!(editor.dirty());
+        assert_eq!(
+            editor.login_text(),
+            LoginText {
+                title: "Lab <b>Gateway</b>".into(),
+                text: "Line one\nLine two".into()
+            }
+        );
+        assert!(editor.text.contains("timezone: UTC"), "the rest is kept");
+        let (_, values) = shown(&mut editor, &services);
+        assert_eq!(values[1..], ["Lab <b>Gateway</b>", "Line one\nLine two"]);
+        editor.update(Msg::Save, &services, "a@b");
+        settle(&mut editor);
+        assert!(fake.stored.lock().unwrap().contains("login_title"));
+        // emptying a field takes its key out again
+        editor.update(Msg::LoginTitle(String::new()), &services, "a@b");
+        assert!(!editor.text.contains("login_title"));
+    }
+
+    #[test]
+    fn the_sign_in_fields_stop_at_their_limits() {
+        let (mut editor, services, _) = setup("");
+        editor.admin = true;
+        editor.update(
+            Msg::LoginTitle("t".repeat(TITLE_LIMIT + 5)),
+            &services,
+            "a@b",
+        );
+        editor.update(
+            Msg::LoginMessage("m".repeat(TEXT_LIMIT + 5)),
+            &services,
+            "a@b",
+        );
+        let now = editor.login_text();
+        assert_eq!(now.title.chars().count(), TITLE_LIMIT);
+        assert_eq!(now.text.chars().count(), TEXT_LIMIT);
+        editor.update(Msg::LoginTitle("a\nb".into()), &services, "a@b");
+        assert_eq!(editor.login_text().title, "ab", "a title is one line");
+        // text that is not yaml is left alone for the settings box to complain about
+        editor.update(Msg::Edit(": [".into()), &services, "a@b");
+        editor.update(Msg::LoginTitle("x".into()), &services, "a@b");
+        assert_eq!(editor.text, ": [");
     }
 
     #[test]

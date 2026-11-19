@@ -10,8 +10,9 @@ mod stream;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use axum::extract::{DefaultBodyLimit, FromRef, Request, State};
@@ -24,6 +25,7 @@ use lanlord_core::log::{self, Kind};
 use lanlord_core::operations::{
     Operation, Request as OperationRequest, Response as OperationResponse, UserChange,
 };
+use lanlord_core::settings::LoginText;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
@@ -87,6 +89,12 @@ fn router(static_dir: Option<&Path>) -> Router {
     )
 }
 
+/// a source that has nothing to say, for tests that do not read the sign-in text.
+#[cfg(test)]
+fn no_login_text() -> LoginTextSource {
+    Arc::new(|| Box::pin(async { None }))
+}
+
 /// the same, sending operations to the service on `operations_socket`.
 pub fn router_at(static_dir: Option<&Path>, operations_socket: &Path) -> Router {
     let auth = auth::Auth::system();
@@ -95,6 +103,7 @@ pub fn router_at(static_dir: Option<&Path>, operations_socket: &Path) -> Router 
         auth.clone(),
         roster::Roster::new(auth),
         service_runner(operations_socket.to_path_buf()),
+        service_login_text(operations_socket.to_path_buf()),
     )
 }
 
@@ -105,6 +114,7 @@ fn router_with(
     auth: Arc<auth::Auth>,
     roster: Arc<roster::Roster>,
     run: Runner,
+    login_text: LoginTextSource,
 ) -> Router {
     let dir = static_dir.map(Path::to_path_buf);
     let quick = Router::new()
@@ -114,6 +124,7 @@ fn router_with(
             post(auth::login).layer(DefaultBodyLimit::max(auth::LOGIN_LIMIT)),
         )
         .route("/api/logout", post(auth::logout))
+        .route("/api/login-text", get(login_text_route))
         .route("/api/session", roster::route(roster.clone()))
         .route("/api/monitor/end", post(monitor::end))
         .route("/api/events", stream::route(roster))
@@ -134,7 +145,11 @@ fn router_with(
         ));
     quick
         .merge(long)
-        .with_state(App { auth, run })
+        .with_state(App {
+            auth,
+            run,
+            login_text: LoginTexts::new(login_text),
+        })
         .layer(axum::middleware::map_response(secure))
 }
 
@@ -288,6 +303,76 @@ fn service_runner(socket: PathBuf) -> Runner {
     })
 }
 
+/// reads the sign-in text, from the operations service.
+type LoginTextSource =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<LoginText>> + Send>> + Send + Sync>;
+
+/// the real source: the root operations service on its unix socket.
+fn service_login_text(socket: PathBuf) -> LoginTextSource {
+    Arc::new(move || {
+        let socket = socket.clone();
+        Box::pin(async move { operations_service::ask_login_text(&socket).await.ok() })
+    })
+}
+
+/// how long a read of the sign-in text is kept, so that anyone who asks for it before signing in
+/// costs the service one read in this time, however often they ask.
+const LOGIN_TEXT_KEPT: Duration = Duration::from_secs(10);
+
+/// the sign-in text and when it was read; `None` is a read that failed, kept as long as a good one
+/// so that a service that is down is not asked again at once.
+type Kept = Option<(Instant, Option<LoginText>)>;
+
+struct LoginTexts {
+    source: LoginTextSource,
+    /// held across a read, so that however many ask at once, one read is made.
+    kept: tokio::sync::Mutex<Kept>,
+}
+
+impl LoginTexts {
+    fn new(source: LoginTextSource) -> Arc<Self> {
+        Arc::new(Self {
+            source,
+            kept: tokio::sync::Mutex::new(None),
+        })
+    }
+
+    /// the text, or the empty text (the page's own words) while the service cannot say.
+    async fn get(&self) -> LoginText {
+        let mut kept = self.kept.lock().await;
+        if let Some((read, text)) = kept.as_ref() {
+            if read.elapsed() < LOGIN_TEXT_KEPT {
+                return text.clone().unwrap_or_default();
+            }
+        }
+        let text = (self.source)().await;
+        *kept = Some((Instant::now(), text.clone()));
+        text.unwrap_or_default()
+    }
+}
+
+/// `GET /api/login-text`: the title and message of the sign-in screen, for anyone, before
+/// signing in. only those two fields are ever in the answer. when the service cannot say, they
+/// are empty and the page shows its own words.
+async fn login_text_route(State(app): State<App>) -> Response {
+    let text = app.login_text.get().await;
+    match serde_json::to_string(&text) {
+        Ok(body) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            body,
+        )
+            .into_response(),
+        Err(_) => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "could not encode the answer",
+        ),
+    }
+}
+
 /// where the apply events of an operation go: to the browsers following applies.
 fn apply_events() -> operations_service::Events {
     Arc::new(|event| stream::publish_apply(&event))
@@ -298,6 +383,7 @@ fn apply_events() -> operations_service::Events {
 struct App {
     auth: Arc<auth::Auth>,
     run: Runner,
+    login_text: Arc<LoginTexts>,
 }
 
 impl FromRef<App> for Arc<auth::Auth> {
@@ -643,6 +729,112 @@ mod tests {
             .unwrap()
             .to_vec();
         (status, kind, body)
+    }
+
+    /// the routes with the sign-in text read from `source` and no operations service.
+    fn router_reading(source: LoginTextSource) -> Router {
+        let auth = auth::Auth::system();
+        router_with(
+            None,
+            auth.clone(),
+            roster::Roster::new(auth),
+            service_runner(PathBuf::from("/nonexistent/operations.sock")),
+            source,
+        )
+    }
+
+    fn lab_text() -> LoginText {
+        LoginText {
+            title: "Lab <b>Gateway</b>".into(),
+            text: "Use your lab account.".into(),
+        }
+    }
+
+    #[test]
+    fn the_sign_in_text_is_public_and_holds_only_its_two_fields() {
+        let source: LoginTextSource = Arc::new(|| Box::pin(async { Some(lab_text()) }));
+        let (status, kind, body) =
+            runtime().block_on(call(router_reading(source), "GET", "/api/login-text"));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(kind, "application/json");
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let fields: Vec<&String> = value.as_object().unwrap().keys().collect();
+        assert_eq!(fields, ["text", "title"]);
+        assert_eq!(value["title"], "Lab <b>Gateway</b>", "text, never html");
+        // read only
+        let source: LoginTextSource = Arc::new(|| Box::pin(async { Some(lab_text()) }));
+        let (status, ..) =
+            runtime().block_on(call(router_reading(source), "POST", "/api/login-text"));
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// a source that counts its reads and answers `text` after a moment, so that callers overlap.
+    fn counting(text: Option<LoginText>) -> (LoginTextSource, Arc<std::sync::atomic::AtomicUsize>) {
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let source: LoginTextSource = Arc::new(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let text = text.clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                text
+            })
+        });
+        (source, reads)
+    }
+
+    #[test]
+    fn the_sign_in_text_is_read_once_in_a_while() {
+        let (source, reads) = counting(Some(lab_text()));
+        let app = router_reading(source);
+        for _ in 0..3 {
+            let (status, ..) = runtime().block_on(call(app.clone(), "GET", "/api/login-text"));
+            assert_eq!(status, StatusCode::OK);
+        }
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn concurrent_requests_on_a_cold_cache_make_one_read() {
+        let (source, reads) = counting(Some(lab_text()));
+        let texts = LoginTexts::new(source);
+        let all = runtime().block_on(async {
+            let tasks: Vec<_> = (0..16)
+                .map(|_| {
+                    let texts = texts.clone();
+                    tokio::spawn(async move { texts.get().await })
+                })
+                .collect();
+            let mut all = Vec::new();
+            for task in tasks {
+                all.push(task.await.unwrap());
+            }
+            all
+        });
+        assert!(all.iter().all(|text| *text == lab_text()));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_read_is_kept_and_answered_with_the_defaults() {
+        let (source, reads) = counting(None);
+        let texts = LoginTexts::new(source);
+        runtime().block_on(async {
+            for _ in 0..5 {
+                assert_eq!(texts.get().await, LoginText::default());
+            }
+        });
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (status, kind, body) = runtime().block_on(call(
+            router_reading(no_login_text()),
+            "GET",
+            "/api/login-text",
+        ));
+        assert_eq!(
+            (status, kind.as_str()),
+            (StatusCode::OK, "application/json")
+        );
+        assert_eq!(body, br#"{"title":"","text":""}"#);
     }
 
     #[test]

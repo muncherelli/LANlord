@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use lanlord_model::login_text::LoginText;
 use lanlord_model::operations::{Operation, Reply, Request};
 use lanlord_model::secret::Secret;
 use lanlord_model::signin::{Identity, SigninError};
@@ -166,6 +167,13 @@ impl WebSession for HttpSession {
 
     fn current(&self) -> LocalFuture<anyhow::Result<Option<Identity>>> {
         Box::pin(session_now())
+    }
+
+    fn login_text(&self) -> LocalFuture<Option<LoginText>> {
+        Box::pin(async {
+            let (status, text) = fetch("GET", "/api/login-text", None).await.ok()?;
+            round_trip::login_text_body(status, &text)
+        })
     }
 
     fn logout(&self) -> LocalFuture<()> {

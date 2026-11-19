@@ -4,6 +4,7 @@
 //! was wrong; there is no third try.
 
 use anyhow::{anyhow, Result};
+use lanlord_model::login_text::LoginText;
 use lanlord_model::operations::{Operation, Reply, Response};
 use lanlord_model::secret::Secret;
 
@@ -100,6 +101,12 @@ fn is_session_error(body: &str) -> bool {
 pub fn after_retry(given: Secret, again: Result<Reply>) -> (Option<Secret>, Result<Reply>) {
     let keep = !matches!(again, Ok(Reply::NeedsPassword { .. }));
     (keep.then_some(given), retried(again))
+}
+
+/// the sign-in text a `/api/login-text` answer holds; anything but a good answer is none, and the
+/// logon box keeps its own words.
+pub fn login_text_body(status: u16, body: &str) -> Option<LoginText> {
+    (status == 200).then(|| serde_json::from_str(body).ok())?
 }
 
 #[cfg(test)]
@@ -200,5 +207,20 @@ mod tests {
         ));
         assert!(matches!(first(Err(anyhow!("down"))), Step::Done(Err(_))));
         assert!(retried(Err(anyhow!("down"))).is_err());
+    }
+
+    #[test]
+    fn the_sign_in_text_is_read_from_a_good_answer_only() {
+        let body = r#"{"title":"Lab","text":"Hello"}"#;
+        assert_eq!(
+            login_text_body(200, body),
+            Some(LoginText {
+                title: "Lab".into(),
+                text: "Hello".into()
+            })
+        );
+        assert_eq!(login_text_body(503, body), None);
+        assert_eq!(login_text_body(200, "not json"), None);
+        assert_eq!(login_text_body(200, r#"{"title":"Lab"}"#), None);
     }
 }

@@ -11,6 +11,7 @@ use serde_yaml_ng::{Mapping, Value};
 use crate::access::{Caller, Refused};
 use lanlord_model::access::area_of_section;
 use lanlord_model::access::{Access, Area, Grants, Level};
+use lanlord_model::login_text::LoginText;
 use lanlord_model::settings::{secret_section, Settings};
 
 /// the settings to write for `sent`, given what is `stored`. administrators write what they
@@ -24,6 +25,10 @@ pub fn merge_save(
     let mut sent = Settings::parse(sent)?;
     if caller.admin {
         return Ok(sent.text());
+    }
+    // the sign-in screen is the administrators' to word, whatever else the caller manages
+    if LoginText::from_settings(stored) != LoginText::from_settings(&sent) {
+        return Err(Refused("only an administrator may change the sign-in text".into()).into());
     }
     let names: BTreeSet<String> = stored
         .sections()
@@ -185,6 +190,24 @@ mod tests {
         )
         .unwrap();
         assert!(!out.contains("ssh") && !out.contains("zone"));
+    }
+
+    #[test]
+    fn only_an_administrator_changes_the_sign_in_text() {
+        let everything = Grants::all(Level::Manage);
+        let stored = Settings::parse("gateway:\n  timezone: UTC\n").unwrap();
+        let sent = "gateway:\n  timezone: UTC\n  login_title: Lab\n";
+        let err = merge_save(&stored, sent, &everything, &caller()).unwrap_err();
+        assert!(err.downcast_ref::<Refused>().is_some(), "{err:#}");
+        let admin = Caller {
+            user: "ann".into(),
+            admin: true,
+        };
+        let out = merge_save(&stored, sent, &everything, &admin).unwrap();
+        assert!(out.contains("login_title: Lab"));
+        // someone else's save that leaves the text as it is goes through
+        let kept = Settings::parse(sent).unwrap();
+        assert!(merge_save(&kept, sent, &everything, &caller()).is_ok());
     }
 
     #[test]
