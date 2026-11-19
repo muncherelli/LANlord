@@ -443,14 +443,26 @@ async fn operations(
     if let Err(refused) = auth::same_origin_json(&headers) {
         return refused;
     }
-    let (user, _) = match auth::require_current(&app.auth, &headers).await {
-        Ok(who) => who,
-        Err(unauthorized) => return unauthorized,
+    // root's first-run setup session may run the setup and nothing else: that is decided here,
+    // and the service holds root to the same rule when it is asked
+    let setup = app.auth.setup_session(&headers);
+    let user = match &setup {
+        Some(user) => user.clone(),
+        None => match auth::require_current(&app.auth, &headers).await {
+            Ok((user, _)) => user,
+            Err(unauthorized) => return unauthorized,
+        },
     };
     let Ok(request) = serde_json::from_slice::<OperationRequest>(&body) else {
         return refusal(StatusCode::BAD_REQUEST, "not an operation");
     };
     drop(body);
+    if setup.is_some() && !matches!(request.operation, Operation::SetupFirstAdmin { .. }) {
+        return refusal(
+            StatusCode::FORBIDDEN,
+            "finish the first-run setup first: nothing else can be done yet",
+        );
+    }
     if matches!(request.operation, Operation::Subscribe { .. }) {
         return refusal(
             StatusCode::NOT_IMPLEMENTED,
@@ -474,7 +486,15 @@ async fn settle(
     operation: Operation,
     changed: Vec<(String, bool)>,
 ) -> Response {
+    let first_run = matches!(operation, Operation::SetupFirstAdmin { .. });
     let answer = (app.run)(user, operation, apply_events()).await;
+    // the setup ends the root session it ran in once the administrator exists, or once it is
+    // refused because one already does; an error keeps it, so the person can try again
+    if first_run {
+        if let Ok(OperationResponse::Ok(_) | OperationResponse::Denied(_)) = &answer {
+            app.auth.revoke_user("root");
+        }
+    }
     let revoke = |app: &App| {
         for (name, keep_own) in &changed {
             if *keep_own {

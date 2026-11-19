@@ -16,6 +16,7 @@ use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
 use lanlord_model::operations::{Operation, Reply, SecretUpdate, UserChange};
 use lanlord_model::power::{Outcome, Power};
+use lanlord_model::rootssh::{RootSsh, RootSshInfo};
 use lanlord_model::secret::Secret;
 use lanlord_model::server::ServerFacts;
 use lanlord_model::settings::{Document, Settings};
@@ -138,6 +139,44 @@ pub trait Gateway: Send + Sync {
             passwordless_sudo: new.passwordless_sudo,
         };
         done(self.call(host, operation, ask)?, "create_admin")
+    }
+
+    /// the first-run setup of a gateway with only root: create the first administrator and set
+    /// root's ssh access. the note, when there is one, says that the account was made but the
+    /// ssh setting was not.
+    fn setup_first_admin(
+        &self,
+        host: &str,
+        name: &str,
+        password: &str,
+        root_ssh: RootSsh,
+        ask: AskPassword,
+    ) -> Result<Option<String>> {
+        let operation = Operation::SetupFirstAdmin {
+            name: name.to_string(),
+            password: Secret::new(password),
+            root_ssh,
+        };
+        match self.call(host, operation, ask)? {
+            Reply::SetupDone { note } => Ok(note),
+            other => Err(unexpected("setup_first_admin", other)),
+        }
+    }
+
+    /// how root may sign in over ssh, and whether the server's sshd can be told; asks for nothing.
+    fn root_ssh(&self, host: &str) -> Result<RootSshInfo> {
+        match self.call(host, Operation::RootSshState, &mut never)? {
+            Reply::RootSsh(info) => Ok(info),
+            other => Err(unexpected("root_ssh", other)),
+        }
+    }
+
+    /// set how root may sign in over ssh.
+    fn set_root_ssh(&self, host: &str, access: RootSsh, ask: AskPassword) -> Result<()> {
+        done(
+            self.call(host, Operation::SetRootSsh { access }, ask)?,
+            "set_root_ssh",
+        )
     }
 
     /// the dhcp leases the gateway has handed out.
@@ -641,7 +680,7 @@ mod fake {
     use super::{
         anyhow, Access, AccountInfo, AskPassword, Change, ClockChange, ClockState, Document,
         Gateway, InterfaceStatus, Internal, Lease, NewAdmin, Operation, Outcome, PasswordReport,
-        Power, Reply, Report, Result, ServerFacts, Settings, Stored, ZoneNow,
+        Power, Reply, Report, Result, RootSsh, RootSshInfo, ServerFacts, Settings, Stored, ZoneNow,
     };
     use lanlord_model::access::{ADMINISTRATORS, USERS};
     use lanlord_model::identity::{LinkInfo, LinkReport, LinkState};
@@ -694,6 +733,8 @@ mod fake {
         pub reads: Mutex<Vec<String>>,
         /// the probe output the doctor answers with.
         pub probe: Mutex<String>,
+        /// how root's ssh access stands, changed by `set_root_ssh`.
+        pub root_ssh: Mutex<RootSshInfo>,
     }
 
     impl Default for Fake {
@@ -751,6 +792,10 @@ mod fake {
                     status: vec!["Server: 10.0.0.1 (pool.ntp.org)".into()],
                 }),
                 reads: Mutex::new(Vec::new()),
+                root_ssh: Mutex::new(RootSshInfo {
+                    chosen: None,
+                    dropins: true,
+                }),
                 probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
                     [
@@ -829,6 +874,19 @@ mod fake {
                         passwordless_sudo,
                     };
                     self.create_admin(host, &new, ask)?;
+                    Reply::Done
+                }
+                Operation::SetupFirstAdmin {
+                    name,
+                    root_ssh,
+                    password: _,
+                } => {
+                    self.enter(format!("setup {host} {name} root-ssh={root_ssh:?}"), ask)?;
+                    Reply::SetupDone { note: None }
+                }
+                Operation::RootSshState => Reply::RootSsh(self.root_ssh(host)?),
+                Operation::SetRootSsh { access } => {
+                    self.set_root_ssh(host, access, ask)?;
                     Reply::Done
                 }
                 Operation::Leases => Reply::Leases(self.leases(host, ask)?),
@@ -1006,6 +1064,20 @@ mod fake {
                 ),
                 ask,
             )
+        }
+
+        pub fn root_ssh(&self, host: &str) -> Result<RootSshInfo> {
+            self.reads.lock().unwrap().push(format!("root-ssh {host}"));
+            match self.fail.lock().unwrap().clone() {
+                Some(message) => Err(anyhow!(message)),
+                None => Ok(self.root_ssh.lock().unwrap().clone()),
+            }
+        }
+
+        pub fn set_root_ssh(&self, host: &str, access: RootSsh, ask: AskPassword) -> Result<()> {
+            self.enter(format!("set-root-ssh {host} {}", access.directive()), ask)?;
+            self.root_ssh.lock().unwrap().chosen = Some(access);
+            Ok(())
         }
 
         pub fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
