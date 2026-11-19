@@ -63,6 +63,9 @@ pub enum Decision {
     NotAdmin,
     /// the password is right, the user is root and nobody else is in the admins group.
     Setup,
+    /// the password is right and the user is root, but another administrator exists: root is closed
+    /// on purpose, and only someone who knows the password hears it said so.
+    RootClosed,
     /// the password is right, but the account is a system or service account.
     System,
     Error(&'static str),
@@ -75,6 +78,7 @@ impl Decision {
             Decision::Ok => Verdict::Ok,
             Decision::NotAdmin => Verdict::User,
             Decision::Setup => Verdict::Setup,
+            Decision::RootClosed => Verdict::RootClosed,
             Decision::Refused | Decision::System => Verdict::Denied,
             Decision::Error(code) => Verdict::Error(code),
         }
@@ -187,7 +191,7 @@ pub fn answer(
             Ok(Some(0)) if !named_caller && request.user == "root" => {
                 decision = match groups.has_other_member(ADMINS_GID) {
                     Ok(false) => Decision::Setup,
-                    Ok(true) => Decision::System,
+                    Ok(true) => Decision::RootClosed,
                     Err(code) => Decision::Error(code),
                 }
             }
@@ -216,6 +220,9 @@ pub fn answer(
         Decision::Setup => {
             format!("web ui login for {user}{client}: ok, first-run setup only (no other admin)")
         }
+        Decision::RootClosed => format!(
+            "web ui login for {user}{client}: denied, root is closed while an administrator exists"
+        ),
         Decision::System => {
             format!("web ui login for {user}{client}: denied, a system account")
         }
@@ -400,11 +407,14 @@ mod tests {
             "web ui login for root: ok, first-run setup only (no other admin)\n"
         );
 
-        // once another admin exists root is refused like any system account
+        // once another admin exists root is closed, and says so after a right password
         let taken = FakeGroups::new(Ok(false)).with_others(Ok(true));
         let (verdict, log) = run_with(&system, &lanlord(), root, Ok(true), taken);
-        assert_eq!(verdict, Verdict::Denied);
-        assert_eq!(log, "web ui login for root: denied, a system account\n");
+        assert_eq!(verdict, Verdict::RootClosed);
+        assert_eq!(
+            log,
+            "web ui login for root: denied, root is closed while an administrator exists\n"
+        );
 
         // the password check stays as strict as for anyone
         let (verdict, _) = run_with(&system, &lanlord(), root, Ok(false), alone());
@@ -492,16 +502,11 @@ mod tests {
             "web ui login for alice from 192.0.2.7: ok, not in group admins (gid 9998)\n"
         );
 
-        // a system account or the web ui's own is refused even with the right password
-        for name in ["root", "lanlord"] {
-            let bytes = format!("{name}\0secret\0");
-            let (verdict, log) = run(&system, &lanlord(), bytes.as_bytes(), Ok(true), true);
-            assert_eq!(verdict, Verdict::Denied, "{name}");
-            assert_eq!(
-                log,
-                format!("web ui login for {name}: denied, a system account\n")
-            );
-        }
+        // the web ui's own account is refused even with the right password (root, with another
+        // administrator, is closed instead and says so: see the setup test)
+        let (verdict, log) = run(&system, &lanlord(), b"lanlord\0secret\0", Ok(true), true);
+        assert_eq!(verdict, Verdict::Denied);
+        assert_eq!(log, "web ui login for lanlord: denied, a system account\n");
 
         let (verdict, log) = run(&system, &lanlord(), b"alice\0secret\0", Err("pam"), true);
         assert_eq!(verdict, Verdict::Error("pam"));
@@ -629,6 +634,7 @@ mod tests {
         let jitter = Duration::from_millis(100);
         let waits: Vec<Duration> = [
             Decision::Refused,
+            Decision::RootClosed,
             Decision::System,
             Decision::Error("pam"),
             Decision::Error("bad-request"),

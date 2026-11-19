@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - first-run setup for root in the web UI: while no administrator other than root exists, root's password signs in to a full-screen setup that creates the first administrator account and sets root's ssh access (one of the three levels, nothing preselected), and nothing else; once another administrator exists root is refused as before
 - "Root ssh access" setting (allowed, keys only, off) in My Server and in the first-run setup, applied as an sshd drop-in that is checked with `sshd -t` and rolled back if sshd refuses it; the first-run setup refuses "off" when sshd takes no ssh passwords, since the new account has no key, and only an administrator changes the setting later
 
+- an optional ssh public key for the new account in the first-run setup (checked for format, installed as `~/.ssh/authorized_keys` with modes 700/600 through the operations layer), and My Account lists, adds and removes your own authorized keys; "off" is allowed in the setup when a key was given
+- the sign-in box says "root can't sign in to the web once an administrator exists; sign in as your administrator account" when root's password was right but root is closed; a wrong password keeps the generic message
+
 ### Changed
 
 - the desktop stops redrawing when nothing changes: no timer on the sign-in screen, one frame a minute for the taskbar clock, no blinking text cursor, icons uploaded once as textures, the look set once, and the browser build capped at 30 frames a second without dithering
@@ -29,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- first-run setup: the root ssh label is no longer clipped, the page no longer shifts when a choice is picked (every choice is described at all times), and "keys only" explains that the administrator needs an ssh key to use ssh
+- status bars wrap a long message instead of cutting it off, so a refused and rolled back root ssh change is shown whole
 - the web menu no longer starts with "Server: local", which only made sense where a server can be chosen
 - a window's status bar stays on its bottom edge, in every window and below contents that scroll, instead of floating up to the end of its contents or scrolling away
 - every check on My Server's Compatibility tab says what it is for, along with the components that use it

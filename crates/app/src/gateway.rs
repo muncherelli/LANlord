@@ -168,13 +168,14 @@ pub trait Gateway: Send + Sync {
         host: &str,
         name: &str,
         password: &str,
-        root_ssh: RootSsh,
+        (root_ssh, ssh_key): (RootSsh, Option<&str>),
         ask: AskPassword,
     ) -> Result<Option<String>> {
         let operation = Operation::SetupFirstAdmin {
             name: name.to_string(),
             password: Secret::new(password),
             root_ssh,
+            ssh_key: ssh_key.map(str::to_string),
         };
         match self.call(host, operation, ask)? {
             Reply::SetupDone { note } => Ok(note),
@@ -230,6 +231,26 @@ pub trait Gateway: Send + Sync {
             Reply::Password(report) => Ok(report),
             other => Err(unexpected("change_password", other)),
         }
+    }
+
+    /// the signed-in person's own authorized ssh keys.
+    fn my_keys(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+        match self.call(host, Operation::MyKeys, ask)? {
+            Reply::Lines(keys) => Ok(keys),
+            other => Err(unexpected("my_keys", other)),
+        }
+    }
+
+    /// add a public key to the signed-in person's own authorized keys.
+    fn add_my_key(&self, host: &str, key: &str, ask: AskPassword) -> Result<()> {
+        let operation = Operation::AddMyKey { key: key.into() };
+        done(self.call(host, operation, ask)?, "add_my_key")
+    }
+
+    /// remove a public key from the signed-in person's own authorized keys.
+    fn remove_my_key(&self, host: &str, key: &str, ask: AskPassword) -> Result<()> {
+        let operation = Operation::RemoveMyKey { key: key.into() };
+        done(self.call(host, operation, ask)?, "remove_my_key")
     }
 
     /// change the signed-in person's own profile.
@@ -748,6 +769,8 @@ mod fake {
         pub apply_error: Mutex<Option<String>>,
         /// the signed-in person's profile, changed by `update_profile`.
         pub profile: Mutex<lanlord_model::access::Profile>,
+        /// the signed-in person's authorized ssh keys.
+        pub keys: Mutex<Vec<String>>,
         /// the roles and who has them, changed by `save_access`.
         pub access: Mutex<Access>,
         /// what a password change reports.
@@ -794,6 +817,7 @@ mod fake {
                 network_error: Mutex::new(None),
                 apply_error: Mutex::new(None),
                 profile: Mutex::new(lanlord_model::access::Profile::default()),
+                keys: Mutex::new(Vec::new()),
                 access: Mutex::new(Access {
                     members: [
                         ("alice".to_string(), vec![ADMINISTRATORS.to_string()]),
@@ -917,9 +941,14 @@ mod fake {
                 Operation::SetupFirstAdmin {
                     name,
                     root_ssh,
+                    ssh_key,
                     password: _,
                 } => {
-                    self.enter(format!("setup {host} {name} root-ssh={root_ssh:?}"), ask)?;
+                    let key = if ssh_key.is_some() { " key" } else { "" };
+                    self.enter(
+                        format!("setup {host} {name} root-ssh={root_ssh:?}{key}"),
+                        ask,
+                    )?;
                     Reply::SetupDone { note: None }
                 }
                 Operation::RootSshState => Reply::RootSsh(self.root_ssh(host)?),
@@ -979,6 +1008,23 @@ mod fake {
                 Operation::ChangePassword { .. } | Operation::ResetPassword { .. } => {
                     self.enter(format!("password {host}"), ask)?;
                     Reply::Password(self.password_report.lock().unwrap().clone())
+                }
+                Operation::MyKeys => {
+                    self.enter(format!("my-keys {host}"), ask)?;
+                    Reply::Lines(self.keys.lock().unwrap().clone())
+                }
+                Operation::AddMyKey { key } => {
+                    self.enter(format!("add-key {host}"), ask)?;
+                    let mut keys = self.keys.lock().unwrap();
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                    Reply::Done
+                }
+                Operation::RemoveMyKey { key } => {
+                    self.enter(format!("remove-key {host}"), ask)?;
+                    self.keys.lock().unwrap().retain(|k| *k != key);
+                    Reply::Done
                 }
                 Operation::UpdateProfile { profile } => {
                     self.enter(format!("profile {host}"), ask)?;

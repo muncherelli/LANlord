@@ -68,6 +68,7 @@ pub fn login_status(status: u16) -> Result<(), SigninError> {
     match status {
         200 => Ok(()),
         401 => Err(SigninError::WrongPassword),
+        409 => Err(SigninError::RootClosed),
         503 => Err(SigninError::Other(
             "The logon service on the server is not available.".into(),
         )),
@@ -1223,6 +1224,7 @@ mod tests {
     fn the_logon_answers_become_messages() {
         assert_eq!(login_status(200), Ok(()));
         assert_eq!(login_status(401), Err(SigninError::WrongPassword));
+        assert_eq!(login_status(409), Err(SigninError::RootClosed));
         for status in [403, 400, 503] {
             assert!(matches!(login_status(status), Err(SigninError::Other(_))));
         }

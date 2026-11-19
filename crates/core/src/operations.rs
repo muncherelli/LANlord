@@ -10,7 +10,9 @@ use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
-use crate::{access, internet, lan, operate, save_guard, self_service, settings, stored, users};
+use crate::{
+    access, authkeys, internet, lan, operate, save_guard, self_service, settings, stored, users,
+};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
     rootssh, setup,
@@ -101,12 +103,21 @@ pub fn execute_setup(
         name,
         password,
         root_ssh,
+        ssh_key,
     } = operation
     else {
         return Err(access::Refused("only the first-run setup may run now".into()).into());
     };
     operation.validate()?;
-    setup::first_admin(session, host, name, password.expose(), *root_ssh, ask)
+    let key = ssh_key.as_deref();
+    setup::first_admin(
+        session,
+        host,
+        name,
+        password.expose(),
+        (*root_ssh, key),
+        ask,
+    )
 }
 
 /// how long an operation may run: the longest ones (an apply, a purge) take minutes. the
@@ -411,13 +422,22 @@ fn dispatch(
             name,
             password,
             root_ssh,
+            ssh_key,
         } => {
             // only root is ever in setup: an administrator has no use for it, and the check
             // that no other administrator exists is made inside
             if who.caller.user != "root" {
                 return Err(access::Refused("first-run setup is for root only".into()).into());
             }
-            setup::first_admin(session, host, name, password.expose(), *root_ssh, ask)?
+            let key = ssh_key.as_deref();
+            setup::first_admin(
+                session,
+                host,
+                name,
+                password.expose(),
+                (*root_ssh, key),
+                ask,
+            )?
         }
         Operation::RootSshState => Reply::RootSsh(rootssh::state(session)?),
         Operation::SetRootSsh { access } => {
@@ -472,6 +492,15 @@ fn dispatch(
         Operation::ClockUpdateNow => Reply::Lines(clock::update_now(session, ask)?),
         Operation::Doctor => Reply::Doctor(doctor::run_with(session, ask)?),
         Operation::AccountInfo => self_service::account_info(session, who.caller, ask)?,
+        Operation::MyKeys => Reply::Lines(authkeys::list(session, &who.caller.user, ask)?),
+        Operation::AddMyKey { key } => {
+            authkeys::add(session, &who.caller.user, key, ask)?;
+            Reply::Done
+        }
+        Operation::RemoveMyKey { key } => {
+            authkeys::remove(session, &who.caller.user, key, ask)?;
+            Reply::Done
+        }
         Operation::ChangePassword { old, new } => {
             self_service::change_password(session, who.caller, old, new, ask)?
         }

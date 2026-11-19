@@ -308,6 +308,7 @@ mod tests {
             (SigninError::Timeout, "did not answer"),
             (SigninError::Refused, "refused"),
             (SigninError::HostKeyChanged, "changed"),
+            (SigninError::RootClosed, "administrator account"),
             (SigninError::AgentLocked, "agent"),
             (
                 SigninError::Unreachable("That hostname could not be found.".into()),
