@@ -35,7 +35,15 @@ writes, it copies each file it changes beside itself as `<file>.v<N>.<timestamp>
 the old version and the timestamp is the gateway's clock (`20260101T120000Z`). If the migration
 fails, the copies are put back and the upgrade is rolled back.
 
+Every write is atomic: the new file is written beside the old one, synced, and moved over it, so
+a crash leaves the old file or the new one, never half of one. A settings save run before the
+upgrade stores what it can migrate now (the format it got to is the one it stamps); the upgrade
+finishes the steps that need to know the gateway, such as its administrators.
+
 Client files are migrated when they are next written.
+
+The copies are not pruned: each upgrade that changes a file leaves one more, named by its
+timestamp. They are small; delete the old ones by hand once a downgrade is no longer wanted.
 
 ## Going back to an older LANlord
 

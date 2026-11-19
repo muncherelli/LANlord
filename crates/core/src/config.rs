@@ -66,30 +66,29 @@ pub(crate) fn failed(what: &str, code: i32) -> anyhow::Error {
 // the scripts below always run as root (directly, or through the one sudo that starts them), so
 // they never call sudo themselves: they write as root and hand the file to the lanlord account
 fn push_script(ciphertext: &[u8]) -> String {
-    let config_dir = config_dir();
-    format!(
-        r#"set -eu
-{INSTALLED_GUARD}{config_dir}base64 -d <<'LANLORD_PAYLOAD' | tee /opt/lanlord/config/settings.age >/dev/null
-{}
-LANLORD_PAYLOAD
-chown lanlord:lanlord /opt/lanlord/config/settings.age
-chmod 0640 /opt/lanlord/config/settings.age
-"#,
-        wrap(ciphertext)
-    )
+    store_script("settings.age", "lanlord:lanlord", &wrap(ciphertext))
 }
 
 fn push_plain_script(plaintext: &[u8]) -> String {
+    store_script("settings.yml", "lanlord:\"$group\"", &wrap(plaintext))
+}
+
+// the file is written beside the real one, synced and moved over it, so a crash or a dropped
+// connection leaves the old file or the new one, never half of one
+fn store_script(file: &str, owner: &str, payload: &str) -> String {
     let config_dir = config_dir();
     format!(
         r#"set -eu
-{INSTALLED_GUARD}{config_dir}base64 -d <<'LANLORD_PAYLOAD' | tee /opt/lanlord/config/settings.yml >/dev/null
-{}
+{INSTALLED_GUARD}{config_dir}trap 'rm -f /opt/lanlord/config/{file}.tmp' EXIT
+base64 -d <<'LANLORD_PAYLOAD' > /opt/lanlord/config/{file}.tmp
+{payload}
 LANLORD_PAYLOAD
-chown lanlord:"$group" /opt/lanlord/config/settings.yml
-chmod 0640 /opt/lanlord/config/settings.yml
-"#,
-        wrap(plaintext)
+chown {owner} /opt/lanlord/config/{file}.tmp
+chmod 0640 /opt/lanlord/config/{file}.tmp
+sync
+mv -f /opt/lanlord/config/{file}.tmp /opt/lanlord/config/{file}
+sync
+"#
     )
 }
 
@@ -147,10 +146,15 @@ pub(crate) fn push_with(
     if plaintext.iter().all(u8::is_ascii_whitespace) {
         bail!("the settings file is empty");
     }
-    // what is stored from a newer lanlord is never written over. a read that fails is left to
-    // the write below, which reports its own failure.
-    if let Ok(Some(stored)) = pull_raw_with(session, identity, &mut *ask_password) {
-        refuse_newer(Stored::Sealed, &stored, "settings.age")?;
+    // what is stored from a newer lanlord is never written over. a read that fails stops the
+    // write; only no file, or one this key cannot open (it is moved to this key by the write),
+    // goes on.
+    if let Some(sealed) = pull_sealed_with(session, &mut *ask_password)? {
+        match crypto::decrypt(identity, &sealed) {
+            Ok(stored) => refuse_newer(Stored::Sealed, &stored, "settings.age")?,
+            Err(error) if error.is::<crypto::NotOurKey>() => {}
+            Err(error) => return Err(error),
+        }
     }
     let plaintext = stamped(Stored::Sealed, plaintext)?;
     let sealed = crypto::encrypt(identity, &plaintext)?;
@@ -252,7 +256,7 @@ pub(crate) fn push_plain_with(
     plaintext: &[u8],
     ask_password: AskPassword,
 ) -> Result<()> {
-    if let Ok(Some(stored)) = pull_plain_raw_with(session, &mut *ask_password) {
+    if let Some(stored) = pull_plain_raw_with(session, &mut *ask_password)? {
         refuse_newer(Stored::Plain, &stored, "settings.yml")?;
     }
     let plaintext = stamped(Stored::Plain, plaintext)?;
@@ -428,8 +432,8 @@ esac"#
         let session = Session::fake_gateway(true, &record, 0);
         push_plain_with(&session, "gw", b"dns: {}\n", &mut no_password).unwrap();
         let sent = std::fs::read_to_string(&record).unwrap();
-        assert!(sent.contains("tee /opt/lanlord/config/settings.yml"));
-        assert!(sent.contains("chmod 0640 /opt/lanlord/config/settings.yml"));
+        assert!(sent.contains("> /opt/lanlord/config/settings.yml.tmp"));
+        assert!(sent.contains("chmod 0640 /opt/lanlord/config/settings.yml.tmp"));
         assert!(sent.contains("admins"));
         assert_eq!(unstamped_bytes(&payload(&sent)), b"dns: {}\n");
         let _ = std::fs::remove_file(&record);
@@ -528,15 +532,21 @@ esac"#,
             failed("storing x", 127).to_string(),
             "storing x failed with status 127"
         );
-        let record =
-            std::env::temp_dir().join(format!("lanlord-config-bare-{}", std::process::id()));
-        let session = Session::fake_gateway(true, &record, 66);
+        // reads find nothing; only a store stops with the guard status
+        let session = Session::fake(
+            r#"for a; do last=$a; done
+case "$last" in
+  "id -un") echo tester ;;
+  "sudo -n true") exit 0 ;;
+  "sh -c "*) exit 0 ;;
+  *) input=$(cat); case "$input" in *LANLORD_PAYLOAD*) exit 66 ;; esac ;;
+esac"#,
+        );
         let err = push_plain_with(&session, "gw", b"a: 1\n", &mut no_password).unwrap_err();
         assert_eq!(err.to_string(), NOT_INSTALLED_MESSAGE);
         let id = identity("bare");
         let err = push_with(&session, "gw", &id, b"a: 1\n", &mut no_password).unwrap_err();
         assert_eq!(err.to_string(), NOT_INSTALLED_MESSAGE);
-        let _ = std::fs::remove_file(record);
     }
 
     #[test]

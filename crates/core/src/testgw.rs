@@ -63,8 +63,10 @@ case "$last" in
 input=$(cat)
 case "$input" in
   "# stored backup"*|"# stored restore"*) printf '%s\n' "$input" | sed "s#/opt/lanlord/config/settings.yml#$D/yml#g; s#/opt/lanlord/config/settings.age#$D/age#g" | sh ;;
-  *"tee /opt/lanlord/config/settings.yml"*) @PAYLOAD@ > "$D/yml" ;;
-  *"tee /opt/lanlord/config/settings.age"*) @PAYLOAD@ > "$D/age" ;;
+  *"> /opt/lanlord/config/settings.yml.tmp"*) @PAYLOAD@ > "$D/yml" ;;
+  *"> /opt/lanlord/config/settings.age.tmp"*)
+    if [ -f "$D/fail-age" ]; then echo "disk full" >&2; exit 1; fi
+    @PAYLOAD@ > "$D/age" ;;
   *"base64 < /opt/lanlord/config/settings.age"*) if [ -f "$D/age" ]; then base64 < "$D/age"; fi ;;
 esac ;;
 esac"##
@@ -89,6 +91,12 @@ esac"##
         Some(unstamped(
             &String::from_utf8(crypto::decrypt(id, &bytes).unwrap()).unwrap(),
         ))
+    }
+
+    /// the sealed text as stored, version stamp included.
+    pub fn sealed_raw(&self, id: &age::x25519::Identity) -> Option<String> {
+        let bytes = std::fs::read(self.dir.join("age")).ok()?;
+        Some(String::from_utf8(crypto::decrypt(id, &bytes).unwrap()).unwrap())
     }
 
     pub fn seed_sealed(&self, id: &age::x25519::Identity, text: &str) {

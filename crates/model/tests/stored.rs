@@ -16,7 +16,8 @@ fn admins() -> Context {
 #[test]
 fn step_one_turns_the_single_network_into_a_list() {
     let settings = load(Kind::Plain, V1, &Context::default()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
+    // the administrators are not known here, so the load stops after this step
+    assert_eq!(settings.format().unwrap().0, Some(2));
     assert!(
         settings.section("networks").is_some(),
         "{}",
@@ -28,6 +29,7 @@ fn step_one_turns_the_single_network_into_a_list() {
 #[test]
 fn step_two_stores_the_role_assignments_once_the_admins_are_known() {
     let settings = load(Kind::Plain, V1, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
     assert!(settings.section("access").is_some(), "{}", settings.text());
     let again = load(Kind::Plain, &settings.text(), &admins()).unwrap();
     assert_eq!(
@@ -52,7 +54,19 @@ fn a_current_file_loads_and_saves_unchanged() {
 #[test]
 fn a_file_with_no_version_is_version_one() {
     assert_eq!(Settings::parse(V1).unwrap().format().unwrap().0, None);
-    assert!(!seal(Kind::Plain, V1).unwrap().is_empty());
+}
+
+#[test]
+fn saving_an_old_file_runs_the_steps_that_can_run_and_does_not_claim_the_rest() {
+    let saved = seal(Kind::Plain, V1).unwrap();
+    let settings = Settings::parse(&saved).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(2), "{saved}");
+    assert!(settings.section("networks").is_some(), "{saved}");
+    assert!(settings.section("access").is_none(), "{saved}");
+    // the upgrade knows the administrators and finishes the job
+    let upgraded = load(Kind::Plain, &saved, &admins()).unwrap();
+    assert_eq!(upgraded.format().unwrap().0, Some(Kind::Plain.current()));
+    assert!(upgraded.section("access").is_some());
 }
 
 #[test]

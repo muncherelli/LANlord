@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use lanlord_model::format::{render_text, Step};
@@ -79,17 +79,11 @@ pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let mut options = fs::OpenOptions::new();
-    options.create(true).write(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let mut text = format!("check_updates={}\n", prefs.check_updates);
     for user in &prefs.welcome_off {
         text.push_str(&format!("welcome_off={user}\n"));
     }
-    options
-        .open(path)?
-        .write_all(render_text(&text, STEPS).as_bytes())
+    localfile::write(path, &render_text(&text, STEPS))
 }
 
 #[cfg(test)]

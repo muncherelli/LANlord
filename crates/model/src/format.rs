@@ -86,6 +86,14 @@ pub struct Context {
 pub struct Step<T> {
     pub name: &'static str,
     pub run: fn(&mut T, &Context) -> Result<()>,
+    /// whether the context holds what the step needs. a step that is not ready stops the run
+    /// there: the file is stored as far as it got, and the next load starts at that step.
+    pub ready: fn(&Context) -> bool,
+}
+
+/// a step that needs nothing beyond the file.
+pub fn always(_: &Context) -> bool {
+    true
 }
 
 /// the newest format a list of steps leads to: version 1 plus one per step.
@@ -93,17 +101,23 @@ pub const fn current<T>(steps: &[Step<T>]) -> u32 {
     steps.len() as u32 + 1
 }
 
-/// run the steps that take `value` from version `from` to the newest one.
-pub fn run_steps<T>(value: &mut T, from: u32, steps: &[Step<T>], context: &Context) -> Result<()> {
+/// run the steps that take `value` from version `from` on. it returns the version it got to:
+/// the newest one, unless a step was not ready (see [`Step::ready`]).
+pub fn run_steps<T>(value: &mut T, from: u32, steps: &[Step<T>], context: &Context) -> Result<u32> {
+    let mut reached = from.max(1);
     for (index, step) in steps
         .iter()
         .enumerate()
         .skip(from.saturating_sub(1) as usize)
     {
+        if !(step.ready)(context) {
+            break;
+        }
         (step.run)(value, context)
             .with_context(|| format!("format {} to {} ({})", index + 1, index + 2, step.name))?;
+        reached = index as u32 + 2;
     }
-    Ok(())
+    Ok(reached)
 }
 
 /// the line that starts a line-based file (hosts, preferences) in format `version`. older
@@ -216,15 +230,20 @@ mod tests {
             Step {
                 name: "one",
                 run: bump,
+                ready: always,
             },
             Step {
                 name: "two",
                 run: bump,
+                ready: always,
             },
         ];
         assert_eq!(current(&steps), 3);
         let mut seen = Vec::new();
-        run_steps(&mut seen, 1, &steps, &Context::default()).unwrap();
+        assert_eq!(
+            run_steps(&mut seen, 1, &steps, &Context::default()).unwrap(),
+            3
+        );
         assert_eq!(seen.len(), 2);
         let mut seen = Vec::new();
         run_steps(&mut seen, 2, &steps, &Context::default()).unwrap();
@@ -232,5 +251,30 @@ mod tests {
         let mut seen = Vec::new();
         run_steps(&mut seen, 3, &steps, &Context::default()).unwrap();
         assert!(seen.is_empty());
+    }
+    fn never(_: &Context) -> bool {
+        false
+    }
+
+    #[test]
+    fn a_step_that_is_not_ready_stops_the_run_where_it_is() {
+        let steps = [
+            Step {
+                name: "one",
+                run: bump,
+                ready: always,
+            },
+            Step {
+                name: "two",
+                run: bump,
+                ready: never,
+            },
+        ];
+        let mut seen = Vec::new();
+        assert_eq!(
+            run_steps(&mut seen, 1, &steps, &Context::default()).unwrap(),
+            2
+        );
+        assert_eq!(seen.len(), 1);
     }
 }

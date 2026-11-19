@@ -37,6 +37,28 @@ pub fn guard(path: &Path, steps: &[Step<String>]) -> io::Result<()> {
     read(path, steps).map(|_| ())
 }
 
+/// store `text` as the file at `path` in one step: it is written beside the file, synced, and
+/// renamed over it, so a crash leaves the old file or the new one, never half of one. the file
+/// is private to the user.
+pub fn write(path: &Path, text: &str) -> io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let mut options = fs::OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let stored = options.open(&temp).and_then(|mut file| {
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp, path)
+    });
+    if stored.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    stored
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +90,16 @@ mod tests {
         assert_eq!(read(&path, &[]).unwrap(), None);
         fs::write(&path, "me@gw\n").unwrap();
         assert_eq!(read(&path, &[]).unwrap().as_deref(), Some("me@gw\n"));
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+    #[test]
+    fn a_write_replaces_the_file_and_leaves_nothing_beside_it() {
+        let path = temp("write").join("file");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write(&path, "one\n").unwrap();
+        write(&path, "two\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "two\n");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }

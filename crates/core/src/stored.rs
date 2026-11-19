@@ -44,9 +44,10 @@ pub fn restore_script(stamp: &str) -> String {
     for kind in FILES {
         let file = path(kind);
         script.push_str(&format!(
-            "b=$(ls {file}.v*.{stamp}.bak 2>/dev/null | head -n 1); [ -z \"$b\" ] || cp -p \"$b\" {file}\n"
+            "b=$(ls {file}.v*.{stamp}.bak 2>/dev/null | head -n 1); [ -z \"$b\" ] || {{ cp -p \"$b\" {file}.tmp && mv -f {file}.tmp {file}; }}\n"
         ));
     }
+    script.push_str("sync\n");
     script
 }
 
@@ -54,6 +55,7 @@ pub fn restore_script(stamp: &str) -> String {
 struct Plan {
     kind: Kind,
     old: u32,
+    new: u32,
     text: String,
 }
 
@@ -68,6 +70,7 @@ fn plan(kind: Kind, stored: Option<Vec<u8>>, context: &Context) -> Result<Option
     Ok((new != text).then_some(Plan {
         kind,
         old,
+        new: version_of(&new),
         text: new,
     }))
 }
@@ -121,7 +124,7 @@ pub(crate) fn migrate_with(
                 "{}: format {} to {}; the old copy is {}.v{}.{stamp}.bak",
                 p.kind.file(),
                 p.old,
-                p.kind.current(),
+                p.new,
                 path(p.kind),
                 p.old
             )
@@ -209,9 +212,59 @@ mod tests {
         assert!(format!("{error:#}").contains("format 99"), "{error:#}");
         assert_eq!(std::fs::read_to_string(gw.dir.join("yml")).unwrap(), newer);
         let sealed = crate::crypto::encrypt(&id, newer.as_bytes()).unwrap();
-        std::fs::write(gw.dir.join("age"), sealed).unwrap();
+        std::fs::write(gw.dir.join("age"), &sealed).unwrap();
         let error =
             config::push_with(&gw.session, "gw", &id, b"a: 1\n", &mut no_password).unwrap_err();
         assert!(format!("{error:#}").contains("format 99"), "{error:#}");
+    }
+    #[test]
+    fn a_newer_sealed_file_is_left_as_it_is_after_the_refusal() {
+        let (gw, id) = (
+            Gateway::new("stored-newer-age"),
+            identity("stored-newer-age"),
+        );
+        let newer = "lanlord_format: 99\nlanlord_version: \"9.9\"\nnt4-domain: {}\n";
+        let sealed = crate::crypto::encrypt(&id, newer.as_bytes()).unwrap();
+        std::fs::write(gw.dir.join("age"), &sealed).unwrap();
+        let error =
+            config::push_with(&gw.session, "gw", &id, b"a: 1\n", &mut no_password).unwrap_err();
+        assert!(format!("{error:#}").contains("format 99"), "{error:#}");
+        assert_eq!(std::fs::read(gw.dir.join("age")).unwrap(), sealed);
+    }
+
+    #[test]
+    fn an_old_sealed_file_is_stamped_and_keeps_a_copy() {
+        let (gw, id) = (Gateway::new("stored-sealed"), identity("stored-sealed"));
+        gw.seed_sealed(&id, "nt4-domain:\n  admin_password: hunter2\n");
+        let before = std::fs::read(gw.dir.join("age")).unwrap();
+        let lines = migrate_with(&gw.session, "gw", &id, STAMP, &mut no_password).unwrap();
+        assert!(
+            lines[0].starts_with("settings.age: format 1 to 1"),
+            "{lines:?}"
+        );
+        let text = gw.sealed_raw(&id).unwrap();
+        assert!(
+            text.contains("lanlord_format: 1") && text.contains("hunter2"),
+            "{text}"
+        );
+        assert_eq!(
+            std::fs::read(gw.dir.join(format!("age.v1.{STAMP}.bak"))).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn a_failure_part_way_puts_the_files_back() {
+        let (gw, id) = (Gateway::new("stored-partway"), identity("stored-partway"));
+        seed_plain(&gw, OLD);
+        gw.seed_sealed(&id, "nt4-domain:\n  admin_password: hunter2\n");
+        let sealed = std::fs::read(gw.dir.join("age")).unwrap();
+        std::fs::write(gw.dir.join("fail-age"), "").unwrap();
+        let error = migrate_with(&gw.session, "gw", &id, STAMP, &mut no_password).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("the old files are back"), "{message}");
+        // the plain file was written before the sealed one failed, and is back
+        assert_eq!(std::fs::read_to_string(gw.dir.join("yml")).unwrap(), OLD);
+        assert_eq!(std::fs::read(gw.dir.join("age")).unwrap(), sealed);
     }
 }

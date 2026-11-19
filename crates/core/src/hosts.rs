@@ -77,11 +77,10 @@ pub fn save_last(path: &Path, target: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    private_file()
-        .write(true)
-        .truncate(true)
-        .open(last_path(path))?
-        .write_all(render_text(&format!("{target}\n"), STEPS).as_bytes())
+    localfile::write(
+        &last_path(path),
+        &render_text(&format!("{target}\n"), STEPS),
+    )
 }
 
 /// drop `host` from the file, keeping comments and the other hosts.
@@ -95,11 +94,7 @@ pub fn remove(path: &Path, host: &str) -> io::Result<()> {
         body.push('\n');
     }
     let body = render_text(&body, STEPS);
-    private_file()
-        .write(true)
-        .truncate(true)
-        .open(path)?
-        .write_all(body.as_bytes())
+    localfile::write(path, &body)
 }
 
 #[cfg(test)]

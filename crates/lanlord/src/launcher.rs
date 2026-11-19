@@ -392,7 +392,7 @@ pub fn install_files(files: &[Planned], manifest: &Path, force: bool) -> Result<
     if let Some(parent) = manifest.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(manifest, known.render())
+    lanlord_core::localfile::write(manifest, &known.render())
         .with_context(|| format!("writing {}", manifest.display()))
 }
 
