@@ -139,7 +139,7 @@ pub(crate) fn migrate_with(
                 format!("the old copies are beside the files ({DIR}/*.{stamp}.bak); put them back")
             }
         };
-        return Err(error.context(format!("storing the migrated files failed; {outcome}")));
+        return Err(error).with_context(|| format!("storing the migrated files failed; {outcome}"));
     }
     lines.push("migrated".into());
     Ok(lines)
