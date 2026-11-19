@@ -276,9 +276,11 @@ impl Desktop {
         if self.services.is_local() {
             return;
         }
+        // the this-server target is no connection to fill in: fall back to the selected host
         let last = self
             .hosts
             .last()
+            .filter(|l| !lanlord_model::signin::is_this_server(l))
             .or(self.hosts.selected())
             .map(String::from);
         self.login = Some(LoginBox::new(auth.clone(), &self.ctx, last.as_deref()));
@@ -649,7 +651,9 @@ impl Desktop {
             if let Err(error) = self.hosts.add(&signed_in.target) {
                 emit(Kind::Err, error);
             }
-            self.hosts.remember(&signed_in.target);
+            if let Err(error) = self.hosts.remember(&signed_in.target) {
+                emit(Kind::Err, error);
+            }
         }
         self.services.session_restored();
         self.reset_session_ui();
