@@ -78,7 +78,7 @@ if have docker; then
   done
 fi
 
-for u in lanlord-webui.service lanlord-operations.service lanlord-auth.socket lanlord-auth@.service lanlord-status.timer lanlord-status.service lanlord-firewall.service; do
+for u in lanlord-webui.service lanlord-operations.service lanlord-auth.socket lanlord-auth@.service lanlord-status.timer lanlord-status.service lanlord-firewall.service lanlord-internet-prune.timer lanlord-internet-prune.service lanlord-internet-boot.service; do
   if exists "$ROOT/etc/systemd/system/$u"; then
     # the per-connection login service is a template that is never enabled itself
     if have systemctl && [ "$u" != lanlord-auth@.service ]; then act "stop and disable $u" systemctl disable --now "$u"; fi
@@ -88,7 +88,7 @@ done
 if [ "$DRY" = 0 ] && have systemctl; then systemctl daemon-reload >/dev/null 2>&1; fi
 
 # the web ui login: the helper the playbook copies out of /opt/lanlord, and its pam rules
-for f in /usr/local/libexec/lanlord-auth-helper /etc/pam.d/lanlord; do
+for f in /usr/local/libexec/lanlord-auth-helper /etc/pam.d/lanlord /etc/sysctl.d/60-lanlord.conf; do
   if exists "$ROOT$f"; then act "remove $f" rm -f "$ROOT$f"; fi
 done
 

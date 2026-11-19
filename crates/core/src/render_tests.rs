@@ -799,9 +799,10 @@ fn an_allowed_machine_gets_a_router_and_a_timed_nft_element() {
     assert!(!firewall.iter().any(|l| l.contains("eth2\" oifname")));
     // a boot loads the rules file alone: its set is empty, so nothing is open before the grants
     // that are still running are put back from the elements file
-    assert!(!firewall
-        .iter()
-        .any(|l| l.contains("elements") || l.contains("timeout")));
+    assert!(!firewall.iter().any(|l| {
+        !l.trim_start().starts_with('#')
+            && (l.contains("elements") || l.contains("02:00:00:00:00:"))
+    }));
     let elements = lines(&out.join("internet-elements.nft"));
     assert!(has(&elements, "flush set inet lanlord internet_retronet"));
     assert!(
