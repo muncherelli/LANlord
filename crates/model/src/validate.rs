@@ -1085,6 +1085,23 @@ fn check_modules(ids: &[String]) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// a new network is checked on its own; the server checks the whole list again after the edit.
+fn check_network_edit(edit: &crate::lan_edit::Edit) -> Result<(), Invalid> {
+    use crate::lan_edit::Edit;
+    match edit {
+        Edit::Add(network) => {
+            crate::lan_networks::validate(std::slice::from_ref(network), None, true)
+                .into_iter()
+                .next()
+                .map_or(Ok(()), |e| Err(Invalid::new(e.path, e.message)))
+        }
+        Edit::Set { name, .. } | Edit::Remove(name) => named("name", label, name),
+        Edit::LeaseAdd { network, .. } | Edit::LeaseRemove { network, .. } => {
+            named("network", label, network)
+        }
+    }
+}
+
 /// check the arguments of an operation the way the server will, before anything runs. the first
 /// field that is wrong is named.
 pub fn operation(operation: &Operation) -> Result<(), Invalid> {
@@ -1092,6 +1109,7 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         Operation::Apply { modules } => check_modules(modules),
         Operation::SaveDocument { plain, updates } => check_save(plain, updates),
         Operation::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
+        Operation::ChangeNetworks { edit } => check_network_edit(edit),
         Operation::ResetMachine { name } => named("name", machine_name, name),
         Operation::CreateAdmin {
             name,
@@ -1998,6 +2016,20 @@ web-proxy:
                 },
                 "topic",
             ),
+            (
+                Operation::ChangeNetworks {
+                    edit: Box::new(crate::lan_edit::Edit::Add(
+                        crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1"),
+                    )),
+                },
+                "networks[0].address",
+            ),
+            (
+                Operation::ChangeNetworks {
+                    edit: Box::new(crate::lan_edit::Edit::Remove("a b".into())),
+                },
+                "name",
+            ),
         ];
         for (operation, field) in refused {
             let error = operation.validate().expect_err(&format!("{operation:?}"));
@@ -2028,6 +2060,11 @@ web-proxy:
             Operation::SaveDocument {
                 plain: "dns:\n  zone: lab\n".into(),
                 updates: vec![],
+            },
+            Operation::ChangeNetworks {
+                edit: Box::new(crate::lan_edit::Edit::Add(
+                    crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1/24"),
+                )),
             },
         ];
         for operation in fine {
