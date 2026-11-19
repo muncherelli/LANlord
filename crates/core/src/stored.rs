@@ -40,14 +40,14 @@ fn backup_script(stamp: &str, old: &[(Kind, u32)]) -> String {
 /// the script that puts every file back from the copies an upgrade with `stamp` made. a file
 /// with no copy was not changed and is left alone.
 pub fn restore_script(stamp: &str) -> String {
-    let mut script = String::from("# stored restore\n");
+    let mut script = String::from("# stored restore\nrc=0\n");
     for kind in FILES {
         let file = path(kind);
         script.push_str(&format!(
-            "b=$(ls {file}.v*.{stamp}.bak 2>/dev/null | head -n 1); [ -z \"$b\" ] || {{ cp -p \"$b\" {file}.tmp && mv -f {file}.tmp {file}; }}\n"
+            "b=$(ls {file}.v*.{stamp}.bak 2>/dev/null | head -n 1); [ -z \"$b\" ] || {{ cp -p \"$b\" {file}.tmp && mv -f {file}.tmp {file} || {{ rc=1; rm -f {file}.tmp; }}; }}\n"
         ));
     }
-    script.push_str("sync\n");
+    script.push_str("sync\nexit $rc\n");
     script
 }
 
@@ -98,8 +98,12 @@ pub(crate) fn migrate_with(
         bail!("the backup stamp must look like 20260101T120000Z");
     }
     let admins = admins::list_with(session, &mut *ask).ok();
+    let admins_unknown = admins.is_none();
     let context = Context { admins };
     let plain = config::pull_plain_raw_with(session, &mut *ask)?;
+    let plain_version = plain
+        .as_deref()
+        .map(|bytes| version_of(&String::from_utf8_lossy(bytes)));
     let sealed = config::pull_raw_with(session, identity, &mut *ask)?;
     // reading all of it first: a newer or unreadable file stops everything before a write
     let plans: Vec<Plan> = [
@@ -109,8 +113,24 @@ pub(crate) fn migrate_with(
     .into_iter()
     .flatten()
     .collect();
+    // without the administrators the role assignments cannot be stored: the file stops short
+    let plain_now = plans
+        .iter()
+        .find(|p| p.kind == Kind::Plain)
+        .map(|p| p.new)
+        .or(plain_version);
+    let warning =
+        (admins_unknown && plain_now.is_some_and(|v| v < Kind::Plain.current())).then(|| {
+            format!(
+                "settings.yml stopped at format {}: could not read the administrators; \
+                 run lanlord upgrade again",
+                plain_now.unwrap_or(1)
+            )
+        });
     if plans.is_empty() {
-        return Ok(vec!["the stored files are in the current format".into()]);
+        return Ok(vec![warning.unwrap_or_else(|| {
+            "the stored files are in the current format".into()
+        })]);
     }
     let old: Vec<(Kind, u32)> = plans.iter().map(|p| (p.kind, p.old)).collect();
     let admin = config::admin(session)?;
@@ -145,6 +165,7 @@ pub(crate) fn migrate_with(
         return Err(error).with_context(|| format!("storing the migrated files failed; {outcome}"));
     }
     lines.push("migrated".into());
+    lines.extend(warning);
     Ok(lines)
 }
 
@@ -266,5 +287,65 @@ mod tests {
         // the plain file was written before the sealed one failed, and is back
         assert_eq!(std::fs::read_to_string(gw.dir.join("yml")).unwrap(), OLD);
         assert_eq!(std::fs::read(gw.dir.join("age")).unwrap(), sealed);
+    }
+    #[test]
+    fn a_restore_that_cannot_copy_says_so_and_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!("lanlord-restore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // a copy that cannot be read: cp fails
+        std::os::unix::fs::symlink(
+            dir.join("nowhere"),
+            dir.join(format!("settings.yml.v1.{STAMP}.bak")),
+        )
+        .unwrap();
+        let script = restore_script(STAMP).replace(DIR, &dir.display().to_string());
+        let status = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(1));
+        assert!(!dir.join("settings.yml.tmp").exists());
+        // and a restore with nothing to put back succeeds
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let status = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_restore_that_fails_is_reported_not_called_done() {
+        let (gw, id) = (
+            Gateway::new("stored-restore-fails"),
+            identity("stored-restore-fails"),
+        );
+        seed_plain(&gw, OLD);
+        gw.seed_sealed(&id, "nt4-domain:\n  admin_password: hunter2\n");
+        std::fs::write(gw.dir.join("fail-age"), "").unwrap();
+        std::fs::write(gw.dir.join("fail-restore"), "").unwrap();
+        let error = migrate_with(&gw.session, "gw", &id, STAMP, &mut no_password).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(!message.contains("the old files are back"), "{message}");
+        assert!(message.contains("put them back"), "{message}");
+    }
+
+    #[test]
+    fn unknown_administrators_are_said_out_loud() {
+        let (gw, id) = (
+            Gateway::new("stored-no-admins"),
+            identity("stored-no-admins"),
+        );
+        seed_plain(&gw, OLD);
+        std::fs::write(gw.dir.join("fail-admins"), "").unwrap();
+        let lines = migrate_with(&gw.session, "gw", &id, STAMP, &mut no_password).unwrap();
+        let last = lines.last().unwrap();
+        assert!(
+            last.contains("stopped at format 2") && last.contains("run lanlord upgrade again"),
+            "{lines:?}"
+        );
     }
 }

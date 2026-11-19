@@ -62,7 +62,10 @@ case "$last" in
   *)
 input=$(cat)
 case "$input" in
-  "# stored backup"*|"# stored restore"*) printf '%s\n' "$input" | sed "s#/opt/lanlord/config/settings.yml#$D/yml#g; s#/opt/lanlord/config/settings.age#$D/age#g" | sh ;;
+  *"tr ',' '\\n' | sed '/^$/d' | sort"*) if [ -f "$D/fail-admins" ]; then echo "no getent" >&2; exit 1; fi ;;
+  "# stored restore"*) if [ -f "$D/fail-restore" ]; then echo "read-only" >&2; exit 1; fi
+    printf '%s\n' "$input" | sed "s#/opt/lanlord/config/settings.yml#$D/yml#g; s#/opt/lanlord/config/settings.age#$D/age#g" | sh ;;
+  "# stored backup"*) printf '%s\n' "$input" | sed "s#/opt/lanlord/config/settings.yml#$D/yml#g; s#/opt/lanlord/config/settings.age#$D/age#g" | sh ;;
   *"> /opt/lanlord/config/settings.yml.tmp"*) @PAYLOAD@ > "$D/yml" ;;
   *"> /opt/lanlord/config/settings.age.tmp"*)
     if [ -f "$D/fail-age" ]; then echo "disk full" >&2; exit 1; fi

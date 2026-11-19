@@ -149,7 +149,10 @@ mod tests {
         save_last(&path, "me@gw").unwrap();
         save_last(&path, "me@other").unwrap();
         let last = last_path(&path);
-        assert_eq!(fs::read_to_string(&last).unwrap(), "me@other\n");
+        assert_eq!(
+            fs::read_to_string(&last).unwrap(),
+            format!("{}me@other\n", lanlord_model::format::text_header(1))
+        );
         assert_eq!(
             fs::metadata(&last).unwrap().permissions().mode() & 0o777,
             0o600

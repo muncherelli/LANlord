@@ -43,7 +43,9 @@ pub fn guard(path: &Path, steps: &[Step<String>]) -> io::Result<()> {
 pub fn write(path: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    static WRITES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let count = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_file_name(format!(".{name}.{}.{count}.tmp", std::process::id()));
     let mut options = fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]
@@ -52,6 +54,12 @@ pub fn write(path: &Path, text: &str) -> io::Result<()> {
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temp, path)
+    });
+    // the rename is only durable once the directory is synced too
+    #[cfg(unix)]
+    let stored = stored.and_then(|()| match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => fs::File::open(dir)?.sync_all(),
+        _ => Ok(()),
     });
     if stored.is_err() {
         let _ = fs::remove_file(&temp);
