@@ -5,7 +5,8 @@
 
 use anyhow::{bail, Result};
 pub use lanlord_model::lan_edit::{
-    add_edit, apply_edit, edit_settings, parse_range, set_edit, AddArgs, Change, Edit, SetArgs,
+    add_edit, apply_edit, edit_settings, edit_settings_on, parse_range, set_edit, AddArgs, Change,
+    Edit, SetArgs,
 };
 use lanlord_model::lan_networks::{self, Networks};
 use lanlord_model::settings::Settings;
@@ -91,10 +92,17 @@ pub fn change(
     if stored == settings::Document::default() {
         bail!("no settings on {host}; run lanlord config push first");
     }
-    let edited = edit_settings(&stored.plain, edit)?;
+    // the card the default route leaves through is the external network's, when the settings do
+    // not say which it is
+    let card = crate::server::read(session)
+        .ok()
+        .and_then(|f| f.interfaces.into_iter().find(|i| i.default_route))
+        .map(|i| i.name);
+    let edited = edit_settings_on(&stored.plain, edit, card.as_deref())?;
     settings::save_document_with(session, host, identity, &edited, &[], &mut ask)?;
     let modules = MODULES.map(String::from);
     apply::apply_with(session, host, Some(identity), &modules, &mut ask)
+        .map_err(|e| anyhow::anyhow!("Saved, but applying failed: {e}. Fix it and click Apply."))
 }
 
 #[cfg(test)]
@@ -121,6 +129,41 @@ mod tests {
         lan_networks::read(&Settings::parse(text).unwrap())
             .unwrap()
             .list
+    }
+
+    #[test]
+    fn a_network_that_is_still_used_cannot_be_removed() {
+        let base = edit_settings(OLD, &Edit::Add(lab())).unwrap();
+        let domain = format!("{base}nt4-domain:\n  network: lab\n");
+        let error = edit_settings(&domain, &Edit::Remove("lab".into())).unwrap_err();
+        assert!(
+            error.to_string().contains("the nt4-domain network"),
+            "{error}"
+        );
+        let attached =
+            format!("{base}components:\n  files:\n    attach:\n      - network: lab\n        address: 192.168.50.5\n");
+        let error = edit_settings(&attached, &Edit::Remove("lab".into())).unwrap_err();
+        assert!(error.to_string().contains("the component files"), "{error}");
+        assert!(edit_settings(&base, &Edit::Remove("lab".into())).is_ok());
+    }
+
+    #[test]
+    fn the_default_route_card_is_not_a_lan_interface_when_the_settings_do_not_name_it() {
+        // eth0 carries the default route and the settings do not say so
+        let edit = Edit::Add(LanNetwork::new("lab", "eth0", "192.168.50.1/24"));
+        let error = edit_settings_on("", &edit, Some("eth0")).unwrap_err();
+        assert!(error.to_string().contains("eth0"), "{error}");
+        assert!(edit_settings_on("", &edit, None).is_ok());
+        // a card that a network already uses stays editable, whatever the route says
+        let base = edit_settings_on("", &edit, None).unwrap();
+        let set = Edit::Set {
+            name: "lab".into(),
+            change: Change {
+                mtu: Some(Some(1400)),
+                ..Change::default()
+            },
+        };
+        assert!(edit_settings_on(&base, &set, Some("eth0")).is_ok());
     }
 
     #[test]

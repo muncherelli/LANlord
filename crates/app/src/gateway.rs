@@ -695,6 +695,8 @@ mod fake {
         pub purge_lines: Mutex<Vec<String>>,
         /// when set, reading the network status fails with this.
         pub network_error: Mutex<Option<String>>,
+        /// when set, a network change is stored and then fails to apply with this reason.
+        pub apply_error: Mutex<Option<String>>,
         /// the signed-in person's profile, changed by `update_profile`.
         pub profile: Mutex<lanlord_model::access::Profile>,
         /// the roles and who has them, changed by `save_access`.
@@ -739,6 +741,7 @@ mod fake {
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
                 network_error: Mutex::new(None),
+                apply_error: Mutex::new(None),
                 profile: Mutex::new(lanlord_model::access::Profile::default()),
                 access: Mutex::new(Access {
                     members: [
@@ -1029,7 +1032,12 @@ mod fake {
                 .lock()
                 .unwrap()
                 .push(format!("apply {host} [docker,dns]"));
-            Ok(())
+            match self.apply_error.lock().unwrap().clone() {
+                Some(reason) => Err(anyhow!(
+                    "Saved, but applying failed: {reason}. Fix it and click Apply."
+                )),
+                None => Ok(()),
+            }
         }
 
         pub fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {

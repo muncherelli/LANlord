@@ -1,0 +1,45 @@
+              ┌ □ Networks ─────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ [ External Network ]                                                             │
+  My Server   │ ┌──────────────────────────────────────────────────────────────────────────────┐ │
+              │ │┌ Connection ────────────────────────┐ ┌ Activity ──────────────────────────┐ │ │
+              │ ││ Status:    Connected               │ │           Sent        Received     │ │ │
+      □       │ ││ Interface: eth0                    │ │  Bytes:   48,211,933  913,442,071  │ │ │
+   Networks   │ ││ Speed:     10.0 Gbps               │ │  Packets: 402,113     771,904      │ │ │
+              │ ││ Address:   192.0.2.10/24           │ └────────────────────────────────────┘ │ │
+              │ │└────────────────────────────────────┘                                        │ │
+      ►       │ └──────────────────────────────────────────────────────────────────────────────┘ │
+   Gateway    │                   [ Properties... ] [ DNS & DHCP... ] [ Details... ] [ Refresh ] │
+              │                                                               [ New network... ] │
+              │ ┌ Network interfaces ──────────────────────────────────────────────────────────┐ │
+      ▦       │ │  eth0   192.0.2.10/24   MTU 1500   Connected                                 │ │
+   Settings   │ │  eth1   172.16.120.1/22   MTU 1450   Connected   not used                    │ │
+              │ └─────────────────────────────────┌ New network ────────────────────────────────────── _ □ × ┐
+              │ up to date                        │ Add a network on a card no network uses. Saving applies  │
+      >       └───────────────────────────────────│ it to the server.                                        │
+   Console                                        │ Name                                                     │
+                                                  │ Interface   eth1 ▼                                       │
+                                                  │ Address     172.16.120.1/22                              │
+      ▣                                           │ DHCP range  172.16.120.100    to      172.16.120.200     │
+    Hosts                                         │ Lease time  7d                                           │
+                                                  │ DNS zone    the name                                     │
+                                                  │ MTU         1450                                         │
+                                                  │ Leave the DHCP range empty for a network without DHCP.   │
+                                                  │                              [ Save & apply ] [ Cancel ] │
+                                                  └──────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ □ Networks ]                                                                                                                          12:00 PM

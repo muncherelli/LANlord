@@ -5,8 +5,10 @@
 //! and Properties of a lanlord network changes or removes it, the way `lanlord networks add`,
 //! `set` and `remove` do; the external network is only shown.
 
-use anyhow::Result;
-use lanlord_model::lan_edit::{external_interface, Edit};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{anyhow, Result};
+use lanlord_model::lan_edit::{external_interface, network_users, Edit};
 use lanlord_model::lan_networks::{self, LanNetwork};
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::networks::{self, Draft, NetworkRow, Role};
@@ -84,6 +86,19 @@ pub struct Networks {
     pub lan: Vec<LanNetwork>,
     /// the interface of the external network, which no lanlord network may use.
     pub external: Option<String>,
+    /// what still uses a lanlord network, by network name: those cannot be removed.
+    pub used: Vec<(String, Vec<String>)>,
+}
+
+impl Networks {
+    /// what in the settings still names the network `name`.
+    fn users_of(&self, name: &str) -> Vec<String> {
+        self.used
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, users)| users.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// the form that adds a network or changes one.
@@ -91,6 +106,8 @@ struct NetForm {
     /// the network being changed; `None` for a new one.
     existing: Option<String>,
     draft: Draft,
+    /// the draft the form opened with, so a save sends only what was changed.
+    original: Draft,
     /// the cards the interface drop-down offers.
     cards: Vec<Iface>,
     /// something was typed or picked, so what is wrong is worth showing.
@@ -118,10 +135,19 @@ fn read(gateway: &dyn Gateway, target: &str, ask: AskPassword) -> Result<Network
             .map(|n| n.list)
             .unwrap_or_default(),
         external,
+        used: lan_networks::read(&settings)
+            .map(|n| n.list)
+            .unwrap_or_default()
+            .iter()
+            .map(|n| (n.name.clone(), network_users(&settings, &n.name)))
+            .collect(),
         rows,
         interfaces: facts.interfaces,
     })
 }
+
+/// how the server starts the error of a change that was stored but did not apply.
+const SAVED_NOT_APPLIED: &str = "Saved, but applying failed";
 
 #[derive(Default)]
 pub struct NetworksWindow {
@@ -140,6 +166,8 @@ pub struct NetworksWindow {
     confirm: Option<String>,
     /// a save or a removal is on its way, so its form stays open until it is known how it went.
     saving: bool,
+    /// set by the job of a save that was stored but could not be applied.
+    warning: Arc<Mutex<Option<String>>>,
     /// when the status was last asked for, in seconds on the caller's clock.
     status_at: f64,
     /// writes a unix time for the lease lines; this computer's time zone when `None`.
@@ -185,7 +213,12 @@ impl NetworksWindow {
         if self.saving && !self.rows.busy() {
             self.saving = false;
             self.confirm = None;
-            if arrived {
+            let warning = self.warning.lock().ok().and_then(|mut w| w.take());
+            if let Some(text) = warning {
+                // the change is stored and the list read again; only the apply failed
+                self.form = None;
+                self.rows.say(true, text);
+            } else if arrived {
                 self.form = None;
             } else if let (Some(form), Some((true, text))) = (&mut self.form, &self.rows.note) {
                 form.error = Some(text.clone());
@@ -204,8 +237,20 @@ impl NetworksWindow {
     /// how it goes) and read the networks again.
     fn change(&mut self, services: &Services, host: &str, edit: Edit, doing: &str, done: &str) {
         let target = host.to_string();
+        let warning = self.warning.clone();
         let job = services.spawn(host, move |gateway, ask| {
-            gateway.change_networks(&target, &edit, ask)?;
+            match gateway.change_networks(&target, &edit, ask) {
+                Ok(()) => {}
+                // stored but not applied: show the networks as they are now, and say why
+                Err(e) if e.to_string().contains(SAVED_NOT_APPLIED) => {
+                    let networks = read(gateway, &target, ask).map_err(|_| anyhow!("{e}"))?;
+                    if let Ok(mut slot) = warning.lock() {
+                        *slot = Some(e.to_string());
+                    }
+                    return Ok(networks);
+                }
+                Err(e) => return Err(e),
+            }
             read(gateway, &target, ask)
         });
         self.saving = self.rows.track(host, job, doing, done, false);
@@ -235,6 +280,7 @@ impl NetworksWindow {
         self.form = Some(NetForm {
             existing: None,
             draft: Draft::on_card(&card),
+            original: Draft::default(),
             cards,
             touched: false,
             error: None,
@@ -278,6 +324,7 @@ impl NetworksWindow {
         );
         self.form = Some(NetForm {
             existing: Some(network.name),
+            original: draft.clone(),
             draft,
             cards,
             touched: false,
@@ -291,7 +338,7 @@ impl NetworksWindow {
             return Err(Vec::new());
         };
         form.draft.edit(
-            form.existing.as_deref(),
+            form.existing.as_deref().map(|n| (n, &form.original)),
             &data.lan,
             data.external.as_deref(),
         )
@@ -367,6 +414,7 @@ impl NetworksWindow {
             interfaces: Vec::new(),
             lan: Vec::new(),
             external: None,
+            used: Vec::new(),
         });
         let can_add =
             self.can_edit(services, host) && !networks::unused(&interfaces, &rows).is_empty();
@@ -547,6 +595,19 @@ impl NetworksWindow {
             format!(" ({n} clients hold a lease now)")
         });
         let busy = self.rows.busy();
+        let users = self
+            .rows
+            .data
+            .as_ref()
+            .map_or_else(Vec::new, |d| d.users_of(name));
+        let blocked = if users.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{} still uses {name}; change that before removing the network.",
+                users.join(" and ")
+            ))
+        };
         Dialog {
             id: "network-remove",
             title: "Remove network".into(),
@@ -559,12 +620,34 @@ impl NetworksWindow {
                      The card itself stays, and can be used for a new network."
                 )),
                 Node::Gap(6.0),
+                Node::Warning(blocked.clone().unwrap_or_default()),
                 Node::Buttons(vec![
                     Button::new("Cancel", !busy, Msg::CancelRemove),
-                    Button::new("Remove network", !busy, Msg::ConfirmRemove),
+                    Button::new(
+                        "Remove network",
+                        !busy && blocked.is_none(),
+                        Msg::ConfirmRemove,
+                    ),
                 ]),
             ],
             escape: Some(Msg::CancelRemove),
+        }
+    }
+
+    /// the static leases that saving the open form would drop: it clears the range of a network
+    /// that has reservations.
+    fn leases_lost(&self, form: &NetForm) -> usize {
+        let cleared =
+            form.draft.range_start.trim().is_empty() && form.draft.range_end.trim().is_empty();
+        let name = form.existing.as_deref();
+        match (cleared, name, &self.rows.data) {
+            (true, Some(name), Some(data)) => data
+                .lan
+                .iter()
+                .find(|n| n.name.eq_ignore_ascii_case(name))
+                .and_then(|n| n.dhcp.as_ref())
+                .map_or(0, |d| d.hosts.len()),
+            _ => 0,
         }
     }
 
@@ -631,6 +714,13 @@ impl NetworksWindow {
             labelled("MTU", input(Field::Mtu, &draft.mtu, "the card's own")),
             Node::Text("Leave the DHCP range empty for a network without DHCP.".into()),
         ];
+        let leases = self.leases_lost(form);
+        if leases > 0 {
+            body.push(Node::Warning(format!(
+                "Clearing the DHCP range removes the {leases} static lease{} of this network.",
+                if leases == 1 { "" } else { "s" }
+            )));
+        }
         let mut shown = problems;
         shown.extend(form.error.clone().filter(|e| !shown_has(&shown, e)));
         body.extend(shown.into_iter().map(Node::Warning));
@@ -749,7 +839,7 @@ fn connection_dialog(status: &InterfaceStatus, time: fn(i64) -> String) -> Dialo
 /// network's dhcp.
 fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>) -> Vec<Node<Msg>> {
     let state = status.map_or(row.link.clone(), |s| s.connection.text().to_string());
-    let mut nodes = vec![Node::Group {
+    let connection = Node::Group {
         title: "Connection".into(),
         body: vec![
             Node::field("Status:", state),
@@ -760,16 +850,23 @@ fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>)
             ),
             Node::field("Address:", row.address.clone()),
         ],
-    }];
-    if let (None, Some(error)) = (status, error) {
-        nodes.push(Node::Gap(6.0));
-        nodes.push(Node::Text(format!(
-            "Could not read the connection status: {error}. Press Refresh to try again."
-        )));
-    }
-    if let Some(status) = status {
-        nodes.push(Node::Gap(6.0));
-        nodes.push(activity(status));
+    };
+    let mut nodes = Vec::new();
+    match (status, error) {
+        // the traffic sits beside the connection, so the page stays short enough to leave room
+        // for the interface list on a small screen
+        (Some(status), _) => nodes.push(Node::Columns(vec![
+            (None, vec![connection]),
+            (None, vec![activity(status)]),
+        ])),
+        (None, Some(error)) => {
+            nodes.push(connection);
+            nodes.push(Node::Gap(6.0));
+            nodes.push(Node::Text(format!(
+                "Could not read the connection status: {error}. Press Refresh to try again."
+            )));
+        }
+        (None, None) => nodes.push(connection),
     }
     if row.role == Role::Lanlord {
         nodes.push(Node::Gap(6.0));
@@ -785,7 +882,7 @@ fn activity(status: &InterfaceStatus) -> Node<Msg> {
         body: vec![Node::Table(Table {
             id: "network-activity",
             headings: vec!["", "Sent", "Received"],
-            widths: vec![80.0, 160.0],
+            widths: vec![64.0, 96.0],
             rows: vec![
                 vec![
                     "Bytes:".into(),
@@ -1147,8 +1244,8 @@ mod tests {
             window.form.as_ref().unwrap().draft.range_end,
             "172.16.120.200"
         );
-        // the network's own card is among the choices, and its own name is no clash
-        assert!(window.form_edit().is_ok());
+        // nothing is changed yet, and the network's own name and card are no clash
+        assert_eq!(window.form_edit().unwrap_err(), ["nothing was changed"]);
         typed(&mut window, &services, Field::Mtu, "1400");
         window.update(Msg::Save, &services, "gw", 0.0);
         settle(&mut window, &services);
@@ -1189,6 +1286,68 @@ mod tests {
             .contains(&"networks gw removed the network lab".into()));
         assert!(window.dialog().is_none());
         assert_eq!(window.rows().data.as_ref().unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn an_apply_that_fails_after_the_save_reloads_the_list_and_says_so() {
+        let (fake, services) = services_with("");
+        let mut window = loaded(&services);
+        window.update(Msg::New, &services, "gw", 0.0);
+        typed(&mut window, &services, Field::Name, "lab");
+        *fake.apply_error.lock().unwrap() = Some("dnsmasq would not start".into());
+        window.update(Msg::Save, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        // stored, and the list shows it, so a second Save cannot add it twice
+        assert!(fake.stored.lock().unwrap().contains("name: lab"));
+        assert!(!window.editing());
+        assert_eq!(window.rows().data.as_ref().unwrap().lan.len(), 1);
+        let (error, text) = window.rows().note.clone().unwrap();
+        assert!(error);
+        assert!(text.starts_with("Saved, but applying failed: dnsmasq would not start."));
+        assert!(text.ends_with("Fix it and click Apply."));
+    }
+
+    #[test]
+    fn a_network_that_is_still_used_cannot_be_removed() {
+        let settings = format!("{LAB}nt4-domain:\n  network: lab\n");
+        let (fake, services) = services_with(&settings);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        window.update(Msg::Properties, &services, "gw", 0.0);
+        window.update(Msg::Remove, &services, "gw", 0.0);
+        let dialog = window.dialog().unwrap();
+        let said = dialog.body.iter().any(
+            |n| matches!(n, Node::Warning(t) if t.contains("the nt4-domain network") && t.contains("lab")),
+        );
+        assert!(said);
+        let enabled = dialog.body.iter().find_map(|n| match n {
+            Node::Buttons(b) => b.iter().find(|b| b.label == "Remove network"),
+            _ => None,
+        });
+        assert_eq!(enabled.map(|b| b.enabled), Some(false));
+        window.update(Msg::ConfirmRemove, &services, "gw", 0.0);
+        assert!(fake.calls().iter().all(|c| !c.starts_with("networks")));
+    }
+
+    #[test]
+    fn clearing_the_range_of_a_network_with_reservations_warns_about_them() {
+        let settings = LAB.replace(
+            "172.16.120.200]\n",
+            "172.16.120.200]\n      hosts:\n        - name: box\n          mac: 02:00:00:00:00:01\n          address: 172.16.120.10\n",
+        );
+        let (_fake, services) = services_with(&settings);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        window.update(Msg::Properties, &services, "gw", 0.0);
+        let warns = |window: &NetworksWindow| {
+            window.dialog().unwrap().body.iter().any(
+                |n| matches!(n, Node::Warning(t) if t.contains("1 static lease") && t.contains("removes")),
+            )
+        };
+        assert!(!warns(&window));
+        typed(&mut window, &services, Field::RangeStart, "");
+        typed(&mut window, &services, Field::RangeEnd, "");
+        assert!(warns(&window));
     }
 
     #[test]

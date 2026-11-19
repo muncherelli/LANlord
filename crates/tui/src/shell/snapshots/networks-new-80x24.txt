@@ -1,0 +1,24 @@
+┌ □ Networks ─────────────────────────────────────────────────────────── _ □ × ┐
+│ [ External Network ]                                                         │
+│ ┌──────────────────────────────────────────────────────────────────────────┐ │
+│ │┌ Connection ──────────────────────┐ ┌ Activity ────────────────────────┐ │ │
+│ ││ Status:    Connected             │ │           Sent      Received     │ │ │
+│ ││ Inter┌ New network ────────────────────────────────────── _ □ × ┐071  │ │ │
+│ ││ Speed│ Add a network on a card no network uses. Saving applies  │     │ │ │
+│ ││ Addre│ it to the server.                                        │─────┘ │ │
+│ │└──────│ Name                                                     │       │ │
+│ └───────│ Interface   eth1 ▼                                       │───────┘ │
+│         │ Address     172.16.120.1/22                              │efresh ] │
+│         │ DHCP range  172.16.120.100    to      172.16.120.200     │ork... ] │
+│ ┌ Networ│ Lease time  7d                                           │───────┐ │
+│ │  eth0 │ DNS zone    the name                                     │       │ │
+│ │  eth1 │ MTU         1450                                         │       │ │
+│ └───────│ Leave the DHCP range empty for a network without DHCP.   │───────┘ │
+│ up to da│                              [ Save & apply ] [ Cancel ] │         │
+└─────────└──────────────────────────────────────────────────────────┘─────────┘
+   Console
+
+
+
+
+[ L LANlord ] [ □ Networks ]                                          12:00 PM

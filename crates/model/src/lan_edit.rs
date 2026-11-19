@@ -250,13 +250,59 @@ pub fn external_interface(settings: &Settings) -> Option<String> {
     None
 }
 
+/// what in the settings still names the network `name`: the nt4 domain's network and the
+/// networks the components attach to.
+pub fn network_users(settings: &Settings, name: &str) -> Vec<String> {
+    let names = |value: Option<&Value>| matches!(value, Some(Value::String(n)) if n.eq_ignore_ascii_case(name));
+    let mut users = Vec::new();
+    if let Some(Value::Mapping(domain)) = settings.section("nt4-domain") {
+        if names(domain.get("network")) {
+            users.push("the nt4-domain network".to_string());
+        }
+    }
+    if let Some(Value::Mapping(components)) = settings.section("components") {
+        for (component, entry) in components {
+            let Some(Value::Sequence(attach)) = entry.get("attach") else {
+                continue;
+            };
+            let attached = attach.iter().any(|a| names(a.get("network")));
+            if let (true, Value::String(component)) = (attached, component) {
+                users.push(format!("the component {component}"));
+            }
+        }
+    }
+    users
+}
+
 /// the settings text after `edit`, checked. the networks are always written as a `networks:`
 /// list, so a server with the older single-network settings is migrated by its first change.
 pub fn edit_settings(plain: &str, edit: &Edit) -> Result<String> {
+    edit_settings_on(plain, edit, None)
+}
+
+/// like `edit_settings`, for a server whose default-route card is `default_card`: when the
+/// settings do not name the external interface, that card is taken as it, so no network may
+/// use it.
+pub fn edit_settings_on(plain: &str, edit: &Edit, default_card: Option<&str>) -> Result<String> {
     let mut settings = Settings::parse(plain)?;
     let Networks { mut list, .. } = lan_networks::read(&settings)?;
+    let before = list.clone();
+    if let Edit::Remove(name) = edit {
+        let users = network_users(&settings, name);
+        if !users.is_empty() {
+            bail!(
+                "cannot remove the network {name}: {} still uses it; change that first",
+                users.join(" and ")
+            );
+        }
+    }
     apply_edit(&mut list, edit)?;
-    let errors = lan_networks::validate(&list, external_interface(&settings).as_deref(), true);
+    let external = external_interface(&settings).or_else(|| {
+        default_card
+            .filter(|card| !before.iter().any(|n| n.interface == *card))
+            .map(String::from)
+    });
+    let errors = lan_networks::validate(&list, external.as_deref(), true);
     if !errors.is_empty() {
         bail!(
             "{}",

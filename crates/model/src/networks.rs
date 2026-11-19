@@ -267,12 +267,14 @@ impl Draft {
         }
     }
 
-    /// the edit this form makes: an add, or with `existing` (the network's name) a change of that
-    /// network. `list` is every lanlord network now and `external` the interface of the external
-    /// network. what is wrong is said in the words of the cli's checks.
+    /// the edit this form makes: an add, or with `existing` (the network's name and the draft it
+    /// was opened with) a change of that network that sends only the fields that differ, so an
+    /// edit made on the server meanwhile to another field is not undone. `list` is every lanlord
+    /// network now and `external` the interface of the external network. what is wrong is said
+    /// in the words of the cli's checks.
     pub fn edit(
         &self,
-        existing: Option<&str>,
+        existing: Option<(&str, &Draft)>,
         list: &[LanNetwork],
         external: Option<&str>,
     ) -> Result<Edit, Vec<String>> {
@@ -293,19 +295,42 @@ impl Draft {
                     lease,
                     zone,
                 }),
-                Some(existing) => set_edit(
-                    existing,
-                    &SetArgs {
-                        interface: Some(self.interface.trim().to_string()),
-                        address: Some(self.address.trim().to_string()),
-                        mtu,
-                        no_mtu: mtu.is_none(),
-                        zone,
-                        no_dhcp: range.is_none(),
-                        dhcp_range: range,
-                        lease,
-                    },
-                ),
+                Some((existing, original)) => {
+                    let was = (original.mtu()?, original.range()?);
+                    let was_zone = original.zone.trim();
+                    let was_zone = if was_zone.is_empty() {
+                        original.name.trim()
+                    } else {
+                        was_zone
+                    };
+                    let (interface, address) = (self.interface.trim(), self.address.trim());
+                    let differs = |now: &str, before: &str| {
+                        Some(now.to_string()).filter(|_| now != before.trim())
+                    };
+                    let range_moved = range != was.1;
+                    let args = SetArgs {
+                        interface: differs(interface, &original.interface),
+                        address: differs(address, &original.address),
+                        mtu: mtu.filter(|_| mtu != was.0),
+                        no_mtu: mtu.is_none() && was.0.is_some(),
+                        zone: zone.filter(|z| z != was_zone),
+                        no_dhcp: range.is_none() && was.1.is_some(),
+                        dhcp_range: range.clone().filter(|_| range_moved),
+                        lease: lease.filter(|l| l != original.lease.trim()),
+                    };
+                    if args.interface.is_none()
+                        && args.address.is_none()
+                        && args.mtu.is_none()
+                        && !args.no_mtu
+                        && args.zone.is_none()
+                        && !args.no_dhcp
+                        && args.dhcp_range.is_none()
+                        && args.lease.is_none()
+                    {
+                        return Err("nothing was changed".into());
+                    }
+                    set_edit(existing, &args)
+                }
             };
             edit.map_err(|e| e.to_string())
         };
@@ -625,21 +650,46 @@ mod tests {
     }
 
     #[test]
-    fn changing_a_network_keeps_its_name_and_may_drop_dhcp_and_mtu() {
+    fn changing_a_network_sends_only_the_fields_that_changed() {
         let mut network = lan("lab", "eth3", "198.51.100.1/24");
         network.mtu = Some(1400);
         let list = [network.clone()];
-        let mut draft = Draft::of(&network);
+        let original = Draft::of(&network);
+        let mut draft = original.clone();
         draft.address = "198.51.100.2/24".into();
         draft.mtu = String::new();
-        let Ok(Edit::Set { name, change }) = draft.edit(Some("lab"), &list, None) else {
+        let Ok(Edit::Set { name, change }) = draft.edit(Some(("lab", &original)), &list, None)
+        else {
             panic!("a set");
         };
         assert_eq!(name, "lab");
         assert_eq!(change.address.as_deref(), Some("198.51.100.2/24"));
         assert_eq!(change.mtu, Some(None));
-        assert!(change.dhcp_off);
-        // the network's own interface and name are not a clash with itself
-        assert!(Draft::of(&network).edit(Some("lab"), &list, None).is_ok());
+        assert!(change.interface.is_none() && change.zone.is_none());
+        assert!(!change.dhcp_off && change.dhcp_range.is_none() && change.lease.is_none());
+    }
+
+    #[test]
+    fn a_form_with_nothing_changed_says_so_and_clearing_the_range_turns_dhcp_off() {
+        let mut network = lan("lab", "eth3", "198.51.100.1/24");
+        network.dhcp = Some(crate::settings::Dhcp {
+            range_start: "198.51.100.100".into(),
+            range_end: "198.51.100.200".into(),
+            lease: "7d".into(),
+            hosts: Vec::new(),
+        });
+        let list = [network.clone()];
+        let original = Draft::of(&network);
+        let errors = original
+            .edit(Some(("lab", &original)), &list, None)
+            .unwrap_err();
+        assert_eq!(errors, ["nothing was changed"]);
+        let mut draft = original.clone();
+        draft.range_start = String::new();
+        draft.range_end = String::new();
+        let Ok(Edit::Set { change, .. }) = draft.edit(Some(("lab", &original)), &list, None) else {
+            panic!("a set");
+        };
+        assert!(change.dhcp_off && change.address.is_none());
     }
 }
