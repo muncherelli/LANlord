@@ -5,6 +5,7 @@ use lanlord_model::settings::Settings;
 use lanlord_model::stored::{load, refuse_newer, seal, Kind};
 
 const V1: &str = include_str!("fixtures/stored/plain-v1-legacy.yml");
+const V3: &str = include_str!("fixtures/stored/plain-v3-networks.yml");
 const NEWER: &str = include_str!("fixtures/stored/plain-v3-newer.yml");
 
 fn admins() -> Context {
@@ -85,10 +86,7 @@ fn a_newer_file_is_refused_for_both_kinds_and_never_stamped_over() {
 
 #[test]
 fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else() {
-    let three = format!(
-        "{FORMAT_KEY}: 3\nlanlord_version: \"0.1\"\nnetworks:\n  - name: lab\n    interface: eth2\n    address: 192.0.2.1/24\n"
-    );
-    let settings = load(Kind::Plain, &three, &admins()).unwrap();
+    let settings = load(Kind::Plain, V3, &admins()).unwrap();
     assert_eq!(settings.format().unwrap().0, Some(4));
     assert_eq!(Kind::Plain.current(), 4);
     assert!(settings.text().contains("name: lab"));
