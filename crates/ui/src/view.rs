@@ -20,13 +20,82 @@ use crate::widgets::Table;
 const SLIDE_SECS: f32 = 0.15;
 
 /// draw `nodes` top to bottom; the message of a click, if there was one. a message changes the
-/// window, so another frame is asked for to show it.
+/// window, so another frame is asked for to show it. inside a window, a status bar that ends the
+/// nodes is held back for the window to draw below the part that scrolls.
 pub fn show<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
-    let sent = nodes_ui(ui, nodes);
+    let pinning = ui
+        .ctx()
+        .data(|d| d.get_temp::<Option<Option<Pinned>>>(pin_id()))
+        .flatten()
+        .is_some();
+    let (head, pinned) = match nodes {
+        [head @ .., Node::Gap(gap), Node::Status { text, error }] if pinning => (
+            head,
+            Some(Pinned {
+                gap: Some((nodes.len() - 2, *gap)),
+                index: nodes.len() - 1,
+                text: text.clone(),
+                error: *error,
+            }),
+        ),
+        [head @ .., Node::Status { text, error }] if pinning => (
+            head,
+            Some(Pinned {
+                gap: None,
+                index: nodes.len() - 1,
+                text: text.clone(),
+                error: *error,
+            }),
+        ),
+        _ => (nodes, None),
+    };
+    let sent = nodes_ui(ui, head);
+    if let Some(pinned) = pinned {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(pin_id(), Some(Some(pinned))));
+    }
     if sent.is_some() {
         ui.ctx().request_repaint();
     }
     sent
+}
+
+/// a status bar that ends a window's contents, held back by `show` so that the window can draw
+/// it on its bottom edge, outside what scrolls.
+#[derive(Clone)]
+pub struct Pinned {
+    /// the node index and size of the gap before the bar, if there is one.
+    gap: Option<(usize, f32)>,
+    /// the node index of the bar, which its slide is kept under.
+    index: usize,
+    text: String,
+    error: bool,
+}
+
+fn pin_id() -> egui::Id {
+    egui::Id::unique("window-pinned-status")
+}
+
+/// run `contents`, which show nodes, with their trailing status bar held back; the window draws
+/// it with `draw_pinned`.
+pub fn pin_status<R>(ctx: &egui::Context, contents: impl FnOnce() -> R) -> (R, Option<Pinned>) {
+    ctx.data_mut(|d| d.insert_temp(pin_id(), Some(None::<Pinned>)));
+    let result = contents();
+    let back = ctx.data_mut(|d| d.remove_temp::<Option<Option<Pinned>>>(pin_id()));
+    (result, back.flatten().flatten())
+}
+
+/// how far the held-back bar has slid in: 0 when hidden, 1 when fully shown.
+pub fn pinned_amount(ui: &Ui, pinned: &Pinned) -> f32 {
+    slide_amount(ui, pinned.index, !pinned.text.is_empty())
+}
+
+/// draw the held-back status bar, and the gap before it, sliding in and out.
+pub fn draw_pinned(ui: &mut Ui, pinned: &Pinned) {
+    if let Some((index, gap)) = pinned.gap {
+        slide_space(ui, index, gap, !pinned.text.is_empty());
+    }
+    slide_status(ui, pinned.index, &pinned.text, pinned.error);
 }
 
 /// draw a modal box; the message of a click inside it, if there was one.
