@@ -237,7 +237,7 @@
         path: /etc/docker
         state: directory
         owner: root
-        mode: "0755"
+        mode: "0750"
       when: >-
         internet_needed and docker_version.stdout is version('28.0', '>=')
         and daemon_config['ip-forward-no-drop'] | default(false) != true
