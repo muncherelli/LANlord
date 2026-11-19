@@ -1409,6 +1409,25 @@ mod fake {
         assert_eq!(fake.calls().len(), 18, "{:?}", fake.calls());
     }
 
+    #[test]
+    fn an_internet_change_goes_through_the_backend_as_one_operation() {
+        let fake = Fake::default();
+        let gateway: &dyn Gateway = &fake;
+        let mut ask = |_: &str| Ok(String::new());
+        let change = lanlord_model::internet::Change::Deny {
+            network: "lab".into(),
+            mac: "02:00:00:00:00:01".into(),
+        };
+        gateway.change_internet("a@b", &change, &mut ask).unwrap();
+        let operation = Operation::ChangeInternet { change };
+        assert_eq!(
+            gateway.call("a@b", operation, &mut ask).unwrap(),
+            Reply::Done
+        );
+        assert_eq!(fake.calls().len(), 2, "{:?}", fake.calls());
+        assert!(fake.calls()[0].starts_with("internet a@b"));
+    }
+
     /// a backend that answers every operation with the wrong kind of reply.
     #[cfg(test)]
     struct Confused;
@@ -1436,6 +1455,14 @@ mod fake {
         assert!(gateway.logon_scripts(h, &mut ask).is_err());
         assert!(gateway.read_logon(h, "x", &mut ask).is_err());
         assert!(gateway.run(h, &[]).is_err());
+        let internet = lanlord_model::internet::Change::Network {
+            network: "lab".into(),
+            on: true,
+        };
+        assert_eq!(
+            gateway.change_internet(h, &internet, &mut ask).is_ok(),
+            true
+        );
         assert!(gateway.power(h, Power::Reboot, &mut ask).is_err());
         assert!(gateway.server_facts(h, &mut ask).is_err());
         assert!(gateway.purge_preview(h, false, &mut ask).is_err());

@@ -731,6 +731,24 @@ esac"#,
     }
 
     #[test]
+    fn an_internet_change_reaches_the_stored_settings() {
+        let gw = Gateway::new("operations-internet");
+        let key = key().unwrap().unwrap();
+        gw.seed_sealed(
+            &key,
+            "docker: {}\nnetworks:\n  - name: lab\n    interface: eth2\n    address: 192.0.2.1/24\n",
+        );
+        let operation = Operation::ChangeInternet {
+            change: lanlord_model::internet::Change::Network {
+                network: "lab".into(),
+                on: true,
+            },
+        };
+        assert_eq!(run(&gw.session, operation).unwrap(), Reply::Done);
+        assert!(gw.plain().unwrap().contains("internet: true"));
+    }
+
+    #[test]
     fn secrets_are_saved_through_the_settings() {
         let gw = Gateway::new("operations-save");
         let key = key().unwrap().unwrap();

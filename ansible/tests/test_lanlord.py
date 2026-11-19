@@ -176,3 +176,64 @@ class NetworksTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class InternetTest(unittest.TestCase):
+    NOW = 1_900_000_000
+
+    def network(self, **extra):
+        item = {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24'}
+        item.update(extra)
+        settings = {'networks_defined': True, 'networks': [item]}
+        return lanlord.lanlord_networks(settings, None, self.NOW)[0]
+
+    def test_off_by_default(self):
+        net = self.network()
+        self.assertFalse(net['internet'])
+        self.assertEqual(net['internet_allow'], [])
+        self.assertFalse(net['internet_any'])
+        self.assertEqual(net['internet_macs'], [])
+
+    def test_switch_and_none_mean_off_or_on(self):
+        self.assertTrue(self.network(internet=True)['internet_any'])
+        self.assertFalse(self.network(internet=None)['internet'])
+        with self.assertRaises(lanlord.Error):
+            self.network(internet='yes')
+
+    def test_grants_carry_the_seconds_left_and_ended_ones_go(self):
+        net = self.network(internet_allow=[
+            {'mac': 'AA:BB:CC:DD:EE:01'},
+            {'mac': 'AA:BB:CC:DD:EE:02', 'until': '2030-03-17T18:46:40Z'},
+            {'mac': 'AA:BB:CC:DD:EE:03', 'until': '2030-03-17T17:46:39Z'},
+        ])
+        self.assertEqual(net['internet_macs'], ['aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02'])
+        self.assertIsNone(net['internet_allow'][0]['seconds'])
+        self.assertEqual(net['internet_allow'][1]['seconds'], 3600)
+        self.assertTrue(net['internet_any'])
+
+    def test_an_ended_grant_alone_leaves_the_network_off(self):
+        net = self.network(internet_allow=[{'mac': 'aa:bb:cc:dd:ee:03', 'until': '2030-03-17T17:46:39Z'}])
+        self.assertFalse(net['internet_any'])
+
+    def test_yaml_timestamps_are_read(self):
+        import datetime
+        naive = datetime.datetime(2030, 3, 17, 18, 46, 40)
+        net = self.network(internet_allow=[{'mac': 'aa:bb:cc:dd:ee:01', 'until': naive}])
+        self.assertEqual(net['internet_allow'][0]['seconds'], 3600)
+
+    def test_bad_grants_are_refused(self):
+        for bad in (
+            'x',
+            [3],
+            [{'mac': 'nope'}],
+            [{'mac': 'aa:bb:cc:dd:ee:01', 'until': 'soon'}],
+            [{'mac': 'aa:bb:cc:dd:ee:01'}, {'mac': 'AA:BB:CC:DD:EE:01'}],
+        ):
+            with self.assertRaises(lanlord.Error, msg=repr(bad)):
+                self.network(internet_allow=bad)
+
+    def test_the_clock_defaults_to_now(self):
+        settings = {'networks_defined': True, 'networks': [
+            {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24',
+             'internet_allow': [{'mac': 'aa:bb:cc:dd:ee:01', 'until': '2001-01-01T00:00:00Z'}]}]}
+        self.assertEqual(lanlord.lanlord_networks(settings)[0]['internet_allow'], [])

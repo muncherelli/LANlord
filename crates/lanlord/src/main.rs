@@ -612,6 +612,14 @@ fn networks(host: &str, action: NetworksCommand) -> Result<()> {
 /// switch the internet for a whole network. `set --internet` goes through its own operation, so
 /// it is not mixed with the other changes of `set`, which are stored by another route.
 fn set_internet(host: &str, set: &NetworksCommand) -> Option<Result<()>> {
+    match set_internet_change(set)? {
+        Ok(change) => Some(change_internet(host, change)),
+        Err(error) => Some(Err(error)),
+    }
+}
+
+/// the change `set --internet` stands for: none when `set` has no `--internet`.
+fn set_internet_change(set: &NetworksCommand) -> Option<Result<lanlord_model::internet::Change>> {
     let NetworksCommand::Set {
         name,
         interface,
@@ -640,13 +648,44 @@ fn set_internet(host: &str, set: &NetworksCommand) -> Option<Result<()>> {
             "give --internet on its own, not with the other changes"
         )));
     }
-    Some(change_internet(
-        host,
-        lanlord_model::internet::Change::Network {
-            network: name.clone(),
-            on: matches!(state, Switch::On),
-        },
-    ))
+    Some(Ok(lanlord_model::internet::Change::Network {
+        network: name.clone(),
+        on: matches!(state, Switch::On),
+    }))
+}
+
+/// the change `internet NAME allow MAC ...` stands for, with the end worked out from `now`.
+fn allow_change(
+    network: &str,
+    allow: InternetCommand,
+    now: i64,
+) -> Result<lanlord_model::internet::Change> {
+    use lanlord_model::internet::{parse_duration, parse_until_local, Change, Expiry};
+    match allow {
+        InternetCommand::Deny { mac } => Ok(Change::Deny {
+            network: network.to_string(),
+            mac,
+        }),
+        InternetCommand::Allow {
+            mac,
+            duration,
+            until,
+            name,
+        } => {
+            let expiry = match (duration, until) {
+                (Some(text), _) => Expiry::At(now + parse_duration(&text)?),
+                (None, Some(text)) => Expiry::At(parse_until_local(&text)?),
+                (None, None) => Expiry::Never,
+            };
+            Ok(Change::Allow {
+                network: network.to_string(),
+                mac,
+                name,
+                expiry,
+            })
+        }
+        InternetCommand::List => bail!("listing changes nothing"),
+    }
 }
 
 fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Result<()> {
@@ -662,51 +701,20 @@ fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Resul
 
 /// `lanlord networks HOST internet NAME ...`.
 fn internet(host: &str, name: &str, action: InternetCommand) -> Result<()> {
-    use lanlord_model::internet::{parse_duration, parse_until_local, Change, Expiry};
-    let (mac, name_label, expiry) = match action {
-        InternetCommand::List => {
-            let document = lanlord_core::remote::document(host, &mut ask)?;
-            let networks = lanlord_core::lan::read_networks(&document.plain)?;
-            let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
-                bail!("there is no network called {name}");
-            };
-            for (label, value) in network.internet.details() {
-                println!("{label}: {value}");
-            }
-            return Ok(());
+    if matches!(action, InternetCommand::List) {
+        let document = lanlord_core::remote::document(host, &mut ask)?;
+        let networks = lanlord_core::lan::read_networks(&document.plain)?;
+        let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
+            bail!("there is no network called {name}");
+        };
+        for (label, value) in network.internet.details() {
+            println!("{label}: {value}");
         }
-        InternetCommand::Deny { mac } => {
-            return change_internet(
-                host,
-                Change::Deny {
-                    network: name.to_string(),
-                    mac,
-                },
-            )
-        }
-        InternetCommand::Allow {
-            mac,
-            duration,
-            until,
-            name,
-        } => {
-            let now = lanlord_core::internet::now();
-            let expiry = match (duration, until) {
-                (Some(text), _) => Expiry::At(now + parse_duration(&text)?),
-                (None, Some(text)) => Expiry::At(parse_until_local(&text)?),
-                (None, None) => Expiry::Never,
-            };
-            (mac, name, expiry)
-        }
-    };
+        return Ok(());
+    }
     change_internet(
         host,
-        Change::Allow {
-            network: name.to_string(),
-            mac,
-            name: name_label,
-            expiry,
-        },
+        allow_change(name, action, lanlord_core::internet::now())?,
     )
 }
 
@@ -2322,11 +2330,78 @@ mod tests {
             no_dhcp: false,
             internet: Some(Switch::On),
         };
-        let refused = set_internet("gw", &mixed)
+        let refused = set_internet_change(&mixed)
             .expect("--internet is seen")
             .unwrap_err();
         assert!(refused.to_string().contains("on its own"), "{refused}");
-        assert!(set_internet("gw", &NetworksCommand::List).is_none());
+        assert!(set_internet_change(&NetworksCommand::List).is_none());
+        // on its own it is the change for the whole network
+        let off = networks_action(&["set", "lab", "--internet", "off"]);
+        match set_internet_change(&off) {
+            Some(Ok(lanlord_model::internet::Change::Network { network, on })) => {
+                assert_eq!((network.as_str(), on), ("lab", false));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn allow_and_deny_become_changes_with_the_end_worked_out() {
+        use lanlord_model::internet::{Change, Expiry};
+        let command = |args: &[&str]| match networks_action(args) {
+            NetworksCommand::Internet { action, .. } => action,
+            _ => panic!("internet"),
+        };
+        let mac = "02:00:00:00:00:01";
+        let now = 1_900_000_000;
+        // for good, for a while, and until a time
+        let for_good = allow_change("lab", command(&["internet", "lab", "allow", mac]), now);
+        assert!(matches!(
+            for_good.unwrap(),
+            Change::Allow {
+                expiry: Expiry::Never,
+                ..
+            }
+        ));
+        let hour = command(&[
+            "internet", "lab", "allow", mac, "--for", "1h", "--name", "dana-pc",
+        ]);
+        match allow_change("lab", hour, now).unwrap() {
+            Change::Allow {
+                network,
+                mac: got,
+                name,
+                expiry,
+            } => {
+                assert_eq!((network.as_str(), got.as_str()), ("lab", mac));
+                assert_eq!(name.as_deref(), Some("dana-pc"));
+                assert_eq!(expiry, Expiry::At(now + 3_600));
+            }
+            other => panic!("{other:?}"),
+        }
+        let until = command(&[
+            "internet",
+            "lab",
+            "allow",
+            mac,
+            "--until",
+            "2999-01-31 09:00",
+        ]);
+        assert!(matches!(
+            allow_change("lab", until, now).unwrap(),
+            Change::Allow {
+                expiry: Expiry::At(_),
+                ..
+            }
+        ));
+        let deny = allow_change("lab", command(&["internet", "lab", "deny", mac]), now);
+        assert!(matches!(deny.unwrap(), Change::Deny { .. }));
+        // what cannot be understood is said plainly
+        let bad_for = command(&["internet", "lab", "allow", mac, "--for", "soon"]);
+        assert!(allow_change("lab", bad_for, now).is_err());
+        let bad_until = command(&["internet", "lab", "allow", mac, "--until", "tomorrow"]);
+        assert!(allow_change("lab", bad_until, now).is_err());
+        assert!(allow_change("lab", InternetCommand::List, now).is_err());
     }
 
     #[test]
