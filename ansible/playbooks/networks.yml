@@ -23,6 +23,14 @@
 #       lease: 7d                # 30m, 12h, 7d or infinite; default 7d
 #       hosts:                   # static leases by mac
 #         - {name: ntsrv1, mac: "aa:bb:cc:dd:ee:ff", address: 172.16.120.10}
+#     internet: false            # optional; true gives every computer on the network the internet
+#     internet_allow:            # optional; computers that may go out while the network is off
+#       - {mac: "aa:bb:cc:dd:ee:ff", name: label}                          # for good
+#       - {mac: "aa:bb:cc:dd:ee:00", until: "2030-01-31T09:00:00Z"}        # until a time (utc)
+#
+# a network has no internet unless one of the two says so: see docker.yml (forwarding, nat and the
+# nft rules) and dns/dnsmasq.conf.j2 (the router option and dns forwarding). lanlord_now (seconds
+# since 1970) is for tests; without it the clock decides which grants have ended.
 #
 # settings without a `networks:` list still work: the `dns:` section, docker.internal_address and
 # the interface settings are read as one network called retronet.
@@ -35,7 +43,7 @@
       {{ {'networks': networks | default(none), 'networks_defined': networks is defined,
           'dns': dns | default(none), 'dns_defined': dns is defined,
           'docker': docker | default({}), 'network': network | default({})}
-         | lanlord_networks({'interface': internal_interface | default(''), 'address': internal_address | default('')}) }}
+         | lanlord_networks({'interface': internal_interface | default(''), 'address': internal_address | default('')}, lanlord_now | default(none)) }}
 
 - name: check that no lanlord network is on the host network's interface
   ansible.builtin.assert:

@@ -211,6 +211,15 @@ const HARNESS: &str = r#"
         dest: "{{ out }}/firewall.nft"
       vars:
         lan_interfaces: "{{ lanlord_networks | default([]) | map(attribute='interface') | list }}"
+    - ansible.builtin.template:
+        src: docker/internet-elements.nft.j2
+        dest: "{{ out }}/internet-elements.nft"
+      vars:
+        lan_interfaces: "{{ lanlord_networks | default([]) | map(attribute='interface') | list }}"
+    - ansible.builtin.template:
+        src: docker/sysctl.conf.j2
+        dest: "{{ out }}/sysctl.conf"
+      when: lanlord_networks | default([]) | selectattr('internet_any') | list | length > 0
 "#;
 
 /// run the harness on these settings; the folder it wrote, or the output when ansible failed.
@@ -665,5 +674,215 @@ fn the_firewall_keeps_dhcp_replies_and_established_traffic() {
     {
         assert!(!line.contains("68"), "{line}");
     }
-    assert!(!rules.contains("established"), "{rules}");
+    // established traffic is only ever accepted, never dropped
+    assert!(
+        !rules
+            .lines()
+            .any(|l| l.contains("established") && l.contains("drop")),
+        "{rules}"
+    );
+}
+
+/// the moment the internet tests run at: 2030-03-17T17:46:40Z.
+const NOW: i64 = 1_900_000_000;
+
+/// retronet (dhcp, one static lease) and lab (dhcp), with `extra` lines at the end of lab's entry
+/// and `lanlord_now` pinned, so the grants' seconds are the same on every run.
+fn internet_settings(retronet: &str, lab: &str) -> String {
+    format!(
+        "lanlord_now: {NOW}\nnetworks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n{retronet}    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      hosts:\n        - {{name: ws1, mac: \"02:00:00:00:00:01\", address: 172.16.121.1}}\n  - name: lab\n    interface: eth2\n    address: 192.168.50.1/24\n{lab}    dhcp:\n      range: [192.168.50.100, 192.168.50.200]\n"
+    )
+}
+
+fn forward_lines(out: &Path) -> Vec<String> {
+    lines(&out.join("firewall.nft"))
+}
+
+#[test]
+fn internet_is_off_by_default_and_nothing_routes() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    let out = render("inet-off", &internet_settings("", "")).unwrap();
+    let firewall = forward_lines(&out);
+    // the same input and output rules as ever, and only drops on the forward hook
+    assert!(has(&firewall, "    iifname \"eth0\" tcp dport 53 drop"));
+    assert!(has(&firewall, "    iifname { \"eth1\", \"eth2\" } accept"));
+    assert!(has(&firewall, "    iifname { \"eth1\", \"eth2\" } drop"));
+    assert!(has(&firewall, "    oifname { \"eth1\", \"eth2\" } drop"));
+    for gone in [
+        "masquerade",
+        "ether saddr",
+        "set internet",
+        "established",
+        "postrouting",
+    ] {
+        assert!(
+            !firewall.iter().any(|l| l.contains(gone)),
+            "{gone} in\n{firewall:#?}"
+        );
+    }
+    assert!(!out.join("sysctl.conf").exists());
+    // dhcp as before: no router, and names outside the zone are not forwarded
+    let conf = lines(&out.join("dns/lab/dnsmasq.conf"));
+    assert!(has(&conf, "no-resolv") && has(&conf, "dhcp-option=3"));
+    assert!(
+        !conf
+            .iter()
+            .any(|l| l.contains("tag:") || l.contains("set:")),
+        "{conf:#?}"
+    );
+    // the same settings with the keys spelled out as off change nothing
+    let spelled = internet_settings(
+        "    internet: false\n    internet_allow: []\n",
+        "    internet: false\n",
+    );
+    let again = render("inet-off-spelled", &spelled).unwrap();
+    assert_eq!(forward_lines(&again), firewall);
+    assert_eq!(lines(&again.join("dns/lab/dnsmasq.conf")), conf);
+}
+
+#[test]
+fn a_network_with_internet_on_goes_out_through_the_host_network() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    let out = render(
+        "inet-network",
+        &internet_settings("", "    internet: true\n"),
+    )
+    .unwrap();
+    let firewall = forward_lines(&out);
+    for want in [
+        "    iifname \"eth0\" oifname { \"eth2\" } ct state established,related accept",
+        "    iifname \"eth2\" oifname \"eth0\" accept",
+        "    oifname \"eth0\" ip saddr 192.168.50.0/24 masquerade",
+        "    iifname { \"eth1\", \"eth2\" } drop",
+        "    oifname { \"eth1\", \"eth2\" } drop",
+    ] {
+        assert!(has(&firewall, want), "{want} in\n{firewall:#?}");
+    }
+    // retronet stays off: no accept or masquerade for it
+    assert!(!firewall
+        .iter()
+        .any(|l| l.contains("\"eth1\" oifname") || l.contains("172.16.120.0")));
+    let sysctl = fs::read_to_string(out.join("sysctl.conf")).unwrap();
+    assert!(sysctl.contains("net.ipv4.ip_forward = 1"), "{sysctl}");
+    let lab = lines(&out.join("dns/lab/dnsmasq.conf"));
+    assert!(has(&lab, "dhcp-option=3,192.168.50.1"), "{lab:#?}");
+    assert!(!has(&lab, "no-resolv") && !has(&lab, "dhcp-option=3"));
+    // the other network is untouched
+    let retronet = lines(&out.join("dns/retronet/dnsmasq.conf"));
+    assert!(has(&retronet, "no-resolv") && has(&retronet, "dhcp-option=3"));
+    // the zone stays local-only authoritative
+    assert!(has(&lab, "local=/lab/"));
+}
+
+#[test]
+fn an_allowed_machine_gets_a_router_and_a_timed_nft_element() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    let allow = "    internet_allow:\n      - {mac: \"02:00:00:00:00:01\", name: ws1pc}\n      - {mac: \"02:00:00:00:00:AA\", until: \"2030-03-17T18:46:40Z\"}\n";
+    let out = render("inet-machine", &internet_settings(allow, "")).unwrap();
+    let firewall = forward_lines(&out);
+    for want in [
+        "  set internet_retronet {",
+        "    iifname \"eth1\" oifname \"eth0\" ether saddr @internet_retronet accept",
+        "    oifname \"eth0\" ip saddr 172.16.120.0/22 masquerade",
+    ] {
+        assert!(has(&firewall, want), "{want} in\n{firewall:#?}");
+    }
+    assert!(!firewall.iter().any(|l| l.contains("eth2\" oifname")));
+    // a boot loads the rules file alone: its set is empty, so nothing is open before the grants
+    // that are still running are put back from the elements file
+    assert!(!firewall.iter().any(|l| {
+        !l.trim_start().starts_with('#')
+            && (l.contains("elements") || l.contains("02:00:00:00:00:"))
+    }));
+    let elements = lines(&out.join("internet-elements.nft"));
+    assert!(has(&elements, "flush set inet lanlord internet_retronet"));
+    assert!(
+        has(&elements, "add element inet lanlord internet_retronet { 02:00:00:00:00:01, 02:00:00:00:00:aa timeout 3600s }"),
+        "{elements:#?}"
+    );
+    assert!(out.join("sysctl.conf").exists());
+    let conf = lines(&out.join("dns/retronet/dnsmasq.conf"));
+    for want in [
+        "dhcp-option=tag:!inet,3",
+        "dhcp-option=tag:inet,3,172.16.120.1",
+        "dhcp-host=02:00:00:00:00:01,172.16.121.1,ws1,set:inet",
+        "dhcp-host=02:00:00:00:00:aa,set:inet",
+    ] {
+        assert!(has(&conf, want), "{want} in\n{conf:#?}");
+    }
+    // names outside the zone resolve there, though only that network got any access
+    assert!(!has(&conf, "no-resolv") && !has(&conf, "dhcp-option=3"));
+    // lab has nothing
+    let lab = lines(&out.join("dns/lab/dnsmasq.conf"));
+    assert!(has(&lab, "no-resolv") && has(&lab, "dhcp-option=3"));
+}
+
+#[test]
+fn an_ended_grant_is_not_rendered_and_the_network_goes_back_to_off() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    // ended one second ago: nothing is written for it
+    let ended = "    internet_allow:\n      - {mac: \"02:00:00:00:00:AA\", until: \"2030-03-17T17:46:39Z\"}\n";
+    let out = render("inet-ended", &internet_settings(ended, "")).unwrap();
+    let off = render("inet-ended-off", &internet_settings("", "")).unwrap();
+    assert_eq!(forward_lines(&out), forward_lines(&off));
+    // a grant that ended before the boot stays closed: the elements file has nothing for it
+    let elements = fs::read_to_string(out.join("internet-elements.nft")).unwrap();
+    assert!(!elements.contains("02:00:00:00:00:aa"), "{elements}");
+    assert!(!out.join("sysctl.conf").exists());
+    let conf = lines(&out.join("dns/retronet/dnsmasq.conf"));
+    assert_eq!(conf, lines(&off.join("dns/retronet/dnsmasq.conf")));
+    // one that ended and one that has a second left: only the second is there
+    let mixed = "    internet_allow:\n      - {mac: \"02:00:00:00:00:AA\", until: \"2030-03-17T17:46:39Z\"}\n      - {mac: \"02:00:00:00:00:BB\", until: \"2030-03-17T17:46:41Z\"}\n";
+    let out = render("inet-mixed", &internet_settings(mixed, "")).unwrap();
+    let elements = lines(&out.join("internet-elements.nft"));
+    assert!(
+        has(
+            &elements,
+            "add element inet lanlord internet_retronet { 02:00:00:00:00:bb timeout 1s }"
+        ),
+        "{elements:#?}"
+    );
+}
+
+#[test]
+fn the_filter_checks_internet_settings() {
+    if !on_path("python3") {
+        eprintln!("skipped: no python3");
+        return;
+    }
+    let net = |extra: &str| {
+        format!("networks:\n  - name: a\n    interface: eth1\n    address: 10.0.0.1/24\n{extra}")
+    };
+    let nets = filter(&net("")).unwrap();
+    assert_eq!(nets[0]["internet"], false);
+    assert_eq!(nets[0]["internet_any"], false);
+    let on = filter(&net("    internet: true\n")).unwrap();
+    assert_eq!(on[0]["internet_any"], true);
+    for bad in [
+        "    internet: maybe\n",
+        "    internet_allow: x\n",
+        "    internet_allow: [{mac: nope}]\n",
+        "    internet_allow: [{mac: \"02:00:00:00:00:01\", until: soon}]\n",
+        "    internet_allow: [{mac: \"02:00:00:00:00:01\"}, {mac: \"02:00:00:00:00:01\"}]\n",
+    ] {
+        assert!(filter(&net(bad)).is_err(), "{bad}");
+        // and the model reads them the same way
+        let settings = Settings::parse(&net(bad)).unwrap();
+        let rust = lan_networks::read(&settings)
+            .map(|n| lan_networks::validate(&n.list, None, true))
+            .map(|e| !e.is_empty());
+        assert!(rust.unwrap_or(true), "model accepted {bad}");
+    }
 }

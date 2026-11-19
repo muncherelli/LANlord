@@ -421,7 +421,7 @@ fn forward_check(said: &str) -> Check {
             "ip forwarding is off; lanlord turns it on when it sets up networks".to_string(),
             Some(
                 "sysctl -w net.ipv4.ip_forward=1, and net.ipv4.ip_forward = 1 in \
-                 /etc/sysctl.d/lanlord.conf"
+                 /etc/sysctl.d/60-lanlord.conf"
                     .to_string(),
             ),
         ),

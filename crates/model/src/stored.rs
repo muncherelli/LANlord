@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use crate::format::{always, check, current, run_steps, Context, Step, TooNew};
 use crate::settings::Settings;
-use crate::{access, lan_networks};
+use crate::{access, internet, lan_networks};
 
 /// which settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +29,11 @@ pub const PLAIN_STEPS: &[Step<Settings>] = &[
         run: access::migrate_settings,
         // it stores the administrators the gateway has, which only the upgrade knows
         ready: |context| context.admins.is_some(),
+    },
+    Step {
+        name: "networks may allow internet access",
+        run: internet::migrate_networks,
+        ready: always,
     },
 ];
 

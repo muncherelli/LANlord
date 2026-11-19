@@ -5,6 +5,7 @@ use lanlord_model::settings::Settings;
 use lanlord_model::stored::{load, refuse_newer, seal, Kind};
 
 const V1: &str = include_str!("fixtures/stored/plain-v1-legacy.yml");
+const V3: &str = include_str!("fixtures/stored/plain-v3-networks.yml");
 const NEWER: &str = include_str!("fixtures/stored/plain-v3-newer.yml");
 
 fn admins() -> Context {
@@ -81,4 +82,21 @@ fn a_newer_file_is_refused_for_both_kinds_and_never_stamped_over() {
         assert!(refuse_newer(kind, NEWER).is_err());
     }
     assert!(NEWER.contains(FORMAT_KEY));
+}
+
+#[test]
+fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else() {
+    let settings = load(Kind::Plain, V3, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(4));
+    assert_eq!(Kind::Plain.current(), 4);
+    assert!(settings.text().contains("name: lab"));
+    assert!(!settings.text().contains("internet"));
+    // a file with grants is current, and an older lanlord (format 3) refuses it
+    let with = seal(
+        Kind::Plain,
+        &format!("{FORMAT_KEY}: 4\nnetworks:\n  - {{name: lab, interface: eth2, address: 192.0.2.1/24, internet: true}}\n"),
+    )
+    .unwrap();
+    assert!(with.contains("internet: true"), "{with}");
+    assert!(lanlord_model::format::check(4, None, 3).is_err());
 }
