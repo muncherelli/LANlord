@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.3] - 2026-11-19
 
+### Added
+
+- Admins can set the title and message shown on the web sign-in screen from Settings; the sign-in page reads them from a public endpoint that returns only those two fields (#156)
+
+### Fixed
+
+- `lanlord upgrade` starts enabled `lanlord-*` services, sockets and timers that were down; one that stays down fails the upgrade by name without rolling back, and only the web interface and operations services decide a rollback (#155)
+- root (uid 0) on the gateway counts as an admin, so `lanlord apply --module` works when run as root (#155)
+
 ## [0.1.2] - 2026-11-18
 
 ### Fixed
