@@ -83,10 +83,13 @@ impl HostList {
     }
 
     /// keep `target` as the last sign-in, so the next start opens on it.
-    pub fn remember(&mut self, target: &str) {
+    /// the error says what could not be written; the target is still the last one this session.
+    pub fn remember(&mut self, target: &str) -> Result<(), String> {
         self.last = Some(target.to_string());
-        if let Some(path) = &self.path {
-            let _ = hosts::save_last(path, target);
+        match &self.path {
+            Some(path) => hosts::save_last(path, target)
+                .map_err(|err| format!("could not remember {target}: {err}")),
+            None => Ok(()),
         }
     }
 
@@ -213,7 +216,7 @@ mod tests {
         let path = temp("last");
         let mut list = HostList::new(Some(path.clone()));
         assert_eq!(list.last(), None);
-        list.remember("me@this-server.localhost");
+        list.remember("me@this-server.localhost").unwrap();
         assert_eq!(list.last(), Some("me@this-server.localhost"));
         assert!(list.hosts().is_empty());
         let again = HostList::new(Some(path.clone()));

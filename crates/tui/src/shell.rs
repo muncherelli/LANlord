@@ -426,9 +426,11 @@ impl Shell {
         if self.services.is_local() {
             return;
         }
+        // the this-server target is no connection to fill in: fall back to the selected host
         let last = self
             .hosts
             .last()
+            .filter(|l| !lanlord_core::signin::is_this_server(l))
             .or(self.hosts.selected())
             .map(String::from);
         self.login = Some(LoginBox::new(auth.clone(), Wake::none(), last.as_deref()));
@@ -447,7 +449,9 @@ impl Shell {
         if let Err(error) = self.hosts.add(&signed_in.target) {
             lanlord_core::log::emit(lanlord_core::log::Kind::Err, error);
         }
-        self.hosts.remember(&signed_in.target);
+        if let Err(error) = self.hosts.remember(&signed_in.target) {
+            lanlord_core::log::emit(lanlord_core::log::Kind::Err, error);
+        }
         self.windows.clear();
         self.active = None;
         self.selected = None;
@@ -499,7 +503,10 @@ impl Shell {
             return;
         };
         match outcome {
-            admin_setup::Outcome::Skipped => self.admin_setup = None,
+            // the first-run setup is the web ui's; there is no other way to get one here
+            admin_setup::Outcome::Skipped | admin_setup::Outcome::FirstRun { .. } => {
+                self.admin_setup = None;
+            }
             admin_setup::Outcome::Created(name) => {
                 // forget the root entry and ask for a logon as the new account
                 self.admin_setup = None;

@@ -165,6 +165,11 @@ fn denied(need: Need) -> Denied {
     match need {
         Need::Area(area, level) => Denied { area, level },
         // the grants always allow it
+        // the caller's roles fall short somewhere; name the first area that does
+        Need::Admin => Denied {
+            area: Area::Users,
+            level: Level::Manage,
+        },
         Need::SelfOnly => Denied {
             area: Area::Status,
             level: Level::View,

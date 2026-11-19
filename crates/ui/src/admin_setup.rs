@@ -32,6 +32,11 @@ impl AdminSetup {
         Self(lanlord_app::admin_setup::AdminSetup::new())
     }
 
+    /// the first-run setup of the web ui: no skipping, two pages.
+    pub fn first_run() -> Self {
+        Self(lanlord_app::admin_setup::AdminSetup::first_run())
+    }
+
     #[cfg(test)]
     pub fn with_test_keys(keys: &[&str]) -> Self {
         Self(lanlord_app::admin_setup::AdminSetup::with_test_keys(keys))

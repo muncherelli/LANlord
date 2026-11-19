@@ -2,6 +2,9 @@
 //! to sign in, but day-to-day work belongs to a personal account that is in `admins` and has
 //! sudo, preferably signed in with an ssh key.
 
+use lanlord_model::operations::Operation;
+use lanlord_model::rootssh::RootSsh;
+use lanlord_model::secret::Secret;
 use zeroize::Zeroizing;
 
 use crate::gateway::NewAdmin;
@@ -17,6 +20,29 @@ pub enum Outcome {
     Created(String),
     /// carry on as root for now.
     Skipped,
+    /// the first-run setup is over: the administrator `name` exists and root's session has ended.
+    /// `note` says what did not work when the account was made but root's ssh setting was not.
+    FirstRun { name: String, note: Option<String> },
+}
+
+/// which page of the first-run setup is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Account,
+    RootSsh,
+}
+
+/// what the first-run setup says about root's ssh access, and what each choice means.
+const ROOT_SSH_INTRO: &str = "Choose how root may sign in to this server over ssh. This is \
+separate from this page: it is about the ssh daemon on the server.";
+
+/// the choices of the root ssh page, in the order they are listed; the last leaves sshd alone.
+fn root_ssh_options() -> Vec<(usize, String)> {
+    RootSsh::ALL
+        .iter()
+        .map(|level| level.label().to_string())
+        .enumerate()
+        .collect()
 }
 
 /// the warning before passwordless sudo, which says how sudo's timeout normally protects you.
@@ -40,6 +66,11 @@ pub enum Msg {
     TogglePasswordless,
     Skip,
     Create,
+    /// first run: on to the root ssh page, or back to the account.
+    Next,
+    Back,
+    /// first run: the choice at this index of the root ssh page.
+    RootSsh(usize),
 }
 
 pub struct AdminSetup {
@@ -51,7 +82,12 @@ pub struct AdminSetup {
     warning: Option<MessageBox>,
     /// the keys your ssh agent offers, read once when the screen opens.
     agent_keys: Vec<String>,
-    job: Option<(Job<()>, String)>,
+    job: Option<(Job<Option<String>>, String)>,
+    /// the first-run setup of the web ui: no skipping, two pages, one request at the end.
+    first_run: bool,
+    step: Step,
+    /// root's ssh access as chosen; none leaves sshd as it is.
+    root_ssh: Option<RootSsh>,
     status: String,
     status_is_error: bool,
     focus: bool,
@@ -86,10 +122,21 @@ impl AdminSetup {
             warning: None,
             agent_keys,
             job: None,
+            first_run: false,
+            step: Step::Account,
+            root_ssh: None,
             status: String::new(),
             status_is_error: false,
             focus: false,
         }
+    }
+
+    /// the first-run setup the web ui makes root go through: create the administrator and
+    /// choose root's ssh access, with nothing else to do.
+    pub fn first_run() -> Self {
+        let mut setup = Self::with_keys(Vec::new());
+        setup.first_run = true;
+        setup
     }
 
     pub fn with_test_keys(keys: &[&str]) -> Self {
@@ -103,6 +150,19 @@ impl AdminSetup {
 
     pub fn status(&self) -> &str {
         &self.status
+    }
+
+    pub fn is_first_run(&self) -> bool {
+        self.first_run
+    }
+
+    /// whether the root ssh page is showing (first run only).
+    pub fn on_root_ssh_page(&self) -> bool {
+        self.step == Step::RootSsh
+    }
+
+    pub fn root_ssh_choice(&self) -> Option<RootSsh> {
+        self.root_ssh
     }
 
     pub fn passwordless(&self) -> bool {
@@ -127,17 +187,12 @@ impl AdminSetup {
         if self.job.is_some() {
             return;
         }
+        if !self.account_ok() {
+            return;
+        }
         let name = self.name.trim().to_string();
-        if name.is_empty() {
-            self.say("Type a username for the new administrator.", true);
-            return;
-        }
-        if self.password.is_empty() {
-            self.say("Type a password for the new account.", true);
-            return;
-        }
-        if *self.password != *self.confirm {
-            self.say("The two passwords are not the same.", true);
+        if self.first_run {
+            self.finish(services, host, name);
             return;
         }
         let key = self.key.trim();
@@ -151,7 +206,66 @@ impl AdminSetup {
         self.confirm = Zeroizing::new(String::new());
         let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
-            gateway.create_admin(&target, &new, ask)
+            gateway.create_admin(&target, &new, ask).map(|()| None)
+        });
+        match job {
+            Some(job) => {
+                self.job = Some((job, name));
+                self.say("Creating the account...", false);
+            }
+            None => self.say("The gateway is busy. Try again in a moment.", true),
+        }
+    }
+
+    /// check the account fields, saying what is wrong.
+    fn account_ok(&mut self) -> bool {
+        let name = self.name.trim().to_string();
+        if name.is_empty() {
+            self.say("Type a username for the new administrator.", true);
+            return false;
+        }
+        if self.password.is_empty() {
+            self.say("Type a password for the new account.", true);
+            return false;
+        }
+        if *self.password != *self.confirm {
+            self.say("The two passwords are not the same.", true);
+            return false;
+        }
+        if self.first_run {
+            // the same rules the server applies, so a bad name is caught before the last page
+            let check = Operation::SetupFirstAdmin {
+                name,
+                password: Secret::new("x"),
+                root_ssh: RootSsh::KeysOnly,
+            };
+            if let Err(invalid) = check.validate() {
+                self.say(
+                    &format!("The username is not allowed: {}.", invalid.reason),
+                    true,
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    /// first run: send the account and the root ssh choice in one request. the password leaves
+    /// the form for the task, which holds the only copy.
+    fn finish(&mut self, services: &Services, host: &str, name: String) {
+        // nothing is preselected: the step cannot finish until one level is picked
+        let Some(root_ssh) = self.root_ssh else {
+            self.say("Choose how root may sign in over ssh.", true);
+            return;
+        };
+        let (account, password) = (
+            name.clone(),
+            Zeroizing::new(std::mem::take(&mut *self.password)),
+        );
+        self.confirm = Zeroizing::new(String::new());
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.setup_first_admin(&target, &account, password.as_str(), root_ssh, ask)
         });
         match job {
             Some(job) => {
@@ -169,9 +283,13 @@ impl AdminSetup {
         let name = name.clone();
         self.job = None;
         match result {
-            Ok(()) => Some(Outcome::Created(name)),
+            Ok(note) if self.first_run => Some(Outcome::FirstRun { name, note }),
+            Ok(_) => Some(Outcome::Created(name)),
             Err(error) => {
                 // the password was spent; it has to be typed again
+                if self.first_run {
+                    self.step = Step::Account;
+                }
                 self.say(&error, true);
                 None
             }
@@ -180,11 +298,17 @@ impl AdminSetup {
 
     /// the title of the screen's box.
     pub fn title(&self) -> &'static str {
+        if self.first_run {
+            return "First-Run Setup";
+        }
         "Create Administrator Account"
     }
 
     /// the screen's contents.
     pub fn view(&mut self) -> Vec<Node<Msg>> {
+        if self.first_run {
+            return self.first_run_view();
+        }
         let busy = self.job.is_some() || self.warning.is_some();
         let first = !self.focus;
         self.focus = true;
@@ -279,6 +403,109 @@ impl AdminSetup {
         ]
     }
 
+    /// the two pages of the first-run setup.
+    fn first_run_view(&mut self) -> Vec<Node<Msg>> {
+        let busy = self.job.is_some();
+        let first = !self.focus;
+        self.focus = true;
+        let status = Node::Status {
+            text: self.status.clone(),
+            error: self.status_is_error,
+        };
+        if self.step == Step::RootSsh {
+            let current = self
+                .root_ssh
+                .map_or("Choose one", RootSsh::label)
+                .to_string();
+            let mut nodes = vec![
+                Node::Header {
+                    icon: "gateway",
+                    title: "Step 2 of 2: root ssh access".into(),
+                    lines: vec![ROOT_SSH_INTRO.into()],
+                },
+                Node::Gap(8.0),
+                Node::Labelled {
+                    label: "Root may sign in over ssh:".into(),
+                    body: vec![Node::Choice {
+                        id: "first-run-root-ssh",
+                        current,
+                        width: 260.0,
+                        options: root_ssh_options(),
+                        pick: Msg::RootSsh,
+                    }],
+                },
+                Node::Gap(6.0),
+            ];
+            match self.root_ssh {
+                Some(level) => {
+                    nodes.push(Node::Text(level.explain().to_string()));
+                    if let Some(warning) = level.setup_warning() {
+                        nodes.push(Node::Text(warning.to_string()));
+                    }
+                }
+                None => nodes.push(Node::Text(
+                    "Pick one of the three. You can change it later in My Server.".into(),
+                )),
+            }
+            nodes.extend([
+                Node::Gap(10.0),
+                Node::Buttons(vec![
+                    Button::new("Back", !busy, Msg::Back),
+                    Button::new("Finish", !busy, Msg::Create),
+                ]),
+                Node::Gap(6.0),
+                status,
+            ]);
+            return nodes;
+        }
+        let secret =
+            |label: &str, value: &Zeroizing<String>, edit: fn(Zeroizing<String>) -> Msg| {
+                Node::Labelled {
+                    label: label.into(),
+                    body: vec![Node::Secret {
+                        value: value.clone(),
+                        size: Size::Points(260.0),
+                        shown: false,
+                        focus: false,
+                        edit: Box::new(edit),
+                        enter: None,
+                    }],
+                }
+            };
+        vec![
+            Node::Header {
+                icon: "gateway",
+                title: "Step 1 of 2: your administrator account".into(),
+                lines: vec![
+                    "This server has no administrator yet. You are signed in as root only to \
+                     set it up. Create the account you will use from now on; after the next \
+                     step you sign in with it."
+                        .into(),
+                ],
+            },
+            Node::Gap(8.0),
+            Node::Labelled {
+                label: "Username:".into(),
+                body: vec![Node::Input {
+                    value: self.name.clone(),
+                    size: Size::Points(260.0),
+                    hint: String::new(),
+                    focus: first,
+                    edit: Box::new(Msg::Name),
+                    enter: None,
+                }],
+            },
+            Node::Gap(4.0),
+            secret("Password:", &self.password, Msg::Password),
+            Node::Gap(4.0),
+            secret("Confirm:", &self.confirm, Msg::Confirm),
+            Node::Gap(10.0),
+            Node::Buttons(vec![Button::new("Next", !busy, Msg::Next)]),
+            Node::Gap(6.0),
+            status,
+        ]
+    }
+
     /// act on a click or keystroke; `Some` once the screen is over.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) -> Option<Outcome> {
         match msg {
@@ -304,10 +531,23 @@ impl AdminSetup {
                     ));
                 }
             }
+            // first run has no skipping: root is for this setup and nothing else
+            Msg::Skip if self.first_run => {}
+            Msg::Next if self.first_run && self.job.is_none() => {
+                if self.account_ok() {
+                    self.say("", false);
+                    self.step = Step::RootSsh;
+                }
+            }
+            Msg::Back if self.first_run && self.job.is_none() => self.step = Step::Account,
+            Msg::RootSsh(i) if self.first_run => self.root_ssh = RootSsh::ALL.get(i).copied(),
             // the same rule as the buttons: nothing while a task or the warning is open
             Msg::Skip | Msg::Create if self.job.is_some() || self.warning.is_some() => {}
             Msg::Skip => return Some(Outcome::Skipped),
+            // the root ssh page is the last one: finishing sends everything
+            Msg::Create if self.first_run && self.step == Step::Account => {}
             Msg::Create => self.create(services, host),
+            Msg::Next | Msg::Back | Msg::RootSsh(_) => {}
         }
         None
     }
@@ -422,5 +662,121 @@ mod tests {
             setup.update(Msg::Skip, &services, "root@gw"),
             Some(Outcome::Skipped)
         );
+    }
+
+    fn finish_first_run(setup: &mut AdminSetup) -> Outcome {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(outcome) = setup.poll() {
+                return outcome;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "timed out: {}",
+                setup.status()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn first_run_takes_the_account_then_the_root_ssh_choice_and_sends_both_once() {
+        use std::sync::Arc;
+
+        let fake = Arc::new(crate::gateway::Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut setup = AdminSetup::first_run();
+        assert!(setup.is_first_run() && !setup.on_root_ssh_page());
+        // skipping is not offered, and not honoured
+        assert_eq!(setup.update(Msg::Skip, &services, "gw"), None);
+        // the account page checks before the next one
+        setup.update(Msg::Next, &services, "gw");
+        assert!(!setup.on_root_ssh_page() && setup.status().contains("username"));
+        setup.name = "root".into();
+        setup.set_passwords("pw", "pw");
+        setup.update(Msg::Next, &services, "gw");
+        assert!(!setup.on_root_ssh_page() && setup.status().contains("not allowed"));
+        setup.name = "pat".into();
+        setup.set_passwords("pw", "other");
+        setup.update(Msg::Next, &services, "gw");
+        assert!(!setup.on_root_ssh_page() && setup.status().contains("not the same"));
+        setup.set_passwords("pw", "pw");
+        // finishing from the first page does nothing
+        setup.update(Msg::Create, &services, "gw");
+        assert!(!setup.working());
+        setup.update(Msg::Next, &services, "gw");
+        assert!(setup.on_root_ssh_page());
+        setup.update(Msg::Back, &services, "gw");
+        assert!(!setup.on_root_ssh_page());
+        setup.update(Msg::Next, &services, "gw");
+        setup.update(Msg::RootSsh(1), &services, "gw");
+        assert_eq!(setup.root_ssh_choice(), Some(RootSsh::KeysOnly));
+        setup.update(Msg::Create, &services, "gw");
+        assert!(setup.working());
+        let outcome = finish_first_run(&mut setup);
+        assert_eq!(
+            outcome,
+            Outcome::FirstRun {
+                name: "pat".into(),
+                note: None
+            }
+        );
+        let calls = fake.calls();
+        assert_eq!(calls, ["setup gw pat root-ssh=KeysOnly"]);
+        assert!(
+            !calls.concat().contains("pw"),
+            "the password is not recorded"
+        );
+    }
+
+    #[test]
+    fn first_run_needs_a_pick_and_a_failure_goes_back_to_the_account() {
+        use std::sync::Arc;
+
+        let fake = Arc::new(crate::gateway::Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut setup = AdminSetup::first_run();
+        setup.name = "pat".into();
+        setup.set_passwords("pw", "pw");
+        setup.update(Msg::Next, &services, "gw");
+        // nothing is preselected, and finishing without a pick sends nothing
+        assert_eq!(setup.root_ssh_choice(), None);
+        setup.update(Msg::Create, &services, "gw");
+        assert!(!setup.working() && setup.status().contains("Choose"));
+        assert!(fake.calls().is_empty());
+        // there is no fourth option to pick
+        setup.update(Msg::RootSsh(3), &services, "gw");
+        assert_eq!(setup.root_ssh_choice(), None);
+        setup.update(Msg::RootSsh(0), &services, "gw");
+        assert_eq!(setup.root_ssh_choice(), Some(RootSsh::Allowed));
+        *fake.fail.lock().unwrap() = Some("an administrator already exists".into());
+        setup.update(Msg::Create, &services, "gw");
+        let start = std::time::Instant::now();
+        while setup.working() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "timed out"
+            );
+            assert_eq!(setup.poll(), None);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            setup.status().contains("already exists"),
+            "{}",
+            setup.status()
+        );
+        assert!(
+            !setup.on_root_ssh_page(),
+            "the password has to be typed again"
+        );
+        assert_eq!(fake.calls(), ["setup gw pat root-ssh=Allowed"]);
+    }
+
+    #[test]
+    fn the_root_ssh_page_lists_exactly_the_three_levels() {
+        let labels: Vec<String> = root_ssh_options().into_iter().map(|(_, l)| l).collect();
+        let levels: Vec<&str> = RootSsh::ALL.iter().map(|l| l.label()).collect();
+        assert_eq!(labels, levels);
+        assert_eq!(labels.len(), 3);
     }
 }

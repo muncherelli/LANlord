@@ -72,6 +72,84 @@ impl Groups for SystemGroups {
             groups.resize(count, 0);
         }
     }
+
+    fn has_other_member(&self, gid: u32) -> Result<bool, &'static str> {
+        Ok(Self::listed(gid)?.iter().any(|n| n != "root") || Self::primary_other(gid)?)
+    }
+}
+
+impl SystemGroups {
+    /// the names listed as members of group `gid`.
+    fn listed(gid: u32) -> Result<Vec<String>, &'static str> {
+        let mut buf = vec![0 as c_char; 4096];
+        let mut grp = MaybeUninit::<libc::group>::uninit();
+        let mut found = ptr::null_mut();
+        loop {
+            // SAFETY: the buffers are sized as given and outlive the call.
+            let rc = unsafe {
+                libc::getgrgid_r(
+                    gid,
+                    grp.as_mut_ptr(),
+                    buf.as_mut_ptr(),
+                    buf.len(),
+                    &mut found,
+                )
+            };
+            if rc == libc::ERANGE && buf.len() < 1 << 20 {
+                buf.resize(buf.len() * 2, 0);
+                continue;
+            }
+            if rc != 0 {
+                return Err("groups");
+            }
+            if found.is_null() {
+                return Ok(Vec::new());
+            }
+            break;
+        }
+        // SAFETY: getgrgid_r filled `grp` because it returned 0 with a result.
+        let grp = unsafe { grp.assume_init() };
+        let mut names = Vec::new();
+        let mut at = grp.gr_mem;
+        // SAFETY: gr_mem is a null-terminated array of c strings inside `buf`.
+        unsafe {
+            while !at.is_null() && !(*at).is_null() {
+                names.push(std::ffi::CStr::from_ptr(*at).to_string_lossy().into_owned());
+                at = at.add(1);
+            }
+        }
+        Ok(names)
+    }
+
+    /// whether an account not named root has `gid` as its primary group. a read error of the
+    /// passwd database is an error, never "no one": the caller must fail closed.
+    fn primary_other(gid: u32) -> Result<bool, &'static str> {
+        let mut other = false;
+        let mut failed = false;
+        // SAFETY: the helper is single threaded, so the shared passwd iterator is not raced.
+        unsafe {
+            libc::setpwent();
+            loop {
+                // getpwent returns null both at the end and on an error; only errno tells
+                *libc::__errno_location() = 0;
+                let entry = libc::getpwent();
+                if entry.is_null() {
+                    failed = *libc::__errno_location() != 0;
+                    break;
+                }
+                let name = std::ffi::CStr::from_ptr((*entry).pw_name);
+                if (*entry).pw_gid == gid && name.to_bytes() != b"root" {
+                    other = true;
+                    break;
+                }
+            }
+            libc::endpwent();
+        }
+        if failed {
+            return Err("groups");
+        }
+        Ok(other)
+    }
 }
 
 /// this process, with the connection systemd hands over as stdin.
@@ -216,6 +294,11 @@ mod tests {
             SystemGroups.member("no-such-user-lanlord-test", 0),
             Ok(false)
         );
+    }
+
+    #[test]
+    fn a_group_nobody_is_in_has_no_other_member() {
+        assert_eq!(SystemGroups.has_other_member(4_000_000), Ok(false));
     }
 
     #[test]
