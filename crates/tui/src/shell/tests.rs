@@ -1037,3 +1037,28 @@ fn an_apply_opens_its_progress_dialog_and_close_ends_it() {
     frame(&mut shell);
     assert!(!shell.windows.iter().any(|w| w.target == Target::Progress));
 }
+
+#[test]
+fn a_status_bar_stays_on_the_last_row_below_a_body_that_scrolls() {
+    let mut nodes: Vec<Node<()>> = (0..40).map(|n| Node::Text(format!("line {n}"))).collect();
+    nodes.push(Node::Gap(6.0));
+    nodes.push(Node::Status {
+        text: "ready".into(),
+        error: false,
+    });
+    for scrolled in [0, 7, 1000] {
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let mut state = ViewState::default();
+        state.scroll.insert("#body".into(), scrolled);
+        let mut pass = Pass::Draw {
+            area,
+            buf: &mut buf,
+            active: true,
+        };
+        drive(&nodes, &mut pass, &state, Palette::default());
+        let all = lines(&buf);
+        assert!(all[9].contains("ready"), "{scrolled}: {all:?}");
+        assert!(all[0].contains("line"), "{scrolled}: {all:?}");
+    }
+}

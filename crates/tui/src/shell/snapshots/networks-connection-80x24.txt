@@ -19,6 +19,6 @@
 │ │ eth1   172.│                                      [ Close ] │            │ │
 │ └────────────└────────────────────────────────────────────────┘────────────┘ │
 │ Editing networks comes next. For now you can look at them, and open DNS &    │
-│ DHCP.                                                                        │
+│ up to date                                                                   │
 └──────────────────────────────────────────────────────────────────────────────┘
 [ L LANlord ] [ □ Networks ]                                          12:00 PM

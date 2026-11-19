@@ -154,6 +154,17 @@ fn drive<M: Clone>(
     drive_at(nodes, pass, state, palette, &[])
 }
 
+/// where the status bar that ends `nodes` starts, with the gap before it; the end when there is
+/// none, or when it has no text and so takes no room.
+fn status_start<M>(nodes: &[Node<M>]) -> usize {
+    match nodes {
+        [.., Node::Status { text, .. }] if text.is_empty() => nodes.len(),
+        [.., Node::Gap(_), Node::Status { .. }] => nodes.len() - 2,
+        [.., Node::Status { .. }] => nodes.len() - 1,
+        _ => nodes.len(),
+    }
+}
+
 /// like `drive`, for a tree whose regions carry `prefix` in front of their paths, so that two
 /// trees can share one window (a tab strip and the page under it). an action or a question
 /// about a path without the prefix is not for this tree.
@@ -174,32 +185,47 @@ fn drive_at<M: Clone>(
             if total <= area.height {
                 painter.draw(nodes, area, buf, prefix);
             } else {
-                // a body taller than its window scrolls with the wheel
+                // a body taller than its window scrolls with the wheel; a status bar that
+                // ends it stays on the bottom rows, outside what scrolls
+                let split = status_start(nodes);
+                let (body, tail) = nodes.split_at(split);
+                let tail_height = painter
+                    .height(tail, area.width, None)
+                    .min(area.height.saturating_sub(1));
+                let scrolled = Rect::new(area.x, area.y, area.width, area.height - tail_height);
+                let total = painter.height(body, area.width, Some(scrolled.height));
                 let offset = state
                     .scroll
                     .get("#body")
                     .copied()
                     .unwrap_or(0)
-                    .min(usize::from(total - area.height)) as u16;
-                let mut tall = Buffer::empty(Rect::new(0, 0, area.width, total));
+                    .min(usize::from(total.saturating_sub(scrolled.height)))
+                    as u16;
+                let mut tall = Buffer::empty(Rect::new(0, 0, area.width, total.max(1)));
                 let whole = tall.area;
                 fill(&mut tall, whole, palette, GRAY);
-                painter.draw(nodes, whole, &mut tall, prefix);
-                view::blit(&tall, offset, area, buf);
+                painter.draw(body, whole, &mut tall, prefix);
+                view::blit(&tall, offset, scrolled, buf);
                 painter
                     .regions
-                    .retain(|r| r.rect.y >= offset && r.rect.bottom() <= offset + area.height);
+                    .retain(|r| r.rect.y >= offset && r.rect.bottom() <= offset + scrolled.height);
                 for region in &mut painter.regions {
                     region.rect.x += area.x;
                     region.rect.y = region.rect.y - offset + area.y;
                 }
                 painter.regions.push(Region {
-                    rect: area,
+                    rect: scrolled,
                     path: prefix.to_vec(),
                     part: Part::Scroll,
                     focusable: false,
                     key: "#body".into(),
                 });
+                if tail_height > 0 {
+                    let at = Rect::new(area.x, scrolled.bottom(), area.width, tail_height);
+                    let before = painter.regions.len();
+                    painter.draw(tail, at, buf, prefix);
+                    painter.regions.truncate(before);
+                }
             }
             answer.want_focus = view::wants_focus(nodes, &painter.regions, prefix);
             answer.regions = painter.regions;
@@ -312,10 +338,10 @@ pub struct Shell {
     pub quit: bool,
 }
 
-/// the actions of the menu's item rows, top to bottom; a note (a header that is off) has none.
+/// the actions of the menu's item rows, top to bottom; a note has none to pick.
 fn menu_actions(rows: &[Row]) -> impl Iterator<Item = &Action> {
     rows.iter().filter_map(|row| match row {
-        Row::Item(item) if item.header && !item.enabled => None,
+        Row::Item(item) if item.action == Action::Note => None,
         Row::Item(item) => Some(&item.action),
         Row::Separator => None,
     })
@@ -759,8 +785,7 @@ impl Shell {
         // the menu has no quit item, so the key to quit with is written on its last row
         rows.push(Row::Item(menu::Item {
             header: true,
-            enabled: false,
-            ..menu::Item::new("Ctrl+Q quits LANlord", Action::ServerLine)
+            ..menu::Item::new("Ctrl+Q quits LANlord", Action::Note)
         }));
         rows
     }
@@ -796,7 +821,7 @@ impl Shell {
             Action::ToggleUpdates => self.toggle_updates(),
             Action::CheckUpdates => self.check_updates(),
             Action::Rebuild => self.ask_rebuild(),
-            Action::Developer | Action::ServerLine => {}
+            Action::Developer | Action::ServerLine | Action::Note => {}
         }
     }
 }

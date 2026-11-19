@@ -26,6 +26,8 @@ pub enum Action {
     About,
     /// the server line at the top of the menu, which only names the server.
     ServerLine,
+    /// a line that only says something, such as how to quit, and does nothing.
+    Note,
 }
 
 pub enum Row {

@@ -293,7 +293,7 @@ impl Desktop {
                 );
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));
             }
-            Action::ServerLine => {}
+            Action::ServerLine | Action::Note => {}
         }
         self.start_open = false;
         self.dev_open = false;
