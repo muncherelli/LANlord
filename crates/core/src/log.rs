@@ -9,10 +9,30 @@ pub use lanlord_model::log::*;
 
 static SUBSCRIBERS: Mutex<Vec<Sender<Line>>> = Mutex::new(Vec::new());
 static VERBOSE: AtomicBool = AtomicBool::new(false);
+static QUIET_TASKS: AtomicBool = AtomicBool::new(false);
 
 /// show debug lines on the terminal when nothing is subscribed.
 pub fn set_verbose(on: bool) {
     VERBOSE.store(on, Ordering::Relaxed);
+}
+
+/// keep the per-task progress of an apply (`ok:`, `changed:`, `skipped:` lines and the
+/// playbook's own messages) off the terminal when nothing is subscribed; failures still show.
+pub fn set_quiet_tasks(on: bool) {
+    QUIET_TASKS.store(on, Ordering::Relaxed);
+}
+
+/// a line that only reports a task that went well.
+fn is_task_progress(text: &str) -> bool {
+    ["ok: ", "changed: ", "skipped: ", "applying "]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+        || text == "apply finished"
+}
+
+/// whether debug lines are asked for (`--verbose`).
+pub fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
 }
 
 /// receive every line from now on; consoles get debug lines too.
@@ -37,6 +57,15 @@ pub fn emit(kind: Kind, text: impl Into<String>) {
 }
 
 fn print_line(line: &Line) {
+    if QUIET_TASKS.load(Ordering::Relaxed)
+        && match line.kind {
+            Kind::Out => true,
+            Kind::Info => is_task_progress(&line.text),
+            _ => false,
+        }
+    {
+        return;
+    }
     match line.kind {
         Kind::Out => println!("{}", line.text),
         Kind::Err | Kind::Info => eprintln!("{}", line.text),

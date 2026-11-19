@@ -13,6 +13,8 @@ use crate::account::login_user;
 use crate::bootstrap::{
     bootstrap_lines, capture_as_root, run_as_root, AnsibleMode, AskPassword, Options,
 };
+use crate::config;
+use crate::firstadmin::{self, Decide};
 use crate::log::{emit, Kind};
 use crate::purge::{self, PurgeOptions};
 use crate::ssh::Session;
@@ -58,8 +60,13 @@ impl Step {
 pub enum Event {
     StepStarted(Step),
     Line(String),
+    /// what to do once the install is finished, ready to print.
+    NextSteps(Vec<String>),
     StepDone(Step),
-    Failed { step: Step, message: String },
+    Failed {
+        step: Step,
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +150,7 @@ pub fn run(
     host: &str,
     web: &WebSource,
     ask_password: AskPassword,
+    decide: Decide,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     run_with(
@@ -150,6 +158,7 @@ pub fn run(
         &options_for(host),
         web,
         ask_password,
+        decide,
         events,
     )
 }
@@ -159,6 +168,7 @@ pub(crate) fn run_with(
     options: &Options,
     web: &WebSource,
     ask_password: AskPassword,
+    decide: Decide,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     let done = match status_with(session, &mut *ask_password)? {
@@ -202,7 +212,18 @@ pub(crate) fn run_with(
         Kind::Info,
         format!("lanlord is installed on {}", options.host),
     );
-    Ok(())
+    // the first administrator: the install is done either way, so a refusal is reported after
+    // the next steps rather than instead of them
+    let admin = firstadmin::run(session, &options.host, decide, &mut *ask_password);
+    // advice only: an install that worked is not undone by a failed look
+    let facts = login_user(session)
+        .and_then(|admin| {
+            capture_as_root(session, &admin.name, NEXT_FACTS.to_string(), ask_password)
+        })
+        .unwrap_or_default();
+    let name = admin.as_ref().ok().and_then(|name| name.as_deref());
+    events(Event::NextSteps(next_steps(&facts, name)));
+    admin.map(|_| ())
 }
 
 fn do_step(
@@ -254,8 +275,65 @@ fn do_step(
             webinstall::run_step(session, &options.host, web, &mut *ask_password, &mut line)?;
             record(session, Step::Web, ask_password)
         }
-        Step::Finish => record(session, Step::Finish, ask_password),
+        Step::Finish => {
+            // the web step applied its own settings only for the web modules; a first
+            // `networks add` or `apply` needs a settings file, so give it the same defaults
+            config::push_plain_if_missing_with(
+                session,
+                &options.host,
+                webinstall::SETTINGS.as_bytes(),
+                &mut *ask_password,
+            )?;
+            record(session, Step::Finish, ask_password)
+        }
     }
+}
+
+/// asks the server for its address and what state root's password is in.
+const NEXT_FACTS: &str = r#"# the address the server reaches others with: the first global one may be docker's bridge
+ip=$(ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+[ -n "$ip" ] || ip=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n 1)
+[ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+echo "ip=$ip"
+echo "root=$(passwd -S root 2>/dev/null | awk '{print $2}')"
+"#;
+
+/// the web ui's address on the server, as `NEXT_FACTS` found it.
+pub(crate) fn web_url(facts: &str) -> Option<String> {
+    let ip = facts.lines().find_map(|l| l.strip_prefix("ip="))?.trim();
+    (!ip.is_empty()).then(|| format!("https://{ip}:{}/", webinstall::PORT))
+}
+
+/// the closing advice: where the web ui is, and how root gets in. `passwd -S` says `L` (locked)
+/// or `NP` (no password) when root cannot sign in yet; lanlord never sets a password itself.
+pub(crate) fn next_steps(facts: &str, admin: Option<&str>) -> Vec<String> {
+    let open = match web_url(facts) {
+        Some(url) => format!("open the web UI at {url}"),
+        None => format!("open the web UI on port {} of the server", webinstall::PORT),
+    };
+    let mut lines = vec![
+        "next steps".to_string(),
+        format!("  1. {open} (the certificate is the gateway's own, so the browser warns once)"),
+    ];
+    if let Some(admin) = admin {
+        lines.push(format!(
+            "  2. sign in as {admin}, your LANlord administrator"
+        ));
+        return lines;
+    }
+    lines.push("  2. sign in as root and create your admin account".to_string());
+    let root = facts
+        .lines()
+        .find_map(|l| l.strip_prefix("root="))
+        .map(str::trim);
+    if matches!(root, Some("L" | "NP")) {
+        lines.push(
+            "     root has no usable password on this server yet, so it cannot sign in: \
+             run `passwd` on the server to set one first"
+                .to_string(),
+        );
+    }
+    lines
 }
 
 fn check_confirm(host: &str, confirm: &str) -> Result<()> {
@@ -272,6 +350,7 @@ pub fn reinstall(
     confirm: &str,
     web: &WebSource,
     ask_password: AskPassword,
+    decide: Decide,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     check_confirm(host, confirm)?;
@@ -280,6 +359,7 @@ pub fn reinstall(
         &options_for(host),
         web,
         ask_password,
+        decide,
         events,
     )
 }
@@ -289,6 +369,7 @@ pub(crate) fn reinstall_with(
     options: &Options,
     web: &WebSource,
     ask_password: AskPassword,
+    decide: Decide,
     events: &mut dyn FnMut(Event),
 ) -> Result<()> {
     // refuse before anything is removed when the server would fail the install's check
@@ -307,12 +388,13 @@ pub(crate) fn reinstall_with(
     for line in lines {
         events(Event::Line(line));
     }
-    run_with(session, options, web, ask_password, events)
+    run_with(session, options, web, ask_password, decide, events)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::firstadmin::Choice;
     use crate::testgw::no_password;
 
     const FINE: &str = "virt_container=none\nvirt_vm=none\nnesting=yes\nkernel=6.1.0\n";
@@ -399,6 +481,13 @@ tar -C /opt/lanlord/web-stage/web -xf "*) ;;
       *"staged files are incomplete"*) echo web-install >> "$D/log" ;;
       *"--tags web-proxy,webui-login"*) echo web-apply >> "$D/log" ;;
       *"the web ui answers on https"*) echo web-verify >> "$D/log"; [ -f "$D/no-web" ] && { echo "nothing answered" >&2; exit 1; }; exit 0 ;;
+      *"is already in admins"*) echo adopted >> "$D/log"; echo "added" ;;
+      *"does not exist; run lanlord bootstrap first"*) cat "$D/admins" 2>/dev/null || true ;;
+      *"useradd --create-home"*) echo created >> "$D/log"; echo "created" ;;
+      *"sudo -l -U"*) cat "$D/sudo-answer" 2>/dev/null || echo yes ;;
+      *"default settings, only if missing"*)
+        if [ -f "$D/settings" ]; then echo kept; else printf '%s\n' "$input" | sed -n '/^base64 -d/,/^LANLORD_PAYLOAD/p' | sed '1d;$d' | base64 -d > "$D/settings"; echo settings >> "$D/log"; echo created; fi ;;
+      *"passwd -S root"*) echo "ip=192.0.2.10"; echo "root=$(cat "$D/root-state" 2>/dev/null || echo P)" ;;
       *"DRY=0"*) echo purge >> "$D/log"; rm -f "$D/marker"; echo "remove /opt/lanlord" ;;
       *"base64 -d <<'LANLORD_PAYLOAD'"*) echo apply >> "$D/log"; @APPLY@ ;;
       *) echo bootstrap >> "$D/log"; echo "setting up" ;;
@@ -451,15 +540,106 @@ esac"#
     }
 
     fn install(server: &Server) -> (Result<()>, Vec<Event>) {
+        install_choosing(server, Choice::Skip)
+    }
+
+    fn install_choosing(server: &Server, choice: Choice) -> (Result<()>, Vec<Event>) {
         let mut seen = Vec::new();
         let result = run_with(
             &server.session,
             &options(),
             &server.web,
             &mut no_password,
+            &mut |_| Ok(choice.clone()),
             &mut |e| seen.push(e),
         );
         (result, seen)
+    }
+
+    fn next_text(events: &[Event]) -> String {
+        events
+            .iter()
+            .find_map(|e| match e {
+                Event::NextSteps(lines) => Some(lines.join("\n")),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn an_existing_account_with_sudo_is_adopted_as_the_first_administrator() {
+        let server = Server::new("adopt", None, FINE);
+        let (result, events) = install_choosing(&server, Choice::Adopt("olive".into()));
+        result.unwrap();
+        assert!(server.log().contains(&"adopted".to_string()));
+        assert!(next_text(&events).contains("sign in as olive"));
+        assert_eq!(server.marker(), "installed");
+    }
+
+    #[test]
+    fn a_new_administrator_is_created_through_the_account_operation() {
+        let server = Server::new("create", None, FINE);
+        let choice = Choice::Create {
+            name: "olive".into(),
+            password: "correct horse".into(),
+            ssh_public_key: None,
+        };
+        let (result, events) = install_choosing(&server, choice);
+        result.unwrap();
+        assert!(server.log().contains(&"created".to_string()));
+        assert!(next_text(&events).contains("sign in as olive"));
+    }
+
+    #[test]
+    fn an_account_that_cannot_use_sudo_is_refused_and_nothing_is_changed() {
+        let server = Server::new("nosudo", None, FINE);
+        std::fs::write(server.dir.join("sudo-answer"), "no\n").unwrap();
+        let (result, events) = install_choosing(&server, Choice::Adopt("olive".into()));
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot become root"), "{err}");
+        assert!(!server.log().contains(&"adopted".to_string()));
+        // the install itself is done, and its next steps still point at root's web setup
+        assert_eq!(server.marker(), "installed");
+        assert!(next_text(&events).contains("sign in as root"));
+        let other = Server::new("adopt-root", None, FINE);
+        let (result, _) = install_choosing(&other, Choice::Adopt("root".into()));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("root is not an account"));
+    }
+
+    #[test]
+    fn with_no_choice_made_the_first_run_in_the_web_ui_stays_the_way() {
+        let server = Server::new("skip", None, FINE);
+        let (result, events) = install_choosing(&server, Choice::Skip);
+        result.unwrap();
+        assert!(!server
+            .log()
+            .iter()
+            .any(|l| l == "adopted" || l == "created"));
+        assert!(next_text(&events).contains("sign in as root"));
+    }
+
+    #[test]
+    fn nobody_is_asked_when_an_administrator_already_exists() {
+        let server = Server::new("has-admin", None, FINE);
+        std::fs::write(server.dir.join("admins"), "olive\n").unwrap();
+        let mut asked = false;
+        let mut seen = Vec::new();
+        run_with(
+            &server.session,
+            &options(),
+            &server.web,
+            &mut no_password,
+            &mut |_| {
+                asked = true;
+                Ok(Choice::Skip)
+            },
+            &mut |e| seen.push(e),
+        )
+        .unwrap();
+        assert!(!asked);
     }
 
     fn steps(events: &[Event]) -> Vec<(Step, &'static str)> {
@@ -469,7 +649,7 @@ esac"#
                 Event::StepStarted(s) => Some((*s, "started")),
                 Event::StepDone(s) => Some((*s, "done")),
                 Event::Failed { step, .. } => Some((*step, "failed")),
-                Event::Line(_) => None,
+                Event::Line(_) | Event::NextSteps(_) => None,
             })
             .collect()
     }
@@ -525,10 +705,72 @@ esac"#
             server.log(),
             with_web(
                 vec!["bootstrap", "bootstrap", "apply", "base"],
-                &["web", "installed"]
+                &["web", "settings", "installed"]
             )
         );
         assert_eq!(server.marker(), "installed");
+    }
+
+    #[test]
+    fn default_settings_are_created_when_missing_and_left_alone_when_present() {
+        let server = Server::new("settings-new", None, FINE);
+        install(&server).0.unwrap();
+        let stored = std::fs::read_to_string(server.dir.join("settings")).unwrap();
+        // the file the install stores is the web ui's defaults, which are valid settings
+        assert!(stored.contains(webinstall::SETTINGS), "{stored}");
+        lanlord_model::validate::settings_document(webinstall::SETTINGS).unwrap();
+
+        let server = Server::new("settings-kept", None, FINE);
+        std::fs::write(server.dir.join("settings"), "mine: true\n").unwrap();
+        install(&server).0.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(server.dir.join("settings")).unwrap(),
+            "mine: true\n"
+        );
+        assert!(!server.log().contains(&"settings".to_string()));
+    }
+
+    #[test]
+    fn a_finished_install_ends_with_the_next_steps() {
+        let server = Server::new("next", None, FINE);
+        let (result, events) = install(&server);
+        result.unwrap();
+        let Some(Event::NextSteps(lines)) = events.last() else {
+            panic!("{events:?}")
+        };
+        let text = lines.join("\n");
+        assert!(text.contains("https://192.0.2.10:8443/"), "{text}");
+        assert!(text.contains("sign in as root"));
+        assert!(!text.contains("passwd"));
+
+        let server = Server::new("next-locked", None, FINE);
+        std::fs::write(server.dir.join("root-state"), "L\n").unwrap();
+        let (_, events) = install(&server);
+        let Some(Event::NextSteps(lines)) = events.last() else {
+            panic!("{events:?}")
+        };
+        assert!(lines.join("\n").contains("run `passwd` on the server"));
+    }
+
+    #[test]
+    fn the_next_steps_name_the_address_and_a_root_without_a_password() {
+        assert_eq!(
+            web_url("ip=198.51.100.7\nroot=P\n").as_deref(),
+            Some("https://198.51.100.7:8443/")
+        );
+        assert_eq!(web_url("ip=\nroot=P\n"), None);
+        for state in ["L", "NP"] {
+            let text = next_steps(&format!("ip=198.51.100.7\nroot={state}\n"), None).join("\n");
+            assert!(text.contains("`passwd`"), "{text}");
+        }
+        let text = next_steps("ip=198.51.100.7\nroot=P\n", None).join("\n");
+        assert!(!text.contains("passwd"), "{text}");
+        // no address and no facts still give the steps, without a made-up url
+        let text = next_steps("", None).join("\n");
+        assert!(
+            text.contains("port 8443") && !text.contains("https://"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -554,7 +796,10 @@ esac"#
         // baseline and the finish
         assert_eq!(
             server.log(),
-            with_web(vec!["bootstrap", "apply", "base"], &["web", "installed"])
+            with_web(
+                vec!["bootstrap", "apply", "base"],
+                &["web", "settings", "installed"]
+            )
         );
         assert!(!events.contains(&Event::Line("already done, skipping".into())));
         assert_eq!(steps(&events).len(), 10);
@@ -566,7 +811,7 @@ esac"#
         // a finished baseline is skipped, but the bootstrap still runs without moving the marker
         assert_eq!(
             server.log(),
-            with_web(vec!["bootstrap"], &["web", "installed"])
+            with_web(vec!["bootstrap"], &["web", "settings", "installed"])
         );
         assert!(events.contains(&Event::Line("already done, skipping".into())));
 
@@ -574,7 +819,7 @@ esac"#
         let server = Server::new("resume-web", Some("web"), FINE);
         let (result, events) = install(&server);
         result.unwrap();
-        assert_eq!(server.log(), ["bootstrap", "installed"]);
+        assert_eq!(server.log(), ["bootstrap", "settings", "installed"]);
         let skipped = events
             .iter()
             .filter(|e| **e == Event::Line("already done, skipping".into()))
@@ -669,6 +914,7 @@ esac"#
                 wrong,
                 &WebSource::release(),
                 &mut no_password,
+                &mut |_| Ok(Choice::Skip),
                 &mut |e| seen.push(e),
             )
             .unwrap_err()
@@ -688,6 +934,7 @@ esac"#
             &options(),
             &server.web,
             &mut no_password,
+            &mut |_| Ok(Choice::Skip),
             &mut |e| seen.push(e),
         )
         .unwrap();
@@ -695,7 +942,7 @@ esac"#
             server.log(),
             with_web(
                 vec!["purge", "bootstrap", "bootstrap", "apply", "base"],
-                &["web", "installed"]
+                &["web", "settings", "installed"]
             )
         );
         // what the purge said comes first, then the five steps
@@ -713,6 +960,7 @@ esac"#
             &options(),
             &server.web,
             &mut no_password,
+            &mut |_| Ok(Choice::Skip),
             &mut |e| seen.push(e),
         )
         .unwrap_err()

@@ -211,6 +211,35 @@ pub(crate) fn push_plain_with(
     }
 }
 
+/// store `plaintext` as the plain settings only when the gateway has no settings at all (no plain
+/// file and no sealed one); returns whether it did. the check and the write are one script as
+/// root, so a file that is there is never touched. like `push_plain_with` it writes the plain
+/// file for the admins group and leaves the sealed file to the first secret that is set.
+pub(crate) fn push_plain_if_missing_with(
+    session: &Session,
+    host: &str,
+    plaintext: &[u8],
+    ask_password: AskPassword,
+) -> Result<bool> {
+    let script = format!(
+        r#"# default settings, only if missing
+if [ -e /opt/lanlord/config/settings.yml ] || [ -e /opt/lanlord/config/settings.age ]; then
+  echo kept
+  exit 0
+fi
+{}echo created
+"#,
+        push_plain_script(plaintext)
+    );
+    let admin = admin(session)?;
+    let out = capture_as_root(session, &admin, script, ask_password)?;
+    let created = out.lines().last().is_some_and(|l| l.trim() == "created");
+    if created {
+        emit(Kind::Info, format!("stored default settings on {host}"));
+    }
+    Ok(created)
+}
+
 /// the plain settings on the gateway; `None` when there are none.
 pub fn pull_plain(host: &str, ask_password: AskPassword) -> Result<Option<Vec<u8>>> {
     pull_plain_with(&Session::new(host)?, ask_password)
@@ -348,6 +377,30 @@ esac"#
         let sealed = crypto::encrypt(&other, b"secret: 1\n").unwrap();
         let session = serving(&format!("printf '%s\\n' '{}'", B64.encode(&sealed)), 0);
         assert!(pull_with(&session, &mine, &mut no_password).is_err());
+    }
+
+    #[test]
+    fn default_settings_say_whether_they_were_created() {
+        let created = serving("echo created", 0);
+        assert!(push_plain_if_missing_with(&created, "gw", b"a: 1\n", &mut no_password).unwrap());
+        let kept = serving("echo kept", 0);
+        assert!(!push_plain_if_missing_with(&kept, "gw", b"a: 1\n", &mut no_password).unwrap());
+        let failing = serving("echo created >&2", 3);
+        assert!(push_plain_if_missing_with(&failing, "gw", b"a: 1\n", &mut no_password).is_err());
+    }
+
+    #[test]
+    fn default_settings_script_checks_both_files_before_it_writes() {
+        let record =
+            std::env::temp_dir().join(format!("lanlord-config-default-{}", std::process::id()));
+        let session = Session::fake_gateway(true, &record, 0);
+        push_plain_if_missing_with(&session, "gw", b"a: 1\n", &mut no_password).unwrap();
+        let sent = std::fs::read_to_string(&record).unwrap();
+        let check = sent.find("-e /opt/lanlord/config/settings.yml").unwrap();
+        assert!(sent.contains("-e /opt/lanlord/config/settings.age"));
+        assert!(check < sent.find("tee /opt/lanlord/config/settings.yml").unwrap());
+        assert_eq!(payload(&sent), b"a: 1\n");
+        let _ = std::fs::remove_file(&record);
     }
 
     #[test]

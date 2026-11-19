@@ -247,6 +247,159 @@ impl WebFiles {
     }
 }
 
+/// who becomes the LANlord administrator at the end of an install that finds none.
+#[derive(clap::Args, Default)]
+struct FirstAdmin {
+    /// make this existing account the administrator; it must already be able to become root
+    /// with sudo
+    #[arg(long, value_name = "USER", conflicts_with_all = ["create_admin", "no_admin"])]
+    admin: Option<String>,
+    /// create this account as the administrator (a login, in admins and sudo); its password is
+    /// asked for, or read from standard input with --admin-password-stdin
+    #[arg(long, value_name = "NAME", conflicts_with = "no_admin")]
+    create_admin: Option<String>,
+    /// read the new administrator's password from one line of standard input
+    #[arg(long, requires = "create_admin")]
+    admin_password_stdin: bool,
+    /// a public key file to authorize for the new administrator
+    #[arg(long, value_name = "FILE", requires = "create_admin")]
+    admin_ssh_key: Option<String>,
+    /// set no administrator up: root signs in to the web UI for the first-run setup
+    #[arg(long)]
+    no_admin: bool,
+}
+
+/// the choice the flags make, or `None` when they make none. the password comes from
+/// `password` only when an account is created.
+fn flag_choice(
+    flags: &FirstAdmin,
+    password: impl FnOnce() -> Result<String>,
+) -> Result<Option<lanlord_core::firstadmin::Choice>> {
+    use lanlord_core::firstadmin::Choice;
+    if flags.no_admin {
+        return Ok(Some(Choice::Skip));
+    }
+    if let Some(user) = &flags.admin {
+        return Ok(Some(Choice::Adopt(user.clone())));
+    }
+    let Some(name) = &flags.create_admin else {
+        return Ok(None);
+    };
+    let ssh_public_key = flags
+        .admin_ssh_key
+        .as_deref()
+        .map(lanlord_core::account::read_key)
+        .transpose()?;
+    Ok(Some(Choice::Create {
+        name: name.clone(),
+        password: password()?,
+        ssh_public_key,
+    }))
+}
+
+/// one line typed in answer to `prompt`, empty when there is none.
+fn ask_line(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
+}
+
+/// the public keys in `~/.ssh`, for offering one to a new account.
+fn own_public_keys() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let mut keys: Vec<PathBuf> = std::fs::read_dir(PathBuf::from(home).join(".ssh"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "pub"))
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// ask for a new administrator's name, password and (optionally) ssh key.
+fn ask_new_admin() -> Result<lanlord_core::firstadmin::Choice> {
+    let name = ask_line("name for the new administrator: ")?;
+    if name.is_empty() {
+        bail!("no name given");
+    }
+    let password = new_password(&name)?;
+    let keys = own_public_keys();
+    let mut ssh_public_key = None;
+    if !keys.is_empty() {
+        eprintln!("authorize one of your ssh public keys for {name}?");
+        for (i, key) in keys.iter().enumerate() {
+            eprintln!("  {}) {}", i + 1, key.display());
+        }
+        let answer = ask_line("number, or enter for none: ")?;
+        if let Some(key) = answer
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| keys.get(i))
+        {
+            ssh_public_key = Some(lanlord_core::account::read_key(&key.to_string_lossy())?);
+        }
+    }
+    Ok(lanlord_core::firstadmin::Choice::Create {
+        name,
+        password,
+        ssh_public_key,
+    })
+}
+
+/// the first administrator: from the flags, else by asking at a terminal, else none (the
+/// next steps then point at the web UI's first-run setup).
+fn decide_admin(
+    flags: &FirstAdmin,
+    login: &lanlord_core::account::LoginUser,
+) -> Result<lanlord_core::firstadmin::Choice> {
+    use lanlord_core::firstadmin::Choice;
+    let from_stdin = || {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        Ok(line.trim_end_matches(['\n', '\r']).to_string())
+    };
+    let password = || {
+        if flags.admin_password_stdin {
+            from_stdin()
+        } else {
+            new_password(flags.create_admin.as_deref().unwrap_or("the new account"))
+        }
+    };
+    if let Some(choice) = flag_choice(flags, password)? {
+        return Ok(choice);
+    }
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return Ok(Choice::Skip);
+    }
+    println!();
+    println!("this server has no LANlord administrator yet.");
+    if login.is_root {
+        let answer = ask_line(
+            "create a new administrator account? [Y] yes, [s] skip and sign in to the web UI as root: ",
+        )?;
+        return match answer.to_lowercase().as_str() {
+            "" | "y" | "yes" => ask_new_admin(),
+            _ => Ok(Choice::Skip),
+        };
+    }
+    let answer = ask_line(&format!(
+        "make {0} your LANlord administrator? [Y] yes, [c] create a new account, [s] skip: ",
+        login.name
+    ))?;
+    match answer.to_lowercase().as_str() {
+        "" | "y" | "yes" => Ok(Choice::Adopt(login.name.clone())),
+        "c" | "create" => ask_new_admin(),
+        _ => Ok(Choice::Skip),
+    }
+}
+
 #[derive(Subcommand)]
 enum BridgeMode {
     /// answer requests until stdin ends (the default)
@@ -378,6 +531,8 @@ enum Command {
         host: String,
         #[command(flatten)]
         web: WebFiles,
+        #[command(flatten)]
+        admin: FirstAdmin,
     },
     /// upgrade lanlord on an installed server in place: the server binary, the browser build
     /// and the playbooks, then restart the services that changed; nothing is removed
@@ -400,6 +555,8 @@ enum Command {
         confirm: String,
         #[command(flatten)]
         web: WebFiles,
+        #[command(flatten)]
+        admin: FirstAdmin,
     },
     /// list the dhcp leases the gateway has handed out
     Leases { host: String },
@@ -758,17 +915,37 @@ fn purge(host: &str, remove_admins: bool, confirm: Option<String>) -> Result<()>
 }
 
 /// print an install's steps and what the server says while it runs.
+/// an install shows its steps, not every task of the playbooks, unless `--verbose` asks.
+fn quiet_install() {
+    lanlord_core::log::set_quiet_tasks(!lanlord_core::log::verbose());
+}
+
 fn print_install(event: lanlord_core::install::Event) {
     use lanlord_core::install::{Event, Step};
+    // what the server printed in the step that runs: package managers and ansible are loud, so
+    // it is shown with --verbose, and otherwise only when the step fails
+    static HELD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let number = |step: Step| Step::ALL.iter().position(|s| *s == step).unwrap_or(0) + 1;
     match event {
         Event::StepStarted(step) => {
+            HELD.lock().unwrap().clear();
             println!("[{}/{}] {}", number(step), Step::ALL.len(), step.title())
         }
-        Event::Line(line) => println!("  {line}"),
+        Event::Line(line) if lanlord_core::log::verbose() => println!("  {line}"),
+        Event::Line(line) => HELD.lock().unwrap().push(line),
+        Event::NextSteps(lines) => {
+            println!();
+            for line in lines {
+                println!("{line}");
+            }
+        }
         Event::StepDone(step) => println!("[{}/{}] done", number(step), Step::ALL.len()),
         // the error itself is printed once, by the caller
         Event::Failed { step, .. } => {
+            let held = std::mem::take(&mut *HELD.lock().unwrap());
+            for line in held.iter().skip(held.len().saturating_sub(40)) {
+                eprintln!("  {line}");
+            }
             eprintln!("[{}/{}] failed", number(step), Step::ALL.len())
         }
     }
@@ -1215,6 +1392,37 @@ fn sudo_account(
     (uid_of(user)? == claimed).then(|| user.to_string())
 }
 
+/// who is asking `lanlord operate`: the account sudo names (see `sudo_account`), or root itself
+/// when sudo took no part, which is how a root login over ssh arrives. root is always let run
+/// operations; sudo variables that are set but disagree are refused, as before.
+#[cfg(unix)]
+fn operating_account(
+    user: Option<&str>,
+    uid: Option<&str>,
+    uid_of: impl Fn(&str) -> Option<u32>,
+) -> Option<String> {
+    match (user, uid) {
+        (None, None) => Some("root".to_string()),
+        _ => sudo_account(user, uid, uid_of),
+    }
+}
+
+/// the caller for `account`: root is an administrator without the group, as it is for a root
+/// login anywhere else.
+#[cfg(unix)]
+fn operating_caller(
+    session: &lanlord_core::ssh::Session,
+    account: &str,
+) -> Result<lanlord_core::access::Caller> {
+    if account == "root" {
+        return Ok(lanlord_core::access::Caller {
+            user: "root".into(),
+            admin: true,
+        });
+    }
+    lanlord_core::access::Caller::of_account(session, account)
+}
+
 /// the uid the system gives the account `name`.
 #[cfg(unix)]
 fn uid_of_account(name: &str) -> Option<u32> {
@@ -1274,7 +1482,7 @@ fn answer_request(
 ) -> lanlord_core::operations::Response {
     use lanlord_core::operations::Response;
     match (account, lanlord_core::operate::read_request(line)) {
-        (None, _) => Response::Denied("run this through sudo from your own account".into()),
+        (None, _) => Response::Denied("could not tell which account ran sudo".into()),
         (_, Err(_)) => Response::Error("not an operation".into()),
         (Some(account), Ok(operation)) => response_of(run(&account, &operation)),
     }
@@ -1286,7 +1494,6 @@ fn answer_request(
 /// is one `{"response": ..}` line.
 #[cfg(unix)]
 fn operate() -> Result<()> {
-    use lanlord_core::access::Caller;
     use lanlord_core::operations::execute_in;
     use lanlord_core::ssh::Session;
     use std::os::unix::fs::MetadataExt;
@@ -1297,7 +1504,7 @@ fn operate() -> Result<()> {
     let mut line = zeroize::Zeroizing::new(String::new());
     std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)?;
     let session = Session::local();
-    let account = sudo_account(
+    let account = operating_account(
         std::env::var("SUDO_USER").ok().as_deref(),
         std::env::var("SUDO_UID").ok().as_deref(),
         uid_of_account,
@@ -1305,7 +1512,11 @@ fn operate() -> Result<()> {
     let response = answer_request(&line, account, |account, operation| {
         lanlord_core::crypto::use_gateway_key(lanlord_core::crypto::GATEWAY_KEY.into())?;
         let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: this is root") };
-        Caller::of_account(&session, account)
+        // the journal names the actor; best effort, the operation does not wait on it
+        let _ = std::process::Command::new("logger")
+            .args(["-t", "lanlord", &format!("operation run as {account}")])
+            .status();
+        operating_caller(&session, account)
             .and_then(|caller| execute_in(&session, "localhost", &caller, operation, &mut ask))
     });
     println!(
@@ -1438,7 +1649,11 @@ fn main() -> Result<()> {
         ),
         Some(Command::Apply { host, modules }) => {
             let apply = lanlord_core::operations::Operation::Apply { modules };
-            lanlord_core::operations::execute(&host, &apply, &mut ask).map(|_| ())
+            lanlord_core::operations::execute(&host, &apply, &mut ask)?;
+            // a last line of its own: the progress above goes to the log, which a terminal
+            // session may not show
+            println!("applied to {host}");
+            Ok(())
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
@@ -1450,8 +1665,15 @@ fn main() -> Result<()> {
             remove_admins,
             confirm,
         }) => purge(&host, remove_admins, confirm),
-        Some(Command::Install { host, web }) => {
-            lanlord_core::install::run(&host, &web.source()?, &mut ask, &mut print_install)
+        Some(Command::Install { host, web, admin }) => {
+            quiet_install();
+            lanlord_core::install::run(
+                &host,
+                &web.source()?,
+                &mut ask,
+                &mut |login| decide_admin(&admin, login),
+                &mut print_install,
+            )
         }
         Some(Command::Upgrade {
             host,
@@ -1459,13 +1681,22 @@ fn main() -> Result<()> {
             yes,
             even_if_down,
         }) => upgrade(&host, web.source()?, yes, even_if_down),
-        Some(Command::Reinstall { host, confirm, web }) => lanlord_core::install::reinstall(
-            &host,
-            &confirm,
-            &web.source()?,
-            &mut ask,
-            &mut print_install,
-        ),
+        Some(Command::Reinstall {
+            host,
+            confirm,
+            web,
+            admin,
+        }) => {
+            quiet_install();
+            lanlord_core::install::reinstall(
+                &host,
+                &confirm,
+                &web.source()?,
+                &mut ask,
+                &mut |login| decide_admin(&admin, login),
+                &mut print_install,
+            )
+        }
         Some(Command::Leases { host }) => leases(&host),
         Some(Command::Power {
             host,
@@ -1488,7 +1719,9 @@ fn main() -> Result<()> {
         }
         Some(Command::Admin { host, action }) => admin(&host, action),
         Some(Command::Config(ConfigCommand::Push { host, file })) => {
-            lanlord_core::remote::push_file(&host, &std::fs::read(&file)?, &mut ask)
+            lanlord_core::remote::push_file(&host, &std::fs::read(&file)?, &mut ask)?;
+            println!("settings stored on {host}");
+            Ok(())
         }
         Some(Command::Config(ConfigCommand::Show { host })) => {
             let (plain, secrets) = lanlord_core::remote::show(&host, &mut ask)?;
@@ -1545,6 +1778,100 @@ mod tests {
     fn the_system_gives_root_uid_zero_and_nobody_else_none() {
         assert_eq!(super::uid_of_account("root"), Some(0));
         assert_eq!(super::uid_of_account("no-such-account-here"), None);
+    }
+
+    #[test]
+    fn the_flags_pick_the_first_administrator() {
+        use lanlord_core::firstadmin::Choice;
+        let none = || -> anyhow::Result<String> { panic!("no password needed") };
+        let flags = super::FirstAdmin::default();
+        assert_eq!(super::flag_choice(&flags, none).unwrap(), None);
+        let flags = super::FirstAdmin {
+            no_admin: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::flag_choice(&flags, none).unwrap(),
+            Some(Choice::Skip)
+        );
+        let flags = super::FirstAdmin {
+            admin: Some("olive".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::flag_choice(&flags, none).unwrap(),
+            Some(Choice::Adopt("olive".into()))
+        );
+        let flags = super::FirstAdmin {
+            create_admin: Some("olive".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::flag_choice(&flags, || Ok("pw".into())).unwrap(),
+            Some(Choice::Create {
+                name: "olive".into(),
+                password: "pw".into(),
+                ssh_public_key: None
+            })
+        );
+    }
+
+    #[test]
+    fn without_flags_or_a_terminal_the_first_administrator_is_skipped() {
+        use std::io::IsTerminal;
+        // a terminal would be asked; the check is for scripts and ci
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return;
+        }
+        let login = lanlord_core::account::LoginUser {
+            name: "root".into(),
+            is_root: true,
+        };
+        let choice = super::decide_admin(&super::FirstAdmin::default(), &login).unwrap();
+        assert_eq!(choice, lanlord_core::firstadmin::Choice::Skip);
+    }
+
+    #[test]
+    fn the_admin_flags_exclude_each_other() {
+        use clap::Parser;
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["lanlord", "install", "gw"];
+            argv.extend_from_slice(args);
+            super::Cli::try_parse_from(argv)
+        };
+        assert!(parse(&["--admin", "a"]).is_ok());
+        assert!(parse(&["--no-admin"]).is_ok());
+        assert!(parse(&["--create-admin", "a", "--admin-password-stdin"]).is_ok());
+        assert!(parse(&["--admin", "a", "--no-admin"]).is_err());
+        assert!(parse(&["--admin", "a", "--create-admin", "b"]).is_err());
+        assert!(parse(&["--admin-password-stdin"]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_over_ssh_is_let_run_operations_and_mismatched_sudo_variables_are_not() {
+        let uids = |name: &str| (name == "ann").then_some(1000);
+        // no sudo at all: a root login over ssh
+        assert_eq!(
+            super::operating_account(None, None, uids).as_deref(),
+            Some("root")
+        );
+        assert_eq!(
+            super::operating_account(Some("ann"), Some("1000"), uids).as_deref(),
+            Some("ann")
+        );
+        // half set, or set to a lie: refused
+        assert_eq!(super::operating_account(Some("ann"), None, uids), None);
+        assert_eq!(super::operating_account(None, Some("0"), uids), None);
+        assert_eq!(super::operating_account(Some("ann"), Some("0"), uids), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_is_an_administrator_without_the_group() {
+        let session = lanlord_core::ssh::Session::local();
+        let caller = super::operating_caller(&session, "root").unwrap();
+        assert_eq!((caller.user.as_str(), caller.admin), ("root", true));
     }
 
     #[cfg(unix)]

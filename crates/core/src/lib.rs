@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod doctor;
 pub mod env;
 pub mod exec;
+pub mod firstadmin;
 pub mod hosts;
 pub mod identity;
 pub mod lan;

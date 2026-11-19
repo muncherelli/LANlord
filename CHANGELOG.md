@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `lanlord install` stores a minimal settings file on the server when it has none (never over an existing one), so `lanlord networks add` and `lanlord apply` work right after it; it ends with a next-steps block (the web UI address, and what to do when root has no password), hides raw package manager and ansible output unless `--verbose` (shown when a step fails), and the web proxy summary no longer prints an empty site list; `config push` and `apply` end with a success line; `examples/settings.yml` is a sample settings file
+- `lanlord install` offers to set up the first administrator when the server has none besides root: it adopts an account that can already use sudo or creates a new one (name, password asked twice, optional ssh key) through the existing admin-creation operation; `--admin USER`, `--create-admin NAME` (with `--admin-password-stdin`, `--admin-ssh-key FILE`) and `--no-admin` do it without prompts, and with no terminal and no flag it is skipped and the next steps point at the web first-run setup
+- a root login over ssh may always run CLI operations (`networks`, `apply`, `config push`, ...); the run is noted in the system log as root
 - first-run setup for root in the web UI: while no administrator other than root exists, root's password signs in to a full-screen setup that creates the first administrator account and sets root's ssh access (one of the three levels, nothing preselected), and nothing else; once another administrator exists root is refused as before
 - "Root ssh access" setting (allowed, keys only, off) in My Server and in the first-run setup, applied as an sshd drop-in that is checked with `sshd -t` and rolled back if sshd refuses it; the first-run setup refuses "off" when sshd takes no ssh passwords, since the new account has no key, and only an administrator changes the setting later
 
