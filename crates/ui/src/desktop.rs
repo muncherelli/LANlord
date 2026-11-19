@@ -164,6 +164,8 @@ impl Desktop {
         ctx: &egui::Context,
         hosts_path: Option<PathBuf>,
     ) -> Self {
+        // the look is set once: nothing changes it afterwards
+        theme::apply(ctx);
         let services = Services::new(gateway, crate::wake(ctx));
         let icons = lanlord_app::desktop::icons(None);
         Self {
@@ -276,9 +278,11 @@ impl Desktop {
         if self.services.is_local() {
             return;
         }
+        // the this-server target is no connection to fill in: fall back to the selected host
         let last = self
             .hosts
             .last()
+            .filter(|l| !lanlord_model::signin::is_this_server(l))
             .or(self.hosts.selected())
             .map(String::from);
         self.login = Some(LoginBox::new(auth.clone(), &self.ctx, last.as_deref()));
@@ -531,9 +535,6 @@ impl Desktop {
     /// draw one frame of the whole desktop.
     fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        theme::apply(&ctx);
-        // keep the clock moving
-        ctx.request_repaint_after(std::time::Duration::from_secs(1));
         self.sync_window_title(&ctx);
         self.poll_log_off();
         if self.login.is_some() {
@@ -557,6 +558,9 @@ impl Desktop {
             self.show_admin_setup(ui, &ctx);
             return;
         }
+        // the taskbar clock shows minutes: draw again when the shown minute changes. the box
+        // above asks for nothing, and what else changes on a timer asks for itself
+        ctx.request_repaint_after(self.feed.until_next_minute());
         self.sync_components();
         self.monitor_tick(&ctx);
         egui::Panel::bottom("taskbar")
@@ -649,12 +653,19 @@ impl Desktop {
             if let Err(error) = self.hosts.add(&signed_in.target) {
                 emit(Kind::Err, error);
             }
-            self.hosts.remember(&signed_in.target);
+            if let Err(error) = self.hosts.remember(&signed_in.target) {
+                emit(Kind::Err, error);
+            }
         }
         self.services.session_restored();
         self.reset_session_ui();
         if signed_in.identity.is_root() {
-            self.admin_setup = Some(AdminSetup::new());
+            // the browser only ever gives root the first-run setup: nothing to skip
+            self.admin_setup = Some(if self.web.is_some() {
+                AdminSetup::first_run()
+            } else {
+                AdminSetup::new()
+            });
         }
         let account = signed_in.identity.user.clone();
         self.signed_in = Some(signed_in);
@@ -689,6 +700,9 @@ impl Desktop {
         match outcome {
             Some(admin_setup::Outcome::Skipped) => self.admin_setup = None,
             Some(admin_setup::Outcome::Created(name)) => self.admin_created(&name, &target),
+            Some(admin_setup::Outcome::FirstRun { name, note }) => {
+                self.first_run_done(&name, note.as_deref());
+            }
             None => {}
         }
         self.dialogs(ctx);
@@ -705,6 +719,24 @@ impl Desktop {
             Some(format!("{name}@{host}")),
             Some(format!("Created {name}. Log on with it.")),
         );
+    }
+
+    /// the first-run setup is over and the server has ended root's session: ask for a logon as
+    /// the new account, saying what did not work when root's ssh setting did not.
+    fn first_run_done(&mut self, name: &str, note: Option<&str>) {
+        self.admin_setup = None;
+        let Some(session) = self.web.clone() else {
+            return;
+        };
+        let mut text = format!("Created {name}. Log on with it.");
+        if let Some(note) = note {
+            text.push(' ');
+            text.push_str(note);
+        }
+        if let Some(signed_in) = self.signed_in.as_mut() {
+            signed_in.identity.user = name.to_string();
+        }
+        self.show_web_login(session, Some(&text));
     }
 
     /// lanlord was removed from `host`: forget it and go back to the logon box.
@@ -1215,6 +1247,7 @@ impl Desktop {
     /// the Task Manager is showing, every other second for the tray alone.
     fn monitor_tick(&mut self, ctx: &egui::Context) {
         let backend = self.monitor_backend();
+        let timed = backend_needs_timer(&backend);
         self.monitor.use_backend(backend);
         if self.monitor.poll() {
             ctx.request_repaint();
@@ -1226,7 +1259,21 @@ impl Desktop {
         let (every, procs) = monitor::cadence(shown);
         let now = ctx.input(|i| i.time);
         self.monitor.tick(now, every, procs, &crate::wake(ctx));
+        // the next sample is due on a timer; the browser's stream wakes the desktop itself
+        if timed {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(every));
+        }
     }
+}
+
+/// does the next sample of `backend` wait on a timer? a stream pushes its samples and a backend
+/// with nothing to read has none coming.
+fn backend_needs_timer(backend: &Backend) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    if matches!(backend, Backend::Web) {
+        return false;
+    }
+    !matches!(backend, Backend::Off(_))
 }
 
 // what the taskbar and the menu ask about updates, on builds with or without them
@@ -1661,6 +1708,13 @@ mod tests {
     use super::harness::*;
     use super::*;
     use lanlord_app::log::Kind;
+
+    #[test]
+    fn only_backends_with_samples_on_a_timer_ask_for_a_repaint() {
+        let demo = Backend::Demo(Default::default());
+        assert!(backend_needs_timer(&demo));
+        assert!(!backend_needs_timer(&Backend::Off("nothing".into())));
+    }
 
     #[test]
     fn the_empty_desktop_draws() {

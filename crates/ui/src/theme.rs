@@ -139,6 +139,8 @@ pub fn list_row(ui: &mut Ui, text: &str, selected: bool) -> Response {
 
 /// colours, square corners and text sizes for everything egui draws by itself.
 pub fn apply(ctx: &egui::Context) {
+    // the look is the light one whatever the system prefers: set it on the theme in use
+    ctx.set_theme(egui::Theme::Light);
     let mut visuals = egui::Visuals::light();
     let square = CornerRadius::ZERO;
     visuals.window_corner_radius = square;
@@ -148,6 +150,8 @@ pub fn apply(ctx: &egui::Context) {
     visuals.override_text_color = Some(BLACK);
     visuals.window_shadow = egui::Shadow::NONE;
     visuals.popup_shadow = egui::Shadow::NONE;
+    // a blinking cursor would draw a frame every half second for nothing
+    visuals.text_cursor.blink = false;
     visuals.selection.bg_fill = NAVY;
     visuals.selection.stroke = Stroke::new(1.0, WHITE);
     for widget in [

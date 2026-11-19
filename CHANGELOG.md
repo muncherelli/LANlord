@@ -10,10 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - internet access, off by default: per network (`lanlord networks HOST set NAME --internet on`) or per computer by MAC address, for good or for a while (`lanlord networks HOST internet NAME allow MAC --for 1h`); ended grants stop on their own, NAT and forwarding live in the lanlord firewall table, and dnsmasq hands the gateway out as the router; any access on a network turns on upstream DNS for every computer on it, so computers that are not allowed out can still resolve names and could tunnel over DNS
+- the Networks window adds, changes and removes LANlord networks (New network..., the Properties of a network, and a click on an unused card in the interface list), like `lanlord networks add`, `set` and `remove`; the operations service has a `change_networks` operation that needs manage on Network
+- first-run setup for root in the web UI: while no administrator other than root exists, root's password signs in to a full-screen setup that creates the first administrator account and sets root's ssh access (one of the three levels, nothing preselected), and nothing else; once another administrator exists root is refused as before
+- "Root ssh access" setting (allowed, keys only, off) in My Server and in the first-run setup, applied as an sshd drop-in that is checked with `sshd -t` and rolled back if sshd refuses it; the first-run setup refuses "off" when sshd takes no ssh passwords, since the new account has no key, and only an administrator changes the setting later
 
 ### Changed
 
+- the desktop stops redrawing when nothing changes: no timer on the sign-in screen, one frame a minute for the taskbar clock, no blinking text cursor, icons uploaded once as textures, the look set once, and the browser build capped at 30 frames a second without dithering
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers
+
+### Fixed
+
+- the sign-in box no longer fills its fields from the "This server" target, and the last sign-in is written whole and private (mode 0600) with write errors logged
 
 ## [0.1.3] - 2026-11-19
 

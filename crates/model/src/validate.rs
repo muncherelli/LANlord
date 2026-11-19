@@ -1085,6 +1085,23 @@ fn check_modules(ids: &[String]) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// a new network is checked on its own; the server checks the whole list again after the edit.
+fn check_network_edit(edit: &crate::lan_edit::Edit) -> Result<(), Invalid> {
+    use crate::lan_edit::Edit;
+    match edit {
+        Edit::Add(network) => {
+            crate::lan_networks::validate(std::slice::from_ref(network), None, true)
+                .into_iter()
+                .next()
+                .map_or(Ok(()), |e| Err(Invalid::new(e.path, e.message)))
+        }
+        Edit::Set { name, .. } | Edit::Remove(name) => named("name", label, name),
+        Edit::LeaseAdd { network, .. } | Edit::LeaseRemove { network, .. } => {
+            named("network", label, network)
+        }
+    }
+}
+
 /// check the arguments of an operation the way the server will, before anything runs. the first
 /// field that is wrong is named.
 pub fn operation(operation: &Operation) -> Result<(), Invalid> {
@@ -1096,6 +1113,7 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         Operation::ChangeInternet { change } => change
             .check(0)
             .map_err(|(field, reason)| Invalid::new(field, reason)),
+        Operation::ChangeNetworks { edit } => check_network_edit(edit),
         Operation::ResetMachine { name } => named("name", machine_name, name),
         Operation::CreateAdmin {
             name,
@@ -1107,6 +1125,17 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             named("password", secret_text, password.expose())?;
             key.as_deref()
                 .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
+        }
+        Operation::SetupFirstAdmin { name, password, .. } => {
+            named("name", login_name, name)?;
+            flag(
+                !matches!(name.as_str(), "root" | "lanlord"),
+                "cannot be created as an administrator account",
+            )
+            .map_err(|reason| invalid("name", reason))?;
+            named("password", secret_text, password.expose())?;
+            flag(!password.expose().is_empty(), "must not be empty")
+                .map_err(|reason| invalid("password", reason))
         }
         Operation::ReadLogon { name } => flag(
             crate::logon::valid_script_name(name),
@@ -1159,6 +1188,7 @@ mod tests {
     };
     use crate::clock::{Change, NtpChange};
     use crate::operations::{Operation, SecretUpdate, UserChange};
+    use crate::rootssh::RootSsh;
     use crate::secret::Secret;
 
     fn table(rule: fn(&str) -> Check, good: &[&str], bad: &[&str]) {
@@ -1890,6 +1920,38 @@ web-proxy:
                 "ssh_key",
             ),
             (
+                Operation::SetupFirstAdmin {
+                    name: "root".into(),
+                    password: password("x"),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "name",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "Alice".into(),
+                    password: password("x"),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "name",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "alice".into(),
+                    password: password(""),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "password",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "alice".into(),
+                    password: password("a\nb"),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "password",
+            ),
+            (
                 Operation::ReadLogon {
                     name: "../x".into(),
                 },
@@ -1958,6 +2020,20 @@ web-proxy:
                 },
                 "topic",
             ),
+            (
+                Operation::ChangeNetworks {
+                    edit: Box::new(crate::lan_edit::Edit::Add(
+                        crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1"),
+                    )),
+                },
+                "networks[0].address",
+            ),
+            (
+                Operation::ChangeNetworks {
+                    edit: Box::new(crate::lan_edit::Edit::Remove("a b".into())),
+                },
+                "name",
+            ),
         ];
         let mut refused = Vec::from(refused);
         refused.push((
@@ -2004,6 +2080,11 @@ web-proxy:
             Operation::SaveDocument {
                 plain: "dns:\n  zone: lab\n".into(),
                 updates: vec![],
+            },
+            Operation::ChangeNetworks {
+                edit: Box::new(crate::lan_edit::Edit::Add(
+                    crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1/24"),
+                )),
             },
         ];
         for operation in fine {

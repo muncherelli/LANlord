@@ -2,23 +2,23 @@
 │ [ External Network ]                                                         │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
 │ │┌ Connection┌ Network Connection Details ───────────── _ □ × ┐───────────┐│ │
-│ ││ Status:   │ Network Connection Details:                    │           ││ │
-│ ││ Interface:│  Property             Value                    │           ││ │
-│ ││ Speed:    │  Description          Virtual Ethernet (veth)  │           ││ │
-│ ││ Address:  │  Physical Address     02-00-00-00-AA-01        │           ││ │
-│ │└───────────│  DHCP Enabled         Yes                      │───────────┘│ │
-│ │┌ Activity ─│  IPv4 Address         192.0.2.10               │───────────┐│ │
-│ ││           │  IPv4 Subnet Mask     255.255.255.0            │           ││ │
-│ ││  Bytes:   │  Lease Obtained       11/18/2026 4:06:40 AM    │           ││ │
-│ ││  Packets: │  Lease Expires        11/19/2026 4:06:40 AM    │           ││ │
-│ │└───────────│  IPv4 Default Gateway 192.0.2.1                │───────────┘│ │
-│ └────────────│  IPv4 DHCP Server     192.0.2.1                │────────────┘ │
-│              │  IPv4 DNS Server      198.51.100.53            │] [ Refresh ] │
-│ ┌ Network int│  IPv6 Address         2001:db8::10/64          │────────────┐ │
-│ │ eth0   192.│  MTU                  1500                     │            │ │
-│ │ eth1   172.│                                      [ Close ] │            │ │
-│ └────────────└────────────────────────────────────────────────┘────────────┘ │
-│ Editing networks comes next. For now you can look at them, and open DNS &    │
-│ DHCP.                                                                        │
-└──────────────────────────────────────────────────────────────────────────────┘
+│ ││ Status:   │ Network Connection Details:                    │ceived     ││ │
+│ ││ Interface:│  Property             Value                    │3,442,071  ││ │
+│ ││ Speed:    │  Description          Virtual Ethernet (veth)  │1,904      ││ │
+│ ││ Address:  │  Physical Address     02-00-00-00-AA-01        │───────────┘│ │
+│ │└───────────│  DHCP Enabled         Yes                      │            │ │
+│ └────────────│  IPv4 Address         192.0.2.10               │────────────┘ │
+│              │  IPv4 Subnet Mask     255.255.255.0            │] [ Refresh ] │
+│              │  Lease Obtained       11/18/2026 4:06:40 AM    │ network... ] │
+│ ┌ Network int│  Lease Expires        11/19/2026 4:06:40 AM    │────────────┐ │
+│ │  eth0   192│  IPv4 Default Gateway 192.0.2.1                │            │ │
+│ │  eth1   172│  IPv4 DHCP Server     192.0.2.1                │            │ │
+│ └────────────│  IPv4 DNS Server      198.51.100.53            │────────────┘ │
+│ up to date   │  IPv6 Address         2001:db8::10/64          │              │
+└──────────────│  MTU                  1500                     │──────────────┘
+   Console     │                                      [ Close ] │
+               └────────────────────────────────────────────────┘
+
+
+
 [ L LANlord ] [ □ Networks ]                                          12:00 PM

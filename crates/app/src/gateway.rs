@@ -12,11 +12,13 @@ use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
 use lanlord_model::identity::{AccountInfo, PasswordReport};
 use lanlord_model::internet::Change as InternetChange;
+use lanlord_model::lan_edit::Edit as NetworkEdit;
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
 use lanlord_model::operations::{Operation, Reply, SecretUpdate, UserChange};
 use lanlord_model::power::{Outcome, Power};
+use lanlord_model::rootssh::{RootSsh, RootSshInfo};
 use lanlord_model::secret::Secret;
 use lanlord_model::server::ServerFacts;
 use lanlord_model::settings::{Document, Settings};
@@ -139,6 +141,14 @@ pub trait Gateway: Send + Sync {
         done(self.call(host, operation, ask)?, "change_internet")
     }
 
+    /// add, change or remove a lanlord network and apply the docker and dns modules.
+    fn change_networks(&self, host: &str, edit: &NetworkEdit, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeNetworks {
+            edit: Box::new(edit.clone()),
+        };
+        done(self.call(host, operation, ask)?, "change_networks")
+    }
+
     /// create an administrator login, in admins and sudo, with an optional ssh key.
     fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {
         let operation = Operation::CreateAdmin {
@@ -148,6 +158,44 @@ pub trait Gateway: Send + Sync {
             passwordless_sudo: new.passwordless_sudo,
         };
         done(self.call(host, operation, ask)?, "create_admin")
+    }
+
+    /// the first-run setup of a gateway with only root: create the first administrator and set
+    /// root's ssh access. the note, when there is one, says that the account was made but the
+    /// ssh setting was not.
+    fn setup_first_admin(
+        &self,
+        host: &str,
+        name: &str,
+        password: &str,
+        root_ssh: RootSsh,
+        ask: AskPassword,
+    ) -> Result<Option<String>> {
+        let operation = Operation::SetupFirstAdmin {
+            name: name.to_string(),
+            password: Secret::new(password),
+            root_ssh,
+        };
+        match self.call(host, operation, ask)? {
+            Reply::SetupDone { note } => Ok(note),
+            other => Err(unexpected("setup_first_admin", other)),
+        }
+    }
+
+    /// how root may sign in over ssh, and whether the server's sshd can be told; asks for nothing.
+    fn root_ssh(&self, host: &str) -> Result<RootSshInfo> {
+        match self.call(host, Operation::RootSshState, &mut never)? {
+            Reply::RootSsh(info) => Ok(info),
+            other => Err(unexpected("root_ssh", other)),
+        }
+    }
+
+    /// set how root may sign in over ssh.
+    fn set_root_ssh(&self, host: &str, access: RootSsh, ask: AskPassword) -> Result<()> {
+        done(
+            self.call(host, Operation::SetRootSsh { access }, ask)?,
+            "set_root_ssh",
+        )
     }
 
     /// the dhcp leases the gateway has handed out.
@@ -508,6 +556,14 @@ mod native {
                 *DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plain.clone());
                 Ok(Reply::Done)
             }
+            Operation::ChangeNetworks { edit } => {
+                let mut saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner());
+                let plain = saved.clone().unwrap_or_else(|| DEMO_SETTINGS.to_string());
+                lanlord_model::lan_edit::edit_settings(&plain, edit).map(|text| {
+                    *saved = Some(text);
+                    Reply::Done
+                })
+            }
             Operation::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
             Operation::ServerFacts => Ok(Reply::Facts(Box::new(server::demo()))),
             Operation::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
@@ -651,7 +707,7 @@ mod fake {
     use super::{
         anyhow, Access, AccountInfo, AskPassword, Change, ClockChange, ClockState, Document,
         Gateway, InterfaceStatus, Internal, Lease, NewAdmin, Operation, Outcome, PasswordReport,
-        Power, Reply, Report, Result, ServerFacts, Settings, Stored, ZoneNow,
+        Power, Reply, Report, Result, RootSsh, RootSshInfo, ServerFacts, Settings, Stored, ZoneNow,
     };
     use lanlord_model::access::{ADMINISTRATORS, USERS};
     use lanlord_model::identity::{LinkInfo, LinkReport, LinkState};
@@ -688,6 +744,8 @@ mod fake {
         pub purge_lines: Mutex<Vec<String>>,
         /// when set, reading the network status fails with this.
         pub network_error: Mutex<Option<String>>,
+        /// when set, a network change is stored and then fails to apply with this reason.
+        pub apply_error: Mutex<Option<String>>,
         /// the signed-in person's profile, changed by `update_profile`.
         pub profile: Mutex<lanlord_model::access::Profile>,
         /// the roles and who has them, changed by `save_access`.
@@ -704,6 +762,8 @@ mod fake {
         pub reads: Mutex<Vec<String>>,
         /// the probe output the doctor answers with.
         pub probe: Mutex<String>,
+        /// how root's ssh access stands, changed by `set_root_ssh`.
+        pub root_ssh: Mutex<RootSshInfo>,
     }
 
     impl Default for Fake {
@@ -732,6 +792,7 @@ mod fake {
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
                 network_error: Mutex::new(None),
+                apply_error: Mutex::new(None),
                 profile: Mutex::new(lanlord_model::access::Profile::default()),
                 access: Mutex::new(Access {
                     members: [
@@ -761,6 +822,10 @@ mod fake {
                     status: vec!["Server: 10.0.0.1 (pool.ntp.org)".into()],
                 }),
                 reads: Mutex::new(Vec::new()),
+                root_ssh: Mutex::new(RootSshInfo {
+                    chosen: None,
+                    dropins: true,
+                }),
                 probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
                     [
@@ -830,6 +895,10 @@ mod fake {
                     self.change_internet(host, &change, ask)?;
                     Reply::Done
                 }
+                Operation::ChangeNetworks { edit } => {
+                    self.change_networks(host, &edit, ask)?;
+                    Reply::Done
+                }
                 Operation::CreateAdmin {
                     name,
                     password,
@@ -843,6 +912,19 @@ mod fake {
                         passwordless_sudo,
                     };
                     self.create_admin(host, &new, ask)?;
+                    Reply::Done
+                }
+                Operation::SetupFirstAdmin {
+                    name,
+                    root_ssh,
+                    password: _,
+                } => {
+                    self.enter(format!("setup {host} {name} root-ssh={root_ssh:?}"), ask)?;
+                    Reply::SetupDone { note: None }
+                }
+                Operation::RootSshState => Reply::RootSsh(self.root_ssh(host)?),
+                Operation::SetRootSsh { access } => {
+                    self.set_root_ssh(host, access, ask)?;
                     Reply::Done
                 }
                 Operation::Leases => Reply::Leases(self.leases(host, ask)?),
@@ -1018,6 +1100,27 @@ mod fake {
             self.enter(format!("internet {host} {}", change.describe()), ask)
         }
 
+        pub fn change_networks(
+            &self,
+            host: &str,
+            edit: &lanlord_model::lan_edit::Edit,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("networks {host} {}", edit.describe()), ask)?;
+            let mut stored = self.stored.lock().unwrap();
+            *stored = lanlord_model::lan_edit::edit_settings(&stored, edit)?;
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("apply {host} [docker,dns]"));
+            match self.apply_error.lock().unwrap().clone() {
+                Some(reason) => Err(anyhow!(
+                    "Saved, but applying failed: {reason}. Fix it and click Apply."
+                )),
+                None => Ok(()),
+            }
+        }
+
         pub fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {
             self.enter(
                 format!(
@@ -1029,6 +1132,20 @@ mod fake {
                 ),
                 ask,
             )
+        }
+
+        pub fn root_ssh(&self, host: &str) -> Result<RootSshInfo> {
+            self.reads.lock().unwrap().push(format!("root-ssh {host}"));
+            match self.fail.lock().unwrap().clone() {
+                Some(message) => Err(anyhow!(message)),
+                None => Ok(self.root_ssh.lock().unwrap().clone()),
+            }
+        }
+
+        pub fn set_root_ssh(&self, host: &str, access: RootSsh, ask: AskPassword) -> Result<()> {
+            self.enter(format!("set-root-ssh {host} {}", access.directive()), ask)?;
+            self.root_ssh.lock().unwrap().chosen = Some(access);
+            Ok(())
         }
 
         pub fn leases(&self, host: &str, ask: AskPassword) -> Result<Vec<Lease>> {
