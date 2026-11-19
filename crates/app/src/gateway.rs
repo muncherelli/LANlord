@@ -11,6 +11,7 @@ use lanlord_model::access::{Access, Profile};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
 use lanlord_model::identity::{AccountInfo, PasswordReport};
+use lanlord_model::internet::Change as InternetChange;
 use lanlord_model::lan_edit::Edit as NetworkEdit;
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
@@ -129,6 +130,15 @@ pub trait Gateway: Send + Sync {
             name: name.to_string(),
         };
         done(self.call(host, operation, ask)?, "reset_machine")
+    }
+
+    /// switch internet access on or off for a network, or allow or deny one computer, and apply
+    /// the docker and dns modules.
+    fn change_internet(&self, host: &str, change: &InternetChange, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeInternet {
+            change: change.clone(),
+        };
+        done(self.call(host, operation, ask)?, "change_internet")
     }
 
     /// add, change or remove a lanlord network and apply the docker and dns modules.
@@ -886,7 +896,7 @@ mod fake {
                     Reply::Done
                 }
                 Operation::LoadDocument => Reply::Document(self.load_document(host, ask)?),
-                Operation::MoveSecrets { .. } => Reply::Done,
+                Operation::MoveSecrets { .. } | Operation::MigrateStored { .. } => Reply::Done,
                 Operation::SaveDocument { plain, updates } => {
                     let updates: Vec<(String, String)> = updates
                         .iter()
@@ -903,6 +913,10 @@ mod fake {
                 }
                 Operation::ResetMachine { name } => {
                     self.reset_machine(host, &name, ask)?;
+                    Reply::Done
+                }
+                Operation::ChangeInternet { change } => {
+                    self.change_internet(host, &change, ask)?;
                     Reply::Done
                 }
                 Operation::ChangeNetworks { edit } => {
@@ -1121,6 +1135,15 @@ mod fake {
 
         pub fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
             self.enter(format!("reset {host} {name}"), ask)
+        }
+
+        pub fn change_internet(
+            &self,
+            host: &str,
+            change: &lanlord_model::internet::Change,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("internet {host} {}", change.describe()), ask)
         }
 
         pub fn change_networks(
@@ -1432,6 +1455,25 @@ mod fake {
         assert_eq!(fake.calls().len(), 18, "{:?}", fake.calls());
     }
 
+    #[test]
+    fn an_internet_change_goes_through_the_backend_as_one_operation() {
+        let fake = Fake::default();
+        let gateway: &dyn Gateway = &fake;
+        let mut ask = |_: &str| Ok(String::new());
+        let change = lanlord_model::internet::Change::Deny {
+            network: "lab".into(),
+            mac: "02:00:00:00:00:01".into(),
+        };
+        gateway.change_internet("a@b", &change, &mut ask).unwrap();
+        let operation = Operation::ChangeInternet { change };
+        assert_eq!(
+            gateway.call("a@b", operation, &mut ask).unwrap(),
+            Reply::Done
+        );
+        assert_eq!(fake.calls().len(), 2, "{:?}", fake.calls());
+        assert!(fake.calls()[0].starts_with("internet a@b"));
+    }
+
     /// a backend that answers every operation with the wrong kind of reply.
     #[cfg(test)]
     struct Confused;
@@ -1459,6 +1501,11 @@ mod fake {
         assert!(gateway.logon_scripts(h, &mut ask).is_err());
         assert!(gateway.read_logon(h, "x", &mut ask).is_err());
         assert!(gateway.run(h, &[]).is_err());
+        let internet = lanlord_model::internet::Change::Network {
+            network: "lab".into(),
+            on: true,
+        };
+        assert!(gateway.change_internet(h, &internet, &mut ask).is_ok());
         assert!(gateway.power(h, Power::Reboot, &mut ask).is_err());
         assert!(gateway.server_facts(h, &mut ask).is_err());
         assert!(gateway.purge_preview(h, false, &mut ask).is_err());

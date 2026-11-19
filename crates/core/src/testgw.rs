@@ -15,6 +15,11 @@ pub fn identity(name: &str) -> age::x25519::Identity {
     identity
 }
 
+/// `text` without the two version lines a stored settings file starts with.
+pub fn unstamped(text: &str) -> String {
+    lanlord_model::format::without_stamp(text)
+}
+
 pub fn no_password(_: &str) -> Result<String> {
     bail!("no password expected")
 }
@@ -40,7 +45,7 @@ impl Gateway {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let payload = r#"printf '%s\n' "$input" | sed -n '/^base64 -d/,/^LANLORD_PAYLOAD$/p' | sed '1d;$d' | base64 -d"#;
-        let script = r#"D='@DIR@'
+        let script = r##"D='@DIR@'
 for a; do last=$a; done
 case "$last" in
   "id -un") echo tester ;;
@@ -57,11 +62,17 @@ case "$last" in
   *)
 input=$(cat)
 case "$input" in
-  *"tee /opt/lanlord/config/settings.yml"*) @PAYLOAD@ > "$D/yml" ;;
-  *"tee /opt/lanlord/config/settings.age"*) @PAYLOAD@ > "$D/age" ;;
+  *"tr ',' '\\n' | sed '/^$/d' | sort"*) if [ -f "$D/fail-admins" ]; then echo "no getent" >&2; exit 1; fi ;;
+  "# stored restore"*) if [ -f "$D/fail-restore" ]; then echo "read-only" >&2; exit 1; fi
+    printf '%s\n' "$input" | sed "s#/opt/lanlord/config/settings.yml#$D/yml#g; s#/opt/lanlord/config/settings.age#$D/age#g" | sh ;;
+  "# stored backup"*) printf '%s\n' "$input" | sed "s#/opt/lanlord/config/settings.yml#$D/yml#g; s#/opt/lanlord/config/settings.age#$D/age#g" | sh ;;
+  *"> /opt/lanlord/config/settings.yml.tmp"*) @PAYLOAD@ > "$D/yml" ;;
+  *"> /opt/lanlord/config/settings.age.tmp"*)
+    if [ -f "$D/fail-age" ]; then echo "disk full" >&2; exit 1; fi
+    @PAYLOAD@ > "$D/age" ;;
   *"base64 < /opt/lanlord/config/settings.age"*) if [ -f "$D/age" ]; then base64 < "$D/age"; fi ;;
 esac ;;
-esac"#
+esac"##
             .replace("@INSTALLED@", if installed { "yes" } else { "no" })
             .replace("@DIR@", &dir.display().to_string())
             .replace("@PAYLOAD@", payload);
@@ -71,11 +82,22 @@ esac"#
         }
     }
 
+    /// the plain settings as stored, without the version stamp.
     pub fn plain(&self) -> Option<String> {
-        std::fs::read_to_string(self.dir.join("yml")).ok()
+        std::fs::read_to_string(self.dir.join("yml"))
+            .ok()
+            .map(|text| unstamped(&text))
     }
 
     pub fn sealed(&self, id: &age::x25519::Identity) -> Option<String> {
+        let bytes = std::fs::read(self.dir.join("age")).ok()?;
+        Some(unstamped(
+            &String::from_utf8(crypto::decrypt(id, &bytes).unwrap()).unwrap(),
+        ))
+    }
+
+    /// the sealed text as stored, version stamp included.
+    pub fn sealed_raw(&self, id: &age::x25519::Identity) -> Option<String> {
         let bytes = std::fs::read(self.dir.join("age")).ok()?;
         Some(String::from_utf8(crypto::decrypt(id, &bytes).unwrap()).unwrap())
     }

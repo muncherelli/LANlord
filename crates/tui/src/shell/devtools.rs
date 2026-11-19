@@ -235,12 +235,12 @@ impl Shell {
                     }
                 }
             }
-            // inside the window, on its last row, where the frame stays whole
+            // on the top border, so it never covers a status bar at the bottom
             let size = format!("{}: {}x{}", win.target.id(), rect.width, rect.height);
             text(
                 buf,
                 rect.x + 2,
-                rect.bottom().saturating_sub(2).max(rect.y),
+                rect.y,
                 rect.width.saturating_sub(4),
                 &size,
                 bold(red),

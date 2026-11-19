@@ -34,6 +34,8 @@ const FILES: &[(&str, &str)] = &[
     playbook!("filter_plugins/lanlord.py"),
     playbook!("callback_plugins/lanlord_progress.py"),
     playbook!("docker/firewall.nft.j2"),
+    playbook!("docker/sysctl.conf.j2"),
+    playbook!("docker/internet-elements.nft.j2"),
     playbook!("replace-container.yml"),
     playbook!("webui-login.yml"),
     playbook!("dns/dnsmasq.conf.j2"),

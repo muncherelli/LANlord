@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- internet access, off by default: per network (`lanlord networks HOST set NAME --internet on`) or per computer by MAC address, for good or for a while (`lanlord networks HOST internet NAME allow MAC --for 1h`); ended grants stop on their own, NAT and forwarding live in the lanlord firewall table, and dnsmasq hands the gateway out as the router; any access on a network turns on upstream DNS for every computer on it, so computers that are not allowed out can still resolve names and could tunnel over DNS
+- every stored file now carries a format version (`settings.yml`, `settings.age`, and the client's `hosts`, `last`, `prefs` and launcher manifest); a file with no version is version 1, and older formats are brought up to date in memory when they are read
+- `lanlord upgrade` migrates the stored files once on the gateway, keeping a copy of each old file (`<file>.v<N>.<timestamp>.bak`) and putting them back if the migration fails and the upgrade is rolled back
+- a file written by a newer LANlord is refused with "written by LANlord X.Y (format N); upgrade LANlord to use it" and is never overwritten; docs/stored-formats.md says how to change a format and how to go back to an older LANlord
+- the settings format is now 4: networks may carry `internet` and `internet_allow`, and an older LANlord refuses a file in this format instead of dropping the grants when it saves
 - the Networks window adds, changes and removes LANlord networks (New network..., the Properties of a network, and a click on an unused card in the interface list), like `lanlord networks add`, `set` and `remove`; the operations service has a `change_networks` operation that needs manage on Network
 - first-run setup for root in the web UI: while no administrator other than root exists, root's password signs in to a full-screen setup that creates the first administrator account and sets root's ssh access (one of the three levels, nothing preselected), and nothing else; once another administrator exists root is refused as before
 - "Root ssh access" setting (allowed, keys only, off) in My Server and in the first-run setup, applied as an sshd drop-in that is checked with `sshd -t` and rolled back if sshd refuses it; the first-run setup refuses "off" when sshd takes no ssh passwords, since the new account has no key, and only an administrator changes the setting later
@@ -20,11 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - the desktop stops redrawing when nothing changes: no timer on the sign-in screen, one frame a minute for the taskbar clock, no blinking text cursor, icons uploaded once as textures, the look set once, and the browser build capped at 30 frames a second without dithering
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers
+- the LANlord menu no longer has "Quit LANlord"; the terminal interface still quits with Ctrl+Q, which its menu notes on the last row, and the sign-in box still shuts down
 
 ### Fixed
 
 - first-run setup: the root ssh label is no longer clipped, the page no longer shifts when a choice is picked (every choice is described at all times), and "keys only" explains that the administrator needs an ssh key to use ssh
 - status bars wrap a long message instead of cutting it off, so a refused and rolled back root ssh change is shown whole
+- the web menu no longer starts with "Server: local", which only made sense where a server can be chosen
+- a window's status bar stays on its bottom edge, in every window and below contents that scroll, instead of floating up to the end of its contents or scrolling away
+- every check on My Server's Compatibility tab says what it is for, along with the components that use it
+- the lease times of a network connection's details show the gateway's UTC offset, or UTC when its clock cannot be read
 - the sign-in box no longer fills its fields from the "This server" target, and the last sign-in is written whole and private (mode 0600) with write errors logged
 
 ## [0.1.3] - 2026-11-19

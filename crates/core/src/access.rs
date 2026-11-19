@@ -333,12 +333,24 @@ mod tests {
 
     #[test]
     fn changing_the_networks_needs_manage_on_network() {
-        let change = Operation::ChangeNetworks {
+        let internet = Operation::ChangeInternet {
+            change: lanlord_model::internet::Change::Network {
+                network: "lab".into(),
+                on: true,
+            },
+        };
+        let edit = Operation::ChangeNetworks {
             edit: Box::new(lanlord_model::lan_edit::Edit::Remove("lab".into())),
         };
-        assert!(authorize(&grants(ADMINISTRATORS), &change).is_ok());
-        assert!(authorize(&grants(OPERATORS), &change).is_ok());
-        let denied = authorize(&grants(USERS), &change).unwrap_err();
+        for change in [internet, edit] {
+            changing_the_networks_is_checked(&change);
+        }
+    }
+
+    fn changing_the_networks_is_checked(change: &Operation) {
+        assert!(authorize(&grants(ADMINISTRATORS), change).is_ok());
+        assert!(authorize(&grants(OPERATORS), change).is_ok());
+        let denied = authorize(&grants(USERS), change).unwrap_err();
         assert_eq!(denied.area, Area::Network);
         // looking at the networks is not enough to change them
         let mut viewer = Access::default();
@@ -347,7 +359,7 @@ mod tests {
             grants: [(Area::Network, Level::View)].into_iter().collect(),
         });
         viewer.members.insert("u".into(), vec!["Viewers".into()]);
-        assert!(authorize(&viewer.grants("u", false), &change).is_err());
+        assert!(authorize(&viewer.grants("u", false), change).is_err());
         assert!(authorize(&viewer.grants("u", false), &Operation::Leases).is_ok());
     }
 

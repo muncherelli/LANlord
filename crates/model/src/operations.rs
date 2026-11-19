@@ -15,6 +15,7 @@ use crate::access::{Access, Area, Need, Profile};
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use crate::doctor::Report;
 use crate::identity::{AccountInfo, PasswordReport};
+use crate::internet::Change as InternetChange;
 use crate::lan_edit::Edit as NetworkEdit;
 use crate::leases::Lease;
 use crate::login_text::LoginText;
@@ -46,6 +47,10 @@ pub enum Operation {
     /// them. `key` is that client's old key file; it is used for this one request and dropped,
     /// and the client stops using it afterwards.
     MoveSecrets { key: Secret },
+    /// bring the stored settings files up to the format this lanlord writes (an upgrade does
+    /// this once). each file that changes is first copied beside itself under `stamp`, the
+    /// gateway's time as `20260101T120000Z`. the answer says what was done.
+    MigrateStored { stamp: String },
     /// the internal interface and address, read without sudo.
     Probe,
     /// change logins and apply the nt4-domain module.
@@ -59,6 +64,9 @@ pub enum Operation {
         ssh_key: Option<String>,
         passwordless_sudo: bool,
     },
+    /// switch internet access on or off for a network, or allow or deny one computer, and apply
+    /// the docker and dns modules.
+    ChangeInternet { change: InternetChange },
     /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
     /// docker and dns modules.
     ChangeNetworks { edit: Box<NetworkEdit> },
@@ -140,7 +148,7 @@ impl Operation {
     /// operation does not compile until it says what it needs.
     pub fn requires(&self) -> Need {
         match self {
-            Operation::Bootstrap => Need::manage(Area::Updates),
+            Operation::Bootstrap | Operation::MigrateStored { .. } => Need::manage(Area::Updates),
             Operation::Apply { .. } => Need::manage(Area::Services),
             Operation::LoadDocument => Need::view(Area::Services),
             Operation::SaveDocument { .. } | Operation::MoveSecrets { .. } => {
@@ -150,6 +158,7 @@ impl Operation {
             Operation::ChangeUsers { .. } => Need::manage(Area::Domain),
             Operation::ResetMachine { .. } => Need::manage(Area::Domain),
             Operation::CreateAdmin { .. } => Need::manage(Area::Users),
+            Operation::ChangeInternet { .. } => Need::manage(Area::Network),
             Operation::ChangeNetworks { .. } => Need::manage(Area::Network),
             // not given to any role: the server only runs it for root's setup session
             Operation::SetupFirstAdmin { .. } => Need::manage(Area::Users),
@@ -214,6 +223,8 @@ impl Operation {
                 | Operation::LoadDocument
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
+                | Operation::ChangeInternet { .. }
+                | Operation::MigrateStored { .. }
                 | Operation::ChangeNetworks { .. }
                 | Operation::ChangeUsers { .. }
                 | Operation::ClockApply { .. }
@@ -415,6 +426,9 @@ mod tests {
             Operation::MoveSecrets {
                 key: Secret::new("AGE-SECRET-KEY-s3cret"),
             },
+            Operation::MigrateStored {
+                stamp: "20260101T120000Z".into(),
+            },
             Operation::Probe,
             Operation::ChangeUsers {
                 changes: vec![
@@ -522,8 +536,76 @@ mod tests {
             Operation::Subscribe {
                 topic: "clock".into(),
             },
+            Operation::ChangeInternet {
+                change: InternetChange::Network {
+                    network: "lab".into(),
+                    on: true,
+                },
+            },
+            Operation::ChangeNetworks {
+                edit: Box::new(NetworkEdit::Remove("lab".into())),
+            },
         ]
     }
+
+    /// the place of each variant in the enum. the match has no catch-all, so adding a variant
+    /// stops this compiling until it is listed here, and `every_operation` must then hold it.
+    fn slot(operation: &Operation) -> usize {
+        match operation {
+            Operation::Bootstrap => 0,
+            Operation::Apply { .. } => 1,
+            Operation::LoadDocument => 2,
+            Operation::SaveDocument { .. } => 3,
+            Operation::MoveSecrets { .. } => 4,
+            Operation::MigrateStored { .. } => 5,
+            Operation::Probe => 6,
+            Operation::ChangeUsers { .. } => 7,
+            Operation::ResetMachine { .. } => 8,
+            Operation::CreateAdmin { .. } => 9,
+            Operation::ChangeInternet { .. } => 10,
+            Operation::ChangeNetworks { .. } => 11,
+            Operation::SetupFirstAdmin { .. } => 12,
+            Operation::RootSshState => 13,
+            Operation::SetRootSsh { .. } => 14,
+            Operation::Leases => 15,
+            Operation::LogonScripts => 16,
+            Operation::ReadLogon { .. } => 17,
+            Operation::ReadGeneratedLogon => 18,
+            Operation::WriteLogon { .. } => 19,
+            Operation::Run { .. } => 20,
+            Operation::Power { .. } => 21,
+            Operation::ServerFacts => 22,
+            Operation::NetworkStatus => 23,
+            Operation::PurgePreview { .. } => 24,
+            Operation::Purge { .. } => 25,
+            Operation::ClockState => 26,
+            Operation::ClockZones => 27,
+            Operation::ClockZoneNow { .. } => 28,
+            Operation::ClockApply { .. } => 29,
+            Operation::ClockUpdateNow => 30,
+            Operation::Doctor => 31,
+            Operation::AccountInfo => 32,
+            Operation::ChangePassword { .. } => 33,
+            Operation::UpdateProfile { .. } => 34,
+            Operation::ResetPassword { .. } => 35,
+            Operation::LoadAccess => 36,
+            Operation::SaveAccess { .. } => 37,
+            Operation::Subscribe { .. } => 38,
+            Operation::MyKeys => 39,
+            Operation::AddMyKey { .. } => 40,
+            Operation::RemoveMyKey { .. } => 41,
+        }
+    }
+
+    #[test]
+    fn every_variant_is_in_every_operation() {
+        let mut slots: Vec<usize> = every_operation().iter().map(slot).collect();
+        slots.sort_unstable();
+        slots.dedup();
+        assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
+    }
+
+    const VARIANTS: usize = 42;
 
     #[test]
     fn every_operation_says_what_it_needs() {
@@ -533,6 +615,16 @@ mod tests {
             let _ = operation.requires();
         }
         assert_eq!(Operation::Leases.requires(), Need::view(Area::Network));
+        assert_eq!(
+            Operation::ChangeInternet {
+                change: InternetChange::Network {
+                    network: "lab".into(),
+                    on: true
+                }
+            }
+            .requires(),
+            Need::manage(Area::Network)
+        );
         assert_eq!(
             Operation::ChangeNetworks {
                 edit: Box::new(NetworkEdit::Remove("lab".into()))
@@ -608,7 +700,7 @@ mod tests {
     fn every_operation_survives_the_wire() {
         let operations = every_operation();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(operations.len(), 39);
+        assert_eq!(operations.len(), VARIANTS);
         for operation in &operations {
             round_trip(operation);
         }

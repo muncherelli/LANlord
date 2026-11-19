@@ -666,8 +666,19 @@ impl<'a> Painter<'a> {
     pub fn draw<M>(&mut self, nodes: &[Node<M>], area: Rect, buf: &mut Buffer, path: &[usize]) {
         let heights = self.stack_heights(nodes, area.width, Some(area.height), path);
         let before = self.enter_labels(nodes);
+        // a status bar that ends the window sits on its bottom row: the rows nothing took go
+        // above the bar and the gap before it
+        let pinned = match nodes {
+            [.., Node::Gap(_), Node::Status { .. }] => nodes.len().checked_sub(2),
+            [.., Node::Status { .. }] => nodes.len().checked_sub(1),
+            _ => None,
+        };
+        let spare = area.height.saturating_sub(heights.iter().sum::<u16>());
         let mut y = area.y;
         for (i, (node, height)) in nodes.iter().zip(heights).enumerate() {
+            if pinned == Some(i) {
+                y = y.saturating_add(spare);
+            }
             let rect = Rect::new(area.x, y, area.width, height);
             self.node(node, rect, buf, &child(path, i));
             y = y.saturating_add(height);
@@ -2000,6 +2011,22 @@ mod tests {
         assert!(text.contains("alice") && text.contains("bob"), "{text}");
         assert!(text.contains("Enabled"), "{text}");
         assert!(text.contains("OK") && text.contains("Cancel"), "{text}");
+    }
+
+    #[test]
+    fn a_status_bar_sits_on_the_bottom_row_of_the_window() {
+        let nodes: Vec<Node<Msg>> = vec![
+            Node::Text("body".into()),
+            Node::Gap(6.0),
+            Node::Status {
+                text: "ready".into(),
+                error: false,
+            },
+        ];
+        let (buf, _) = paint(&nodes, &ViewState::default());
+        let all = lines(&buf);
+        assert!(all[15].contains("ready"), "{all:?}");
+        assert!(all[0].contains("body"), "{all:?}");
     }
 
     #[test]

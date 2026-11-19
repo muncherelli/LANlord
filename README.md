@@ -29,6 +29,8 @@ LANlord is early software. The pieces below work today, but expect rough edges.
 
 The desktop window's LANlord menu switches between saved servers, and reboots or shuts down the selected server after asking. The taskbar always names the server that actions target.
 
+Internet access is off on every network until you turn it on. `lanlord networks HOST set NAME --internet on|off` switches it for a whole network. For single computers on a network that is otherwise off, `lanlord networks HOST internet NAME allow MAC [--for 1h | --until 'YYYY-MM-DD HH:MM'] [--name LABEL]` lets one MAC address out, for good or for a while, `deny MAC` takes it back and `list` shows who is allowed. A time-limited grant stops working by itself when it ends, with no apply, and a timer then removes it from the settings. Traffic leaves through the gateway's own network, is translated (NAT) there, and the same firewall keeps the networks from reaching each other. Where Docker's FORWARD policy would block it, the Docker module sets `ip-forward-no-drop` in `daemon.json`. dnsmasq hands the gateway out as the router, to the whole network or only to the allowed computers. Note that any access on a network, even for one computer, makes the DNS on that network forward other names to the gateway's resolvers for every computer on it, because dnsmasq cannot choose per computer. Computers that are not allowed out can therefore still resolve names, and could tunnel data over DNS. Open flows of a computer that is denied, whose grant ended, or whose network is switched off are cut at the next apply or prune when `conntrack` is installed, and grants come back after a reboot only while they have not ended. The Networks window shows the state read-only.
+
 Planned: Let's Encrypt certificates through Cloudflare, a Cloudflare tunnel, running commands on NT4 machines, links for remote retro machines, and the web interface with PAM login.
 
 ## Quick start
@@ -115,6 +117,8 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+A change to a file LANlord stores adds a migration step and a fixture test; see [`docs/stored-formats.md`](docs/stored-formats.md).
 
 Shell code is linted by `tools/lint-shell.sh` (shellcheck, actionlint, and a check that every `case` has a `*)` branch); to run it before every push (it lints the working tree, not the commits being pushed), use `git config core.hooksPath .githooks`.
 

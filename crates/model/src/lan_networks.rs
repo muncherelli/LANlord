@@ -10,6 +10,8 @@ use std::net::Ipv4Addr;
 use anyhow::{anyhow, bail, Result};
 use serde_yaml_ng::{Mapping, Value};
 
+use crate::format::Context;
+use crate::internet::Internet;
 use crate::settings::{valid_label, Dhcp, DnsSettings, Record, Settings, Subnet, ValidationError};
 
 /// what the first network is called when it comes from the older single-network settings.
@@ -33,6 +35,9 @@ pub struct LanNetwork {
     pub records: Vec<Record>,
     /// the dhcp server; none means this network gets no dhcp.
     pub dhcp: Option<Dhcp>,
+    /// who may go out to the internet; nobody by default.
+    #[serde(default)]
+    pub internet: Internet,
 }
 
 impl LanNetwork {
@@ -45,6 +50,7 @@ impl LanNetwork {
             zone: name.to_ascii_lowercase(),
             records: Vec::new(),
             dhcp: None,
+            internet: Internet::default(),
         }
     }
 
@@ -131,6 +137,7 @@ fn legacy(settings: &Settings) -> Result<Option<LanNetwork>> {
         zone: dns.zone,
         records: dns.records,
         dhcp: dns.dhcp,
+        internet: Internet::default(),
     }))
 }
 
@@ -171,6 +178,7 @@ fn parse_network(item: &Mapping, index: usize) -> Result<LanNetwork> {
         zone,
         records: parsed.records,
         dhcp: parsed.dhcp,
+        internet: Internet::from_entry(item, &path)?,
         name,
     })
 }
@@ -213,6 +221,19 @@ pub fn read(settings: &Settings) -> Result<Networks> {
     }
 }
 
+/// format step 1 to 2: the older single network becomes a `networks:` list. a network that does
+/// not say its interface and address yet stays as it is (the playbooks find them), and so does
+/// anything that cannot be read, so that an existing install behaves as it did.
+pub fn migrate_legacy(settings: &mut Settings, _: &Context) -> Result<()> {
+    let Ok(Networks { list, legacy: true }) = read(settings) else {
+        return Ok(());
+    };
+    if validate(&list, None, true).is_empty() {
+        write(settings, &list);
+    }
+    Ok(())
+}
+
 fn network_value(network: &LanNetwork) -> Value {
     let mut map = Mapping::new();
     map.insert(key("name"), key(&network.name));
@@ -221,6 +242,7 @@ fn network_value(network: &LanNetwork) -> Value {
     if let Some(mtu) = network.mtu {
         map.insert(key("mtu"), Value::Number(mtu.into()));
     }
+    network.internet.put_in(&mut map);
     let mut holder = Settings::empty();
     DnsSettings {
         zone: network.zone.clone(),
@@ -275,6 +297,7 @@ pub fn validate(
         errors.extend(seen.interface_error(network, &path, external, complete));
         errors.extend(mtu_error(network, &path));
         errors.extend(seen.zone_error(network, &path));
+        errors.extend(crate::internet::errors(network, &path));
         if network.address.is_empty() && !complete {
             continue;
         }

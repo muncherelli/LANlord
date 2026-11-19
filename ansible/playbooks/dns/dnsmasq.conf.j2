@@ -1,6 +1,12 @@
 # written by lanlord for the network {{ net.name }}; changes here are overwritten
+{% if net.internet_any %}
+# someone on this network may go out to the internet, so names outside the zone are forwarded to
+# the gateway's own resolvers (dnsmasq cannot choose by client, so every client here gets them);
+# the zone below stays answered here and is never forwarded
+{% else %}
 # local names only: nothing is ever resolved outside the zone
 no-resolv
+{% endif %}
 domain-needed
 bogus-priv
 local=/{{ net.zone }}/
@@ -28,14 +34,27 @@ host-record={{ record.name }}.{{ net.zone }},{{ record.address }}
 {% endfor %}
 {% if net.dhcp %}
 
+{% if net.internet %}
+# internet for the whole network: the gateway is the router for every client
+{% elif net.internet_macs %}
+# internet for some computers: only they get the gateway as router, everyone else none
+{% else %}
 # dhcp without a router: the gateway is not a router for these clients
+{% endif %}
 dhcp-authoritative
 no-dhcp-interface={{ host_interface }}
 {% for other in dns_others %}
 no-dhcp-interface={{ other }}
 {% endfor %}
 dhcp-range={{ net.dhcp.range[0] }},{{ net.dhcp.range[1] }},{{ net.netmask }},{{ net.dhcp.lease }}
+{% if net.internet %}
+dhcp-option=3,{{ net.ip }}
+{% elif net.internet_macs %}
+dhcp-option=tag:!inet,3
+dhcp-option=tag:inet,3,{{ net.ip }}
+{% else %}
 dhcp-option=3
+{% endif %}
 dhcp-option=6,{{ net.ip }}
 dhcp-option=15,{{ net.zone }}
 dhcp-option=44,{{ net.ip }}
@@ -45,6 +64,14 @@ dhcp-option=42,{{ net.ip }}
 {% endif %}
 dhcp-option=46,8
 {% for host in net.dhcp.hosts %}
-dhcp-host={{ host.mac | lower }},{{ host.address }},{{ host.name }}
+dhcp-host={{ host.mac | lower }},{{ host.address }},{{ host.name }}{% if not net.internet and host.mac | lower in net.internet_macs %},set:inet{% endif %}
+
 {% endfor %}
+{% if not net.internet %}
+{% for mac in net.internet_macs %}
+{% if mac not in (net.dhcp.hosts | map(attribute='mac') | list) %}
+dhcp-host={{ mac }},set:inet
+{% endif %}
+{% endfor %}
+{% endif %}
 {% endif %}
