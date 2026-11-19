@@ -33,7 +33,7 @@ use anyhow::{bail, Result};
 use lanlord_core::access::{Caller, Denied, Refused};
 use lanlord_core::apply::ApplyEvent;
 use lanlord_core::log::{self, Kind};
-use lanlord_core::operations::{execute_in, login_uids, Operation, Reply, Response};
+use lanlord_core::operations::{execute_in, execute_setup, login_uids, Operation, Reply, Response};
 use lanlord_core::settings::{login_text_with, LoginText};
 use lanlord_core::ssh::Session;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -389,7 +389,14 @@ fn system_answer(line: &[u8], emit: Emit) -> Response {
         &|caller, operation| {
             let mut ask =
                 |_: &str| -> Result<String> { bail!("no sudo prompt: the service is root") };
-            let mut run = || execute_in(&session, "localhost", caller, operation, &mut ask);
+            // root's web session is the first-run setup and nothing else, whatever roles root has
+            let mut run = || {
+                if caller.user == "root" {
+                    execute_setup(&session, "localhost", operation, &mut ask)
+                } else {
+                    execute_in(&session, "localhost", caller, operation, &mut ask)
+                }
+            };
             single_apply(&APPLY, operation, || match operation {
                 Operation::Apply { .. } => with_events(emit, &mut run),
                 _ => run(),

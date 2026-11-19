@@ -57,11 +57,21 @@ pub fn save_last(path: &Path, target: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    private_file()
+    // a temp file next to it, then a rename: a crash never leaves half a line, and the file is
+    // private from the first byte
+    let last = last_path(path);
+    let temp = last.with_file_name(format!(".last.{}", std::process::id()));
+    let _ = fs::remove_file(&temp);
+    let written = private_file()
         .write(true)
         .truncate(true)
-        .open(last_path(path))?
-        .write_all(format!("{target}\n").as_bytes())
+        .open(&temp)
+        .and_then(|mut file| file.write_all(format!("{target}\n").as_bytes()))
+        .and_then(|()| fs::rename(&temp, &last));
+    if written.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    written
 }
 
 /// drop `host` from the file, keeping comments and the other hosts.
@@ -121,6 +131,28 @@ mod tests {
             Some("me@this-server.localhost")
         );
         assert!(load(&path).is_empty());
+        cleanup(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_last_sign_in_is_replaced_whole_privately_and_leaves_nothing_behind() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp("last-private");
+        save_last(&path, "me@gw").unwrap();
+        save_last(&path, "me@other").unwrap();
+        let last = last_path(&path);
+        assert_eq!(fs::read_to_string(&last).unwrap(), "me@other\n");
+        assert_eq!(
+            fs::metadata(&last).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.starts_with(".last.")), "{names:?}");
         cleanup(&path);
     }
 

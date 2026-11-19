@@ -1104,6 +1104,17 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             key.as_deref()
                 .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
         }
+        Operation::SetupFirstAdmin { name, password, .. } => {
+            named("name", login_name, name)?;
+            flag(
+                !matches!(name.as_str(), "root" | "lanlord"),
+                "cannot be created as an administrator account",
+            )
+            .map_err(|reason| invalid("name", reason))?;
+            named("password", secret_text, password.expose())?;
+            flag(!password.expose().is_empty(), "must not be empty")
+                .map_err(|reason| invalid("password", reason))
+        }
         Operation::ReadLogon { name } => flag(
             crate::logon::valid_script_name(name),
             "is not a script name",
@@ -1155,6 +1166,7 @@ mod tests {
     };
     use crate::clock::{Change, NtpChange};
     use crate::operations::{Operation, SecretUpdate, UserChange};
+    use crate::rootssh::RootSsh;
     use crate::secret::Secret;
 
     fn table(rule: fn(&str) -> Check, good: &[&str], bad: &[&str]) {
@@ -1884,6 +1896,38 @@ web-proxy:
                     passwordless_sudo: false,
                 },
                 "ssh_key",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "root".into(),
+                    password: password("x"),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "name",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "Alice".into(),
+                    password: password("x"),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "name",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "alice".into(),
+                    password: password(""),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "password",
+            ),
+            (
+                Operation::SetupFirstAdmin {
+                    name: "alice".into(),
+                    password: password("a\nb"),
+                    root_ssh: RootSsh::KeysOnly,
+                },
+                "password",
             ),
             (
                 Operation::ReadLogon {
