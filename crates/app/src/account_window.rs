@@ -268,7 +268,7 @@ impl AccountWindow {
             Node::Gap(4.0),
             Node::Toolbar(vec![Button::new(
                 "Change Password...",
-                idle && self.form.is_none(),
+                !self.remote.busy() && !self.outcome.busy() && self.form.is_none(),
                 Msg::ChangePassword,
             )]),
         ];
