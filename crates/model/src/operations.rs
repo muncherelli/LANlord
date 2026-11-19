@@ -59,12 +59,12 @@ pub enum Operation {
         passwordless_sudo: bool,
     },
     /// first-run setup, for root's web session while no other administrator exists: create the
-    /// administrator `name` (in admins and sudo) and, when `root_ssh` is given, set root's ssh
-    /// access. refused once an administrator other than root exists.
+    /// administrator `name` (in admins and sudo) and set root's ssh
+    /// access, which must be chosen. refused once an administrator other than root exists.
     SetupFirstAdmin {
         name: String,
         password: Secret,
-        root_ssh: Option<RootSsh>,
+        root_ssh: RootSsh,
     },
     /// how root may sign in over ssh: the level lanlord set, if any.
     RootSshState,
@@ -140,7 +140,8 @@ impl Operation {
             // not given to any role: the server only runs it for root's setup session
             Operation::SetupFirstAdmin { .. } => Need::manage(Area::Users),
             Operation::RootSshState => Need::view(Area::Users),
-            Operation::SetRootSsh { .. } => Need::manage(Area::Users),
+            // changes what the whole server's sshd allows: administrators only
+            Operation::SetRootSsh { .. } => Need::Admin,
             Operation::Leases => Need::view(Area::Network),
             Operation::LogonScripts
             | Operation::ReadLogon { .. }
@@ -426,7 +427,7 @@ mod tests {
             Operation::SetupFirstAdmin {
                 name: "admin".into(),
                 password: Secret::new("pw"),
-                root_ssh: Some(RootSsh::KeysOnly),
+                root_ssh: RootSsh::KeysOnly,
             },
             Operation::RootSshState,
             Operation::SetRootSsh {
@@ -514,6 +515,13 @@ mod tests {
             Need::Area(Area::Updates, Level::Manage)
         );
         assert_eq!(Operation::AccountInfo.requires(), Need::SelfOnly);
+        assert_eq!(
+            Operation::SetRootSsh {
+                access: crate::rootssh::RootSsh::Off
+            }
+            .requires(),
+            Need::Admin
+        );
         let subscription = |t: &str| Operation::Subscribe { topic: t.into() }.requires();
         assert_eq!(subscription(topic::MONITOR), Need::view(Area::Status));
         assert_eq!(subscription(topic::PROCS), Need::view(Area::Status));

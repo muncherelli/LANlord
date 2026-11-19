@@ -41,6 +41,11 @@ refused for that session by the web UI, and the operations service refuses every
 for root as well. When the setup is done the session ends and the person signs in as the new
 account.
 
+- Only the name `root` is left out of the count of administrators, so another account with uid 0
+  neither gets the setup nor counts; a passwd database that cannot be read is an error, never an
+  empty group.
+- "Root ssh off" is refused in the setup when sshd takes no ssh passwords: the new account has no
+  key yet, so no one could sign in over ssh.
 - The group is read at every login, never cached. Once any other account is in `admins`, root is
   refused exactly as every other system account is: the same `denied`, after the same time.
 - The setup checks again, on the gateway, that no other administrator exists, so a second try

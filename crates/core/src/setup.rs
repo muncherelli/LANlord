@@ -47,15 +47,21 @@ pub fn other_admins(session: &Session) -> Result<Vec<String>> {
     Ok(others(&out))
 }
 
-/// create the administrator `name` with `password`, then set root's ssh access to `root_ssh`
-/// when given. refused when an administrator other than root exists. an ssh setting that does
+/// why "off" is refused in the setup when this server takes no ssh passwords.
+const LOCKOUT: &str =
+    "this server's sshd does not accept ssh passwords and the new account has no \
+ssh key yet, so turning root's ssh access off would leave no way to sign in over ssh: choose \
+keys only, or add a key for the new account first";
+
+/// create the administrator `name` with `password`, then set root's ssh access to `root_ssh`.
+/// refused when an administrator other than root exists. an ssh setting that does
 /// not take leaves the new account in place and says so in the reply's note.
 pub fn first_admin(
     session: &Session,
     host: &str,
     name: &str,
     password: &str,
-    root_ssh: Option<RootSsh>,
+    root_ssh: RootSsh,
     ask: AskPassword,
 ) -> Result<Reply> {
     let _one = ONE_AT_A_TIME
@@ -66,21 +72,23 @@ pub fn first_admin(
             Refused("an administrator already exists: sign in as that account".into()).into(),
         );
     }
+    // the new account has no ssh key and, when sshd takes no passwords, root's ssh would be the
+    // last way in over ssh: turning it off would leave no one. refused before anything is made.
+    if root_ssh == RootSsh::Off && rootssh::passwords_refused(session, &mut *ask)? {
+        return Err(Refused(LOCKOUT.into()).into());
+    }
     account::create_admin(session, host, name, password, None, false, &mut *ask)?;
-    let note = match root_ssh {
-        None => None,
-        Some(level) => match rootssh::apply(session, level, ask) {
-            Ok(()) => None,
-            Err(error) => {
-                emit(
-                    Kind::Err,
-                    format!("root's ssh access was not set: {error:#}"),
-                );
-                Some(format!(
-                    "The administrator was created, but root's ssh access was not changed: {error:#}"
-                ))
-            }
-        },
+    let note = match rootssh::apply(session, root_ssh, ask) {
+        Ok(()) => None,
+        Err(error) => {
+            emit(
+                Kind::Err,
+                format!("root's ssh access was not set: {error:#}"),
+            );
+            Some(format!(
+                "The administrator was created, but root's ssh access was not changed: {error:#}"
+            ))
+        }
     };
     Ok(Reply::SetupDone { note })
 }
@@ -122,7 +130,15 @@ esac"#
     #[test]
     fn an_existing_administrator_refuses_setup_before_anything_is_created() {
         let session = server("olive");
-        let err = first_admin(&session, "gw", "pat", "pw", None, &mut no_password).unwrap_err();
+        let err = first_admin(
+            &session,
+            "gw",
+            "pat",
+            "pw",
+            RootSsh::KeysOnly,
+            &mut no_password,
+        )
+        .unwrap_err();
         assert!(format!("{err}").contains("already exists"), "{err}");
         assert!(err.downcast_ref::<Refused>().is_some());
     }
@@ -154,7 +170,7 @@ esac"#
         let bad = Operation::SetupFirstAdmin {
             name: "root".into(),
             password: lanlord_model::secret::Secret::new("pw"),
-            root_ssh: None,
+            root_ssh: RootSsh::KeysOnly,
         };
         let err = execute_setup(&session, "gw", &bad, &mut no_password).unwrap_err();
         assert!(format!("{err}").contains("name"), "{err}");
@@ -167,9 +183,36 @@ esac"#
         let operation = Operation::SetupFirstAdmin {
             name: "pat".into(),
             password: lanlord_model::secret::Secret::new("pw"),
-            root_ssh: None,
+            root_ssh: RootSsh::KeysOnly,
         };
         let reply = execute_setup(&session, "gw", &operation, &mut no_password).unwrap();
         assert_eq!(reply, Reply::SetupDone { note: None });
+    }
+
+    #[test]
+    fn off_is_refused_when_sshd_takes_no_passwords_and_the_account_has_no_key() {
+        let session = Session::fake(
+            r#"for a; do last=$a; done
+case "$last" in
+  *"id -un"*) printf 'root\n0\n' ;;
+  *getent*) printf '\n' ;;
+  *) if grep -q 'tolower($1)=="passwordauthentication"'; then echo no; fi ;;
+esac"#,
+        );
+        let err =
+            first_admin(&session, "gw", "pat", "pw", RootSsh::Off, &mut no_password).unwrap_err();
+        assert!(err.downcast_ref::<Refused>().is_some(), "{err}");
+        assert!(format!("{err}").contains("no ssh key"), "{err}");
+        // keys only is allowed there (with a warning in the page)
+        let reply = first_admin(
+            &session,
+            "gw",
+            "pat",
+            "pw",
+            RootSsh::KeysOnly,
+            &mut no_password,
+        )
+        .unwrap();
+        assert!(matches!(reply, Reply::SetupDone { .. }));
     }
 }

@@ -46,6 +46,21 @@ impl RootSsh {
         }
     }
 
+    /// the extra warning shown in the first-run setup, where the new account has no ssh key.
+    pub fn setup_warning(self) -> Option<&'static str> {
+        match self {
+            RootSsh::Allowed => None,
+            RootSsh::KeysOnly => Some(
+                "Warning: the new account has no ssh key yet. Add a key for root or for the new \
+                 account before you rely on ssh.",
+            ),
+            RootSsh::Off => Some(
+                "Not possible when this server accepts no ssh passwords: the new account has no \
+                 ssh key, so no one could sign in over ssh. The setup says so and goes back.",
+            ),
+        }
+    }
+
     /// what choosing this level means in plain words, with the warning that matters.
     pub fn explain(self) -> &'static str {
         match self {

@@ -141,15 +141,15 @@ pub trait Gateway: Send + Sync {
         done(self.call(host, operation, ask)?, "create_admin")
     }
 
-    /// the first-run setup of a gateway with only root: create the first administrator and, when
-    /// `root_ssh` is given, set root's ssh access. the note, when there is one, says that the
-    /// account was made but the ssh setting was not.
+    /// the first-run setup of a gateway with only root: create the first administrator and set
+    /// root's ssh access. the note, when there is one, says that the account was made but the
+    /// ssh setting was not.
     fn setup_first_admin(
         &self,
         host: &str,
         name: &str,
         password: &str,
-        root_ssh: Option<RootSsh>,
+        root_ssh: RootSsh,
         ask: AskPassword,
     ) -> Result<Option<String>> {
         let operation = Operation::SetupFirstAdmin {

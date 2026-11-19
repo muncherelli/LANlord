@@ -41,7 +41,6 @@ fn root_ssh_options() -> Vec<(usize, String)> {
     RootSsh::ALL
         .iter()
         .map(|level| level.label().to_string())
-        .chain(["Leave it as it is".to_string()])
         .enumerate()
         .collect()
 }
@@ -238,7 +237,7 @@ impl AdminSetup {
             let check = Operation::SetupFirstAdmin {
                 name,
                 password: Secret::new("x"),
-                root_ssh: None,
+                root_ssh: RootSsh::KeysOnly,
             };
             if let Err(invalid) = check.validate() {
                 self.say(
@@ -254,12 +253,17 @@ impl AdminSetup {
     /// first run: send the account and the root ssh choice in one request. the password leaves
     /// the form for the task, which holds the only copy.
     fn finish(&mut self, services: &Services, host: &str, name: String) {
+        // nothing is preselected: the step cannot finish until one level is picked
+        let Some(root_ssh) = self.root_ssh else {
+            self.say("Choose how root may sign in over ssh.", true);
+            return;
+        };
         let (account, password) = (
             name.clone(),
             Zeroizing::new(std::mem::take(&mut *self.password)),
         );
         self.confirm = Zeroizing::new(String::new());
-        let (target, root_ssh) = (host.to_string(), self.root_ssh);
+        let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
             gateway.setup_first_admin(&target, &account, password.as_str(), root_ssh, ask)
         });
@@ -411,7 +415,7 @@ impl AdminSetup {
         if self.step == Step::RootSsh {
             let current = self
                 .root_ssh
-                .map_or("Leave it as it is", RootSsh::label)
+                .map_or("Choose one", RootSsh::label)
                 .to_string();
             let mut nodes = vec![
                 Node::Header {
@@ -433,9 +437,14 @@ impl AdminSetup {
                 Node::Gap(6.0),
             ];
             match self.root_ssh {
-                Some(level) => nodes.push(Node::Text(level.explain().to_string())),
+                Some(level) => {
+                    nodes.push(Node::Text(level.explain().to_string()));
+                    if let Some(warning) = level.setup_warning() {
+                        nodes.push(Node::Text(warning.to_string()));
+                    }
+                }
                 None => nodes.push(Node::Text(
-                    "The ssh daemon is not changed. You can choose later in My Server.".into(),
+                    "Pick one of the three. You can change it later in My Server.".into(),
                 )),
             }
             nodes.extend([
@@ -713,7 +722,7 @@ mod tests {
             }
         );
         let calls = fake.calls();
-        assert_eq!(calls, ["setup gw pat root-ssh=Some(KeysOnly)"]);
+        assert_eq!(calls, ["setup gw pat root-ssh=KeysOnly"]);
         assert!(
             !calls.concat().contains("pw"),
             "the password is not recorded"
@@ -721,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn first_run_can_leave_sshd_alone_and_a_failure_goes_back_to_the_account() {
+    fn first_run_needs_a_pick_and_a_failure_goes_back_to_the_account() {
         use std::sync::Arc;
 
         let fake = Arc::new(crate::gateway::Fake::new());
@@ -730,9 +739,16 @@ mod tests {
         setup.name = "pat".into();
         setup.set_passwords("pw", "pw");
         setup.update(Msg::Next, &services, "gw");
-        // the last option is "leave it as it is"
+        // nothing is preselected, and finishing without a pick sends nothing
+        assert_eq!(setup.root_ssh_choice(), None);
+        setup.update(Msg::Create, &services, "gw");
+        assert!(!setup.working() && setup.status().contains("Choose"));
+        assert!(fake.calls().is_empty());
+        // there is no fourth option to pick
         setup.update(Msg::RootSsh(3), &services, "gw");
         assert_eq!(setup.root_ssh_choice(), None);
+        setup.update(Msg::RootSsh(0), &services, "gw");
+        assert_eq!(setup.root_ssh_choice(), Some(RootSsh::Allowed));
         *fake.fail.lock().unwrap() = Some("an administrator already exists".into());
         setup.update(Msg::Create, &services, "gw");
         let start = std::time::Instant::now();
@@ -753,13 +769,14 @@ mod tests {
             !setup.on_root_ssh_page(),
             "the password has to be typed again"
         );
-        assert_eq!(fake.calls(), ["setup gw pat root-ssh=None"]);
+        assert_eq!(fake.calls(), ["setup gw pat root-ssh=Allowed"]);
     }
 
     #[test]
-    fn the_root_ssh_page_lists_the_three_levels_and_leaving_it() {
+    fn the_root_ssh_page_lists_exactly_the_three_levels() {
         let labels: Vec<String> = root_ssh_options().into_iter().map(|(_, l)| l).collect();
-        assert_eq!(labels.len(), 4);
-        assert_eq!(labels[3], "Leave it as it is");
+        let levels: Vec<&str> = RootSsh::ALL.iter().map(|l| l.label()).collect();
+        assert_eq!(labels, levels);
+        assert_eq!(labels.len(), 3);
     }
 }

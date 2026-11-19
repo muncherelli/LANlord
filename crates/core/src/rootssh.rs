@@ -65,6 +65,28 @@ pub fn state(session: &Session) -> Result<RootSshInfo> {
     Ok(parse_state(&out))
 }
 
+/// the sh script (run as root) that prints what sshd says about password sign-in (`yes`, `no`),
+/// or `unknown` when sshd cannot be asked.
+fn passwords_script(paths: &Paths) -> String {
+    let find_sshd = paths.find_sshd;
+    format!(
+        r#"set -eu
+{find_sshd}
+if [ -z "${{sshd:-}}" ] || [ ! -x "$sshd" ]; then echo unknown; exit 0; fi
+v=$("$sshd" -T 2>/dev/null | awk 'tolower($1)=="passwordauthentication" {{ print $2; exit }}' || true)
+echo "${{v:-unknown}}"
+"#
+    )
+}
+
+/// whether sshd refuses ssh passwords now. an answer that cannot be read counts as no: only a
+/// clear `no` blocks anything.
+pub fn passwords_refused(session: &Session, ask: AskPassword) -> Result<bool> {
+    let login = login_user(session)?;
+    let out = capture_as_root(session, &login.name, passwords_script(&Paths::SYSTEM), ask)?;
+    Ok(out.trim() == "no")
+}
+
 /// the sh script (run as root) that sets `level`: write the drop-in, ask sshd to check its
 /// configuration and say what it would use for root, reload it, and put things back the way they
 /// were when any step says no. the exit status says which step: 3 sshd cannot take a drop-in,
@@ -371,6 +393,29 @@ esac
         assert_eq!(code, 5, "{text}");
         assert!(text.contains("rolled back"), "{text}");
         assert_eq!(rig.dropin(), None);
+    }
+
+    #[test]
+    fn the_password_check_reads_what_sshd_would_use() {
+        let run = |sshd: &str| {
+            let rig = Rig::new("passwords", INCLUDE, sshd);
+            let base = rig.base();
+            let find = format!("sshd='{base}/fake-sshd'");
+            let paths = Paths {
+                base: &base,
+                find_sshd: &find,
+                reload: "true",
+            };
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg(passwords_script(&paths))
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert_eq!(run("#!/bin/sh\necho 'passwordauthentication no'\n"), "no");
+        assert_eq!(run("#!/bin/sh\necho 'passwordauthentication yes'\n"), "yes");
+        assert_eq!(run("#!/bin/sh\nexit 1\n"), "unknown");
     }
 
     #[test]

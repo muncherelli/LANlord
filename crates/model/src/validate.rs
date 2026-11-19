@@ -1166,6 +1166,7 @@ mod tests {
     };
     use crate::clock::{Change, NtpChange};
     use crate::operations::{Operation, SecretUpdate, UserChange};
+    use crate::rootssh::RootSsh;
     use crate::secret::Secret;
 
     fn table(rule: fn(&str) -> Check, good: &[&str], bad: &[&str]) {
@@ -1900,7 +1901,7 @@ web-proxy:
                 Operation::SetupFirstAdmin {
                     name: "root".into(),
                     password: password("x"),
-                    root_ssh: None,
+                    root_ssh: RootSsh::KeysOnly,
                 },
                 "name",
             ),
@@ -1908,7 +1909,7 @@ web-proxy:
                 Operation::SetupFirstAdmin {
                     name: "Alice".into(),
                     password: password("x"),
-                    root_ssh: None,
+                    root_ssh: RootSsh::KeysOnly,
                 },
                 "name",
             ),
@@ -1916,7 +1917,7 @@ web-proxy:
                 Operation::SetupFirstAdmin {
                     name: "alice".into(),
                     password: password(""),
-                    root_ssh: None,
+                    root_ssh: RootSsh::KeysOnly,
                 },
                 "password",
             ),
@@ -1924,7 +1925,7 @@ web-proxy:
                 Operation::SetupFirstAdmin {
                     name: "alice".into(),
                     password: password("a\nb"),
-                    root_ssh: None,
+                    root_ssh: RootSsh::KeysOnly,
                 },
                 "password",
             ),
