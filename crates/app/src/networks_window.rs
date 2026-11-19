@@ -438,13 +438,15 @@ pub fn utc_time(secs: i64) -> String {
 /// offset written out: `2026-11-20 14:03:09 UTC-05:00`. with no zone known it is in UTC and says
 /// so. the name stays out: the box is narrow, and the offset says which time it is.
 fn zoned_time(secs: i64, zone: Option<&(String, i32)>) -> String {
+    let offset = zone.map_or(0, |(_, offset)| *offset);
+    let text = clock::local_text(secs, offset);
+    // a time that can't be written is blank, not a bare zone
+    if text.is_empty() {
+        return text;
+    }
     match zone {
-        Some((_, offset)) => format!(
-            "{} UTC{}",
-            clock::local_text(secs, *offset),
-            clock::offset_text(*offset)
-        ),
-        None => format!("{} UTC", clock::local_text(secs, 0)),
+        Some(_) => format!("{text} UTC{}", clock::offset_text(offset)),
+        None => format!("{text} UTC"),
     }
 }
 
@@ -510,6 +512,14 @@ mod tests {
         assert_eq!(grouped(999), "999");
         assert_eq!(grouped(1_000), "1,000");
         assert_eq!(grouped(913_442_071), "913,442,071");
+    }
+
+    #[test]
+    fn a_bad_time_is_blank_not_a_panic() {
+        let zone = ("Etc/UTC".to_string(), 3600);
+        assert_eq!(zoned_time(i64::MAX, Some(&zone)), "");
+        assert_eq!(zoned_time(i64::MAX, None), "");
+        assert_eq!(zoned_time(i64::MIN, Some(&("x".to_string(), -3600))), "");
     }
 
     #[test]
