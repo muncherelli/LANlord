@@ -10,6 +10,7 @@ pub mod compat;
 pub mod components;
 pub mod doctor;
 pub mod identity;
+pub mod internet;
 pub mod lan_networks;
 pub mod leases;
 pub mod log;

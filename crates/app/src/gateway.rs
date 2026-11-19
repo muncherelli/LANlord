@@ -11,6 +11,7 @@ use lanlord_model::access::{Access, Profile};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
 use lanlord_model::identity::{AccountInfo, PasswordReport};
+use lanlord_model::internet::Change as InternetChange;
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
@@ -127,6 +128,15 @@ pub trait Gateway: Send + Sync {
             name: name.to_string(),
         };
         done(self.call(host, operation, ask)?, "reset_machine")
+    }
+
+    /// switch internet access on or off for a network, or allow or deny one computer, and apply
+    /// the docker and dns modules.
+    fn change_internet(&self, host: &str, change: &InternetChange, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeInternet {
+            change: change.clone(),
+        };
+        done(self.call(host, operation, ask)?, "change_internet")
     }
 
     /// create an administrator login, in admins and sudo, with an optional ssh key.
@@ -816,6 +826,10 @@ mod fake {
                     self.reset_machine(host, &name, ask)?;
                     Reply::Done
                 }
+                Operation::ChangeInternet { change } => {
+                    self.change_internet(host, &change, ask)?;
+                    Reply::Done
+                }
                 Operation::CreateAdmin {
                     name,
                     password,
@@ -993,6 +1007,15 @@ mod fake {
 
         pub fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
             self.enter(format!("reset {host} {name}"), ask)
+        }
+
+        pub fn change_internet(
+            &self,
+            host: &str,
+            change: &lanlord_model::internet::Change,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("internet {host} {}", change.describe()), ask)
         }
 
         pub fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {

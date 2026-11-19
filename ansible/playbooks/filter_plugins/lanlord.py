@@ -2,8 +2,10 @@
 # from the older single `dns:` section (with docker.internal_address) as one network called
 # retronet. the rules are the same as crates/model/src/lan_networks.rs, which checks them before
 # anything is applied; they are checked again here, because this is what changes the machine.
+import datetime
 import ipaddress
 import re
+import time
 
 try:
     from ansible.errors import AnsibleFilterError as Error
@@ -106,7 +108,57 @@ def _records(raw, path):
     return records
 
 
-def _network(item, path, strict, defaults=None):
+def _until(value, path):
+    """the end of a grant as seconds since 1970 (utc), or None when it does not end."""
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):  # yaml read an unquoted timestamp
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=datetime.timezone.utc)
+        return int(value.timestamp())
+    try:
+        parsed = datetime.datetime.strptime(str(value), '%Y-%m-%dT%H:%M:%SZ')
+    except ValueError as err:
+        raise Error('%s.until must look like 2030-01-31T09:00:00Z (utc), not %r' % (path, value)) from err
+    return int(parsed.replace(tzinfo=datetime.timezone.utc).timestamp())
+
+
+def _internet(item, path, now):
+    """who on the network may go out to the internet. grants that have ended at `now` are dropped,
+    the others carry the seconds they have left, which is what the nft set element times out on."""
+    enabled = item.get('internet', False)
+    if enabled is None:
+        enabled = False
+    if not isinstance(enabled, bool):
+        raise Error('%s.internet must be true or false' % path)
+    raw = item.get('internet_allow') or []
+    if not isinstance(raw, list):
+        raise Error('%s.internet_allow must be a list' % path)
+    allow, seen = [], set()
+    for i, host in enumerate(raw):
+        where = '%s.internet_allow[%d]' % (path, i)
+        if not isinstance(host, dict):
+            raise Error('%s must be a mapping with a mac' % where)
+        mac = str(host.get('mac', ''))
+        if not MAC.match(mac):
+            raise Error('%s.mac must look like aa:bb:cc:dd:ee:ff' % where)
+        if mac.lower() in seen:
+            raise Error('%s: %s is listed twice' % (where, mac))
+        seen.add(mac.lower())
+        until = _until(host.get('until'), where)
+        if until is not None and until <= now:
+            continue
+        allow.append({'mac': mac.lower(), 'until': until,
+                      'seconds': None if until is None else until - now})
+    return {
+        'internet': enabled,
+        'internet_allow': allow,
+        'internet_any': enabled or bool(allow),
+        'internet_macs': [h['mac'] for h in allow],
+    }
+
+
+def _network(item, path, strict, defaults=None, now=0):
     """one normalised network. `defaults` fills what the older settings leave to be detected."""
     defaults = defaults or {}
     name = _label(item.get('name', ''), path + NAME)
@@ -121,7 +173,7 @@ def _network(item, path, strict, defaults=None):
             raise Error('%s.mtu must be a number from 576 to 9000' % path)
     zone = _label(item.get('zone') or (name if strict else LEGACY_NAME), path + '.zone')
     dhcp = item.get('dhcp')
-    return {
+    result = {
         'name': name,
         'interface': interface,
         'address': '%s/%d' % (ip, network.prefixlen),
@@ -134,23 +186,27 @@ def _network(item, path, strict, defaults=None):
         'records': _records(item.get('records'), path),
         'dhcp': _dhcp(dhcp, network, ip, path + '.dhcp', strict) if dhcp else None,
     }
+    result.update(_internet(item, path, now))
+    return result
 
 
-def lanlord_networks(settings, detected=None):
+def lanlord_networks(settings, detected=None, now=None):
     """the networks to set up, normalised and checked.
 
     `settings` has networks/networks_defined, dns/dns_defined, docker and network. `detected` is
     the interface and address the machine already has, used by the older single-network settings
     where the playbooks find them. each result has `dns_enabled` (run a dnsmasq for it) and
-    `configure_address` (put the address on the interface).
+    `configure_address` (put the address on the interface). `now` is seconds since 1970; internet
+    grants that ended before it are left out.
     """
     detected = detected or {}
+    now = int(time.time()) if now is None else int(now)
     if settings.get('networks_defined'):
-        return _listed_networks(settings)
-    return _legacy_networks(settings, detected)
+        return _listed_networks(settings, now)
+    return _legacy_networks(settings, detected, now)
 
 
-def _listed_networks(settings):
+def _listed_networks(settings, now):
     raw = settings.get('networks') or []
     if not isinstance(raw, list):
         raise Error('networks must be a list')
@@ -158,14 +214,14 @@ def _listed_networks(settings):
     for i, item in enumerate(raw):
         if not isinstance(item, dict):
             raise Error('networks[%d] must be a mapping' % i)
-        net = _network(item, 'networks[%d]' % i, True)
+        net = _network(item, 'networks[%d]' % i, True, now=now)
         net.update({'dns_enabled': True, 'configure_address': True})
         networks.append(net)
     _unique(networks)
     return networks
 
 
-def _legacy_networks(settings, detected):
+def _legacy_networks(settings, detected, now):
     docker = settings.get('docker') or {}
     dns = settings.get('dns') if settings.get('dns_defined') else None
     legacy_address = docker.get('internal_address')
@@ -174,7 +230,7 @@ def _legacy_networks(settings, detected):
     item = {'name': LEGACY_NAME, 'address': legacy_address or '',
             'interface': docker.get('internal_interface') or (settings.get('network') or {}).get('internal_interface')}
     item.update({k: v for k, v in (dns or {}).items() if k in ('zone', 'records', 'dhcp')})
-    net = _network(item, 'dns', False, detected)
+    net = _network(item, 'dns', False, detected, now)
     net.update({'dns_enabled': bool(settings.get('dns_defined')), 'configure_address': bool(legacy_address)})
     return [net]
 

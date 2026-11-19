@@ -10,7 +10,7 @@ use crate::bootstrap::{self, AnsibleMode, AskPassword, Options};
 use crate::purge::PurgeOptions;
 use crate::server;
 use crate::ssh::Session;
-use crate::{access, operate, save_guard, self_service, settings, users};
+use crate::{access, internet, operate, save_guard, self_service, settings, users};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
 };
@@ -338,6 +338,10 @@ fn dispatch(
             Reply::Done
         }
         Operation::Probe => Reply::Internal(network::probe(session)?),
+        Operation::ChangeInternet { change } => {
+            internet::change(session, host, &key()?, change, ask)?;
+            Reply::Done
+        }
         Operation::ChangeUsers { changes } => {
             let changes: Vec<users::Change> = changes.iter().map(Into::into).collect();
             let changed =
@@ -1051,6 +1055,13 @@ esac"#,
         };
         assert!(is_denied(&go(&dana, reset.clone())));
         assert!(is_denied(&go(&dana, Operation::LoadAccess)));
+        let internet = Operation::ChangeInternet {
+            change: lanlord_model::internet::Change::Network {
+                network: "lab".into(),
+                on: true,
+            },
+        };
+        assert!(is_denied(&go(&dana, internet)));
         assert!(is_denied(&go(
             &dana,
             Operation::SaveAccess {

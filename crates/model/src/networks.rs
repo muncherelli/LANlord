@@ -4,6 +4,7 @@
 
 use serde_yaml_ng::Value;
 
+use crate::internet::Internet;
 use crate::lan_networks;
 use crate::server::Iface;
 use crate::settings::{DnsSettings, Settings};
@@ -27,6 +28,9 @@ pub struct NetworkRow {
     pub dhcp: Option<String>,
     /// how many clients hold a lease, when it is known.
     pub leases: Option<usize>,
+    /// who may go out to the internet, for a lanlord network.
+    #[serde(default)]
+    pub internet: Option<Internet>,
 }
 
 impl NetworkRow {
@@ -53,6 +57,9 @@ impl NetworkRow {
         if let Some(leases) = self.leases {
             lines.push(("Clients with a lease".to_string(), leases.to_string()));
         }
+        if let Some(internet) = &self.internet {
+            lines.extend(internet.details());
+        }
         lines
     }
 }
@@ -67,6 +74,7 @@ fn row(iface: &Iface, name: &str, role: Role) -> NetworkRow {
         link: iface.link().to_string(),
         dhcp: None,
         leases: None,
+        internet: None,
     }
 }
 
@@ -113,6 +121,7 @@ pub fn rows(ifaces: &[Iface], settings: &Settings, leases: Option<usize>) -> Vec
             .as_ref()
             .map(|d| format!("{} - {}", d.range_start, d.range_end));
         lanlord.leases = lanlord.dhcp.as_ref().and(leases);
+        lanlord.internet = Some(Internet::default());
         rows.push(lanlord);
     }
     rows
@@ -151,9 +160,11 @@ fn listed_rows(ifaces: &[Iface], list: &[lan_networks::LanNetwork]) -> Vec<Netwo
                 link: "interface not found".to_string(),
                 dhcp: None,
                 leases: None,
+                internet: None,
             },
         };
         entry.dhcp = dhcp;
+        entry.internet = Some(network.internet.clone());
         rows.push(entry);
     }
     rows

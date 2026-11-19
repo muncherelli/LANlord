@@ -1,10 +1,28 @@
+{% set nets = lanlord_networks | default([]) %}
+{% set out = host_interface | default('') %}
+{% set whole = nets | selectattr('internet') | list %}
+{% set some = nets | rejectattr('internet') | selectattr('internet_allow') | list %}
+{% set reaching = whole + some %}
 # written by lanlord; changes here are overwritten
 # netbios, smb, dns and dhcp are kept off the host network ({{ host_interface }}). the lanlord networks
 # ({{ lan_interfaces | join(', ') if lan_interfaces | length > 0 else 'none' }}) are accepted first, so
 # these rules can never cut off one of them.
+{% if lan_interfaces | length > 0 %}
+# the lanlord networks never forward to each other or in from outside. they have no internet unless
+# a network says so, or a computer is allowed (by mac, for good or until a time) on a network that
+# does not: only then do their clients go out through {{ out }}, translated to its address.
+{% endif %}
 add table inet lanlord
-flush table inet lanlord
+delete table inet lanlord
 table inet lanlord {
+{% for net in some %}
+  # {{ net.name }}: the computers allowed out, each removed by nft itself when its time is up
+  set internet_{{ net.name | replace('-', '_') }} {
+    type ether_addr
+    flags timeout
+    elements = { {% for host in net.internet_allow %}{{ host.mac }}{% if host.seconds is not none %} timeout {{ host.seconds }}s{% endif %}{% if not loop.last %}, {% endif %}{% endfor %} }
+  }
+{% endfor %}
   chain input {
     type filter hook input priority -10; policy accept;
 {% if lan_interfaces | length > 0 %}
@@ -23,4 +41,28 @@ table inet lanlord {
     oifname "{{ host_interface }}" udp sport 67 drop
 {% endif %}
   }
+{% if lan_interfaces | length > 0 %}
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+{% if reaching | length > 0 and out != '' %}
+    ct state established,related accept
+{% for net in whole %}
+    iifname "{{ net.interface }}" oifname "{{ out }}" accept
+{% endfor %}
+{% for net in some %}
+    iifname "{{ net.interface }}" oifname "{{ out }}" ether saddr @internet_{{ net.name | replace('-', '_') }} accept
+{% endfor %}
+{% endif %}
+    iifname { {% for name in lan_interfaces %}"{{ name }}"{% if not loop.last %}, {% endif %}{% endfor %} } drop
+    oifname { {% for name in lan_interfaces %}"{{ name }}"{% if not loop.last %}, {% endif %}{% endfor %} } drop
+  }
+{% endif %}
+{% if reaching | length > 0 and out != '' %}
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+{% for net in reaching %}
+    oifname "{{ out }}" ip saddr {{ net.subnet }} masquerade
+{% endfor %}
+  }
+{% endif %}
 }

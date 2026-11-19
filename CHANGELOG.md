@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- internet access, off by default: per network (`lanlord networks HOST set NAME --internet on`) or per computer by MAC address, for good or for a while (`lanlord networks HOST internet NAME allow MAC --for 1h`); ended grants stop on their own, NAT and forwarding live in the lanlord firewall table, and dnsmasq hands the gateway out as the router
+
 ### Changed
 
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers

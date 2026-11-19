@@ -163,6 +163,10 @@ enum NetworksCommand {
         /// turn the dhcp server off
         #[arg(long)]
         no_dhcp: bool,
+        /// give the whole network internet access, or take it away (none by default); give it
+        /// on its own
+        #[arg(long, value_enum)]
+        internet: Option<Switch>,
     },
     /// remove a network and its dnsmasq
     Remove { name: String },
@@ -172,6 +176,33 @@ enum NetworksCommand {
         #[command(subcommand)]
         action: LeaseCommand,
     },
+    /// let single computers on a network go out to the internet, for good or for a while
+    Internet {
+        name: String,
+        #[command(subcommand)]
+        action: InternetCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum InternetCommand {
+    /// let a computer (by mac) go out; without --for or --until, for good
+    Allow {
+        mac: String,
+        /// for how long, like 30m, 1h, 1d or 1d12h
+        #[arg(long = "for", value_name = "DURATION", conflicts_with = "until")]
+        duration: Option<String>,
+        /// until a time in your own time zone, like '2030-01-31 09:00'
+        #[arg(long, value_name = "YYYY-MM-DD HH:MM")]
+        until: Option<String>,
+        /// a label for the computer
+        #[arg(long, value_name = "LABEL")]
+        name: Option<String>,
+    },
+    /// take a computer's internet access away
+    Deny { mac: String },
+    /// show the network's internet access and the computers allowed out
+    List,
 }
 
 #[derive(Subcommand)]
@@ -454,6 +485,14 @@ enum Command {
     /// operations that need its key (not meant to be run by hand)
     #[command(hide = true)]
     Operate,
+    /// take the internet grants that have ended out of the settings (run by a timer on the
+    /// gateway, as root)
+    #[command(name = "internet-prune", hide = true)]
+    InternetPrune {
+        /// write the rules again even when nothing ended (after a boot)
+        #[arg(long)]
+        refresh: bool,
+    },
     /// store and read the encrypted settings on a gateway
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -560,10 +599,141 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
 }
 
 fn networks(host: &str, action: NetworksCommand) -> Result<()> {
+    if let Some(done) = set_internet(host, &action) {
+        return done;
+    }
     match action {
         NetworksCommand::Status { json } => network_status(host, json),
+        NetworksCommand::Internet { name, action } => internet(host, &name, action),
         edit => change_networks(host, edit),
     }
+}
+
+/// switch the internet for a whole network. `set --internet` goes through its own operation, so
+/// it is not mixed with the other changes of `set`, which are stored by another route.
+fn set_internet(host: &str, set: &NetworksCommand) -> Option<Result<()>> {
+    let NetworksCommand::Set {
+        name,
+        interface,
+        address,
+        mtu,
+        no_mtu,
+        zone,
+        dhcp_range,
+        lease,
+        no_dhcp,
+        internet: Some(state),
+    } = set
+    else {
+        return None;
+    };
+    let other = interface.is_some()
+        || address.is_some()
+        || mtu.is_some()
+        || *no_mtu
+        || zone.is_some()
+        || dhcp_range.is_some()
+        || lease.is_some()
+        || *no_dhcp;
+    if other {
+        return Some(Err(anyhow::anyhow!(
+            "give --internet on its own, not with the other changes"
+        )));
+    }
+    Some(change_internet(
+        host,
+        lanlord_model::internet::Change::Network {
+            network: name.clone(),
+            on: matches!(state, Switch::On),
+        },
+    ))
+}
+
+fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Result<()> {
+    let text = change.describe();
+    match execute(host, &Operation::ChangeInternet { change }, &mut ask)? {
+        Reply::Done => {
+            println!("{text}; applied the docker and dns modules");
+            Ok(())
+        }
+        _ => bail!("unexpected answer"),
+    }
+}
+
+/// `lanlord networks HOST internet NAME ...`.
+fn internet(host: &str, name: &str, action: InternetCommand) -> Result<()> {
+    use lanlord_model::internet::{parse_duration, parse_until_local, Change, Expiry};
+    let (mac, name_label, expiry) = match action {
+        InternetCommand::List => {
+            let document = lanlord_core::remote::document(host, &mut ask)?;
+            let networks = lanlord_core::lan::read_networks(&document.plain)?;
+            let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
+                bail!("there is no network called {name}");
+            };
+            for (label, value) in network.internet.details() {
+                println!("{label}: {value}");
+            }
+            return Ok(());
+        }
+        InternetCommand::Deny { mac } => {
+            return change_internet(
+                host,
+                Change::Deny {
+                    network: name.to_string(),
+                    mac,
+                },
+            )
+        }
+        InternetCommand::Allow {
+            mac,
+            duration,
+            until,
+            name,
+        } => {
+            let now = lanlord_core::internet::now();
+            let expiry = match (duration, until) {
+                (Some(text), _) => Expiry::At(now + parse_duration(&text)?),
+                (None, Some(text)) => Expiry::At(parse_until_local(&text)?),
+                (None, None) => Expiry::Never,
+            };
+            (mac, name, expiry)
+        }
+    };
+    change_internet(
+        host,
+        Change::Allow {
+            network: name.to_string(),
+            mac,
+            name: name_label,
+            expiry,
+        },
+    )
+}
+
+/// the gateway's clean-up of internet grants that have ended, run by its timer as root.
+#[cfg(unix)]
+fn internet_prune(refresh: bool) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if std::fs::metadata("/proc/self")?.uid() != 0 {
+        bail!("this runs as root on the gateway");
+    }
+    lanlord_core::crypto::use_gateway_key(lanlord_core::crypto::GATEWAY_KEY.into())?;
+    let Some(key) = lanlord_core::crypto::load_default()? else {
+        return Ok(());
+    };
+    let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: this is root") };
+    let session = lanlord_core::ssh::Session::local();
+    let gone = lanlord_core::internet::prune(&session, &key, refresh, &mut ask)?;
+    if gone > 0 {
+        println!("took {gone} ended internet grant(s) out of the settings");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn internet_prune(_refresh: bool) -> Result<()> {
+    bail!("this runs on the gateway, which is a unix machine")
 }
 
 fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
@@ -608,6 +778,7 @@ fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
             dhcp_range,
             lease,
             no_dhcp,
+            internet: _,
         } => set_edit(
             &name,
             &SetArgs {
@@ -622,6 +793,7 @@ fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
             },
         )?,
         NetworksCommand::Remove { name } => Edit::Remove(name),
+        NetworksCommand::Internet { .. } => unreachable!("run by `networks`"),
         NetworksCommand::Lease { name, action } => match action {
             LeaseCommand::Add { host, mac, address } => Edit::LeaseAdd {
                 network: name,
@@ -1503,6 +1675,7 @@ fn main() -> Result<()> {
         }
         Some(Command::MoveSecrets { host }) => move_secrets(&host),
         Some(Command::Operate) => operate(),
+        Some(Command::InternetPrune { refresh }) => internet_prune(refresh),
         Some(Command::Run {
             target,
             via,
@@ -2043,6 +2216,117 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["lanlord", "networks", "gw", "add", "x"]).is_err());
+    }
+
+    #[test]
+    fn the_internet_commands_parse() {
+        let NetworksCommand::Set { internet, .. } =
+            networks_action(&["set", "lab", "--internet", "on"])
+        else {
+            panic!("set");
+        };
+        assert!(matches!(internet, Some(Switch::On)));
+        assert!(Cli::try_parse_from([
+            "lanlord",
+            "networks",
+            "gw",
+            "set",
+            "lab",
+            "--internet",
+            "maybe"
+        ])
+        .is_err());
+        let NetworksCommand::Internet { name, action } = networks_action(&[
+            "internet",
+            "lab",
+            "allow",
+            "02:00:00:00:00:01",
+            "--for",
+            "1h",
+            "--name",
+            "dana-pc",
+        ]) else {
+            panic!("internet");
+        };
+        assert_eq!(name, "lab");
+        let InternetCommand::Allow {
+            mac,
+            duration,
+            until,
+            name,
+        } = action
+        else {
+            panic!("allow");
+        };
+        assert_eq!(
+            (mac.as_str(), duration.as_deref(), until, name.as_deref()),
+            ("02:00:00:00:00:01", Some("1h"), None, Some("dana-pc"))
+        );
+        let NetworksCommand::Internet {
+            action: InternetCommand::Allow { until, .. },
+            ..
+        } = networks_action(&[
+            "internet",
+            "lab",
+            "allow",
+            "02:00:00:00:00:01",
+            "--until",
+            "2030-01-31 09:00",
+        ])
+        else {
+            panic!("allow until");
+        };
+        assert_eq!(until.as_deref(), Some("2030-01-31 09:00"));
+        assert!(matches!(
+            networks_action(&["internet", "lab", "deny", "02:00:00:00:00:01"]),
+            NetworksCommand::Internet {
+                action: InternetCommand::Deny { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            networks_action(&["internet", "lab", "list"]),
+            NetworksCommand::Internet {
+                action: InternetCommand::List,
+                ..
+            }
+        ));
+        // for good is the default, and --for and --until are one or the other
+        assert!(
+            Cli::try_parse_from(["lanlord", "networks", "gw", "internet", "lab", "allow"]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "lanlord",
+            "networks",
+            "gw",
+            "internet",
+            "lab",
+            "allow",
+            "02:00:00:00:00:01",
+            "--for",
+            "1h",
+            "--until",
+            "2030-01-31 09:00",
+        ])
+        .is_err());
+        // --internet is not mixed with the other changes of `set`
+        let mixed = NetworksCommand::Set {
+            name: "lab".into(),
+            interface: None,
+            address: None,
+            mtu: Some(1400),
+            no_mtu: false,
+            zone: None,
+            dhcp_range: None,
+            lease: None,
+            no_dhcp: false,
+            internet: Some(Switch::On),
+        };
+        let refused = set_internet("gw", &mixed)
+            .expect("--internet is seen")
+            .unwrap_err();
+        assert!(refused.to_string().contains("on its own"), "{refused}");
+        assert!(set_internet("gw", &NetworksCommand::List).is_none());
     }
 
     #[test]

@@ -1092,6 +1092,10 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         Operation::Apply { modules } => check_modules(modules),
         Operation::SaveDocument { plain, updates } => check_save(plain, updates),
         Operation::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
+        // the server checks the time against its own clock
+        Operation::ChangeInternet { change } => change
+            .check(0)
+            .map_err(|(field, reason)| Invalid::new(field, reason)),
         Operation::ResetMachine { name } => named("name", machine_name, name),
         Operation::CreateAdmin {
             name,
@@ -1955,6 +1959,16 @@ web-proxy:
                 "topic",
             ),
         ];
+        let mut refused = Vec::from(refused);
+        refused.push((
+            Operation::ChangeInternet {
+                change: crate::internet::Change::Deny {
+                    network: "lab".into(),
+                    mac: "nope".into(),
+                },
+            },
+            "mac",
+        ));
         for (operation, field) in refused {
             let error = operation.validate().expect_err(&format!("{operation:?}"));
             assert!(error.field.starts_with(field), "{operation:?} gave {error}");
@@ -1964,6 +1978,12 @@ web-proxy:
                 modules: vec!["dns".into()],
             },
             Operation::LoadDocument,
+            Operation::ChangeInternet {
+                change: crate::internet::Change::Network {
+                    network: "lab".into(),
+                    on: true,
+                },
+            },
             Operation::ResetMachine { name: "ws1".into() },
             Operation::Run {
                 command: vec!["uname".into(), "-a".into()],

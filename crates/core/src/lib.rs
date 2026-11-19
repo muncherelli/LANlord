@@ -15,6 +15,7 @@ pub mod env;
 pub mod exec;
 pub mod hosts;
 pub mod identity;
+pub mod internet;
 pub mod lan;
 pub mod leases;
 #[cfg(unix)]
