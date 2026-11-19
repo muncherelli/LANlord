@@ -183,6 +183,7 @@ impl NetworksWindow {
         } = self.rows.data.clone().unwrap_or(Networks {
             rows: Vec::new(),
             interfaces: Vec::new(),
+            zone: None,
         });
         if rows.is_empty() {
             return self.without_networks(&interfaces);
