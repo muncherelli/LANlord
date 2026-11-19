@@ -89,6 +89,44 @@ pub fn needed_for(id: &str) -> Vec<&'static str> {
     uses
 }
 
+/// what the check `id` is for, in plain words: every id the probe reports has one.
+pub fn purpose(id: &str) -> &'static str {
+    match id {
+        "link-bridge" => "bridges, which join the machines of a network",
+        "link-dummy" => "dummy links, which stand in for a network card that is not there",
+        "link-vlan" => "802.1q vlans, which split one network cable into several networks",
+        "link-veth" => "veth pairs, which wire a container or a bridge to a network",
+        "link-macvlan" => "macvlan links, which give a network its own address on a card",
+        "link-ipvlan" => "ipvlan links, which share a card between several networks",
+        "link-vxlan" => "vxlan tunnels, which link networks across gateways",
+        "link-gretap" => "gretap tunnels, which link networks across gateways",
+        "link-wireguard" => "wireguard tunnels, which link networks over the internet",
+        "tun" => "a virtual network device that remote attachments and userspace wireguard open",
+        "ip-forward" => "routing between your networks and out to the internet",
+        "nftables" => "the firewall rules that share the internet and forward ports",
+        "lxc-nesting" => "running containers inside this one, as docker does",
+        "lxc-keyctl" => "the keyring calls that docker makes inside a container",
+        "nested-container" => "running docker when this server is itself a container",
+        "fuse" => "mounting file systems from userspace, as some file sharing does",
+        "docker" => "running the components that come as docker containers",
+        "network-manager" => "keeping the network manager from taking over lanlord's networks",
+        "vde" => "virtual switches that remote pcs plug into",
+        "ntp-port" => "answering clock requests on udp port 123",
+        "proxmox-macfilter" => "letting remote pcs' traffic through the proxmox firewall",
+        _ => "",
+    }
+}
+
+/// what the check `id` is for and what uses it, as one line for the compatibility lists.
+pub fn explain(id: &str) -> String {
+    let uses = needed_for(id);
+    match (purpose(id), uses.is_empty()) {
+        (p, true) => p.to_string(),
+        ("", false) => uses.join(", "),
+        (p, false) => format!("{p}; used by {}", uses.join(", ")),
+    }
+}
+
 /// the checks of `report` that the module `module` needs and that are not ok.
 pub fn problems<'a>(report: &'a Report, module: &str) -> Vec<&'a Check> {
     let ids = checks_for_module(module);
