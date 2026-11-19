@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers
+- the LANlord menu no longer has "Quit LANlord"; the terminal interface shows Ctrl+Q in its taskbar, and the sign-in box still shuts down
+
+### Fixed
+
+- the web menu no longer starts with "Server: local", which only made sense where a server can be chosen
+- a window's status bar stays on its bottom edge instead of floating up to the end of its contents
+- every check on My Server's Compatibility tab says what it is for, along with the components that use it
+- the lease times of a network connection's details name their time zone: the gateway's, or UTC when its clock cannot be read
 
 ## [0.1.3] - 2026-11-19
 
