@@ -304,9 +304,8 @@ impl Draft {
                         was_zone
                     };
                     let (interface, address) = (self.interface.trim(), self.address.trim());
-                    let differs = |now: &str, before: &str| {
-                        Some(now.to_string()).filter(|_| now != before.trim())
-                    };
+                    let differs =
+                        |now: &str, before: &str| (now != before.trim()).then(|| now.to_string());
                     let range_moved = range != was.1;
                     let args = SetArgs {
                         interface: differs(interface, &original.interface),
