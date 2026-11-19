@@ -1217,6 +1217,7 @@ impl Desktop {
     /// the Task Manager is showing, every other second for the tray alone.
     fn monitor_tick(&mut self, ctx: &egui::Context) {
         let backend = self.monitor_backend();
+        let timed = backend_needs_timer(&backend);
         self.monitor.use_backend(backend);
         if self.monitor.poll() {
             ctx.request_repaint();
@@ -1229,9 +1230,20 @@ impl Desktop {
         let now = ctx.input(|i| i.time);
         self.monitor.tick(now, every, procs, &crate::wake(ctx));
         // the next sample is due on a timer; the browser's stream wakes the desktop itself
-        #[cfg(not(target_arch = "wasm32"))]
-        ctx.request_repaint_after(std::time::Duration::from_secs_f64(every));
+        if timed {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(every));
+        }
     }
+}
+
+/// does the next sample of `backend` wait on a timer? a stream pushes its samples and a backend
+/// with nothing to read has none coming.
+fn backend_needs_timer(backend: &Backend) -> bool {
+    #[cfg(target_arch = "wasm32")]
+    if matches!(backend, Backend::Web) {
+        return false;
+    }
+    !matches!(backend, Backend::Off(_))
 }
 
 // what the taskbar and the menu ask about updates, on builds with or without them
@@ -1666,6 +1678,13 @@ mod tests {
     use super::harness::*;
     use super::*;
     use lanlord_app::log::Kind;
+
+    #[test]
+    fn only_backends_with_samples_on_a_timer_ask_for_a_repaint() {
+        let demo = Backend::Demo(Default::default());
+        assert!(backend_needs_timer(&demo));
+        assert!(!backend_needs_timer(&Backend::Off("nothing".into())));
+    }
 
     #[test]
     fn the_empty_desktop_draws() {

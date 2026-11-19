@@ -157,7 +157,7 @@ const SMALL_CLOCK: [&str; 16] = [
 /// draw `art` with its top-left corner at `pos`, each pixel `scale` points wide. the art is
 /// uploaded once as a texture and drawn with nearest filtering as one quad: filled rects this
 /// small would be feathered into thin lines, which some screens render as nothing.
-pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
+pub fn draw(painter: &Painter, pos: Pos2, art: &'static [&'static str], scale: f32) {
     let pos = pos.round_to_pixels(painter.pixels_per_point());
     let texture = texture(painter.ctx(), art);
     let size = Vec2::new(
@@ -171,7 +171,7 @@ pub fn draw(painter: &Painter, pos: Pos2, art: &[&str], scale: f32) {
 }
 
 /// the texture of `art`, made on first use. the art is static data, so its address names it.
-fn texture(ctx: &Context, art: &[&str]) -> TextureHandle {
+fn texture(ctx: &Context, art: &'static [&'static str]) -> TextureHandle {
     let key = Id::NULL.with(("icon-texture", art.as_ptr() as usize, art.len()));
     if let Some(texture) = ctx.data(|d| d.get_temp::<TextureHandle>(key)) {
         return texture;

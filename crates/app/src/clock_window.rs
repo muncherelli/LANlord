@@ -149,7 +149,7 @@ impl ClockFeed {
         let into_minute = match &self.state {
             Some(state) => {
                 let t = (state.utc_secs + i64::from(state.offset_secs)) as f64
-                    + self.read_at.elapsed().as_secs_f64().floor();
+                    + self.read_at.elapsed().as_secs_f64();
                 t.rem_euclid(60.0)
             }
             None => {
