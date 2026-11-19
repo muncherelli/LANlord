@@ -435,12 +435,12 @@ pub fn utc_time(secs: i64) -> String {
 }
 
 /// a unix time in the server's `zone` (its name and its offset from utc in seconds), with the
-/// zone written out: `2026-11-20 14:03:09 UTC-05:00 (America/New_York)`. with no zone known it is
-/// in UTC and says so.
+/// offset written out: `2026-11-20 14:03:09 UTC-05:00`. with no zone known it is in UTC and says
+/// so. the name stays out: the box is narrow, and the offset says which time it is.
 fn zoned_time(secs: i64, zone: Option<&(String, i32)>) -> String {
     match zone {
-        Some((name, offset)) => format!(
-            "{} UTC{} ({name})",
+        Some((_, offset)) => format!(
+            "{} UTC{}",
             clock::local_text(secs, *offset),
             clock::offset_text(*offset)
         ),
@@ -517,7 +517,7 @@ mod tests {
         let zone = ("America/New_York".to_string(), -5 * 3600);
         assert_eq!(
             zoned_time(1_795_000_000, Some(&zone)),
-            "2026-11-18 06:06:40 UTC-05:00 (America/New_York)"
+            "2026-11-18 06:06:40 UTC-05:00"
         );
         assert_eq!(zoned_time(0, None), "1970-01-01 00:00:00 UTC");
         assert_eq!(utc_time(0), "1970-01-01 00:00:00 UTC");
