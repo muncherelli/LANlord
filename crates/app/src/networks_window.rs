@@ -390,13 +390,14 @@ impl NetworksWindow {
             Button::new("Details...", status.is_some(), Msg::Details),
             Button::new("DNS & DHCP...", lanlord && !services.busy(host), Msg::Dns),
             Button::new("Properties...", true, Msg::Properties),
-            Button::new("New network...", can_add, Msg::New),
         ]);
+        let add = Node::Buttons(vec![Button::new("New network...", can_add, Msg::New)]);
         vec![
             tabs,
             Node::Gap(6.0),
             buttons,
             Node::Gap(6.0),
+            add,
             interface_list(&interfaces, &rows),
             Node::Gap(4.0),
             view::status(&self.rows),

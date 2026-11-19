@@ -14,11 +14,11 @@
       ▦       │ │└─────────────────────────────────────┌ Network Connection Details ───────────── _ □ × ┐
    Settings   │ └──────────────────────────────────────│ Network Connection Details:                    │
               │                   [ Properties... ] [ D│  Property             Value                    │
-              │ ┌ Network interfaces ──────────────────│  Description          Virtual Ethernet (veth)  │
-      >       │ │ eth0   192.0.2.10/24   MTU 1500   Con│  Physical Address     02-00-00-00-AA-01        │
-   Console    │ │ eth1   172.16.120.1/22   MTU 1450   C│  DHCP Enabled         Yes                      │
-              │ └──────────────────────────────────────│  IPv4 Address         192.0.2.10               │
-              │ Editing networks comes next. For now yo│  IPv4 Subnet Mask     255.255.255.0            │
+              │                                        │  Description          Virtual Ethernet (veth)  │
+      >       │ ┌ Network interfaces ──────────────────│  Physical Address     02-00-00-00-AA-01        │
+   Console    │ │  eth0   192.0.2.10/24   MTU 1500   Co│  DHCP Enabled         Yes                      │
+              │ │  eth1   172.16.120.1/22   MTU 1450   │  IPv4 Address         192.0.2.10               │
+              │ └──────────────────────────────────────│  IPv4 Subnet Mask     255.255.255.0            │
       ▣       │ up to date                             │  Lease Obtained       11/18/2026 4:06:40 AM    │
     Hosts     └────────────────────────────────────────│  Lease Expires        11/19/2026 4:06:40 AM    │
                                                        │  IPv4 Default Gateway 192.0.2.1                │
