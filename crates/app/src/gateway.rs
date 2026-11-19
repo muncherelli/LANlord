@@ -1459,10 +1459,7 @@ mod fake {
             network: "lab".into(),
             on: true,
         };
-        assert_eq!(
-            gateway.change_internet(h, &internet, &mut ask).is_ok(),
-            true
-        );
+        assert!(gateway.change_internet(h, &internet, &mut ask).is_ok());
         assert!(gateway.power(h, Power::Reboot, &mut ask).is_err());
         assert!(gateway.server_facts(h, &mut ask).is_err());
         assert!(gateway.purge_preview(h, false, &mut ask).is_err());
