@@ -101,7 +101,11 @@ pub fn change(host: &str, action: &Action, ask_password: AskPassword) -> Result<
     change_with(&Session::new(host)?, action, ask_password)
 }
 
-fn change_with(session: &Session, action: &Action, ask_password: AskPassword) -> Result<()> {
+pub(crate) fn change_with(
+    session: &Session,
+    action: &Action,
+    ask_password: AskPassword,
+) -> Result<()> {
     // validate before connecting anywhere
     let script = change_script(action)?;
     let admin = admin_of(session)?;

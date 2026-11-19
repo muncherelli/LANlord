@@ -494,7 +494,7 @@
     - name: report
       ansible.builtin.debug:
         msg: >-
-          caddy is proxying {{ proxy_sites | map(attribute='host') | list }} on {{ proxy_listen | join(', ') }}
+          caddy is {{ ('proxying ' ~ (proxy_sites | map(attribute='host') | join(', ')) ~ ' on ') if proxy_sites | length > 0 else 'listening on ' }}{{ proxy_listen | join(', ') }}
           ({{ 'plain http' if proxy_tls == 'off' else 'https with its own certificate authority' }})
           {{- (', and the web ui at https://' ~ webui_host ~ ':' ~ webui_port ~ ' (' ~ webui_tls ~ ')') if webui_on else '' }}
       when: wp is defined

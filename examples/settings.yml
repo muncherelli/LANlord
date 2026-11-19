@@ -1,0 +1,21 @@
+# an example settings file for `lanlord config push`. addresses are documentation addresses
+# (192.0.2.0/24, 198.51.100.0/24): replace them with your own. `lanlord install` already stores
+# the web UI's defaults (the web-proxy section below, and no networks) when the server has no
+# settings, so push a file only to replace them.
+networks:
+  - name: retronet
+    interface: eth1
+    address: 192.0.2.1/24
+    dhcp:
+      range: [192.0.2.100, 192.0.2.200]
+    records:
+      - {name: ntsrv1, address: 192.0.2.10}
+  - name: lab
+    interface: eth2
+    address: 198.51.100.1/24
+web-proxy:
+  tls: "off"
+  status:
+    enabled: false
+  webui:
+    tls: internal
