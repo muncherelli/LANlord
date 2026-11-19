@@ -257,7 +257,7 @@ impl Desktop {
         }
     }
 
-    pub(super) fn do_action(&mut self, ctx: &egui::Context, action: Action) {
+    pub(super) fn do_action(&mut self, _ctx: &egui::Context, action: Action) {
         match action {
             Action::Developer => {
                 // the submenu opens beside the row; the menu stays up
