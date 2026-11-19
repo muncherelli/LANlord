@@ -25,6 +25,20 @@ class FirewallUnitTest(unittest.TestCase):
         self.assertNotIn("when:", step)
         self.assertIn("'started'", step)
 
+    def test_etc_docker_is_made_before_daemon_json_is_written(self):
+        # docker has no /etc/docker until it needs a daemon.json
+        mk = self.text.index("make a place for docker's daemon.json")
+        write = self.text.index("tell docker to leave the FORWARD policy alone")
+        self.assertLess(mk, write)
+        step = self.text[mk:write]
+        self.assertIn("path: /etc/docker\n", step)
+        self.assertIn("state: directory", step)
+        self.assertIn("internet_needed", step)
+
+    def test_daemon_json_is_read_only_when_it_exists(self):
+        step = self.text.split("read docker's daemon.json")[1].split("- name:")[0]
+        self.assertIn("daemon_json_stat.stat.exists", step)
+
 
 class NetworksTest(unittest.TestCase):
     def test_listed_network_with_dhcp_host(self):
