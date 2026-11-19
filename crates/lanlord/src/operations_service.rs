@@ -717,17 +717,22 @@ async fn read_answer<R: tokio::io::AsyncRead + Unpin>(
 
 /// the sign-in text from the service listening on `socket`; it needs no account.
 pub async fn ask_login_text(socket: &Path) -> Result<LoginText, Unreachable> {
-    let mut stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .map_err(|_| Unreachable::Down)?;
     let exchange = async {
-        stream.write_all(PUBLIC_LOGIN_TEXT).await.ok()?;
-        read_answer(&mut stream, &|_| {}).await
+        let mut stream = tokio::net::UnixStream::connect(socket)
+            .await
+            .map_err(|_| Unreachable::Down)?;
+        stream
+            .write_all(PUBLIC_LOGIN_TEXT)
+            .await
+            .map_err(|_| Unreachable::NoAnswer)?;
+        match read_answer(&mut stream, &|_| {}).await {
+            Some(Response::Ok(Reply::LoginText(text))) => Ok(text),
+            _ => Err(Unreachable::NoAnswer),
+        }
     };
-    match tokio::time::timeout(READ_TIMEOUT, exchange).await {
-        Ok(Some(Response::Ok(Reply::LoginText(text)))) => Ok(text),
-        _ => Err(Unreachable::NoAnswer),
-    }
+    tokio::time::timeout(READ_TIMEOUT, exchange)
+        .await
+        .unwrap_or(Err(Unreachable::NoAnswer))
 }
 
 /// send `account`'s `operation` to the service listening on `socket`, pass the apply events on to

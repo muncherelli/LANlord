@@ -11,7 +11,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -319,54 +319,43 @@ fn service_login_text(socket: PathBuf) -> LoginTextSource {
 /// costs the service one read in this time, however often they ask.
 const LOGIN_TEXT_KEPT: Duration = Duration::from_secs(10);
 
-/// the sign-in text and when it was read.
+/// the sign-in text and when it was read; `None` is a read that failed, kept as long as a good one
+/// so that a service that is down is not asked again at once.
+type Kept = Option<(Instant, Option<LoginText>)>;
+
 struct LoginTexts {
     source: LoginTextSource,
-    kept: Mutex<Option<(Instant, LoginText)>>,
+    /// held across a read, so that however many ask at once, one read is made.
+    kept: tokio::sync::Mutex<Kept>,
 }
 
 impl LoginTexts {
     fn new(source: LoginTextSource) -> Arc<Self> {
         Arc::new(Self {
             source,
-            kept: Mutex::new(None),
+            kept: tokio::sync::Mutex::new(None),
         })
     }
 
-    async fn get(&self) -> Option<LoginText> {
-        let fresh = |kept: &Option<(Instant, LoginText)>| {
-            kept.as_ref()
-                .filter(|(read, _)| read.elapsed() < LOGIN_TEXT_KEPT)
-                .map(|(_, text)| text.clone())
-        };
-        if let Some(text) = fresh(
-            &self
-                .kept
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        ) {
-            return Some(text);
+    /// the text, or the empty text (the page's own words) while the service cannot say.
+    async fn get(&self) -> LoginText {
+        let mut kept = self.kept.lock().await;
+        if let Some((read, text)) = kept.as_ref() {
+            if read.elapsed() < LOGIN_TEXT_KEPT {
+                return text.clone().unwrap_or_default();
+            }
         }
-        let text = (self.source)().await?;
-        *self
-            .kept
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((Instant::now(), text.clone()));
-        Some(text)
+        let text = (self.source)().await;
+        *kept = Some((Instant::now(), text.clone()));
+        text.unwrap_or_default()
     }
 }
 
 /// `GET /api/login-text`: the title and message of the sign-in screen, for anyone, before
-/// signing in. only those two fields are ever in the answer. when the service cannot say, the
-/// answer is a 503 and the page shows its own words.
+/// signing in. only those two fields are ever in the answer. when the service cannot say, they
+/// are empty and the page shows its own words.
 async fn login_text_route(State(app): State<App>) -> Response {
-    let Some(text) = app.login_text.get().await else {
-        return refusal(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the sign-in text is not available",
-        );
-    };
+    let text = app.login_text.get().await;
     match serde_json::to_string(&text) {
         Ok(body) => (
             StatusCode::OK,
@@ -779,27 +768,73 @@ mod tests {
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     }
 
-    #[test]
-    fn the_sign_in_text_is_read_once_in_a_while_and_a_failure_is_a_503() {
+    /// a source that counts its reads and answers `text` after a moment, so that callers overlap.
+    fn counting(text: Option<LoginText>) -> (LoginTextSource, Arc<std::sync::atomic::AtomicUsize>) {
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = reads.clone();
         let source: LoginTextSource = Arc::new(move || {
             counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(async { Some(lab_text()) })
+            let text = text.clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                text
+            })
         });
+        (source, reads)
+    }
+
+    #[test]
+    fn the_sign_in_text_is_read_once_in_a_while() {
+        let (source, reads) = counting(Some(lab_text()));
         let app = router_reading(source);
         for _ in 0..3 {
             let (status, ..) = runtime().block_on(call(app.clone(), "GET", "/api/login-text"));
             assert_eq!(status, StatusCode::OK);
         }
         assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
-        let (status, kind, _) = runtime().block_on(call(
+    }
+
+    #[test]
+    fn concurrent_requests_on_a_cold_cache_make_one_read() {
+        let (source, reads) = counting(Some(lab_text()));
+        let texts = LoginTexts::new(source);
+        let all = runtime().block_on(async {
+            let tasks: Vec<_> = (0..16)
+                .map(|_| {
+                    let texts = texts.clone();
+                    tokio::spawn(async move { texts.get().await })
+                })
+                .collect();
+            let mut all = Vec::new();
+            for task in tasks {
+                all.push(task.await.unwrap());
+            }
+            all
+        });
+        assert!(all.iter().all(|text| *text == lab_text()));
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_read_is_kept_and_answered_with_the_defaults() {
+        let (source, reads) = counting(None);
+        let texts = LoginTexts::new(source);
+        runtime().block_on(async {
+            for _ in 0..5 {
+                assert_eq!(texts.get().await, LoginText::default());
+            }
+        });
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (status, kind, body) = runtime().block_on(call(
             router_reading(no_login_text()),
             "GET",
             "/api/login-text",
         ));
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(kind, "application/json");
+        assert_eq!(
+            (status, kind.as_str()),
+            (StatusCode::OK, "application/json")
+        );
+        assert_eq!(body, br#"{"title":"","text":""}"#);
     }
 
     #[test]
