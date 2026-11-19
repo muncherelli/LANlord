@@ -44,7 +44,17 @@ pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
 
 fn nodes_ui<M: Clone>(ui: &mut Ui, nodes: &[Node<M>]) -> Option<M> {
     let mut sent = None;
+    // a status bar that ends the window sits on its bottom edge: the room the window has
+    // left over, which no growable part took, goes above the bar and the gap before it
+    let pinned = match nodes {
+        [.., Node::Gap(_), Node::Status { .. }] => nodes.len().checked_sub(2),
+        [.., Node::Status { .. }] => nodes.len().checked_sub(1),
+        _ => None,
+    };
     for (i, node) in nodes.iter().enumerate() {
+        if pinned == Some(i) {
+            ui.add_space(controls::grow(ui, 0.0));
+        }
         let msg = match (node, nodes.get(i + 1)) {
             // a gap that leads into a status bar slides with it
             (Node::Gap(gap), Some(Node::Status { text, .. })) => {
@@ -823,6 +833,22 @@ mod tests {
         let bare = height(&ctx, &[Node::Text("body".into())]);
         let empty = height(&ctx, &with_status(""));
         assert!((empty - bare).abs() < 0.01, "{empty} vs {bare}");
+    }
+
+    #[test]
+    fn a_status_bar_takes_the_room_a_window_has_left_over_to_sit_at_the_bottom() {
+        let ctx = egui::Context::default();
+        let nodes = with_status("ready");
+        let tight = height(&ctx, &nodes);
+        let mut roomy = 0.0;
+        for _ in 0..30 {
+            controls::lend_room(&ctx, 100.0, || roomy = height(&ctx, &nodes));
+        }
+        let mut tight = tight;
+        for _ in 0..30 {
+            tight = height(&ctx, &nodes);
+        }
+        assert!((roomy - tight - 100.0).abs() < 0.01, "{roomy} vs {tight}");
     }
 
     #[test]
