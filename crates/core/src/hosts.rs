@@ -40,6 +40,30 @@ pub fn add(path: &Path, host: &str) -> io::Result<()> {
     writeln!(file, "{host}")
 }
 
+/// the file next to the hosts that holds the target last signed in to.
+fn last_path(path: &Path) -> PathBuf {
+    path.with_file_name("last")
+}
+
+/// the target last signed in to (`user@host`, or the this-server target), if one is kept.
+pub fn load_last(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(last_path(path)).ok()?;
+    let target = text.trim();
+    (!target.is_empty()).then(|| target.to_string())
+}
+
+/// keep `target` as the last sign-in; it is not a list entry.
+pub fn save_last(path: &Path, target: &str) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    private_file()
+        .write(true)
+        .truncate(true)
+        .open(last_path(path))?
+        .write_all(format!("{target}\n").as_bytes())
+}
+
 /// drop `host` from the file, keeping comments and the other hosts.
 pub fn remove(path: &Path, host: &str) -> io::Result<()> {
     let Ok(text) = fs::read_to_string(path) else {
@@ -83,6 +107,20 @@ mod tests {
         add(&path, "me@gw").unwrap();
         add(&path, "me@other").unwrap();
         assert_eq!(load(&path), ["me@gw", "me@other"]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_last_sign_in_is_kept_apart_from_the_list() {
+        let path = temp("last");
+        assert_eq!(load_last(&path), None);
+        save_last(&path, "me@gw").unwrap();
+        save_last(&path, "me@this-server.localhost").unwrap();
+        assert_eq!(
+            load_last(&path).as_deref(),
+            Some("me@this-server.localhost")
+        );
+        assert!(load(&path).is_empty());
         cleanup(&path);
     }
 
