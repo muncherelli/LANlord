@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-19
+
 ### Added
 
 - `lanlord install` stores a minimal settings file on the server when it has none (never over an existing one), so `lanlord networks add` and `lanlord apply` work right after it; it ends with a next-steps block (the web UI address, and what to do when root has no password), hides raw package manager and ansible output unless `--verbose` (shown when a step fails), and the web proxy summary no longer prints an empty site list; `config push` and `apply` end with a success line; `examples/settings.yml` is a sample settings file
