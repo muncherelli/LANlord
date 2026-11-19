@@ -11,6 +11,8 @@ use lanlord_model::access::{Access, Profile};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
 use lanlord_model::identity::{AccountInfo, PasswordReport};
+use lanlord_model::internet::Change as InternetChange;
+use lanlord_model::lan_edit::Edit as NetworkEdit;
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
@@ -128,6 +130,23 @@ pub trait Gateway: Send + Sync {
             name: name.to_string(),
         };
         done(self.call(host, operation, ask)?, "reset_machine")
+    }
+
+    /// switch internet access on or off for a network, or allow or deny one computer, and apply
+    /// the docker and dns modules.
+    fn change_internet(&self, host: &str, change: &InternetChange, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeInternet {
+            change: change.clone(),
+        };
+        done(self.call(host, operation, ask)?, "change_internet")
+    }
+
+    /// add, change or remove a lanlord network and apply the docker and dns modules.
+    fn change_networks(&self, host: &str, edit: &NetworkEdit, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeNetworks {
+            edit: Box::new(edit.clone()),
+        };
+        done(self.call(host, operation, ask)?, "change_networks")
     }
 
     /// create an administrator login, in admins and sudo, with an optional ssh key.
@@ -537,6 +556,14 @@ mod native {
                 *DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plain.clone());
                 Ok(Reply::Done)
             }
+            Operation::ChangeNetworks { edit } => {
+                let mut saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner());
+                let plain = saved.clone().unwrap_or_else(|| DEMO_SETTINGS.to_string());
+                lanlord_model::lan_edit::edit_settings(&plain, edit).map(|text| {
+                    *saved = Some(text);
+                    Reply::Done
+                })
+            }
             Operation::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
             Operation::ServerFacts => Ok(Reply::Facts(Box::new(server::demo()))),
             Operation::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
@@ -717,6 +744,8 @@ mod fake {
         pub purge_lines: Mutex<Vec<String>>,
         /// when set, reading the network status fails with this.
         pub network_error: Mutex<Option<String>>,
+        /// when set, a network change is stored and then fails to apply with this reason.
+        pub apply_error: Mutex<Option<String>>,
         /// the signed-in person's profile, changed by `update_profile`.
         pub profile: Mutex<lanlord_model::access::Profile>,
         /// the roles and who has them, changed by `save_access`.
@@ -763,6 +792,7 @@ mod fake {
                 facts: Mutex::new(None),
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
                 network_error: Mutex::new(None),
+                apply_error: Mutex::new(None),
                 profile: Mutex::new(lanlord_model::access::Profile::default()),
                 access: Mutex::new(Access {
                     members: [
@@ -842,7 +872,7 @@ mod fake {
                     Reply::Done
                 }
                 Operation::LoadDocument => Reply::Document(self.load_document(host, ask)?),
-                Operation::MoveSecrets { .. } => Reply::Done,
+                Operation::MoveSecrets { .. } | Operation::MigrateStored { .. } => Reply::Done,
                 Operation::SaveDocument { plain, updates } => {
                     let updates: Vec<(String, String)> = updates
                         .iter()
@@ -859,6 +889,14 @@ mod fake {
                 }
                 Operation::ResetMachine { name } => {
                     self.reset_machine(host, &name, ask)?;
+                    Reply::Done
+                }
+                Operation::ChangeInternet { change } => {
+                    self.change_internet(host, &change, ask)?;
+                    Reply::Done
+                }
+                Operation::ChangeNetworks { edit } => {
+                    self.change_networks(host, &edit, ask)?;
                     Reply::Done
                 }
                 Operation::CreateAdmin {
@@ -1051,6 +1089,36 @@ mod fake {
 
         pub fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
             self.enter(format!("reset {host} {name}"), ask)
+        }
+
+        pub fn change_internet(
+            &self,
+            host: &str,
+            change: &lanlord_model::internet::Change,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("internet {host} {}", change.describe()), ask)
+        }
+
+        pub fn change_networks(
+            &self,
+            host: &str,
+            edit: &lanlord_model::lan_edit::Edit,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("networks {host} {}", edit.describe()), ask)?;
+            let mut stored = self.stored.lock().unwrap();
+            *stored = lanlord_model::lan_edit::edit_settings(&stored, edit)?;
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("apply {host} [docker,dns]"));
+            match self.apply_error.lock().unwrap().clone() {
+                Some(reason) => Err(anyhow!(
+                    "Saved, but applying failed: {reason}. Fix it and click Apply."
+                )),
+                None => Ok(()),
+            }
         }
 
         pub fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {
@@ -1341,6 +1409,25 @@ mod fake {
         assert_eq!(fake.calls().len(), 18, "{:?}", fake.calls());
     }
 
+    #[test]
+    fn an_internet_change_goes_through_the_backend_as_one_operation() {
+        let fake = Fake::default();
+        let gateway: &dyn Gateway = &fake;
+        let mut ask = |_: &str| Ok(String::new());
+        let change = lanlord_model::internet::Change::Deny {
+            network: "lab".into(),
+            mac: "02:00:00:00:00:01".into(),
+        };
+        gateway.change_internet("a@b", &change, &mut ask).unwrap();
+        let operation = Operation::ChangeInternet { change };
+        assert_eq!(
+            gateway.call("a@b", operation, &mut ask).unwrap(),
+            Reply::Done
+        );
+        assert_eq!(fake.calls().len(), 2, "{:?}", fake.calls());
+        assert!(fake.calls()[0].starts_with("internet a@b"));
+    }
+
     /// a backend that answers every operation with the wrong kind of reply.
     #[cfg(test)]
     struct Confused;
@@ -1368,6 +1455,11 @@ mod fake {
         assert!(gateway.logon_scripts(h, &mut ask).is_err());
         assert!(gateway.read_logon(h, "x", &mut ask).is_err());
         assert!(gateway.run(h, &[]).is_err());
+        let internet = lanlord_model::internet::Change::Network {
+            network: "lab".into(),
+            on: true,
+        };
+        assert!(gateway.change_internet(h, &internet, &mut ask).is_ok());
         assert!(gateway.power(h, Power::Reboot, &mut ask).is_err());
         assert!(gateway.server_facts(h, &mut ask).is_err());
         assert!(gateway.purge_preview(h, false, &mut ask).is_err());

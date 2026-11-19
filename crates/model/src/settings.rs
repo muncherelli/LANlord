@@ -7,6 +7,8 @@ use std::net::Ipv4Addr;
 use anyhow::{anyhow, bail, Result};
 use serde_yaml_ng::{Mapping, Value};
 
+use crate::format::{written_by, FORMAT_KEY, WRITTEN_BY_KEY};
+
 /// the settings as a yaml mapping. text that came from a file is kept
 /// verbatim, so saving it again keeps the comments, until a typed edit
 /// replaces it.
@@ -55,6 +57,7 @@ impl Settings {
     pub fn sections(&self) -> Vec<String> {
         self.root
             .keys()
+            .filter(|k| !is_stamp_key(k))
             .filter_map(|k| k.as_str().map(str::to_string))
             .collect()
     }
@@ -71,6 +74,89 @@ impl Settings {
             self.raw = None;
         }
     }
+
+    /// add a section that is not there yet, keeping the text (and its comments) as it was when
+    /// the text can take it.
+    pub fn add_section_keeping_text(&mut self, key: &str, value: Value) {
+        let kept = self.raw.as_ref().and_then(|raw| {
+            let mut one = Mapping::new();
+            one.insert(Value::String(key.into()), value.clone());
+            let added = serde_yaml_ng::to_string(&one).ok()?;
+            let joined = format!("{}\n{added}", raw.trim_end());
+            self.reads_as(&joined, key, &value).then_some(joined)
+        });
+        self.root.insert(Value::String(key.into()), value);
+        self.raw = kept;
+    }
+
+    /// whether `text` is a mapping that is these settings with `key` set to `value`.
+    fn reads_as(&self, text: &str, key: &str, value: &Value) -> bool {
+        let mut expected = self.root.clone();
+        expected.insert(Value::String(key.into()), value.clone());
+        matches!(
+            serde_yaml_ng::from_str::<Value>(text),
+            Ok(Value::Mapping(map)) if map == expected
+        )
+    }
+
+    /// the format version the settings say they are in, and the lanlord that wrote them;
+    /// `None` for the version when they say nothing (version 1).
+    pub fn format(&self) -> Result<(Option<u32>, Option<String>)> {
+        let version = match self.root.get(FORMAT_KEY) {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(n)) => Some(
+                n.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n >= 1)
+                    .ok_or_else(|| anyhow!("{FORMAT_KEY} must be a whole number from 1"))?,
+            ),
+            Some(_) => bail!("{FORMAT_KEY} must be a whole number from 1"),
+        };
+        let by = self.root.get(WRITTEN_BY_KEY).and_then(text_of);
+        Ok((version, by))
+    }
+
+    /// say these settings are in format `version`, written by this lanlord. the stamp goes at
+    /// the top; the rest of the text is kept.
+    pub fn stamp(&mut self, version: u32) {
+        let by = written_by();
+        let mut root = Mapping::new();
+        root.insert(
+            Value::String(FORMAT_KEY.into()),
+            Value::Number(version.into()),
+        );
+        root.insert(
+            Value::String(WRITTEN_BY_KEY.into()),
+            Value::String(by.into()),
+        );
+        for (key, value) in &self.root {
+            if !is_stamp_key(key) {
+                root.insert(key.clone(), value.clone());
+            }
+        }
+        let raw = self.raw.take().filter(|raw| !raw.trim().is_empty());
+        self.raw = raw.and_then(|raw| {
+            let body: String = raw
+                .lines()
+                .filter(|line| {
+                    !line.starts_with(&format!("{FORMAT_KEY}:"))
+                        && !line.starts_with(&format!("{WRITTEN_BY_KEY}:"))
+                })
+                .map(|line| format!("{line}\n"))
+                .collect();
+            let text = format!("{FORMAT_KEY}: {version}\n{WRITTEN_BY_KEY}: \"{by}\"\n{body}");
+            matches!(
+                serde_yaml_ng::from_str::<Value>(&text),
+                Ok(Value::Mapping(map)) if map == root
+            )
+            .then_some(text)
+        });
+        self.root = root;
+    }
+}
+
+fn is_stamp_key(key: &Value) -> bool {
+    matches!(key.as_str(), Some(FORMAT_KEY) | Some(WRITTEN_BY_KEY))
 }
 
 /// the key names whose values are secrets: they live encrypted on the
@@ -517,7 +603,7 @@ impl Default for Dhcp {
 }
 
 const DEFAULT_ZONE: &str = "retronet";
-const DEFAULT_LEASE: &str = "7d";
+pub const DEFAULT_LEASE: &str = "7d";
 
 /// the `dns` section; see ansible/playbooks/dns.yml for what each part does.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

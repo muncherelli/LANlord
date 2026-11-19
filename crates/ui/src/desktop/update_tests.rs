@@ -111,6 +111,9 @@ fn dev(name: &str, build_ok: bool) -> (Desktop, egui::Context, std::path::PathBu
         Some(exe),
     );
     frames(&mut desktop, &ctx, 2);
+    // the first frame starts a background check that finds nothing; when it lands late it
+    // forgets an update the test pretended, so let it land before the test goes on
+    until(&mut desktop, &ctx, |d| !d.updates.checking());
     (desktop, ctx, repo)
 }
 

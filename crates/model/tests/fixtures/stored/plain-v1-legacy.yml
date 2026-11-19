@@ -1,0 +1,6 @@
+# a gateway set up before versions existed
+docker:
+  internal_interface: eth1
+  internal_address: 192.0.2.1/24
+dns:
+  zone: retronet

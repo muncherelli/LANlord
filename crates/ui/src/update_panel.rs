@@ -236,6 +236,12 @@ impl Updates {
         self.notice.dialog
     }
 
+    /// is a check running in the background? only the unix-only dev tests ask.
+    #[cfg(all(test, unix))]
+    pub fn checking(&self) -> bool {
+        self.notice.checking()
+    }
+
     pub fn open_dialog(&mut self) {
         if self.notice.open_dialog() {
             self.balloon_since = None;

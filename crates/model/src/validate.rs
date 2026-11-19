@@ -279,6 +279,14 @@ pub fn machine_name(text: &str) -> Check {
     )
 }
 
+/// the time that names an upgrade's backups, like 20260101T120000Z.
+pub fn backup_stamp(text: &str) -> Check {
+    flag(
+        crate::format::backup_stamp(text),
+        "must look like 20260101T120000Z",
+    )
+}
+
 /// a dhcp lease time: 30m, 12h, 7d or infinite.
 pub fn lease(text: &str) -> Check {
     flag(
@@ -846,6 +854,13 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
     check_mapping_general("", map, 0, &mut 0)?;
     for (key, value) in map {
         let name = key.as_str().unwrap_or_default();
+        // the version stamp is not a section; it is checked where the settings are loaded
+        if matches!(
+            name,
+            crate::format::FORMAT_KEY | crate::format::WRITTEN_BY_KEY
+        ) {
+            continue;
+        }
         if !known_section(name) {
             return Err(Invalid::new(
                 name,
@@ -1085,13 +1100,36 @@ fn check_modules(ids: &[String]) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// a new network is checked on its own; the server checks the whole list again after the edit.
+fn check_network_edit(edit: &crate::lan_edit::Edit) -> Result<(), Invalid> {
+    use crate::lan_edit::Edit;
+    match edit {
+        Edit::Add(network) => {
+            crate::lan_networks::validate(std::slice::from_ref(network), None, true)
+                .into_iter()
+                .next()
+                .map_or(Ok(()), |e| Err(Invalid::new(e.path, e.message)))
+        }
+        Edit::Set { name, .. } | Edit::Remove(name) => named("name", label, name),
+        Edit::LeaseAdd { network, .. } | Edit::LeaseRemove { network, .. } => {
+            named("network", label, network)
+        }
+    }
+}
+
 /// check the arguments of an operation the way the server will, before anything runs. the first
 /// field that is wrong is named.
 pub fn operation(operation: &Operation) -> Result<(), Invalid> {
     match operation {
         Operation::Apply { modules } => check_modules(modules),
+        Operation::MigrateStored { stamp } => named("stamp", backup_stamp, stamp),
         Operation::SaveDocument { plain, updates } => check_save(plain, updates),
         Operation::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
+        // the server checks the time against its own clock
+        Operation::ChangeInternet { change } => change
+            .check(0)
+            .map_err(|(field, reason)| Invalid::new(field, reason)),
+        Operation::ChangeNetworks { edit } => check_network_edit(edit),
         Operation::ResetMachine { name } => named("name", machine_name, name),
         Operation::CreateAdmin {
             name,
@@ -1998,7 +2036,31 @@ web-proxy:
                 },
                 "topic",
             ),
+            (
+                Operation::ChangeNetworks {
+                    edit: Box::new(crate::lan_edit::Edit::Add(
+                        crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1"),
+                    )),
+                },
+                "networks[0].address",
+            ),
+            (
+                Operation::ChangeNetworks {
+                    edit: Box::new(crate::lan_edit::Edit::Remove("a b".into())),
+                },
+                "name",
+            ),
         ];
+        let mut refused = Vec::from(refused);
+        refused.push((
+            Operation::ChangeInternet {
+                change: crate::internet::Change::Deny {
+                    network: "lab".into(),
+                    mac: "nope".into(),
+                },
+            },
+            "mac",
+        ));
         for (operation, field) in refused {
             let error = operation.validate().expect_err(&format!("{operation:?}"));
             assert!(error.field.starts_with(field), "{operation:?} gave {error}");
@@ -2008,6 +2070,12 @@ web-proxy:
                 modules: vec!["dns".into()],
             },
             Operation::LoadDocument,
+            Operation::ChangeInternet {
+                change: crate::internet::Change::Network {
+                    network: "lab".into(),
+                    on: true,
+                },
+            },
             Operation::ResetMachine { name: "ws1".into() },
             Operation::Run {
                 command: vec!["uname".into(), "-a".into()],
@@ -2028,6 +2096,11 @@ web-proxy:
             Operation::SaveDocument {
                 plain: "dns:\n  zone: lab\n".into(),
                 updates: vec![],
+            },
+            Operation::ChangeNetworks {
+                edit: Box::new(crate::lan_edit::Edit::Add(
+                    crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1/24"),
+                )),
             },
         ];
         for operation in fine {

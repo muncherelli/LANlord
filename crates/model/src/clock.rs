@@ -39,13 +39,15 @@ pub struct ClockState {
 impl ClockState {
     /// the server's local time `secs_later` seconds after it was read, as `YYYY-MM-DD HH:MM:SS`.
     pub fn local_text(&self, secs_later: i64) -> String {
-        local_text(self.utc_secs + secs_later, self.offset_secs)
+        local_text(self.utc_secs.saturating_add(secs_later), self.offset_secs)
     }
 }
 
 /// the local time at `utc_secs` in a zone `offset_secs` from utc.
 pub fn local_text(utc_secs: i64, offset_secs: i32) -> String {
-    chrono::DateTime::from_timestamp(utc_secs + i64::from(offset_secs), 0)
+    utc_secs
+        .checked_add(i64::from(offset_secs))
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
         .map_or_else(String::new, |t| t.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
@@ -296,4 +298,16 @@ pub enum Stored {
     NotInstalled,
     /// the server took the change, but keeping it in the settings failed; the text says why.
     Failed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_time_out_of_range_is_blank_not_a_panic() {
+        assert_eq!(local_text(i64::MAX, 3600), "");
+        assert_eq!(local_text(i64::MIN, -3600), "");
+        assert_eq!(local_text(0, 3600), "1970-01-01 01:00:00");
+    }
 }

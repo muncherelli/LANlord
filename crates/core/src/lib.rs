@@ -16,10 +16,12 @@ pub mod exec;
 pub mod firstadmin;
 pub mod hosts;
 pub mod identity;
+pub mod internet;
 pub mod lan;
 pub mod leases;
 #[cfg(unix)]
 pub mod local;
+pub mod localfile;
 pub mod log;
 pub mod logon;
 mod save_guard;
@@ -48,6 +50,7 @@ pub mod settings;
 pub mod setup;
 pub mod signin;
 pub mod ssh;
+pub mod stored;
 #[cfg(all(test, unix))]
 mod testgw;
 pub mod update;

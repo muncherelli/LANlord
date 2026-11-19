@@ -279,7 +279,9 @@ impl Desktop {
             }
             // the browser build is updated on the gateway, not from here
             #[cfg(not(feature = "native"))]
-            Action::ToggleUpdates | Action::CheckUpdates => {}
+            Action::ToggleUpdates | Action::CheckUpdates => {
+                let _ = ctx;
+            }
             Action::Rebuild => self.ask_rebuild(),
             Action::Open(target) => self.open(target),
             Action::SwitchServer | Action::LogOff => self.log_off(),
@@ -291,8 +293,7 @@ impl Desktop {
                 );
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));
             }
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Action::ServerLine => {}
+            Action::ServerLine | Action::Note => {}
         }
         self.start_open = false;
         self.dev_open = false;
