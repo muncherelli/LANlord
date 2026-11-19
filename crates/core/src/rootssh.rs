@@ -115,6 +115,8 @@ if ! out=$("$sshd" -t 2>&1); then
   exit 4
 fi
 seen=$("$sshd" -T 2>/dev/null | awk 'tolower($1)=="permitrootlogin" {{ print $2; exit }}' || true)
+# older openssh prints the keys-only level under its former name
+if [ "$seen" = without-password ]; then seen=prohibit-password; fi
 if [ "$seen" != '{directive}' ]; then
   back
   echo "sshd would not use the change (it reads PermitRootLogin as '${{seen:-unknown}}', probably set earlier in $base/sshd_config), so it was rolled back" >&2
