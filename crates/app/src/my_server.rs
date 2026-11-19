@@ -446,7 +446,7 @@ impl MyServer {
                 chosen.map_or("Not managed by LANlord", RootSsh::label),
             ),
             Node::Gap(4.0),
-            Node::Disabled(vec![Node::Labelled {
+            Node::Labelled {
                 label: "Root may sign in:".into(),
                 body: vec![Node::Choice {
                     id: "root-ssh",
@@ -459,11 +459,11 @@ impl MyServer {
                         .collect(),
                     pick: Msg::PickRootSsh,
                 }],
-            }]),
+            },
         ];
         if self.read_only {
-            // the choice above is shown greyed out: only an administrator changes it
-            body.remove(body.len() - 1);
+            // only an administrator changes it: the choice gives way to a line saying so
+            body.pop();
             body.push(Node::Text("Only an administrator can change this.".into()));
         }
         if let Some(level) = shown {
@@ -966,6 +966,18 @@ mod tests {
         })
     }
 
+    /// whether the root ssh choice is shown and not greyed out; None when it is not shown.
+    fn root_choice_enabled(nodes: &[Node<Msg>], disabled: bool) -> Option<bool> {
+        nodes.iter().find_map(|node| match node {
+            Node::Choice { id: "root-ssh", .. } => Some(!disabled),
+            Node::Group { body, .. } | Node::Danger(body) | Node::Labelled { body, .. } => {
+                root_choice_enabled(body, disabled)
+            }
+            Node::Disabled(body) => root_choice_enabled(body, true),
+            _ => None,
+        })
+    }
+
     fn settle(window: &mut MyServer, services: &Services) {
         let start = Instant::now();
         loop {
@@ -989,6 +1001,11 @@ mod tests {
         assert!(
             seen.iter().any(|t| t == "Not managed by LANlord"),
             "{seen:?}"
+        );
+        // an administrator can use the choice
+        assert_eq!(
+            root_choice_enabled(&window.advanced(true), false),
+            Some(true)
         );
         // nothing picked yet: nothing to apply
         assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
@@ -1024,6 +1041,7 @@ mod tests {
         window.update(Msg::ApplyRootSsh, &services, "me@gw");
         assert_eq!(window.root_ssh_pick(), None);
         assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
+        assert_eq!(root_choice_enabled(&window.advanced(true), false), None);
         assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
     }
 
