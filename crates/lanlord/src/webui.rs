@@ -339,11 +339,20 @@ impl LoginTexts {
                 .filter(|(read, _)| read.elapsed() < LOGIN_TEXT_KEPT)
                 .map(|(_, text)| text.clone())
         };
-        if let Some(text) = fresh(&self.kept.lock().unwrap_or_else(|e| e.into_inner())) {
+        if let Some(text) = fresh(
+            &self
+                .kept
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ) {
             return Some(text);
         }
         let text = (self.source)().await?;
-        *self.kept.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), text.clone()));
+        *self
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((Instant::now(), text.clone()));
         Some(text)
     }
 }
