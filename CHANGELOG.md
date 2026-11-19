@@ -20,9 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - the desktop stops redrawing when nothing changes: no timer on the sign-in screen, one frame a minute for the taskbar clock, no blinking text cursor, icons uploaded once as textures, the look set once, and the browser build capped at 30 frames a second without dithering
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers
+- the LANlord menu no longer has "Quit LANlord"; the terminal interface still quits with Ctrl+Q, which its menu notes on the last row, and the sign-in box still shuts down
 
 ### Fixed
 
+- the web menu no longer starts with "Server: local", which only made sense where a server can be chosen
+- a window's status bar stays on its bottom edge, in every window and below contents that scroll, instead of floating up to the end of its contents or scrolling away
+- every check on My Server's Compatibility tab says what it is for, along with the components that use it
+- the lease times of a network connection's details show the gateway's UTC offset, or UTC when its clock cannot be read
 - the sign-in box no longer fills its fields from the "This server" target, and the last sign-in is written whole and private (mode 0600) with write errors logged
 
 ## [0.1.3] - 2026-11-19

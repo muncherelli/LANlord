@@ -48,7 +48,7 @@ const MENU: [MenuRow<'static>; 5] = [
     },
     MenuRow::Separator,
     MenuRow::Item {
-        label: "Quit LANlord",
+        label: "About LANlord",
         ticked: false,
         arrow: false,
         enabled: true,
