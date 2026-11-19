@@ -13,6 +13,7 @@ use crate::ssh::Session;
 use crate::{access, operate, save_guard, self_service, settings, stored, users};
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
+    rootssh, setup,
 };
 
 /// the message when the gateway has no key to decrypt the secrets with.
@@ -84,6 +85,28 @@ pub fn execute_in(
             }
         },
     )
+}
+
+/// run the first-run setup for root's web session, through `session`: the one operation such a
+/// session may run, and nothing else. nothing here reads the caller's roles: root has none, and
+/// the web ui only forwards this for a session the login helper let in for setup. what keeps it
+/// from running twice is the check inside [`setup::first_admin`].
+pub fn execute_setup(
+    session: &Session,
+    host: &str,
+    operation: &Operation,
+    ask: AskPassword,
+) -> Result<Reply> {
+    let Operation::SetupFirstAdmin {
+        name,
+        password,
+        root_ssh,
+    } = operation
+    else {
+        return Err(access::Refused("only the first-run setup may run now".into()).into());
+    };
+    operation.validate()?;
+    setup::first_admin(session, host, name, password.expose(), *root_ssh, ask)
 }
 
 /// how long an operation may run: the longest ones (an apply, a purge) take minutes. the
@@ -374,6 +397,23 @@ fn dispatch(
                 *passwordless_sudo,
                 ask,
             )?;
+            Reply::Done
+        }
+        Operation::SetupFirstAdmin {
+            name,
+            password,
+            root_ssh,
+        } => {
+            // only root is ever in setup: an administrator has no use for it, and the check
+            // that no other administrator exists is made inside
+            if who.caller.user != "root" {
+                return Err(access::Refused("first-run setup is for root only".into()).into());
+            }
+            setup::first_admin(session, host, name, password.expose(), *root_ssh, ask)?
+        }
+        Operation::RootSshState => Reply::RootSsh(rootssh::state(session)?),
+        Operation::SetRootSsh { access } => {
+            rootssh::apply(session, *access, ask)?;
             Reply::Done
         }
         Operation::Leases => Reply::Leases(leases::read_with(session, ask)?),

@@ -3,6 +3,7 @@
 
 use lanlord_model::compat::{self, mark};
 use lanlord_model::doctor::{Report, Status};
+use lanlord_model::rootssh::{RootSsh, RootSshInfo, DROPIN};
 use lanlord_model::server::ServerFacts;
 
 use crate::log::{emit, Kind};
@@ -24,6 +25,10 @@ pub enum Msg {
     /// read the server's report again.
     Recheck,
     AskPurge,
+    /// pick a level of root's ssh access, at this index of `RootSsh::ALL`; nothing is sent yet.
+    PickRootSsh(usize),
+    /// set root's ssh access to the picked level.
+    ApplyRootSsh,
     /// the "also remove the administrator accounts" tick.
     ToggleAdmins,
     /// the confirmation field now holds this text.
@@ -129,6 +134,10 @@ pub struct MyServer {
     picked: usize,
     /// the signed-in account is not an administrator: nothing here changes the server.
     read_only: bool,
+    /// how root may sign in over ssh, as the server says now.
+    ssh: Remote<RootSshInfo>,
+    /// the level picked in the window and not applied yet.
+    ssh_pick: Option<RootSsh>,
 }
 
 impl MyServer {
@@ -149,6 +158,16 @@ impl MyServer {
     /// the purge box, while it is open.
     pub fn purge(&self) -> Option<&PurgeBox> {
         self.purge.as_ref()
+    }
+
+    /// how root's ssh access stands, once it is read.
+    pub fn root_ssh(&self) -> &Remote<RootSshInfo> {
+        &self.ssh
+    }
+
+    /// the level picked and not yet applied.
+    pub fn root_ssh_pick(&self) -> Option<RootSsh> {
+        self.ssh_pick
     }
 
     /// switch off what changes the server, for an account that is not an administrator.
@@ -186,6 +205,18 @@ impl MyServer {
         self.checking = services.compat().busy();
         self.report_note = services.compat().note();
         self.facts.poll();
+        self.ssh.poll();
+        if self.ssh.wants_load(host, false) {
+            let target = host.to_string();
+            let job = services.spawn(host, move |gateway, _| gateway.root_ssh(&target));
+            self.ssh.track(
+                host,
+                job,
+                "reading root's ssh access...",
+                "up to date",
+                true,
+            );
+        }
         if self.facts.wants_load(host, false) {
             let target = host.to_string();
             let job = services.spawn(host, move |gateway, ask| gateway.server_facts(&target, ask));
@@ -385,10 +416,82 @@ impl MyServer {
                 "LANlord is not installed on this server.".into(),
             ));
         }
-        vec![Node::Danger(vec![Node::Group {
-            title: "Danger zone".into(),
+        vec![
+            self.root_ssh_group(idle),
+            Node::Gap(6.0),
+            Node::Danger(vec![Node::Group {
+                title: "Danger zone".into(),
+                body,
+            }]),
+        ]
+    }
+
+    /// whether root may sign in to the server over ssh: the setting, its three levels, and what
+    /// each one means. an account that is not an administrator sees it and cannot change it.
+    fn root_ssh_group(&self, idle: bool) -> Node<Msg> {
+        let info = self.ssh.data.as_ref();
+        let chosen = info.and_then(|i| i.chosen);
+        let shown = self.ssh_pick.or(chosen);
+        let readable = info.is_some_and(|i| i.dropins);
+        let mut body = vec![
+            Node::Gap(4.0),
+            Node::Text(
+                "Whether root may sign in to this server over ssh. Until you choose, \
+                 LANlord leaves the ssh daemon as it is."
+                    .into(),
+            ),
+            Node::Gap(4.0),
+            Node::field(
+                "Now",
+                chosen.map_or("Not managed by LANlord", RootSsh::label),
+            ),
+            Node::Gap(4.0),
+            Node::Labelled {
+                label: "Root may sign in:".into(),
+                body: vec![Node::Choice {
+                    id: "root-ssh",
+                    current: shown.map_or("choose a level", RootSsh::label).into(),
+                    width: 220.0,
+                    options: RootSsh::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(i, level)| (i, level.label().to_string()))
+                        .collect(),
+                    pick: Msg::PickRootSsh,
+                }],
+            },
+        ];
+        if self.read_only {
+            // only an administrator changes it: the choice gives way to a line saying so
+            body.pop();
+            body.push(Node::Text("Only an administrator can change this.".into()));
+        }
+        if let Some(level) = shown {
+            body.push(Node::Gap(4.0));
+            body.push(Node::Text(level.explain().to_string()));
+        }
+        if info.is_some() && !readable {
+            body.push(Node::Gap(4.0));
+            body.push(Node::Alert(format!(
+                "This server's sshd does not read {}, so root's ssh access cannot be set here.",
+                DROPIN.rsplit_once('/').map_or(DROPIN, |(dir, _)| dir)
+            )));
+        }
+        let ready = !self.read_only
+            && idle
+            && readable
+            && !self.ssh.busy()
+            && self.ssh_pick.is_some_and(|p| Some(p) != chosen);
+        body.push(Node::Gap(6.0));
+        body.push(Node::Button(Button::new("Apply", ready, Msg::ApplyRootSsh)));
+        if let Some((error, text)) = self.ssh.note.clone() {
+            body.push(Node::Gap(4.0));
+            body.push(Node::Status { text, error });
+        }
+        Node::Group {
+            title: "Root ssh access".into(),
             body,
-        }])]
+        }
     }
 
     /// the confirmation box, while a purge is being asked for or run.
@@ -466,6 +569,34 @@ impl MyServer {
             Msg::AskPurge => {
                 if self.can_purge(!services.busy(host)) {
                     self.ask_to_purge(services, host);
+                }
+            }
+            Msg::PickRootSsh(i) => {
+                if !self.read_only {
+                    self.ssh_pick = RootSsh::ALL.get(i).copied();
+                }
+            }
+            Msg::ApplyRootSsh => {
+                let Some(level) = self.ssh_pick else {
+                    return;
+                };
+                let readable = self.ssh.data.as_ref().is_some_and(|i| i.dropins);
+                if self.read_only || !readable || self.ssh.busy() {
+                    return;
+                }
+                let target = host.to_string();
+                let job = services.spawn(host, move |gateway, ask| {
+                    gateway.set_root_ssh(&target, level, ask)?;
+                    gateway.root_ssh(&target)
+                });
+                if self.ssh.track(
+                    host,
+                    job,
+                    "setting root's ssh access...",
+                    "root's ssh access is set",
+                    false,
+                ) {
+                    self.ssh_pick = None;
                 }
             }
             Msg::Cancel => {
@@ -809,5 +940,128 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    /// every text a node tree shows, flattened.
+    fn texts(nodes: &[Node<Msg>], out: &mut Vec<String>) {
+        for node in nodes {
+            match node {
+                Node::Text(t) | Node::Alert(t) => out.push(t.clone()),
+                Node::Group { body, .. }
+                | Node::Danger(body)
+                | Node::Disabled(body)
+                | Node::Labelled { body, .. } => texts(body, out),
+                Node::Choice { current, .. } => out.push(current.clone()),
+                Node::Field { value, .. } => out.push(value.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    fn apply_enabled(nodes: &[Node<Msg>]) -> Option<bool> {
+        nodes.iter().find_map(|node| match node {
+            Node::Group { body, .. } | Node::Danger(body) => apply_enabled(body),
+            Node::Button(b) if b.label == "Apply" => Some(b.enabled),
+            _ => None,
+        })
+    }
+
+    /// whether the root ssh choice is shown and not greyed out; None when it is not shown.
+    fn root_choice_enabled(nodes: &[Node<Msg>], disabled: bool) -> Option<bool> {
+        nodes.iter().find_map(|node| match node {
+            Node::Choice { id: "root-ssh", .. } => Some(!disabled),
+            Node::Group { body, .. } | Node::Danger(body) | Node::Labelled { body, .. } => {
+                root_choice_enabled(body, disabled)
+            }
+            Node::Disabled(body) => root_choice_enabled(body, true),
+            _ => None,
+        })
+    }
+
+    fn settle(window: &mut MyServer, services: &Services) {
+        let start = Instant::now();
+        loop {
+            window.refresh(services, "me@gw");
+            if window.ssh.data.is_some() && !window.ssh.busy() && !window.facts.busy() {
+                return;
+            }
+            assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn root_ssh_access_is_read_picked_and_applied_by_an_administrator() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        settle(&mut window, &services);
+        let mut seen = Vec::new();
+        texts(&window.advanced(true), &mut seen);
+        assert!(
+            seen.iter().any(|t| t == "Not managed by LANlord"),
+            "{seen:?}"
+        );
+        // an administrator can use the choice
+        assert_eq!(
+            root_choice_enabled(&window.advanced(true), false),
+            Some(true)
+        );
+        // nothing picked yet: nothing to apply
+        assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
+        window.update(Msg::PickRootSsh(2), &services, "me@gw");
+        assert_eq!(window.root_ssh_pick(), Some(RootSsh::Off));
+        let mut seen = Vec::new();
+        texts(&window.advanced(true), &mut seen);
+        assert!(
+            seen.iter().any(|t| t.contains("LANlord clients")),
+            "the warning about clients that connect as root: {seen:?}"
+        );
+        assert_eq!(apply_enabled(&window.advanced(true)), Some(true));
+        window.update(Msg::ApplyRootSsh, &services, "me@gw");
+        let start = Instant::now();
+        while window.ssh.busy() {
+            window.refresh(&services, "me@gw");
+            assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(fake.calls().contains(&"set-root-ssh me@gw no".to_string()));
+        assert_eq!(window.ssh.data.as_ref().unwrap().chosen, Some(RootSsh::Off));
+        assert_eq!(window.root_ssh_pick(), None);
+    }
+
+    #[test]
+    fn root_ssh_access_cannot_be_changed_by_a_read_only_window() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        window.set_read_only(true);
+        settle(&mut window, &services);
+        window.update(Msg::PickRootSsh(0), &services, "me@gw");
+        window.update(Msg::ApplyRootSsh, &services, "me@gw");
+        assert_eq!(window.root_ssh_pick(), None);
+        assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
+        assert_eq!(root_choice_enabled(&window.advanced(true), false), None);
+        assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
+    }
+
+    #[test]
+    fn a_server_whose_sshd_ignores_the_folder_says_so_and_offers_no_apply() {
+        let fake = Arc::new(Fake::new());
+        fake.root_ssh.lock().unwrap().dropins = false;
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        settle(&mut window, &services);
+        window.update(Msg::PickRootSsh(1), &services, "me@gw");
+        let mut seen = Vec::new();
+        texts(&window.advanced(true), &mut seen);
+        assert!(
+            seen.iter()
+                .any(|t| t.contains("does not read /etc/ssh/sshd_config.d")),
+            "{seen:?}"
+        );
+        assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
+        window.update(Msg::ApplyRootSsh, &services, "me@gw");
+        assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
     }
 }

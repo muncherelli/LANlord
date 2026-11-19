@@ -28,7 +28,32 @@ to read the shadow file), so the check is done by a small separate program,
      address as the remote host;
    - when the password is right, checks whether `alice` is in the `admins` group, and answers
      `ok` for an administrator or `ok user` for any other ordinary account.
-5. It answers one line: `ok`, `ok user`, `denied` or `error <code>`.
+5. It answers one line: `ok`, `ok user`, `ok setup`, `denied` or `error <code>`.
+
+## The first-run exception for root
+
+Root never signs in to the web UI as an ordinary session. The one exception is a gateway that has
+no administrator yet: while the `admins` group has no member other than root, the helper accepts
+root's password (checked through PAM as strictly as anyone's) and answers `ok setup`. The web UI
+then gives root a setup session that can do one thing, the first-run setup: create the first
+administrator account and choose root's ssh access. Every other operation, stream and page is
+refused for that session by the web UI, and the operations service refuses everything but the setup
+for root as well. When the setup is done the session ends and the person signs in as the new
+account.
+
+- Only the name `root` is left out of the count of administrators, so another account with uid 0
+  neither gets the setup nor counts; a passwd database that cannot be read is an error, never an
+  empty group.
+- "Root ssh off" is refused in the setup when sshd takes no ssh passwords: the new account has no
+  key yet, so no one could sign in over ssh.
+- The group is read at every login, never cached. Once any other account is in `admins`, root is
+  refused exactly as every other system account is: the same `denied`, after the same time.
+- The setup checks again, on the gateway, that no other administrator exists, so a second try
+  (or a race between two) is refused.
+- The new account's password travels once, from the browser to the web UI, and from there to the
+  operations service on its socket. It is not logged and is never an argument or in the
+  environment of any command.
+- Other accounts below uid 1000 (daemon, nobody and the rest) are still denied.
 
 ## What it never gives away
 

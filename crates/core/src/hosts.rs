@@ -140,6 +140,28 @@ mod tests {
         cleanup(&path);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_last_sign_in_is_replaced_whole_privately_and_leaves_nothing_behind() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp("last-private");
+        save_last(&path, "me@gw").unwrap();
+        save_last(&path, "me@other").unwrap();
+        let last = last_path(&path);
+        assert_eq!(fs::read_to_string(&last).unwrap(), "me@other\n");
+        assert_eq!(
+            fs::metadata(&last).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let names: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.starts_with(".last.")), "{names:?}");
+        cleanup(&path);
+    }
+
     #[test]
     fn load_skips_comments_and_blank_lines() {
         let path = temp("comments");

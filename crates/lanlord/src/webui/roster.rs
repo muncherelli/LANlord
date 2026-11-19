@@ -96,6 +96,19 @@ async fn session(
     Extension(roster): Extension<Arc<Roster>>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(user) = auth.setup_session(&headers) {
+        // root's first-run setup: no roles, no grants, and the page shows nothing but the setup
+        return (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            serde_json::json!({ "user": user, "admin": false, "setup": true, "grants": {} })
+                .to_string(),
+        )
+            .into_response();
+    }
     match require_current(&auth, &headers).await {
         Ok((user, admin)) => {
             let grants = roster.grants_given(&user, admin).await;

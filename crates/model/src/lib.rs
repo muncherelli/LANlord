@@ -25,6 +25,7 @@ pub mod nt4;
 pub mod operations;
 pub mod passwords;
 pub mod power;
+pub mod rootssh;
 pub mod routes;
 pub mod secret;
 pub mod server;

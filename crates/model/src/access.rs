@@ -141,6 +141,8 @@ pub enum Need {
     Area(Area, Level),
     /// the caller's own account: always allowed, whatever the roles.
     SelfOnly,
+    /// manage on every area: what only an administrator has.
+    Admin,
 }
 
 impl Need {
@@ -235,6 +237,7 @@ impl Grants {
     pub fn allows(&self, need: Need) -> bool {
         match need {
             Need::SelfOnly => true,
+            Need::Admin => Area::ALL.iter().all(|a| self.level(*a) >= Level::Manage),
             Need::Area(area, level) => self.level(area) >= level,
         }
     }
@@ -501,6 +504,16 @@ mod tests {
         assert!(!none.allows(Need::view(Area::Status)));
         assert!(Grants::all(Level::View).allows(Need::view(Area::Dns)));
         assert!(!Grants::all(Level::View).allows(Need::manage(Area::Dns)));
+    }
+
+    #[test]
+    fn admin_needs_manage_on_every_area() {
+        assert!(Grants::all(Level::Manage).allows(Need::Admin));
+        assert!(!Grants::all(Level::View).allows(Need::Admin));
+        let mut nearly = Grants::all(Level::Manage);
+        nearly.0.insert(Area::Updates, Level::View);
+        assert!(!nearly.allows(Need::Admin));
+        assert!(!Grants::default().allows(Need::Admin));
     }
 
     #[test]
