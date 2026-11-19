@@ -154,7 +154,7 @@
       ansible.builtin.template:
         src: docker/sysctl.conf.j2
         dest: /etc/sysctl.d/60-lanlord.conf
-        mode: "0644"
+        mode: "0600"
       when: internet_needed
 
     - name: turn ip forwarding on now
@@ -228,7 +228,7 @@
       ansible.builtin.copy:
         dest: /etc/docker/daemon.json
         content: "{{ daemon_config | combine({'ip-forward-no-drop': true}) | to_nice_json }}\n"
-        mode: "0644"
+        mode: "0600"
       register: daemon_json_written
       when: >-
         internet_needed and docker_version.stdout is version('28.0', '>=')
@@ -238,7 +238,7 @@
       ansible.builtin.copy:
         dest: /etc/docker/daemon.json
         content: "{{ daemon_config | dict2items | rejectattr('key', 'eq', 'ip-forward-no-drop') | items2dict | to_nice_json }}\n"
-        mode: "0644"
+        mode: "0600"
       register: daemon_json_cleaned
       when: >-
         not internet_needed and docker_version.stdout is version('28.0', '>=')
