@@ -196,7 +196,10 @@ impl Plan {
     /// after an upgrade that did not touch its files.
     pub fn with_units(mut self, units: &[Unit]) -> Self {
         for unit in units {
-            match SERVICES.iter().find(|service| service.name == unit.name) {
+            let core = SERVICES
+                .iter()
+                .find(|service| format!("{}.service", service.name) == unit.name);
+            match core {
                 Some(service) => {
                     let known = |list: &[Service]| list.contains(service);
                     if !unit.active && known(&self.check) && !known(&self.restart) {
@@ -222,27 +225,46 @@ pub struct Unit {
     pub active: bool,
 }
 
-/// the script that prints `unit state` for every enabled lanlord service.
+/// the script that prints `unit state` for every enabled lanlord service, socket and timer.
 pub fn units_script() -> String {
     "# upgrade units\n\
-     systemctl list-unit-files 'lanlord-*.service' --state=enabled --no-legend 2>/dev/null | while read -r unit _; do\n\
+     systemctl list-unit-files 'lanlord-*.service' 'lanlord-*.socket' 'lanlord-*.timer' --state=enabled --no-legend 2>/dev/null | while read -r unit _; do\n\
      \x20 echo \"$unit $(systemctl is-active \"$unit\" 2>/dev/null | head -n 1)\"\n\
      done\n"
         .to_string()
 }
 
-/// read the output of [`units_script`]; lines that are not a lanlord service are skipped.
+/// read the output of [`units_script`]; lines that are not a lanlord unit are skipped. the name
+/// keeps its suffix.
 pub fn parse_units(text: &str) -> Vec<Unit> {
     text.lines()
         .filter_map(|line| {
             let (unit, state) = line.split_once(' ')?;
-            let name = unit.strip_suffix(".service")?;
-            name.starts_with("lanlord-").then(|| Unit {
-                name: name.to_string(),
+            let named = [".service", ".socket", ".timer"]
+                .iter()
+                .any(|suffix| unit.ends_with(suffix));
+            (named && unit.starts_with("lanlord-")).then(|| Unit {
+                name: unit.to_string(),
                 active: state.trim() == "active",
             })
         })
         .collect()
+}
+
+/// the script that prints the name of each of `units` that is still not active, after giving it
+/// up to fifteen seconds; it always exits 0.
+pub fn extras_script(units: &[String]) -> String {
+    format!(
+        "# upgrade extras\n\
+         for unit in {}; do\n\
+         \x20 tries=0\n\
+         \x20 while [ \"$(systemctl is-active \"$unit\" 2>/dev/null | head -n 1)\" != active ] && [ \"$tries\" -lt 15 ]; do\n\
+         \x20   tries=$((tries + 1)); sleep 1\n\
+         \x20 done\n\
+         \x20 [ \"$(systemctl is-active \"$unit\" 2>/dev/null | head -n 1)\" = active ] || echo \"$unit\"\n\
+         done\n",
+        units.join(" ")
+    )
 }
 
 /// the services whose unit exists in `snapshot`.
@@ -563,15 +585,35 @@ pub(crate) fn run_with(
         Ok(plan)
     })?;
     step(events, Step::Verify, |line| {
-        let all = names_with(&plan.check, &plan.extra_check);
-        if root_status(
-            session,
-            check_script(&plan.check, &plan.extra_check),
-            &mut *ask,
-        )? == 0
-        {
-            line(&format!("{all} answering"));
-            return Ok(());
+        if root_status(session, check_script(&plan.check, &[]), &mut *ask)? == 0 {
+            line(&format!("{} answering", names(&plan.check)));
+            // the other units do not decide whether the new binary is rolled back: the upgrade
+            // stays, and what is still down is named
+            if plan.extra_check.is_empty() {
+                return Ok(());
+            }
+            let admin = login_user(session)?;
+            let text = capture_as_root(
+                session,
+                &admin.name,
+                extras_script(&plan.extra_check),
+                &mut *ask,
+            )?;
+            let down: Vec<&str> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            if down.is_empty() {
+                line(&format!("{} active", plan.extra_check.join(" ")));
+                return Ok(());
+            }
+            bail!(
+                "the upgrade is in place and {} answering, but {} still not active; nothing was \
+                 rolled back; look at each with `systemctl status <unit>` or run `lanlord doctor`",
+                names(&plan.check),
+                down.join(", ")
+            );
         }
         if !before.healthy {
             bail!(
@@ -599,8 +641,8 @@ mod tests {
     use crate::ssh::Session;
     use crate::testgw::no_password;
     use crate::upgrade::{
-        check_script, has_web_server, parse_units, restart_script, rollback_script, run_with,
-        snapshot_script, units_script, Event, Plan, Snapshot, Step, Unit, BINARY,
+        check_script, extras_script, has_web_server, parse_units, restart_script, rollback_script,
+        run_with, snapshot_script, units_script, Event, Plan, Snapshot, Step, Unit, BINARY,
         NO_WEB_SERVER_REVERSED, SERVICES,
     };
     use crate::webinstall::{install_script, WebSource};
@@ -672,6 +714,9 @@ case "$last" in
       "# upgrade restart"*)
         echo "$input" | grep '^systemctl restart' | sed 's/^systemctl //' >> "$D/log" ;;
       "# upgrade units"*) cat "$D/units" 2>/dev/null || true ;;
+      "# upgrade extras"*)
+        echo extras >> "$D/log"
+        [ -f "$D/firewall-down" ] && echo lanlord-firewall.service; exit 0 ;;
       "# upgrade rollback"*)
         case "$input" in
           *"swap had not begun"*) [ -f "$D/moved" ] || { echo rollback-skipped >> "$D/log"; exit 3; } ;;
@@ -679,7 +724,6 @@ case "$last" in
         echo rollback >> "$D/log"; touch "$D/rolled"; [ -f "$D/still-broken" ] && exit 1; exit 0 ;;
       "# upgrade check"*)
         echo check >> "$D/log"
-        case "$input" in *lanlord-firewall*) echo check-firewall >> "$D/log"; [ -f "$D/firewall-down" ] && exit 1 ;; esac
         if [ -f "$D/down-before" ] && [ ! -f "$D/placed" ]; then exit 1; fi
         if [ -f "$D/unhealthy" ] && [ -f "$D/placed" ] && [ ! -f "$D/rolled" ]; then exit 1; fi; exit 0 ;;
       "set -eu
@@ -1025,14 +1069,14 @@ esac"##
         server.upgrade().0.unwrap();
         let log = server.log();
         assert!(
-            log.contains(&"restart lanlord-firewall".to_string()),
+            log.contains(&"restart lanlord-firewall.service".to_string()),
             "{log:?}"
         );
-        assert_eq!(&log[log.len() - 2..], ["check", "check-firewall"]);
+        assert_eq!(&log[log.len() - 2..], ["check", "extras"]);
     }
 
     #[test]
-    fn a_unit_that_stays_down_fails_the_upgrade() {
+    fn a_unit_that_stays_down_fails_the_upgrade_without_a_rollback() {
         let server = Server::installed("firewall-down");
         std::fs::write(
             server.dir.join("units"),
@@ -1042,17 +1086,38 @@ esac"##
         server.flag("firewall-down");
         let (result, events) = server.upgrade();
         let message = format!("{:#}", result.unwrap_err());
-        assert!(message.contains("did not come back"), "{message}");
+        assert!(message.contains("lanlord-firewall.service"), "{message}");
+        assert!(message.contains("systemctl status"), "{message}");
+        assert!(message.contains("nothing was rolled back"), "{message}");
+        assert!(!message.contains("running again"), "{message}");
         assert_eq!(outcomes(&events).last(), Some(&(Step::Verify, "failed")));
-        assert!(server
-            .log()
-            .contains(&"restart lanlord-webui lanlord-operations lanlord-firewall".to_string()));
+        let log = server.log();
+        assert!(!log.contains(&"rollback".to_string()), "{log:?}");
+        assert!(log.contains(
+            &"restart lanlord-webui lanlord-operations lanlord-firewall.service".to_string()
+        ));
+    }
+
+    #[test]
+    fn a_core_service_that_fails_is_still_rolled_back_with_a_healthy_extra_unit() {
+        let server = Server::installed("core-down");
+        std::fs::write(
+            server.dir.join("units"),
+            "lanlord-firewall.service active\n",
+        )
+        .unwrap();
+        server.flag("unhealthy");
+        let (result, _) = server.upgrade();
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("running again"), "{message}");
+        assert!(server.log().contains(&"rollback".to_string()));
     }
 
     #[test]
     fn the_units_are_read_from_systemctl_output() {
         let text = "lanlord-webui.service active\nlanlord-firewall.service inactive\n\
-                    lanlord-dhcp.service failed\nother.service active\ngarbage\n";
+                    lanlord-dhcp.service failed\nlanlord-dhcp.socket active\n\
+                    lanlord-sweep.timer inactive\nother.service active\ngarbage\n";
         let unit = |name: &str, active| Unit {
             name: name.into(),
             active,
@@ -1060,12 +1125,18 @@ esac"##
         assert_eq!(
             parse_units(text),
             [
-                unit("lanlord-webui", true),
-                unit("lanlord-firewall", false),
-                unit("lanlord-dhcp", false)
+                unit("lanlord-webui.service", true),
+                unit("lanlord-firewall.service", false),
+                unit("lanlord-dhcp.service", false),
+                unit("lanlord-dhcp.socket", true),
+                unit("lanlord-sweep.timer", false)
             ]
         );
-        assert!(units_script().contains("--state=enabled"));
+        let script = units_script();
+        assert!(script.contains("--state=enabled"));
+        assert!(script.contains("'lanlord-*.socket' 'lanlord-*.timer'"));
+        assert!(extras_script(&["lanlord-firewall.service".into()])
+            .contains("in lanlord-firewall.service;"));
     }
 
     #[test]
@@ -1078,15 +1149,17 @@ esac"##
             active,
         };
         let plan = plan.with_units(&[
-            unit("lanlord-webui", false),
-            unit("lanlord-operations", true),
-            unit("lanlord-firewall", false),
-            unit("lanlord-dhcp", true),
+            unit("lanlord-webui.service", false),
+            unit("lanlord-operations.service", true),
+            unit("lanlord-firewall.service", false),
+            unit("lanlord-dhcp.socket", true),
         ]);
         assert_eq!(plan.restart, [SERVICES[0]]);
-        assert_eq!(plan.extra_start, ["lanlord-firewall"]);
-        assert_eq!(plan.extra_check, ["lanlord-firewall", "lanlord-dhcp"]);
-        assert!(check_script(&plan.check, &plan.extra_check).contains("lanlord-dhcp"));
+        assert_eq!(plan.extra_start, ["lanlord-firewall.service"]);
+        assert_eq!(
+            plan.extra_check,
+            ["lanlord-firewall.service", "lanlord-dhcp.socket"]
+        );
     }
 
     #[test]
