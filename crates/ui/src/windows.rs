@@ -297,6 +297,34 @@ fn remember_room(
     }
 }
 
+/// draw the held-back status bar under the scrolling part, with its margins; how tall that took.
+fn pinned_strip(ui: &mut Ui, pinned: Option<&view::Pinned>) -> f32 {
+    let Some(pinned) = pinned else {
+        return 0.0;
+    };
+    let t = view::pinned_amount(ui, pinned);
+    let top = ui.cursor().top();
+    egui::Frame::new()
+        .inner_margin(Margin {
+            left: MARGIN as i8,
+            right: MARGIN as i8,
+            top: 0,
+            bottom: (MARGIN * t) as i8,
+        })
+        .show(ui, |ui| view::draw_pinned(ui, pinned));
+    ui.cursor().top() - top
+}
+
+/// room to add under contents of `content_height` so that a window opens at its `floor`, none
+/// when it is not a window that fits its contents.
+fn pad_to_floor(fit: bool, floor: f32, content_height: f32, reserve: f32) -> f32 {
+    if fit {
+        (floor - CHROME - content_height - reserve).max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -406,11 +434,9 @@ pub fn show(
                             });
                         content_height = framed.response.rect.height();
                         // near empty contents leave the window the height it is meant to open at
-                        if fit {
-                            let pad = floor - CHROME - content_height - reserve;
-                            if pad > 0.0 {
-                                ui.allocate_space(Vec2::new(0.0, pad));
-                            }
+                        let pad = pad_to_floor(fit, floor, content_height, reserve);
+                        if pad > 0.0 {
+                            ui.allocate_space(Vec2::new(0.0, pad));
                         }
                     });
             })
@@ -428,20 +454,7 @@ pub fn show(
         ui.allocate_rect(taken, Sense::hover());
         // the status bar, if the contents end in one, sits below the scrolling part: on the
         // bottom edge of the window, and always in view
-        let mut strip = 0.0;
-        if let Some(pinned) = &pinned {
-            let t = view::pinned_amount(ui, pinned);
-            let top = ui.cursor().top();
-            egui::Frame::new()
-                .inner_margin(Margin {
-                    left: MARGIN as i8,
-                    right: MARGIN as i8,
-                    top: 0,
-                    bottom: (MARGIN * t) as i8,
-                })
-                .show(ui, |ui| view::draw_pinned(ui, pinned));
-            strip = ui.cursor().top() - top;
-        }
+        let strip = pinned_strip(ui, pinned.as_ref());
         ctx.data_mut(|d| d.insert_temp(pin_key, strip));
         content_height += strip;
     })?;
