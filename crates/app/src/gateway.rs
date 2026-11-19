@@ -11,6 +11,7 @@ use lanlord_model::access::{Access, Profile};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
 use lanlord_model::identity::{AccountInfo, PasswordReport};
+use lanlord_model::lan_edit::Edit as NetworkEdit;
 use lanlord_model::leases::Lease;
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::network::Internal;
@@ -127,6 +128,12 @@ pub trait Gateway: Send + Sync {
             name: name.to_string(),
         };
         done(self.call(host, operation, ask)?, "reset_machine")
+    }
+
+    /// add, change or remove a lanlord network and apply the docker and dns modules.
+    fn change_networks(&self, host: &str, edit: &NetworkEdit, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeNetworks { edit: edit.clone() };
+        done(self.call(host, operation, ask)?, "change_networks")
     }
 
     /// create an administrator login, in admins and sudo, with an optional ssh key.
@@ -498,6 +505,14 @@ mod native {
                 *DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(plain.clone());
                 Ok(Reply::Done)
             }
+            Operation::ChangeNetworks { edit } => {
+                let mut saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner());
+                let plain = saved.clone().unwrap_or_else(|| DEMO_SETTINGS.to_string());
+                lanlord_model::lan_edit::edit_settings(&plain, edit).map(|text| {
+                    *saved = Some(text);
+                    Reply::Done
+                })
+            }
             Operation::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
             Operation::ServerFacts => Ok(Reply::Facts(Box::new(server::demo()))),
             Operation::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
@@ -816,6 +831,10 @@ mod fake {
                     self.reset_machine(host, &name, ask)?;
                     Reply::Done
                 }
+                Operation::ChangeNetworks { edit } => {
+                    self.change_networks(host, &edit, ask)?;
+                    Reply::Done
+                }
                 Operation::CreateAdmin {
                     name,
                     password,
@@ -993,6 +1012,22 @@ mod fake {
 
         pub fn reset_machine(&self, host: &str, name: &str, ask: AskPassword) -> Result<()> {
             self.enter(format!("reset {host} {name}"), ask)
+        }
+
+        pub fn change_networks(
+            &self,
+            host: &str,
+            edit: &lanlord_model::lan_edit::Edit,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("networks {host} {}", edit.describe()), ask)?;
+            let mut stored = self.stored.lock().unwrap();
+            *stored = lanlord_model::lan_edit::edit_settings(&stored, edit)?;
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("apply {host} [docker,dns]"));
+            Ok(())
         }
 
         pub fn create_admin(&self, host: &str, new: &NewAdmin, ask: AskPassword) -> Result<()> {

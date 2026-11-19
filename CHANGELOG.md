@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- the Networks window adds, changes and removes LANlord networks (New network..., the Properties of a network, and a click on an unused card in the interface list), like `lanlord networks add`, `set` and `remove`; the operations service has a `change_networks` operation that needs manage on Network
+
 ### Changed
 
 - the sign-in box opens on the connection you used last, "This server" included; the last sign-in is kept in a `last` file beside the recent servers

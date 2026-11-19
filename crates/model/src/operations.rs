@@ -15,6 +15,7 @@ use crate::access::{Access, Area, Need, Profile};
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use crate::doctor::Report;
 use crate::identity::{AccountInfo, PasswordReport};
+use crate::lan_edit::Edit as NetworkEdit;
 use crate::leases::Lease;
 use crate::login_text::LoginText;
 use crate::netstatus::InterfaceStatus;
@@ -57,6 +58,9 @@ pub enum Operation {
         ssh_key: Option<String>,
         passwordless_sudo: bool,
     },
+    /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
+    /// docker and dns modules.
+    ChangeNetworks { edit: NetworkEdit },
     /// the dhcp leases the gateway has handed out.
     Leases,
     /// the names of the logon scripts in the netlogon share.
@@ -124,6 +128,7 @@ impl Operation {
             Operation::ChangeUsers { .. } => Need::manage(Area::Domain),
             Operation::ResetMachine { .. } => Need::manage(Area::Domain),
             Operation::CreateAdmin { .. } => Need::manage(Area::Users),
+            Operation::ChangeNetworks { .. } => Need::manage(Area::Network),
             Operation::Leases => Need::view(Area::Network),
             Operation::LogonScripts
             | Operation::ReadLogon { .. }
@@ -179,6 +184,7 @@ impl Operation {
                 | Operation::LoadDocument
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
+                | Operation::ChangeNetworks { .. }
                 | Operation::ChangeUsers { .. }
                 | Operation::ClockApply { .. }
         )
@@ -474,6 +480,13 @@ mod tests {
             let _ = operation.requires();
         }
         assert_eq!(Operation::Leases.requires(), Need::view(Area::Network));
+        assert_eq!(
+            Operation::ChangeNetworks {
+                edit: NetworkEdit::Remove("lab".into())
+            }
+            .requires(),
+            Need::manage(Area::Network)
+        );
         assert_eq!(
             Operation::Purge {
                 remove_admins: false

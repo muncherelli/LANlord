@@ -59,6 +59,7 @@ pub fn timeout_ms(operation: &Operation) -> i32 {
         Operation::Apply { .. }
         | Operation::Power { .. }
         | Operation::ClockApply { .. }
+        | Operation::ChangeNetworks { .. }
         | Operation::Purge { .. }
         | Operation::Run { .. }
         | Operation::Bootstrap => 16 * 60 * 1000,
@@ -183,6 +184,9 @@ mod tests {
                 command: vec!["true".into()],
             },
             Operation::Bootstrap,
+            Operation::ChangeNetworks {
+                edit: lanlord_model::lan_edit::Edit::Remove("lab".into()),
+            },
         ] {
             assert!(timeout_ms(&operation) > 15 * 60 * 1000);
         }

@@ -327,6 +327,26 @@ mod tests {
     }
 
     #[test]
+    fn changing_the_networks_needs_manage_on_network() {
+        let change = Operation::ChangeNetworks {
+            edit: lanlord_model::lan_edit::Edit::Remove("lab".into()),
+        };
+        assert!(authorize(&grants(ADMINISTRATORS), &change).is_ok());
+        assert!(authorize(&grants(OPERATORS), &change).is_ok());
+        let denied = authorize(&grants(USERS), &change).unwrap_err();
+        assert_eq!(denied.area, Area::Network);
+        // looking at the networks is not enough to change them
+        let mut viewer = Access::default();
+        viewer.roles.push(Role {
+            name: "Viewers".into(),
+            grants: [(Area::Network, Level::View)].into_iter().collect(),
+        });
+        viewer.members.insert("u".into(), vec!["Viewers".into()]);
+        assert!(authorize(&viewer.grants("u", false), &change).is_err());
+        assert!(authorize(&viewer.grants("u", false), &Operation::Leases).is_ok());
+    }
+
+    #[test]
     fn administrators_may_do_everything() {
         assert_eq!(allowed(&grants(ADMINISTRATORS)), [true; 7]);
     }
