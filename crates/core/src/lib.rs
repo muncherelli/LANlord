@@ -5,6 +5,7 @@ pub mod access;
 pub mod account;
 pub mod admins;
 pub mod apply;
+pub mod authkeys;
 pub mod bootstrap;
 pub mod bridge;
 pub mod clock;

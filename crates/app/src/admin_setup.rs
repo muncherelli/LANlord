@@ -234,16 +234,20 @@ impl AdminSetup {
         }
         if self.first_run {
             // the same rules the server applies, so a bad name is caught before the last page
+            let key = self.key.trim();
             let check = Operation::SetupFirstAdmin {
                 name,
                 password: Secret::new("x"),
                 root_ssh: RootSsh::KeysOnly,
+                ssh_key: (!key.is_empty()).then(|| key.to_string()),
             };
             if let Err(invalid) = check.validate() {
-                self.say(
-                    &format!("The username is not allowed: {}.", invalid.reason),
-                    true,
-                );
+                let what = if invalid.field == "ssh_key" {
+                    "The ssh public key is not valid"
+                } else {
+                    "The username is not allowed"
+                };
+                self.say(&format!("{what}: {}.", invalid.reason), true);
                 return false;
             }
         }
@@ -263,9 +267,11 @@ impl AdminSetup {
             Zeroizing::new(std::mem::take(&mut *self.password)),
         );
         self.confirm = Zeroizing::new(String::new());
+        let key = self.key.trim().to_string();
         let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
-            gateway.setup_first_admin(&target, &account, password.as_str(), root_ssh, ask)
+            let key = (!key.is_empty()).then_some(key.as_str());
+            gateway.setup_first_admin(&target, &account, password.as_str(), (root_ssh, key), ask)
         });
         match job {
             Some(job) => {
@@ -424,8 +430,9 @@ impl AdminSetup {
                     lines: vec![ROOT_SSH_INTRO.into()],
                 },
                 Node::Gap(8.0),
+                // the label is short on purpose: the column is narrow and clips what is longer
                 Node::Labelled {
-                    label: "Root may sign in over ssh:".into(),
+                    label: "Root ssh:".into(),
                     body: vec![Node::Choice {
                         id: "first-run-root-ssh",
                         current,
@@ -435,17 +442,17 @@ impl AdminSetup {
                     }],
                 },
                 Node::Gap(6.0),
+                Node::Text("Pick one of the three. You can change it later in My Server.".into()),
             ];
-            match self.root_ssh {
-                Some(level) => {
-                    nodes.push(Node::Text(level.explain().to_string()));
-                    if let Some(warning) = level.setup_warning() {
-                        nodes.push(Node::Text(warning.to_string()));
-                    }
+            // every choice is described all the time, so picking one moves nothing
+            let has_key = !self.key.trim().is_empty();
+            for level in RootSsh::ALL {
+                let mut text = format!("{}: {}", level.label(), level.explain());
+                if let Some(warning) = level.setup_warning(has_key) {
+                    text.push(' ');
+                    text.push_str(warning);
                 }
-                None => nodes.push(Node::Text(
-                    "Pick one of the three. You can change it later in My Server.".into(),
-                )),
+                nodes.push(Node::Bullet(text));
             }
             nodes.extend([
                 Node::Gap(10.0),
@@ -499,6 +506,17 @@ impl AdminSetup {
             secret("Password:", &self.password, Msg::Password),
             Node::Gap(4.0),
             secret("Confirm:", &self.confirm, Msg::Confirm),
+            Node::Gap(4.0),
+            Node::Group {
+                title: "SSH public key (optional)".into(),
+                body: vec![Node::TextArea {
+                    id: "first-run-key",
+                    value: self.key.clone(),
+                    height: 48.0,
+                    hint: "ssh-ed25519 AAAA... paste your public key here".into(),
+                    edit: Msg::Key,
+                }],
+            },
             Node::Gap(10.0),
             Node::Buttons(vec![Button::new("Next", !busy, Msg::Next)]),
             Node::Gap(6.0),
@@ -567,7 +585,7 @@ impl AdminSetup {
 }
 
 /// a short name for a key line: its comment, or its type.
-fn key_label(key: &str) -> String {
+pub fn key_label(key: &str) -> String {
     let mut words = key.split_whitespace();
     let kind = words.next().unwrap_or("");
     match words.nth(1) {
@@ -770,6 +788,58 @@ mod tests {
             "the password has to be typed again"
         );
         assert_eq!(fake.calls(), ["setup gw pat root-ssh=Allowed"]);
+    }
+
+    #[test]
+    fn first_run_takes_an_optional_valid_ssh_key_and_sends_it() {
+        use std::sync::Arc;
+
+        let fake = Arc::new(crate::gateway::Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut setup = AdminSetup::first_run();
+        setup.name = "pat".into();
+        setup.set_passwords("pw", "pw");
+        setup.key = "not a key".into();
+        setup.update(Msg::Next, &services, "gw");
+        assert!(!setup.on_root_ssh_page() && setup.status().contains("ssh public key"));
+        setup.key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoZ pat@laptop".into();
+        setup.update(Msg::Next, &services, "gw");
+        assert!(setup.on_root_ssh_page());
+        setup.update(Msg::RootSsh(2), &services, "gw");
+        setup.update(Msg::Create, &services, "gw");
+        finish_first_run(&mut setup);
+        assert_eq!(fake.calls(), ["setup gw pat root-ssh=Off key"]);
+    }
+
+    #[test]
+    fn the_root_ssh_page_does_not_move_when_a_choice_is_picked() {
+        let services = Services::new(
+            std::sync::Arc::new(crate::gateway::Fake::new()),
+            Wake::none(),
+        );
+        let mut setup = AdminSetup::first_run();
+        setup.name = "pat".into();
+        setup.set_passwords("pw", "pw");
+        setup.update(Msg::Next, &services, "gw");
+        let shape = |setup: &mut AdminSetup| -> Vec<String> {
+            setup
+                .view()
+                .iter()
+                .map(|n| match n {
+                    Node::Bullet(t) | Node::Text(t) => t.clone(),
+                    _ => String::new(),
+                })
+                .collect()
+        };
+        let before = shape(&mut setup);
+        for pick in 0..3 {
+            setup.update(Msg::RootSsh(pick), &services, "gw");
+            assert_eq!(shape(&mut setup), before, "choice {pick}");
+        }
+        // keys only says the administrator needs a key while it has none
+        assert!(before.iter().any(|t| t.contains("no ssh key")));
+        setup.key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoZ pat@laptop".into();
+        assert!(!shape(&mut setup).iter().any(|t| t.contains("no ssh key")));
     }
 
     #[test]

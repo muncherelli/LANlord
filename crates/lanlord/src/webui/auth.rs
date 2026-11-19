@@ -40,6 +40,9 @@ pub enum Check {
     /// root's password is right and no other administrator exists: a session for the first-run
     /// setup and nothing else.
     Setup,
+    /// root's password is right but an administrator exists: root is closed to the web ui. the
+    /// login answers this one differently from a refusal, after the same wait.
+    RootClosed,
     /// anything else about the login.
     Denied,
     /// the helper could not answer.
@@ -142,6 +145,7 @@ async fn ask(path: &std::path::Path, request: &[u8]) -> std::io::Result<Check> {
         b"ok" => Check::Ok { admin: true },
         b"ok user" => Check::Ok { admin: false },
         b"ok setup" => Check::Setup,
+        b"closed" => Check::RootClosed,
         b"denied" => Check::Denied,
         _ => Check::Unavailable,
     })
@@ -632,6 +636,12 @@ fn denied() -> Response {
     json(StatusCode::UNAUTHORIZED, r#"{"error":"login failed"}"#)
 }
 
+/// root's password was right, but root is closed to the web ui while an administrator exists: a 409
+/// the sign-in box turns into advice. a wrong password is still the plain 401.
+fn root_closed() -> Response {
+    json(StatusCode::CONFLICT, r#"{"error":"root is closed"}"#)
+}
+
 /// POST /api/login: `{"user":..,"password":..}`. a good login answers with the session cookie;
 /// every failure is the same 401, after at least `fail_delay`.
 pub async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -698,13 +708,17 @@ pub async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Byte
                 r#"{"error":"login unavailable"}"#,
             )
         }
-        Check::Denied => {
+        Check::Denied | Check::RootClosed => {
             if !blocked {
                 auth.failed(if well_formed { user } else { "" }, &ip_key);
             }
             // the shortest answer is as slow as the longest
             let wait = auth.limits.fail_delay.saturating_sub(started.elapsed());
             tokio::time::sleep(wait).await;
+            // only the helper says this, and only after root's password checked out
+            if verdict == Check::RootClosed {
+                return root_closed();
+            }
             denied()
         }
     }
@@ -838,6 +852,7 @@ mod tests {
                 ("root", b"right", _) => Check::Setup,
                 ("admin", b"right", _) => Check::Ok { admin: true },
                 ("carol", b"right", _) => Check::Ok { admin: false },
+                ("closed-root", b"right", _) => Check::RootClosed,
                 _ => Check::Denied,
             };
             Box::pin(async move { answer })
@@ -1792,6 +1807,21 @@ mod tests {
         assert!(Login::parse(br#"{"user":"admin"}"#).is_none());
         assert!(Login::parse(br#"{"user":1,"password":"x"}"#).is_none());
         assert_eq!(login.user, "admin");
+    }
+
+    #[test]
+    fn a_closed_root_is_said_only_after_the_password_checked_out() {
+        runtime().block_on(async {
+            let rig = rig();
+            let (status, headers, body) = login_as(&rig, "closed-root", "right").await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert!(body.contains("root is closed"), "{body}");
+            assert!(!headers.contains_key(header::SET_COOKIE));
+            // a wrong password is the same plain refusal as for any account
+            let (status, _, body) = login_as(&rig, "closed-root", "wrong").await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert!(body.contains("login failed"), "{body}");
+        });
     }
 
     const SETUP: &str =

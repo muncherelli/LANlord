@@ -28,7 +28,7 @@ to read the shadow file), so the check is done by a small separate program,
      address as the remote host;
    - when the password is right, checks whether `alice` is in the `admins` group, and answers
      `ok` for an administrator or `ok user` for any other ordinary account.
-5. It answers one line: `ok`, `ok user`, `ok setup`, `denied` or `error <code>`.
+5. It answers one line: `ok`, `ok user`, `ok setup`, `closed`, `denied` or `error <code>`.
 
 ## The first-run exception for root
 
@@ -44,10 +44,15 @@ account.
 - Only the name `root` is left out of the count of administrators, so another account with uid 0
   neither gets the setup nor counts; a passwd database that cannot be read is an error, never an
   empty group.
-- "Root ssh off" is refused in the setup when sshd takes no ssh passwords: the new account has no
-  key yet, so no one could sign in over ssh.
+- "Root ssh off" is refused in the setup when sshd takes no ssh passwords and the new account was
+  given no ssh key (the setup's first page takes an optional public key), since no one could sign
+  in over ssh.
 - The group is read at every login, never cached. Once any other account is in `admins`, root is
-  refused exactly as every other system account is: the same `denied`, after the same time.
+  closed. A wrong password is still the plain `denied`, as for every other system account, after
+  the same time. Only when root's password was right does the helper answer `closed`, which the
+  web UI turns into a 409 and the sign-in box into "root can't sign in to the web once an
+  administrator exists; sign in as your administrator account". Anyone who holds root's password
+  learns nothing new from that.
 - The setup checks again, on the gateway, that no other administrator exists, so a second try
   (or a race between two) is refused.
 - The new account's password travels once, from the browser to the web UI, and from there to the

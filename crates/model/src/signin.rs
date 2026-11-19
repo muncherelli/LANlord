@@ -55,6 +55,8 @@ pub enum SigninError {
     /// the server takes none of the offered methods but these (for example only keys).
     KeysOnly(Vec<String>),
     WrongPassword,
+    /// the password was right, but root cannot sign in to the web once an administrator exists.
+    RootClosed,
     /// no trusted host key is known for the server yet.
     HostKeyUnknown,
     HostKeyChanged,
@@ -80,6 +82,11 @@ impl fmt::Display for SigninError {
                 methods.join(", ")
             ),
             Self::WrongPassword => write!(f, "The username or password is incorrect."),
+            Self::RootClosed => write!(
+                f,
+                "root can't sign in to the web once an administrator exists; sign in as your \
+                 administrator account"
+            ),
             Self::HostKeyUnknown => write!(f, "The server's identity is not known yet."),
             Self::HostKeyChanged => write!(
                 f,

@@ -17,6 +17,12 @@ pub enum Msg {
     SaveProfile,
     ChangePassword,
     Reload,
+    /// the text of the key to add.
+    KeyDraft(String),
+    AddKey,
+    /// the key at this row of the list.
+    SelectKey(usize),
+    RemoveKey,
 }
 
 #[derive(Default)]
@@ -26,6 +32,10 @@ pub struct AccountWindow {
     outcome: Remote<PasswordReport>,
     draft: Profile,
     form: Option<Form>,
+    /// the person's own authorized ssh keys.
+    keys: Remote<Vec<String>>,
+    key_draft: String,
+    key_selected: Option<usize>,
 }
 
 /// what a person sees for one link's result.
@@ -59,10 +69,116 @@ impl AccountWindow {
             }
         }
         self.outcome.poll();
+        if self.keys.poll() {
+            self.key_selected = None;
+        }
     }
 
     fn idle(&self, services: &Services, host: &str) -> bool {
-        !services.busy(host) && !self.remote.busy() && !self.outcome.busy()
+        !services.busy(host) && !self.remote.busy() && !self.outcome.busy() && !self.keys.busy()
+    }
+
+    fn load_keys(&mut self, services: &Services, host: &str) {
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| gateway.my_keys(&target, ask));
+        self.keys.track(
+            host,
+            job,
+            "loading your ssh keys...",
+            "loaded your ssh keys",
+            true,
+        );
+    }
+
+    /// add the typed key, or remove the selected one, then read the list again.
+    fn change_keys(&mut self, services: &Services, host: &str, add: bool) {
+        let key = if add {
+            self.key_draft.trim().to_string()
+        } else {
+            match self.selected_key() {
+                Some(key) => key,
+                None => return,
+            }
+        };
+        if add {
+            if let Err(why) = lanlord_model::validate::ssh_key(&key) {
+                self.keys
+                    .say(true, format!("That is not an ssh public key: {why}."));
+                return;
+            }
+            self.key_draft.clear();
+        }
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| {
+            if add {
+                gateway.add_my_key(&target, &key, ask)?;
+            } else {
+                gateway.remove_my_key(&target, &key, ask)?;
+            }
+            gateway.my_keys(&target, ask)
+        });
+        let doing = if add {
+            "adding the key..."
+        } else {
+            "removing the key..."
+        };
+        self.keys
+            .track(host, job, doing, "saved your ssh keys", false);
+    }
+
+    fn selected_key(&self) -> Option<String> {
+        let keys = self.keys.data.as_ref()?;
+        keys.get(self.key_selected?).cloned()
+    }
+
+    fn key_group(&self, idle: bool) -> Node<Msg> {
+        let rows = self.keys.data.iter().flatten().map(|k| {
+            let data = k.split_whitespace().nth(1).unwrap_or("");
+            let tail: String = data
+                .chars()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            vec![crate::admin_setup::key_label(k), format!("...{tail}")]
+        });
+        Node::Fold {
+            id: "account-keys-fold",
+            title: "SSH keys (sign in over ssh without a password)".into(),
+            body: vec![
+                Node::Table(Table {
+                    id: "account-keys",
+                    headings: vec!["Key", "Ends with"],
+                    widths: vec![260.0],
+                    rows: rows.collect(),
+                    selected: self.key_selected,
+                    bad: Vec::new(),
+                    height: 64.0,
+                    select: Msg::SelectKey,
+                }),
+                Node::TextArea {
+                    id: "account-key-draft",
+                    value: self.key_draft.clone(),
+                    height: 40.0,
+                    hint: "ssh-ed25519 AAAA... paste a public key here".into(),
+                    edit: Msg::KeyDraft,
+                },
+                Node::Toolbar(vec![
+                    Button::new(
+                        "Add key",
+                        idle && !self.key_draft.trim().is_empty(),
+                        Msg::AddKey,
+                    ),
+                    Button::new(
+                        "Remove selected",
+                        idle && self.key_selected.is_some(),
+                        Msg::RemoveKey,
+                    ),
+                ]),
+            ],
+        }
     }
 
     fn reload(&mut self, services: &Services, host: &str) {
@@ -115,7 +231,15 @@ impl AccountWindow {
         if self.remote.wants_load(host, false) {
             self.reload(services, host);
         }
-        let idle = self.idle(services, host);
+        let mut idle = self.idle(services, host);
+        // the keys follow the account, once the gateway is free
+        if idle
+            && self.remote.belongs_to(host)
+            && self.keys.wants_load(host, !self.key_draft.is_empty())
+        {
+            self.load_keys(services, host);
+            idle = false;
+        }
         let info = self.remote.data.clone().unwrap_or_default();
         let mut nodes = vec![
             Node::Header {
@@ -140,15 +264,21 @@ impl AccountWindow {
                 })],
             },
             Node::Gap(4.0),
+            self.key_group(idle),
+            Node::Gap(4.0),
             Node::Toolbar(vec![Button::new(
                 "Change Password...",
-                idle && self.form.is_none(),
+                !self.remote.busy() && !self.outcome.busy() && self.form.is_none(),
                 Msg::ChangePassword,
             )]),
         ];
         nodes.extend(self.outcome_nodes());
         nodes.push(Node::Gap(4.0));
-        nodes.push(view::status(&self.remote));
+        // the keys' own message shows while it is the latest thing that happened
+        nodes.push(match self.keys.note {
+            Some((true, _)) => view::status(&self.keys),
+            _ => view::status(&self.remote),
+        });
         nodes
     }
 
@@ -203,6 +333,10 @@ impl AccountWindow {
             Msg::Description(text) if !self.remote.busy() => self.draft.description = text,
             Msg::SaveProfile if self.idle(services, host) => self.save_profile(services, host),
             Msg::Reload if self.idle(services, host) => self.reload(services, host),
+            Msg::KeyDraft(text) if !self.keys.busy() => self.key_draft = text,
+            Msg::SelectKey(row) => self.key_selected = Some(row),
+            Msg::AddKey if self.idle(services, host) => self.change_keys(services, host, true),
+            Msg::RemoveKey if self.idle(services, host) => self.change_keys(services, host, false),
             Msg::ChangePassword if self.form.is_none() => self.form = Some(password_form()),
             _ => {}
         }
@@ -327,10 +461,49 @@ mod tests {
         assert!(window.remote.data.is_some());
         let nodes = window.view(&services, Some("gw"));
         assert!(nodes.len() > 4);
-        assert_eq!(fake.calls(), ["account gw"], "it does not reload by itself");
+        settle(&mut window, &services);
+        let _ = window.view(&services, Some("gw"));
+        settle(&mut window, &services);
+        assert_eq!(
+            fake.calls(),
+            ["account gw", "my-keys gw"],
+            "it does not reload by itself"
+        );
         window.update(Msg::Reload, &services, "gw");
         settle(&mut window, &services);
-        assert_eq!(fake.calls().len(), 2);
+        assert_eq!(fake.calls().len(), 3);
+    }
+
+    const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGoZ pat@laptop";
+
+    #[test]
+    fn a_key_can_be_added_and_removed_and_a_bad_one_is_refused() {
+        let (mut window, services, fake) = setup();
+        let _ = window.view(&services, Some("gw"));
+        settle(&mut window, &services);
+        let _ = window.view(&services, Some("gw"));
+        settle(&mut window, &services);
+        window.update(Msg::KeyDraft("hello".into()), &services, "gw");
+        window.update(Msg::AddKey, &services, "gw");
+        assert!(matches!(&window.keys.note, Some((true, t)) if t.contains("ssh public key")));
+        assert!(fake.keys.lock().unwrap().is_empty());
+        window.update(Msg::KeyDraft(KEY.into()), &services, "gw");
+        window.update(Msg::AddKey, &services, "gw");
+        settle(&mut window, &services);
+        assert_eq!(*fake.keys.lock().unwrap(), [KEY]);
+        assert_eq!(window.keys.data.as_deref(), Some(&[KEY.to_string()][..]));
+        assert!(window.key_draft.is_empty());
+        window.update(Msg::RemoveKey, &services, "gw");
+        settle(&mut window, &services);
+        assert_eq!(
+            fake.keys.lock().unwrap().len(),
+            1,
+            "nothing selected, nothing removed"
+        );
+        window.update(Msg::SelectKey(0), &services, "gw");
+        window.update(Msg::RemoveKey, &services, "gw");
+        settle(&mut window, &services);
+        assert!(fake.keys.lock().unwrap().is_empty());
     }
 
     #[test]
