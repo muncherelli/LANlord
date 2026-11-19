@@ -21,6 +21,7 @@ use crate::login_text::LoginText;
 use crate::netstatus::InterfaceStatus;
 use crate::network::Internal;
 use crate::power::{Outcome, Power};
+use crate::rootssh::{RootSsh, RootSshInfo};
 use crate::secret::Secret;
 use crate::server::ServerFacts;
 use crate::settings::Document;
@@ -61,6 +62,18 @@ pub enum Operation {
     /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
     /// docker and dns modules.
     ChangeNetworks { edit: Box<NetworkEdit> },
+    /// first-run setup, for root's web session while no other administrator exists: create the
+    /// administrator `name` (in admins and sudo) and set root's ssh
+    /// access, which must be chosen. refused once an administrator other than root exists.
+    SetupFirstAdmin {
+        name: String,
+        password: Secret,
+        root_ssh: RootSsh,
+    },
+    /// how root may sign in over ssh: the level lanlord set, if any.
+    RootSshState,
+    /// set how root may sign in over ssh.
+    SetRootSsh { access: RootSsh },
     /// the dhcp leases the gateway has handed out.
     Leases,
     /// the names of the logon scripts in the netlogon share.
@@ -129,6 +142,11 @@ impl Operation {
             Operation::ResetMachine { .. } => Need::manage(Area::Domain),
             Operation::CreateAdmin { .. } => Need::manage(Area::Users),
             Operation::ChangeNetworks { .. } => Need::manage(Area::Network),
+            // not given to any role: the server only runs it for root's setup session
+            Operation::SetupFirstAdmin { .. } => Need::manage(Area::Users),
+            Operation::RootSshState => Need::view(Area::Users),
+            // changes what the whole server's sshd allows: administrators only
+            Operation::SetRootSsh { .. } => Need::Admin,
             Operation::Leases => Need::view(Area::Network),
             Operation::LogonScripts
             | Operation::ReadLogon { .. }
@@ -303,6 +321,12 @@ pub enum Reply {
     },
     /// what the server can and cannot do, from `lanlord doctor`.
     Doctor(Report),
+    RootSsh(RootSshInfo),
+    /// first-run setup is done; `note` says what did not go as asked (root's ssh access could not
+    /// be set, say) and is `None` when everything did.
+    SetupDone {
+        note: Option<String>,
+    },
     Account(AccountInfo),
     /// how a password change went on each linked account.
     Password(PasswordReport),
@@ -406,6 +430,15 @@ mod tests {
                 ssh_key: Some("ssh-ed25519 AAAA example".into()),
                 passwordless_sudo: false,
             },
+            Operation::SetupFirstAdmin {
+                name: "admin".into(),
+                password: Secret::new("pw"),
+                root_ssh: RootSsh::KeysOnly,
+            },
+            Operation::RootSshState,
+            Operation::SetRootSsh {
+                access: RootSsh::Off,
+            },
             Operation::Leases,
             Operation::LogonScripts,
             Operation::ReadLogon {
@@ -495,6 +528,13 @@ mod tests {
             Need::Area(Area::Updates, Level::Manage)
         );
         assert_eq!(Operation::AccountInfo.requires(), Need::SelfOnly);
+        assert_eq!(
+            Operation::SetRootSsh {
+                access: crate::rootssh::RootSsh::Off
+            }
+            .requires(),
+            Need::Admin
+        );
         let subscription = |t: &str| Operation::Subscribe { topic: t.into() }.requires();
         assert_eq!(subscription(topic::MONITOR), Need::view(Area::Status));
         assert_eq!(subscription(topic::PROCS), Need::view(Area::Status));
@@ -524,7 +564,7 @@ mod tests {
     fn every_operation_survives_the_wire() {
         let operations = every_operation();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(operations.len(), 33);
+        assert_eq!(operations.len(), 36);
         for operation in &operations {
             round_trip(operation);
         }

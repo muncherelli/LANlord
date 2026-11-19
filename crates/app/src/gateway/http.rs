@@ -202,7 +202,13 @@ async fn session_now() -> Result<Option<Identity>> {
             .and_then(|v| v.as_str())
             .ok_or_else(|| field("user"))?
             .to_string(),
-        uid: 1000,
+        // on the web, a root identity is the first-run setup session: the server never gives
+        // root any other
+        uid: if value.get("setup").and_then(|v| v.as_bool()) == Some(true) {
+            0
+        } else {
+            1000
+        },
         admin: value
             .get("admin")
             .and_then(|v| v.as_bool())

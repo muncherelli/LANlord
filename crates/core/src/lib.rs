@@ -41,8 +41,10 @@ pub mod purge;
 pub mod remote;
 #[cfg(test)]
 mod render_tests;
+pub mod rootssh;
 pub mod server;
 pub mod settings;
+pub mod setup;
 pub mod signin;
 pub mod ssh;
 #[cfg(all(test, unix))]

@@ -37,6 +37,9 @@ pub enum Check {
     /// the password is right and the account may log in; `admin` says whether it is in the admins
     /// group. system and service accounts never get this far, the helper denies them.
     Ok { admin: bool },
+    /// root's password is right and no other administrator exists: a session for the first-run
+    /// setup and nothing else.
+    Setup,
     /// anything else about the login.
     Denied,
     /// the helper could not answer.
@@ -138,6 +141,7 @@ async fn ask(path: &std::path::Path, request: &[u8]) -> std::io::Result<Check> {
     Ok(match answer.trim_ascii() {
         b"ok" => Check::Ok { admin: true },
         b"ok user" => Check::Ok { admin: false },
+        b"ok setup" => Check::Setup,
         b"denied" => Check::Denied,
         _ => Check::Unavailable,
     })
@@ -182,6 +186,9 @@ impl Default for Limits {
 struct Session {
     user: String,
     admin: bool,
+    /// root's first-run setup session: it can do the setup and nothing else, and is not an
+    /// ordinary session for any lookup but `Auth::setup_of`.
+    setup: bool,
     made: Instant,
     last: Instant,
 }
@@ -206,6 +213,8 @@ const REMEMBERED: usize = 10_000;
 /// what `Auth::current` found.
 pub enum Current {
     Now(String, bool),
+    /// the session is root's first-run setup, which may do nothing but the setup.
+    Setup(String),
     /// no session, or it ended, or the account is gone.
     Gone,
     /// the account could not be looked up.
@@ -307,7 +316,7 @@ impl Auth {
     }
 
     /// start a session and say its token.
-    fn open(&self, user: &str, admin: bool) -> Result<String, ()> {
+    fn open(&self, user: &str, admin: bool, setup: bool) -> Result<String, ()> {
         let token = random_token()?;
         let now = self.now();
         let mut book = self.book();
@@ -329,6 +338,7 @@ impl Auth {
             Session {
                 user: user.to_string(),
                 admin,
+                setup,
                 made: now,
                 last: now,
             },
@@ -354,6 +364,18 @@ impl Auth {
     }
 
     fn lookup(&self, token: &str, touch: bool) -> Option<(String, bool)> {
+        self.lookup_full(token, touch)
+            .and_then(|(user, admin, setup)| (!setup).then_some((user, admin)))
+    }
+
+    /// root's setup session a token names, when it is one and still valid; a use keeps it alive.
+    /// an ordinary session is none, so that the two never stand in for each other.
+    fn setup_of(&self, token: &str) -> Option<String> {
+        self.lookup_full(token, true)
+            .and_then(|(user, _, setup)| setup.then_some(user))
+    }
+
+    fn lookup_full(&self, token: &str, touch: bool) -> Option<(String, bool, bool)> {
         let now = self.now();
         let key = digest(token);
         let mut book = self.book();
@@ -368,7 +390,7 @@ impl Auth {
         if touch {
             session.last = now;
         }
-        Some((session.user.clone(), session.admin))
+        Some((session.user.clone(), session.admin, session.setup))
     }
 
     fn close(&self, token: &str) {
@@ -402,6 +424,11 @@ impl Auth {
         let Some(token) = cookie_token(headers) else {
             return Current::Gone;
         };
+        if let Some(user) = self.setup_of(&token) {
+            // no account lookup: root has no roles, and the service checks that no other
+            // administrator exists when the setup runs
+            return Current::Setup(user);
+        }
         let Some((user, _)) = self.user_of(&token) else {
             return Current::Gone;
         };
@@ -432,6 +459,11 @@ impl Auth {
     /// the user of the session a request's cookie names.
     pub fn session(&self, headers: &HeaderMap) -> Option<(String, bool)> {
         self.user_of(&cookie_token(headers)?)
+    }
+
+    /// the user of the first-run setup session a request's cookie names, if it is one.
+    pub fn setup_session(&self, headers: &HeaderMap) -> Option<String> {
+        self.setup_of(&cookie_token(headers)?)
     }
 
     /// the user of the session a request names, without keeping the session alive.
@@ -528,6 +560,11 @@ pub fn same_origin_json(headers: &HeaderMap) -> Result<(), Response> {
 pub async fn require_current(auth: &Auth, headers: &HeaderMap) -> Result<(String, bool), Response> {
     match auth.current(headers).await {
         Current::Now(user, admin) => Ok((user, admin)),
+        // the first-run setup is no ordinary session: only the setup's own handlers look for it
+        Current::Setup(_) => Err(json(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"finish the first-run setup first"}"#,
+        )),
         Current::Gone => Err(json(StatusCode::UNAUTHORIZED, r#"{"error":"session"}"#)),
         Current::Unavailable => Err(json(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -623,13 +660,29 @@ pub async fn login(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Byte
     };
     match verdict {
         Check::Ok { admin } => {
-            let Ok(token) = auth.open(user, admin) else {
+            let Ok(token) = auth.open(user, admin, false) else {
                 return json(StatusCode::INTERNAL_SERVER_ERROR, r#"{"error":"failed"}"#);
             };
             auth.succeeded(user);
             log::emit(
                 Kind::Info,
                 format!("web ui login for {user} from {ip_key}: ok"),
+            );
+            let mut response = json(StatusCode::OK, r#"{"ok":true}"#);
+            response.headers_mut().insert(
+                header::SET_COOKIE,
+                set_cookie(&token, auth.limits.absolute.as_secs()),
+            );
+            response
+        }
+        Check::Setup => {
+            let Ok(token) = auth.open(user, false, true) else {
+                return json(StatusCode::INTERNAL_SERVER_ERROR, r#"{"error":"failed"}"#);
+            };
+            auth.succeeded(user);
+            log::emit(
+                Kind::Info,
+                format!("web ui login for {user} from {ip_key}: first-run setup"),
             );
             let mut response = json(StatusCode::OK, r#"{"ok":true}"#);
             response.headers_mut().insert(
@@ -731,6 +784,20 @@ mod tests {
                     .get(&account)
                     .copied()
                     .unwrap_or(false);
+                // as the service does: root's session is the setup and nothing else, and the
+                // setup is for root only
+                if account != "root" && matches!(operation, Operation::SetupFirstAdmin { .. }) {
+                    return Ok(Response::Denied("first-run setup is for root only".into()));
+                }
+                if account == "root" {
+                    return Ok(match operation {
+                        Operation::SetupFirstAdmin { .. } => {
+                            ran.lock().unwrap().push((account, operation));
+                            Response::Ok(Reply::SetupDone { note: None })
+                        }
+                        _ => Response::Denied("first-run setup only".into()),
+                    });
+                }
                 if let Err(denied) = authorize(&Grants::fallback(admin), &operation) {
                     return Ok(Response::Denied(denied.to_string()));
                 }
@@ -768,6 +835,7 @@ mod tests {
             self.calls.lock().unwrap().push((user.to_string(), ip));
             let answer = match (user, password, self.down) {
                 (_, _, true) => Check::Unavailable,
+                ("root", b"right", _) => Check::Setup,
                 ("admin", b"right", _) => Check::Ok { admin: true },
                 ("carol", b"right", _) => Check::Ok { admin: false },
                 _ => Check::Denied,
@@ -1724,5 +1792,78 @@ mod tests {
         assert!(Login::parse(br#"{"user":"admin"}"#).is_none());
         assert!(Login::parse(br#"{"user":1,"password":"x"}"#).is_none());
         assert_eq!(login.user, "admin");
+    }
+
+    const SETUP: &str =
+        r#"{"op":{"op":"setup_first_admin","name":"pat","password":"pw","root_ssh":"keys_only"}}"#;
+
+    #[test]
+    fn root_in_setup_gets_a_setup_session_that_can_only_do_the_setup() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "root").await;
+            // the page learns it is a setup, with no roles
+            let (status, body) = get_session(&rig, &cookie).await;
+            assert_eq!(status, StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["user"], "root");
+            assert_eq!(body["setup"], true);
+            assert_eq!(body["admin"], false);
+            // every other operation is refused here, before the service is asked
+            for other in [
+                FACTS,
+                RESET,
+                r#"{"op":{"op":"root_ssh_state"}}"#,
+                r#"{"op":{"op":"set_root_ssh","access":"allowed"}}"#,
+                r#"{"op":{"op":"create_admin","name":"pat","password":"pw","ssh_key":null,"passwordless_sudo":false}}"#,
+            ] {
+                let (status, _) = post_body(&rig, &cookie, other).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{other}");
+            }
+            assert!(rig.ran.lock().unwrap().is_empty(), "nothing ran");
+            // the other endpoints do not take it for a session
+            let request = Request::builder()
+                .uri("/api/events?topic=status")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap();
+            let (status, _, _) = send(&rig, request).await;
+            assert!(status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN, "{status}");
+            assert_eq!(
+                post_end(&rig, &cookie, r#"{"pid":1}"#).await,
+                StatusCode::FORBIDDEN
+            );
+        });
+    }
+
+    #[test]
+    fn the_setup_runs_once_and_ends_the_root_session() {
+        runtime().block_on(async {
+            let rig = rig();
+            let cookie = session_for(&rig, "root").await;
+            let (status, _) = post_body(&rig, &cookie, SETUP).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(rig.ran.lock().unwrap().len(), 1);
+            // the session is over: the person signs in as the new account
+            let (status, _) = get_session(&rig, &cookie).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            let (status, _) = post_body(&rig, &cookie, SETUP).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        });
+    }
+
+    #[test]
+    fn an_ordinary_session_cannot_run_the_setup() {
+        runtime().block_on(async {
+            let rig = rig();
+            for user in ["admin", "carol"] {
+                let cookie = session_for(&rig, user).await;
+                let (status, _) = post_body(&rig, &cookie, SETUP).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{user}");
+                let (_, body) = get_session(&rig, &cookie).await;
+                assert!(!body.contains("setup"), "{body}");
+            }
+            assert!(rig.ran.lock().unwrap().is_empty());
+        });
     }
 }

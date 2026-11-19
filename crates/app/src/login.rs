@@ -1273,6 +1273,20 @@ mod tests {
     }
 
     #[test]
+    fn last_on_this_server_without_the_socket_is_not_local_and_fills_nothing() {
+        // the machine has no socket now, but the last sign-in was on this server: the box must
+        // not offer it, nor fill the fields from the this-server target, nor list it as recent
+        let last = this_server_target("ann");
+        let mut login = LoginBox::new(Arc::new(FakeAuth::default()), Wake::none(), Some(&last));
+        assert!(!login.local && !login.is_local());
+        assert_eq!((login.user.as_str(), login.host.as_str()), ("", ""));
+        assert!(choice_labels(&mut login).is_empty());
+        let known = [last, "bob@other".to_string()];
+        login.update(Msg::Recent(0), &known);
+        assert_eq!(login.target().unwrap(), "bob@other");
+    }
+
+    #[test]
     fn without_history_this_server_is_picked_when_offered_and_ssh_otherwise() {
         assert!(LoginBox::new(here_auth(), Wake::none(), None).local);
         let login = LoginBox::new(Arc::new(FakeAuth::default()), Wake::none(), None);
