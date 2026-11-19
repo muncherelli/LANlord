@@ -28,6 +28,17 @@ for f in "$@"; do
       depth = 0
     }
 
+    # open (( groups before position pos of s, so << there is a shift, not a heredoc
+    function arith_open(s, pos,   j, a, ch, nx) {
+      a = 0
+      for (j = 1; j < pos; j++) {
+        ch = substr(s, j, 1); nx = substr(s, j + 1, 1)
+        if (ch == "(" && nx == "(") { a++; j++ }
+        else if (ch == ")" && nx == ")" && a > 0) { a--; j++ }
+      }
+      return a
+    }
+
     BEGIN { yml = (file ~ /\.ya?ml$/); depth = 0; inrun = 0; q = ""; hd = "" }
 
     # for workflow files only look inside run: blocks, keeping line numbers
@@ -46,7 +57,9 @@ for f in "$@"; do
       # blank comments and quoted text, remember quotes across lines
       line = $0; out = ""; kept = ""; prev = " "
       # inside a heredoc body quotes never span lines (prose has apostrophes)
+      inbody = 0
       if (hd != "") {
+        inbody = 1
         stripped = line; sub(/^[ \t]+/, "", stripped)
         if (stripped == hd) { hd = ""; q = ""; next }
         q = ""
@@ -54,7 +67,7 @@ for f in "$@"; do
       for (i = 1; i <= length(line); i++) {
         c = substr(line, i, 1)
         if (q != "") {
-          if (c == "\\" && q == "\"") i++
+          if (c == "\\" && q == "\"") { kept = kept substr(line, i, 2); i++; out = out "  "; prev = c; continue }
           else if (c == q) q = ""
           out = out " "; kept = kept c
         } else if (c == "\\") { kept = kept substr(line, i, 2); i++; out = out "  " }
@@ -63,12 +76,27 @@ for f in "$@"; do
         else { out = out c; kept = kept c }
         prev = c
       }
-      # a heredoc opened on this line ends at its delimiter word
-      # (looked for outside comments, and not inside arithmetic)
-      if (hd == "" && match(kept, "(^|[^<])<<-?[ \t]*\\\\?[\"\047]?[A-Za-z_][A-Za-z_0-9]*") \
-          && substr(kept, 1, RSTART) !~ /\(\([^)]*$/) {
-        hd = substr(kept, RSTART, RLENGTH); sub(/^.*<</, "", hd); gsub(/[^A-Za-z_0-9]/, "", hd)
+      # a heredoc opened on this line ends at its delimiter word; << is looked for
+      # in the blanked text (so not in quotes or comments, nor inside arithmetic)
+      # and the delimiter is read from the same place in the kept text
+      if (hd == "") {
+        off = 0; scan = out
+        while (match(scan, "(^|[^<])<<-?") ) {
+          pos = off + RSTART + (substr(scan, RSTART, 1) == "<" ? 0 : 1)
+          len = RLENGTH - (substr(scan, RSTART, 1) == "<" ? 0 : 1)
+          nextc = substr(out, pos + len, 1)
+          if (nextc != "<" && !arith_open(out, pos)) {
+            rest = substr(kept, pos + len); sub(/^[ \t]+/, "", rest)
+            if (match(rest, "^\\\\?[\"\047]?[A-Za-z_][A-Za-z_0-9]*")) {
+              hd = substr(rest, RSTART, RLENGTH); gsub(/[^A-Za-z_0-9]/, "", hd)
+              break
+            }
+          }
+          off += RSTART + RLENGTH - 1; scan = substr(out, off + 1)
+        }
       }
+      # nothing in a heredoc body is code
+      if (inbody) next
       # command substitutions open a group; ;; ;;& ;& and ; all separate
       gsub(/\$\(|`/, " ( ", out)
       gsub(/;;&|;&|;;|;/, " ; ", out)
