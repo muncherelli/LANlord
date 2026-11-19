@@ -1123,16 +1123,39 @@ fn quiet_install() {
     lanlord_core::log::set_quiet_tasks(!lanlord_core::log::verbose());
 }
 
+/// what the server printed in the step that runs: package managers and ansible are loud, so it
+/// is shown with --verbose, and otherwise only when the step fails.
+#[derive(Default)]
+struct StepOutput(Vec<String>);
+
+impl StepOutput {
+    /// a new step: what the last one printed is no longer wanted.
+    fn start(&mut self) {
+        self.0.clear();
+    }
+
+    fn push(&mut self, line: String) {
+        self.0.push(line);
+    }
+
+    /// the lines to show for a failed step: the playbook's own output (`from_log`, held by the
+    /// log) first, then the step's lines, the last 40 of them.
+    fn failure(&mut self, from_log: Vec<String>) -> Vec<String> {
+        let mut held = from_log;
+        held.append(&mut self.0);
+        let skip = held.len().saturating_sub(40);
+        held.split_off(skip)
+    }
+}
+
 /// print an install's steps and what the server says while it runs.
 fn print_install(event: lanlord_core::install::Event) {
     use lanlord_core::install::{Event, Step};
-    // what the server printed in the step that runs: package managers and ansible are loud, so
-    // it is shown with --verbose, and otherwise only when the step fails
-    static HELD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    static HELD: std::sync::Mutex<StepOutput> = std::sync::Mutex::new(StepOutput(Vec::new()));
     let number = |step: Step| Step::ALL.iter().position(|s| *s == step).unwrap_or(0) + 1;
     match event {
         Event::StepStarted(step) => {
-            HELD.lock().unwrap().clear();
+            HELD.lock().unwrap().start();
             lanlord_core::log::take_held();
             println!("[{}/{}] {}", number(step), Step::ALL.len(), step.title())
         }
@@ -1147,10 +1170,8 @@ fn print_install(event: lanlord_core::install::Event) {
         Event::StepDone(step) => println!("[{}/{}] done", number(step), Step::ALL.len()),
         // the error itself is printed once, by the caller
         Event::Failed { step, .. } => {
-            // the playbook's own output (held by the log) comes first, then the step's lines
-            let mut held = lanlord_core::log::take_held();
-            held.extend(std::mem::take(&mut *HELD.lock().unwrap()));
-            for line in held.iter().skip(held.len().saturating_sub(40)) {
+            let held = HELD.lock().unwrap().failure(lanlord_core::log::take_held());
+            for line in &held {
                 eprintln!("  {line}");
             }
             eprintln!("[{}/{}] failed", number(step), Step::ALL.len())
@@ -2153,24 +2174,27 @@ mod tests {
     }
 
     #[test]
-    fn an_install_prints_its_steps_and_holds_the_loud_output_for_a_failure() {
-        use lanlord_core::install::{Event, Step};
-        super::quiet_install();
-        for event in [
-            Event::StepStarted(Step::Check),
-            Event::Line("pacman noise".into()),
-            Event::StepDone(Step::Check),
-            Event::NextSteps(vec!["next steps".into(), "  1. open it".into()]),
-            Event::StepStarted(Step::Base),
-            Event::Line("ansible noise".into()),
-            Event::Failed {
-                step: Step::Base,
-                message: "boom".into(),
-            },
-        ] {
-            super::print_install(event);
+    fn a_failed_step_shows_the_playbook_output_then_its_own_lines_and_nothing_older() {
+        let mut out = super::StepOutput::default();
+        out.push("old step line".into());
+        out.start();
+        out.push("pacman line".into());
+        out.push("last line".into());
+        let log = vec!["fatal: [gw]: FAILED! => boom".to_string()];
+        assert_eq!(
+            out.failure(log),
+            ["fatal: [gw]: FAILED! => boom", "pacman line", "last line"]
+        );
+        // shown once: the hold is empty afterwards
+        assert!(out.failure(Vec::new()).is_empty());
+        // only the last 40 lines are kept
+        for n in 0..50 {
+            out.push(format!("line {n}"));
         }
-        lanlord_core::log::set_quiet_tasks(false);
+        let shown = out.failure(vec!["first".into()]);
+        assert_eq!(shown.len(), 40);
+        assert_eq!(shown.last().unwrap(), "line 49");
+        assert_eq!(shown[0], "line 10");
     }
 
     #[cfg(unix)]

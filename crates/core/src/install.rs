@@ -249,8 +249,12 @@ fn reachable_address(host: &str) -> Option<String> {
             host
         }
     });
-    let local =
-        host.is_empty() || host.starts_with("127.") || host.eq_ignore_ascii_case("localhost");
+    let lower = host.to_ascii_lowercase();
+    let local = host.is_empty()
+        || host.starts_with("127.")
+        || lower.starts_with("localhost")
+        || host == "0.0.0.0"
+        || host.starts_with("::");
     (!local && host.contains('.') && !host.contains(char::is_whitespace)).then(|| host.to_string())
 }
 
@@ -321,7 +325,6 @@ fn do_step(
 const NEXT_FACTS: &str = r#"# the address the server reaches others with: the first global one may be docker's bridge
 ip=$(ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
 [ -n "$ip" ] || ip=$(ip -o -4 addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lxcbr|incusbr)/ {print $4}' | cut -d/ -f1 | head -n 1)
-[ -n "$ip" ] || ip=$(hostname -I 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i !~ /^172\.17\./) {print $i; exit}}')
 echo "ip=$ip"
 echo "root=$(passwd -S root 2>/dev/null | awk '{print $2}')"
 "#;
@@ -825,7 +828,17 @@ esac"#
             reachable_address("gw.example.net:22").as_deref(),
             Some("gw.example.net")
         );
-        for host in ["localhost", "root@127.0.0.1", "gw", ""] {
+        for host in [
+            "localhost",
+            "root@127.0.0.1",
+            "gw",
+            "",
+            "localhost.localdomain",
+            "LOCALHOST:22",
+            "root@0.0.0.0",
+            "::",
+            "::1",
+        ] {
             assert_eq!(reachable_address(host), None, "{host}");
         }
     }
