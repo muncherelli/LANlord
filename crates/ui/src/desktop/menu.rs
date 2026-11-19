@@ -291,7 +291,6 @@ impl Desktop {
                 );
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));
             }
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::ServerLine => {}
         }
         self.start_open = false;

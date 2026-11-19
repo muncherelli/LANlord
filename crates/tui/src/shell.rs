@@ -784,7 +784,6 @@ impl Shell {
                 );
                 self.modal = Some(Modal::About(Form::new("about", "About LANlord", &about)));
             }
-            Action::Quit => self.quit = true,
             Action::SwitchServer | Action::LogOff => self.log_off(),
             Action::ToggleUpdates => self.toggle_updates(),
             Action::CheckUpdates => self.check_updates(),
@@ -1618,6 +1617,8 @@ impl Shell {
 
     fn render_taskbar(&mut self, area: Rect, buf: &mut Buffer) {
         let clock = self.clock.clone().unwrap_or_else(|| self.feed.text());
+        // the menu has no quit item, so the key stays in sight
+        let clock = format!("Ctrl+Q quit  {clock}");
         let shown: Vec<(Target, bool)> = self
             .windows
             .iter()

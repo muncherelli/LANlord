@@ -24,7 +24,6 @@ pub enum Action {
     /// look for an update now.
     CheckUpdates,
     About,
-    Quit,
     /// the server line at the top of the menu, which only names the server.
     ServerLine,
 }
@@ -202,7 +201,6 @@ pub fn rows(state: &State) -> Vec<Row> {
         Action::Open(Target::Welcome),
     )));
     rows.push(Row::Item(Item::new("About LANlord", Action::About)));
-    rows.push(Row::Item(Item::new("Quit LANlord", Action::Quit)));
     rows
 }
 
