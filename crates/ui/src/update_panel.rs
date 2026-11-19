@@ -236,8 +236,8 @@ impl Updates {
         self.notice.dialog
     }
 
-    /// is a check running in the background?
-    #[cfg(test)]
+    /// is a check running in the background? only the unix-only dev tests ask.
+    #[cfg(all(test, unix))]
     pub fn checking(&self) -> bool {
         self.notice.checking()
     }

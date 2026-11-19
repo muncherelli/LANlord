@@ -8,6 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
+use lanlord_model::clock;
 use lanlord_model::lan_edit::{external_interface, network_users, Edit};
 use lanlord_model::lan_networks::{self, LanNetwork};
 use lanlord_model::netstatus::InterfaceStatus;
@@ -82,6 +83,9 @@ pub struct Networks {
     pub rows: Vec<NetworkRow>,
     /// every interface of the server, which the tabs do not all show.
     pub interfaces: Vec<Iface>,
+    /// the server's time zone, as its name and its offset from utc in seconds: leases are the
+    /// gateway's, so their times are written in its zone. `None` when its clock was not read.
+    pub zone: Option<(String, i32)>,
     /// the lanlord networks as the settings hold them, for the form's checks.
     pub lan: Vec<LanNetwork>,
     /// the interface of the external network, which no lanlord network may use.
@@ -124,6 +128,10 @@ fn read(gateway: &dyn Gateway, target: &str, ask: AskPassword) -> Result<Network
         .load_settings(target, ask)
         .unwrap_or_else(|_| Settings::empty());
     let leases = gateway.leases(target, ask).ok().map(|l| l.len());
+    let zone = gateway
+        .clock_state(target)
+        .ok()
+        .map(|c| (c.timezone, c.offset_secs));
     let rows = networks::rows(&facts.interfaces, &settings, leases);
     let external = rows
         .iter()
@@ -143,6 +151,7 @@ fn read(gateway: &dyn Gateway, target: &str, ask: AskPassword) -> Result<Network
             .collect(),
         rows,
         interfaces: facts.interfaces,
+        zone,
     })
 }
 
@@ -173,12 +182,12 @@ pub struct NetworksWindow {
     warning: Arc<Mutex<Option<String>>>,
     /// when the status was last asked for, in seconds on the caller's clock.
     status_at: f64,
-    /// writes a unix time for the lease lines; this computer's time zone when `None`.
+    /// writes a unix time for the lease lines; the server's time zone when `None`.
     time: Option<fn(i64) -> String>,
 }
 
 impl NetworksWindow {
-    /// write lease times with `time` rather than in this computer's time zone, so a test or a
+    /// write lease times with `time` rather than in the server's time zone, so a test or a
     /// scene shows the same text everywhere.
     pub fn with_time(mut self, time: fn(i64) -> String) -> Self {
         self.time = Some(time);
@@ -415,6 +424,7 @@ impl NetworksWindow {
         } = self.rows.data.clone().unwrap_or(Networks {
             rows: Vec::new(),
             interfaces: Vec::new(),
+            zone: None,
             lan: Vec::new(),
             external: None,
             used: Vec::new(),
@@ -577,7 +587,11 @@ impl NetworksWindow {
     /// external network and the Network Connection Details list.
     pub fn dialog(&self) -> Option<Dialog<Msg>> {
         if let Some(status) = &self.connection {
-            return Some(connection_dialog(status, self.time.unwrap_or(local_time)));
+            let zone = self.rows.data.as_ref().and_then(|n| n.zone.clone());
+            return Some(match self.time {
+                Some(time) => connection_dialog(status, &time),
+                None => connection_dialog(status, &|secs| zoned_time(secs, zone.as_ref())),
+            });
         }
         if let Some(name) = &self.confirm {
             return Some(self.remove_dialog(name));
@@ -809,7 +823,7 @@ fn properties_dialog(row: &NetworkRow) -> Dialog<Msg> {
     }
 }
 
-fn connection_dialog(status: &InterfaceStatus, time: fn(i64) -> String) -> Dialog<Msg> {
+fn connection_dialog(status: &InterfaceStatus, time: &dyn Fn(i64) -> String) -> Dialog<Msg> {
     let rows = status
         .details(time)
         .into_iter()
@@ -931,22 +945,25 @@ fn grouped(n: u64) -> String {
     out
 }
 
-/// a unix time in UTC, in the same shape as `local_time`.
+/// a unix time in UTC, written the way `zoned_time` writes it.
 pub fn utc_time(secs: i64) -> String {
-    chrono::DateTime::from_timestamp(secs, 0)
-        .map(|t| t.format("%-m/%-d/%Y %-I:%M:%S %p").to_string())
-        .unwrap_or_default()
+    zoned_time(secs, None)
 }
 
-/// a unix time in this computer's time zone, like `11/16/2026 4:05:09 PM`.
-fn local_time(secs: i64) -> String {
-    chrono::DateTime::from_timestamp(secs, 0)
-        .map(|t| {
-            t.with_timezone(&chrono::Local)
-                .format("%-m/%-d/%Y %-I:%M:%S %p")
-                .to_string()
-        })
-        .unwrap_or_default()
+/// a unix time in the server's `zone` (its name and its offset from utc in seconds), with the
+/// offset written out: `2026-11-20 14:03:09 UTC-05:00`. with no zone known it is in UTC and says
+/// so. the name stays out: the box is narrow, and the offset says which time it is.
+fn zoned_time(secs: i64, zone: Option<&(String, i32)>) -> String {
+    let offset = zone.map_or(0, |(_, offset)| *offset);
+    let text = clock::local_text(secs, offset);
+    // a time that can't be written is blank, not a bare zone
+    if text.is_empty() {
+        return text;
+    }
+    match zone {
+        Some(_) => format!("{text} UTC{}", clock::offset_text(offset)),
+        None => format!("{text} UTC"),
+    }
 }
 
 #[cfg(test)]
@@ -1021,8 +1038,21 @@ mod tests {
 
     #[test]
     fn a_bad_time_is_blank_not_a_panic() {
-        assert_eq!(local_time(i64::MAX), "");
-        assert!(!local_time(1_795_000_000).is_empty());
+        let zone = ("Etc/UTC".to_string(), 3600);
+        assert_eq!(zoned_time(i64::MAX, Some(&zone)), "");
+        assert_eq!(zoned_time(i64::MAX, None), "");
+        assert_eq!(zoned_time(i64::MIN, Some(&("x".to_string(), -3600))), "");
+    }
+
+    #[test]
+    fn a_lease_time_names_whose_zone_it_is_in() {
+        let zone = ("America/New_York".to_string(), -5 * 3600);
+        assert_eq!(
+            zoned_time(1_795_000_000, Some(&zone)),
+            "2026-11-18 06:06:40 UTC-05:00"
+        );
+        assert_eq!(zoned_time(0, None), "1970-01-01 00:00:00 UTC");
+        assert_eq!(utc_time(0), "1970-01-01 00:00:00 UTC");
     }
 
     #[test]
@@ -1083,7 +1113,6 @@ mod tests {
     #[test]
     fn a_pinned_time_format_writes_the_lease_lines() {
         let window = NetworksWindow::default().with_time(utc_time);
-        assert_eq!(utc_time(0), "1/1/1970 12:00:00 AM");
         assert!(window.dialog().is_none());
     }
 

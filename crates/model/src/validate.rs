@@ -279,6 +279,14 @@ pub fn machine_name(text: &str) -> Check {
     )
 }
 
+/// the time that names an upgrade's backups, like 20260101T120000Z.
+pub fn backup_stamp(text: &str) -> Check {
+    flag(
+        crate::format::backup_stamp(text),
+        "must look like 20260101T120000Z",
+    )
+}
+
 /// a dhcp lease time: 30m, 12h, 7d or infinite.
 pub fn lease(text: &str) -> Check {
     flag(
@@ -846,6 +854,13 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
     check_mapping_general("", map, 0, &mut 0)?;
     for (key, value) in map {
         let name = key.as_str().unwrap_or_default();
+        // the version stamp is not a section; it is checked where the settings are loaded
+        if matches!(
+            name,
+            crate::format::FORMAT_KEY | crate::format::WRITTEN_BY_KEY
+        ) {
+            continue;
+        }
         if !known_section(name) {
             return Err(Invalid::new(
                 name,
@@ -1107,6 +1122,7 @@ fn check_network_edit(edit: &crate::lan_edit::Edit) -> Result<(), Invalid> {
 pub fn operation(operation: &Operation) -> Result<(), Invalid> {
     match operation {
         Operation::Apply { modules } => check_modules(modules),
+        Operation::MigrateStored { stamp } => named("stamp", backup_stamp, stamp),
         Operation::SaveDocument { plain, updates } => check_save(plain, updates),
         Operation::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
         Operation::ChangeNetworks { edit } => check_network_edit(edit),

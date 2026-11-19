@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use lanlord_model::operations::{Operation, Reply};
 
 use crate::bootstrap::{
     bootstrap_lines, capture_as_root, run_as_root, run_as_root_lines, AskPassword, Options,
@@ -21,6 +22,7 @@ use crate::bootstrap::{
 use crate::install::{options_for, status_with, Status};
 use crate::log::{emit, Kind};
 use crate::ssh::Session;
+use crate::stored;
 use crate::webinstall::WebSource;
 use crate::{account::login_user, webinstall};
 
@@ -58,16 +60,18 @@ pub enum Step {
     Apply,
     Restart,
     Verify,
+    Migrate,
 }
 
 impl Step {
-    pub const ALL: [Step; 6] = [
+    pub const ALL: [Step; 7] = [
         Step::Check,
         Step::Bootstrap,
         Step::Files,
         Step::Apply,
         Step::Restart,
         Step::Verify,
+        Step::Migrate,
     ];
 
     pub fn title(self) -> &'static str {
@@ -78,6 +82,7 @@ impl Step {
             Step::Apply => "Applying the web UI modules",
             Step::Restart => "Restarting the changed services",
             Step::Verify => "Checking that the services came back",
+            Step::Migrate => "Bringing the stored files up to the new format",
         }
     }
 }
@@ -438,8 +443,22 @@ pub fn run(
         allow_unhealthy,
         ask_password,
         events,
+        &mut |stamp, ask| {
+            // the new service holds the key, so it migrates the files
+            let operation = Operation::MigrateStored {
+                stamp: stamp.to_string(),
+            };
+            match crate::operations::execute(host, &operation, ask)? {
+                Reply::Lines(lines) => Ok(lines),
+                _ => Ok(Vec::new()),
+            }
+        },
     )
 }
+
+/// how the stored files are migrated: given the stamp that names the backups, it answers with
+/// what was done.
+type Migrate<'a> = &'a mut dyn FnMut(&str, AskPassword) -> Result<Vec<String>>;
 
 /// what the server was like before the upgrade.
 struct Before {
@@ -487,6 +506,40 @@ fn check(
     Ok(Before { snapshot, healthy })
 }
 
+/// why the migration failed, and the stamp its copies carry (when it got far enough to have one).
+struct MigrateFailed {
+    message: String,
+    stamp: Option<String>,
+}
+
+/// ask the gateway for a stamp and have the stored files migrated under it.
+fn migrate_stored(
+    session: &Session,
+    ask: AskPassword,
+    migrate: Migrate,
+    on_line: &mut dyn FnMut(&str),
+) -> std::result::Result<(), MigrateFailed> {
+    let failed = |error: anyhow::Error, stamp: Option<String>| MigrateFailed {
+        message: format!("{error:#}"),
+        stamp,
+    };
+    let admin = login_user(session).map_err(|e| failed(e, None))?;
+    let text = capture_as_root(session, &admin.name, stored::stamp_script(), &mut *ask)
+        .map_err(|e| failed(e, None))?;
+    let stamp = text.trim().to_string();
+    if !lanlord_model::format::backup_stamp(&stamp) {
+        return Err(failed(
+            anyhow::anyhow!("the server's clock gave no usable stamp"),
+            None,
+        ));
+    }
+    let lines = migrate(&stamp, ask).map_err(|e| failed(e, Some(stamp.clone())))?;
+    for line in lines {
+        on_line(&line);
+    }
+    Ok(())
+}
+
 const NOT_REVERTED: &str = "the units and settings that the upgrade applied were not reverted";
 
 /// put the previous files back and say how that went.
@@ -524,6 +577,7 @@ pub(crate) fn run_with(
     allow_unhealthy: bool,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
+    migrate: Migrate,
 ) -> Result<()> {
     let ask = ask_password;
     let before = step(events, Step::Check, |line| {
@@ -625,6 +679,29 @@ pub(crate) fn run_with(
         let outcome = roll_back(session, &plan.check, false, &mut *ask, line)?;
         bail!("the services did not come back after the upgrade; {outcome}")
     })?;
+    // the new binary is answering: it migrates the stored files (a failed apply leaves them
+    // as they are; the new binary reads the old formats all the same)
+    if applied.is_ok() {
+        step(events, Step::Migrate, |line| {
+            let migrated = migrate_stored(session, &mut *ask, migrate, line);
+            let Err(error) = migrated else {
+                return Ok(());
+            };
+            line("putting the old copies of the stored files back");
+            let restored = match &error.stamp {
+                Some(stamp) => root_status(session, stored::restore_script(stamp), &mut *ask),
+                None => Ok(0),
+            };
+            let restored = match restored {
+                Ok(0) => "the stored files are as they were".to_string(),
+                _ => "the stored files could not be put back; their copies are beside them \
+                      (settings.*.bak in /opt/lanlord/config)"
+                    .to_string(),
+            };
+            let outcome = roll_back(session, &plan.check, false, &mut *ask, line)?;
+            bail!("{}; {restored}; {outcome}", error.message)
+        })?;
+    }
     applied?;
     emit(
         Kind::Info,
@@ -722,6 +799,8 @@ case "$last" in
           *"swap had not begun"*) [ -f "$D/moved" ] || { echo rollback-skipped >> "$D/log"; exit 3; } ;;
         esac
         echo rollback >> "$D/log"; touch "$D/rolled"; [ -f "$D/still-broken" ] && exit 1; exit 0 ;;
+      "# stored stamp"*) echo 20260101T120000Z ;;
+      "# stored restore"*) echo restore >> "$D/log" ;;
       "# upgrade check"*)
         echo check >> "$D/log"
         if [ -f "$D/down-before" ] && [ ! -f "$D/placed" ]; then exit 1; fi
@@ -793,6 +872,19 @@ esac"##
                 allow_unhealthy,
                 &mut no_password,
                 &mut |event| seen.push(event),
+                &mut |stamp, _| {
+                    use std::io::Write;
+                    let mut log = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(self.dir.join("log"))
+                        .unwrap();
+                    writeln!(log, "migrate {stamp}").unwrap();
+                    if self.dir.join("migrate-fails").exists() {
+                        anyhow::bail!("settings.yml: written by LANlord 9.9 (format 9); upgrade LANlord to use it");
+                    }
+                    Ok(vec!["settings.yml: format 1 to 3".to_string()])
+                },
             );
             (result, seen)
         }
@@ -844,7 +936,11 @@ esac"##
         result.unwrap();
         assert_eq!(
             server.log(),
-            log_with(&["restart lanlord-webui lanlord-operations", "check"])
+            log_with(&[
+                "restart lanlord-webui lanlord-operations",
+                "check",
+                "migrate 20260101T120000Z"
+            ])
         );
         let done: Vec<_> = outcomes(&events)
             .into_iter()
@@ -895,6 +991,30 @@ esac"##
             outcomes(&events),
             [(Step::Check, "started"), (Step::Check, "failed")]
         );
+    }
+
+    #[test]
+    fn a_failed_migration_puts_the_stored_files_back_and_rolls_the_upgrade_back() {
+        let server = Server::installed("migrate-fails");
+        server.flag("migrate-fails");
+        let (result, events) = server.upgrade();
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("upgrade LANlord to use it"), "{message}");
+        assert!(
+            message.contains("the stored files are as they were"),
+            "{message}"
+        );
+        assert_eq!(
+            server.log(),
+            log_with(&[
+                "restart lanlord-webui lanlord-operations",
+                "check",
+                "migrate 20260101T120000Z",
+                "restore",
+                "rollback"
+            ])
+        );
+        assert_eq!(outcomes(&events).last(), Some(&(Step::Migrate, "failed")));
     }
 
     #[test]
@@ -1034,7 +1154,8 @@ esac"##
                 "web-apply",
                 "web-verify",
                 "restart lanlord-webui lanlord-operations",
-                "check"
+                "check",
+                "migrate 20260101T120000Z"
             ]
         );
     }
@@ -1050,7 +1171,11 @@ esac"##
         server.upgrade().0.unwrap();
         let log = server.log();
         assert!(!log.iter().any(|line| line.starts_with("restart")));
-        assert_eq!(log.last().map(String::as_str), Some("check"));
+        assert_eq!(
+            log.last().map(String::as_str),
+            Some("migrate 20260101T120000Z")
+        );
+        assert!(log.contains(&"check".to_string()));
     }
 
     #[test]
@@ -1072,7 +1197,10 @@ esac"##
             log.contains(&"restart lanlord-firewall.service".to_string()),
             "{log:?}"
         );
-        assert_eq!(&log[log.len() - 2..], ["check", "extras"]);
+        assert_eq!(
+            &log[log.len() - 3..],
+            ["check", "extras", "migrate 20260101T120000Z"]
+        );
     }
 
     #[test]

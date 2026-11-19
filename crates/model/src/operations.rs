@@ -46,6 +46,10 @@ pub enum Operation {
     /// them. `key` is that client's old key file; it is used for this one request and dropped,
     /// and the client stops using it afterwards.
     MoveSecrets { key: Secret },
+    /// bring the stored settings files up to the format this lanlord writes (an upgrade does
+    /// this once). each file that changes is first copied beside itself under `stamp`, the
+    /// gateway's time as `20260101T120000Z`. the answer says what was done.
+    MigrateStored { stamp: String },
     /// the internal interface and address, read without sudo.
     Probe,
     /// change logins and apply the nt4-domain module.
@@ -131,7 +135,7 @@ impl Operation {
     /// operation does not compile until it says what it needs.
     pub fn requires(&self) -> Need {
         match self {
-            Operation::Bootstrap => Need::manage(Area::Updates),
+            Operation::Bootstrap | Operation::MigrateStored { .. } => Need::manage(Area::Updates),
             Operation::Apply { .. } => Need::manage(Area::Services),
             Operation::LoadDocument => Need::view(Area::Services),
             Operation::SaveDocument { .. } | Operation::MoveSecrets { .. } => {
@@ -202,6 +206,7 @@ impl Operation {
                 | Operation::LoadDocument
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
+                | Operation::MigrateStored { .. }
                 | Operation::ChangeNetworks { .. }
                 | Operation::ChangeUsers { .. }
                 | Operation::ClockApply { .. }
@@ -403,6 +408,9 @@ mod tests {
             Operation::MoveSecrets {
                 key: Secret::new("AGE-SECRET-KEY-s3cret"),
             },
+            Operation::MigrateStored {
+                stamp: "20260101T120000Z".into(),
+            },
             Operation::Probe,
             Operation::ChangeUsers {
                 changes: vec![
@@ -564,7 +572,7 @@ mod tests {
     fn every_operation_survives_the_wire() {
         let operations = every_operation();
         // one per action a front end can take: keep this in step with the enum
-        assert_eq!(operations.len(), 36);
+        assert_eq!(operations.len(), 37);
         for operation in &operations {
             round_trip(operation);
         }

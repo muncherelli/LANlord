@@ -778,7 +778,7 @@ case "$last" in
   *)
     input=$(cat)
     case "$input" in
-      *"tee /opt/lanlord/config/settings.yml"*) echo "sudo: command not found" >&2; exit 127 ;;
+      *"> /opt/lanlord/config/settings.yml.tmp"*) echo "sudo: command not found" >&2; exit 127 ;;
       *"timedatectl set-timezone"*) echo "zone changed" ;;
     esac ;;
 esac"#,
