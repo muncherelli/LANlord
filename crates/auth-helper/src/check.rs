@@ -14,7 +14,7 @@ pub const ADMINS_GID: u32 = 9998;
 /// its name, for the journal.
 pub const ADMINS_GROUP: &str = "admins";
 
-/// every answer but `ok` and `ok user` takes this long (plus up to `JITTER`), counted from when the helper
+/// every answer but a success takes this long (plus up to `JITTER`), counted from when the helper
 /// started. it is the only delay: libpam's own failure delay is switched off, because it only
 /// applies to a wrong password and would tell that apart from a right password for an account
 /// that may not log in or is not an admin.
@@ -34,6 +34,9 @@ pub trait Pam {
 /// the group database.
 pub trait Groups {
     fn member(&self, user: &str, gid: u32) -> Result<bool, &'static str>;
+    /// whether any account other than root is in the group `gid`, as a listed member or by its
+    /// primary group. read from the database on every call, never cached.
+    fn has_other_member(&self, gid: u32) -> Result<bool, &'static str>;
 }
 
 /// what the helper asks of the system about itself and its caller.
@@ -58,6 +61,8 @@ pub enum Decision {
     Refused,
     /// the password is right, and the user is an ordinary account outside the admins group.
     NotAdmin,
+    /// the password is right, the user is root and nobody else is in the admins group.
+    Setup,
     /// the password is right, but the account is a system or service account.
     System,
     Error(&'static str),
@@ -69,6 +74,7 @@ impl Decision {
         match self {
             Decision::Ok => Verdict::Ok,
             Decision::NotAdmin => Verdict::User,
+            Decision::Setup => Verdict::Setup,
             Decision::Refused | Decision::System => Verdict::Denied,
             Decision::Error(code) => Verdict::Error(code),
         }
@@ -176,6 +182,15 @@ pub fn answer(
         let named_caller = caller.as_deref() == Some(request.user.as_str());
         match system.uid_of(&request.user) {
             Ok(Some(uid)) if !reserved_uid(uid) && !named_caller => {}
+            // root may sign in only to set up, while no other admin exists: asked now, at every
+            // login, and only after pam accepted the password
+            Ok(Some(0)) if !named_caller => {
+                decision = match groups.has_other_member(ADMINS_GID) {
+                    Ok(false) => Decision::Setup,
+                    Ok(true) => Decision::System,
+                    Err(code) => Decision::Error(code),
+                }
+            }
             Ok(_) => decision = Decision::System,
             Err(code) => decision = Decision::Error(code),
         }
@@ -198,6 +213,9 @@ pub fn answer(
         Decision::NotAdmin => format!(
             "web ui login for {user}{client}: ok, not in group {ADMINS_GROUP} (gid {ADMINS_GID})"
         ),
+        Decision::Setup => {
+            format!("web ui login for {user}{client}: ok, first-run setup only (no other admin)")
+        }
         Decision::System => {
             format!("web ui login for {user}{client}: denied, a system account")
         }
@@ -209,7 +227,7 @@ pub fn answer(
 /// how much longer to wait before answering `verdict`, `elapsed` after the helper started, with
 /// `jitter` (at most `JITTER`) added to every answer but a success.
 pub fn padding(verdict: Verdict, elapsed: Duration, jitter: Duration) -> Duration {
-    if matches!(verdict, Verdict::Ok | Verdict::User) {
+    if matches!(verdict, Verdict::Ok | Verdict::User | Verdict::Setup) {
         Duration::ZERO
     } else {
         (FAIL_DELAY + jitter.min(JITTER)).saturating_sub(elapsed)
@@ -233,19 +251,29 @@ mod tests {
     struct FakeGroups {
         answer: Result<bool, &'static str>,
         asked: Cell<Option<u32>>,
+        others: Result<bool, &'static str>,
     }
     impl FakeGroups {
         fn new(answer: Result<bool, &'static str>) -> Self {
             Self {
                 answer,
                 asked: Cell::new(None),
+                others: Ok(true),
             }
+        }
+        fn with_others(mut self, others: Result<bool, &'static str>) -> Self {
+            self.others = others;
+            self
         }
     }
     impl Groups for FakeGroups {
         fn member(&self, _: &str, gid: u32) -> Result<bool, &'static str> {
             self.asked.set(Some(gid));
             self.answer
+        }
+        fn has_other_member(&self, gid: u32) -> Result<bool, &'static str> {
+            self.asked.set(Some(gid));
+            self.others
         }
     }
 
@@ -285,6 +313,7 @@ mod tests {
                 "lanlord" => self.lanlord,
                 "alice" => Ok(Some(10000)),
                 "root" => Ok(Some(0)),
+                "daemon" => Ok(Some(1)),
                 _ => Ok(None),
             }
         }
@@ -306,13 +335,23 @@ mod tests {
         pam: Result<bool, &'static str>,
         admin: bool,
     ) -> (Verdict, String) {
+        run_with(system, args, input, pam, FakeGroups::new(Ok(admin)))
+    }
+
+    fn run_with(
+        system: &FakeSystem,
+        args: &[String],
+        input: &[u8],
+        pam: Result<bool, &'static str>,
+        groups: FakeGroups,
+    ) -> (Verdict, String) {
         let mut log = Vec::new();
         let verdict = answer(
             args,
             system,
             &mut &input[..],
             &FakePam(pam),
-            &FakeGroups::new(Ok(admin)),
+            &groups,
             &mut log,
         );
         (verdict, String::from_utf8(log).unwrap())
@@ -345,6 +384,47 @@ mod tests {
         }
         for uid in [1000, 1500, 8999, 10000, 20000] {
             assert!(!reserved_uid(uid), "{uid}");
+        }
+    }
+
+    #[test]
+    fn root_signs_in_for_setup_only_while_no_other_admin_exists() {
+        let system = FakeSystem::default();
+        let root = b"root\0secret\0";
+        let alone = || FakeGroups::new(Ok(false)).with_others(Ok(false));
+        let (verdict, log) = run_with(&system, &lanlord(), root, Ok(true), alone());
+        assert_eq!(verdict, Verdict::Setup);
+        assert_eq!(
+            log,
+            "web ui login for root: ok, first-run setup only (no other admin)\n"
+        );
+
+        // once another admin exists root is refused like any system account
+        let taken = FakeGroups::new(Ok(false)).with_others(Ok(true));
+        let (verdict, log) = run_with(&system, &lanlord(), root, Ok(true), taken);
+        assert_eq!(verdict, Verdict::Denied);
+        assert_eq!(log, "web ui login for root: denied, a system account\n");
+
+        // the password check stays as strict as for anyone
+        let (verdict, _) = run_with(&system, &lanlord(), root, Ok(false), alone());
+        assert_eq!(verdict, Verdict::Denied);
+        let (verdict, _) = run_with(&system, &lanlord(), root, Err("pam"), alone());
+        assert_eq!(verdict, Verdict::Error("pam"));
+
+        // a failing group lookup is an error, never a way in
+        let broken = FakeGroups::new(Ok(false)).with_others(Err("groups"));
+        let (verdict, _) = run_with(&system, &lanlord(), root, Ok(true), broken);
+        assert_eq!(verdict, Verdict::Error("groups"));
+    }
+
+    #[test]
+    fn other_system_accounts_never_get_setup() {
+        let system = FakeSystem::default();
+        for name in ["lanlord", "daemon"] {
+            let bytes = format!("{name}\0secret\0");
+            let groups = FakeGroups::new(Ok(false)).with_others(Ok(false));
+            let (verdict, _) = run_with(&system, &lanlord(), bytes.as_bytes(), Ok(true), groups);
+            assert_eq!(verdict, Verdict::Denied, "{name}");
         }
     }
 
@@ -561,6 +641,7 @@ mod tests {
         );
         assert_eq!(padding(Verdict::Ok, elapsed, jitter), Duration::ZERO);
         assert_eq!(padding(Verdict::User, elapsed, jitter), Duration::ZERO);
+        assert_eq!(padding(Verdict::Setup, elapsed, jitter), Duration::ZERO);
     }
 
     #[test]

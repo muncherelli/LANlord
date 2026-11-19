@@ -4,8 +4,9 @@
 //! NUL (handed to pam as the remote host), nothing before or after it, and the caller then shuts
 //! down its writing side so the helper sees the end. the answer is one line:
 //! `ok` (the password is right and the user is in the admins group), `ok user` (the password is
-//! right, the user is an ordinary account), `denied` or `error <code>`, and the exit status says
-//! the same (0, 0, 1, 2).
+//! right, the user is an ordinary account), `ok setup` (the password is right, the user is root and
+//! no other account is an administrator yet: first-run setup only), `denied` or `error <code>`, and
+//! the exit status says the same (0, 0, 0, 1, 2).
 
 use std::fmt;
 use std::io::Read;
@@ -43,6 +44,9 @@ pub enum Verdict {
     Ok,
     /// the password is right and the user may log in, but is not in the admins group.
     User,
+    /// the password is right and the user is root while the admins group has no other member:
+    /// the web ui may offer first-run setup and nothing else.
+    Setup,
     /// anything else about the login: an unknown user, a wrong password, an expired or locked
     /// account, or a system or service account. all of them look the same to the caller.
     Denied,
@@ -57,6 +61,7 @@ impl Verdict {
         match self {
             Verdict::Ok => "ok".to_string(),
             Verdict::User => "ok user".to_string(),
+            Verdict::Setup => "ok setup".to_string(),
             Verdict::Denied => "denied".to_string(),
             Verdict::Error(code) => format!("error {code}"),
         }
@@ -64,7 +69,7 @@ impl Verdict {
 
     pub fn exit_code(&self) -> u8 {
         match self {
-            Verdict::Ok | Verdict::User => 0,
+            Verdict::Ok | Verdict::User | Verdict::Setup => 0,
             Verdict::Denied => 1,
             Verdict::Error(_) => 2,
         }
@@ -258,6 +263,10 @@ mod tests {
         assert_eq!(
             (Verdict::User.line(), Verdict::User.exit_code()),
             ("ok user".into(), 0)
+        );
+        assert_eq!(
+            (Verdict::Setup.line(), Verdict::Setup.exit_code()),
+            ("ok setup".into(), 0)
         );
         assert_eq!(
             (Verdict::Denied.line(), Verdict::Denied.exit_code()),
