@@ -21,15 +21,21 @@ pub struct Caller {
 }
 
 impl Caller {
-    /// the account the session signs in as: its name, and whether it is in `admins`.
+    /// the account the session signs in as: its name, and whether it is in `admins`. root counts
+    /// as an administrator without the group (found by uid 0): bootstrap does not add it (root
+    /// needs no membership or sudo rules), and a root login is accepted everywhere else.
     pub fn of_session(session: &Session) -> Result<Self> {
-        let user = session.capture(&["id".into(), "-un".into()])?.trim().into();
+        let user: String = session.capture(&["id".into(), "-un".into()])?.trim().into();
         let groups = session
             .capture(&["id".into(), "-nG".into()])
             .unwrap_or_default();
-        let admin = groups
-            .split_whitespace()
-            .any(|g| g == crate::admins::ADMINS_GROUP);
+        let uid = session
+            .capture(&["id".into(), "-u".into()])
+            .unwrap_or_default();
+        let admin = uid.trim() == "0"
+            || groups
+                .split_whitespace()
+                .any(|g| g == crate::admins::ADMINS_GROUP);
         Ok(Self { user, admin })
     }
 
@@ -253,6 +259,25 @@ mod tests {
 
     use super::*;
     use lanlord_model::leases::Lease;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_root_login_is_an_administrator_without_the_group() {
+        let who = |user: &str, uid: u32, groups: &str| {
+            Session::fake(&format!(
+                "for a; do last=$a; done\ncase \"$last\" in\n  \"id -un\") echo {user} ;;\n  \"id -u\") echo {uid} ;;\n  \"id -nG\") echo {groups} ;;\nesac"
+            ))
+        };
+        let root = Caller::of_session(&who("root", 0, "root")).unwrap();
+        assert_eq!((root.user.as_str(), root.admin), ("root", true));
+        let other = Caller::of_session(&who("olive", 1000, "olive")).unwrap();
+        assert!(!other.admin);
+        let admin = Caller::of_session(&who("olive", 1000, "olive admins")).unwrap();
+        assert!(admin.admin);
+        // the name alone does not make an administrator
+        let named = Caller::of_session(&who("root", 1000, "root")).unwrap();
+        assert!(!named.admin);
+    }
 
     fn caller(user: &str) -> Caller {
         Caller {
