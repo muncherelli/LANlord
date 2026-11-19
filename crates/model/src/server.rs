@@ -286,8 +286,8 @@ pub fn parse(output: &str) -> Result<ServerFacts> {
             Some(n) if cpus_limited => n,
             _ => host_cpus,
         },
-        sockets: number(&head, "sockets") as u16,
-        cores: number(&head, "cores") as u16,
+        sockets: u16::try_from(number(&head, "sockets")).unwrap_or(0),
+        cores: u16::try_from(number(&head, "cores")).unwrap_or(0),
         cpus_limited,
         mem_total_mb,
         mem_available_mb,
@@ -305,3 +305,19 @@ pub fn demo() -> ServerFacts {
 }
 
 const DEMO: &str = "hostname=demo\nos=Arch Linux\nkernel=Linux 6.12.7-arch1-1\nuptime=273900\nuser=root\nuid=0\ncpu_model=Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz\ncpus=4\nsockets=1\ncores=2\nmem_total_kb=4194304\nmem_available_kb=3407872\ninstalled=1\nversion=0.1.0\napplied=2026-11-15T20:41:07-06:00\n---link\n1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00\n2: eth0@if48: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:01 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n3: eth1@if49: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT group default qlen 1000\\    link/ether 02:00:00:00:aa:02 brd ff:ff:ff:ff:ff:ff link-netnsid 0\n---addr\n1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever\n2: eth0    inet 192.0.2.10/24 metric 1024 brd 192.0.2.255 scope global dynamic eth0\\       valid_lft 3600sec preferred_lft 3600sec\n3: eth1    inet 172.16.120.1/22 brd 172.16.123.255 scope global eth1\\       valid_lft forever preferred_lft forever\n---route\ndefault via 192.0.2.1 dev eth0 proto dhcp src 192.0.2.10 metric 1024\n";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_out_of_range_cpu_topology_reads_as_unknown() {
+        let wrapped = DEMO
+            .replace("sockets=1", "sockets=65537")
+            .replace("cores=2", "cores=70000");
+        let facts = parse(&wrapped).unwrap();
+        assert_eq!((facts.sockets, facts.cores), (0, 0));
+        let facts = parse(DEMO).unwrap();
+        assert_eq!((facts.sockets, facts.cores), (1, 2));
+    }
+}

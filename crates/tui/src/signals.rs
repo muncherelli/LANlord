@@ -107,7 +107,7 @@ mod tests {
 
     // one test on purpose: handlers and their flags are process-wide, so raising SIGHUP in a
     // second test could flip the first. only one raise per process, as a second signal now
-    // exits the process through the conditional shutdown (and SIGTERM is never raised here).
+    // exits the process at once (SIGTERM is never raised here).
     #[test]
     fn a_stop_signal_sets_its_flag() {
         let stop = Stop::listen().unwrap();
