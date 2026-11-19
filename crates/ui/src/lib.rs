@@ -113,7 +113,12 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
     eframe::WebRunner::new()
         .start(
             canvas,
-            eframe::WebOptions::default(),
+            eframe::WebOptions {
+                // a page that paints 30 times a second is plenty for this desktop
+                max_fps: Some(30),
+                dithering: false,
+                ..eframe::WebOptions::default()
+            },
             Box::new(|cc| {
                 let mut desktop = desktop::Desktop::new(web_gateway(), &cc.egui_ctx, None);
                 if cfg!(feature = "demo") {

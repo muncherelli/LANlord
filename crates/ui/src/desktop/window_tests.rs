@@ -177,16 +177,13 @@ fn passwords_admin_flags_and_deletion_need_a_selection_and_go_through_the_task_r
 fn logins_without_a_domain_section_explain_themselves_and_reload_works() {
     let (mut desktop, ctx, fake) = open("nt4-domain", "docker: {}\n");
     desktop.nt4.tab = Tab::Logins;
+    // a transient "the gateway is busy" note comes first when another read holds the host
     until(&mut desktop, &ctx, |d| {
-        d.nt4.users.note().is_some_and(|n| n.0)
+        d.nt4
+            .users
+            .note()
+            .is_some_and(|n| n.0 && n.1.contains("no nt4-domain section"))
     });
-    assert!(desktop
-        .nt4
-        .users
-        .note()
-        .unwrap()
-        .1
-        .contains("no nt4-domain section"));
     *fake.stored.lock().unwrap() = NT4.into();
     assert!(press(&mut desktop, &ctx, "Reload logins"));
     until(&mut desktop, &ctx, |d| d.nt4.users.belongs_to("me@gw"));
