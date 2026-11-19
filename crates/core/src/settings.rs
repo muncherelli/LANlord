@@ -9,7 +9,19 @@ use crate::config;
 use crate::ssh::Session;
 use crate::users::cached;
 
+pub use lanlord_model::login_text::LoginText;
 pub use lanlord_model::settings::*;
+
+/// the sign-in screen's title and message. they are in the plain settings, so no key is needed:
+/// the gateway's operations service answers with them before anyone has signed in.
+pub fn login_text_with(session: &Session, ask: AskPassword) -> Result<LoginText> {
+    let plain = config::pull_plain_with(session, ask)?;
+    Ok(plain
+        .map(text_of_bytes)
+        .transpose()?
+        .map(|text| LoginText::from_text(&text))
+        .unwrap_or_default())
+}
 
 pub(crate) fn load_document_with(
     session: &Session,

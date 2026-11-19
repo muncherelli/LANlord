@@ -1471,6 +1471,7 @@ impl Desktop {
             Target::Hosts => self.hosts_window(ui),
             Target::Settings => {
                 let host = self.host();
+                self.settings.admin = self.is_admin();
                 self.settings.show(ui, &self.services, host.as_deref());
                 if self.settings.take_saved() {
                     self.components.invalidate();

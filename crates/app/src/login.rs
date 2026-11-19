@@ -12,6 +12,7 @@ use std::sync::Arc;
 use lanlord_core::operate::{is_this_server, offered_at, this_server_target, LOCAL_SOCKET};
 #[cfg(feature = "native")]
 use lanlord_core::signin::{local_identity, Attempt, Signin};
+use lanlord_model::login_text::LoginText;
 use lanlord_model::signin::{Identity, SigninError};
 use zeroize::Zeroizing;
 
@@ -55,6 +56,11 @@ pub trait WebSession {
     fn current(&self) -> LocalFuture<anyhow::Result<Option<Identity>>>;
     /// end the session on the server.
     fn logout(&self) -> LocalFuture<()>;
+    /// the title and message the server wants on the logon box, which it gives before anyone
+    /// has signed in; `None` when it cannot say, and the box keeps its own words.
+    fn login_text(&self) -> LocalFuture<Option<LoginText>> {
+        Box::pin(async { None })
+    }
 }
 
 /// what the web ui's `/api/login` answered, as the logon box shows it.
@@ -221,15 +227,21 @@ pub struct LoginBox {
     overlay: Option<Overlay>,
     status: String,
     status_is_error: bool,
-    /// the box's title; a field so an admin setting can replace it later.
+    /// the box's title; the web box takes the server's own when an administrator set one.
     title: String,
-    /// the web box's body text; a field so an admin setting can replace it later.
+    /// the web box's body text; the same.
     web_body: String,
+    /// the server's title and message for the web box, while they are on their way.
+    login_text: Option<Receiver<LoginText>>,
     focus: bool,
     /// `user@this-server` when the operations socket is here, and whether it is the choice.
     here: Option<String>,
     local: bool,
 }
+
+/// the words of the box until the server gives its own.
+const DEFAULT_TITLE: &str = "Login Information";
+const DEFAULT_WEB_BODY: &str = "Enter a username and password that is valid for this system.";
 
 /// spacing of the box, in points.
 const BODY_GAP: f32 = 8.0;
@@ -269,8 +281,9 @@ impl LoginBox {
             overlay: None,
             status: String::new(),
             status_is_error: false,
-            title: "Login Information".into(),
-            web_body: "Enter a username and password that is valid for this system.".into(),
+            title: DEFAULT_TITLE.into(),
+            web_body: DEFAULT_WEB_BODY.into(),
+            login_text: None,
             focus: false,
         }
     }
@@ -284,7 +297,37 @@ impl LoginBox {
         login.local = false;
         login.user = last.unwrap_or_default().to_string();
         login.stage = Stage::Password;
+        login.fetch_login_text();
         login
+    }
+
+    /// ask the server for its title and message; they are put in when they arrive.
+    fn fetch_login_text(&mut self) {
+        let Backend::Web(session) = self.backend.clone() else {
+            return;
+        };
+        let (tx, rx) = channel();
+        let wake = self.wake.clone();
+        spawn_local(async move {
+            if let Some(text) = session.login_text().await {
+                let _ = tx.send(text);
+                wake.wake();
+            }
+        });
+        self.login_text = Some(rx);
+    }
+
+    /// show the server's title and message; an empty one is the box's own.
+    pub fn set_login_text(&mut self, text: &LoginText) {
+        let or = |given: &str, own: &str| {
+            if given.trim().is_empty() {
+                own.to_string()
+            } else {
+                given.to_string()
+            }
+        };
+        self.title = or(&text.title, DEFAULT_TITLE);
+        self.web_body = or(&text.text, DEFAULT_WEB_BODY);
     }
 
     /// whether the choice is this server, signed in as the account running this program.
@@ -460,6 +503,16 @@ impl LoginBox {
 
     /// pick up what the background work found.
     pub fn poll(&mut self) -> Option<SignedIn> {
+        if let Some(text) = self.login_text.as_ref().map(Receiver::try_recv) {
+            match text {
+                Ok(text) => {
+                    self.set_login_text(&text);
+                    self.login_text = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.login_text = None,
+            }
+        }
         let received = self.work.as_ref()?.try_recv();
         let work = match received {
             Ok(work) => work,
@@ -850,7 +903,7 @@ pub mod fake {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use super::{Auth, Identity, LocalFuture, SigninError, WebSession, Zeroizing};
+    use super::{Auth, Identity, LocalFuture, LoginText, SigninError, WebSession, Zeroizing};
 
     #[derive(Default)]
     pub struct FakeAuth {
@@ -883,6 +936,8 @@ pub mod fake {
         pub keeps_session: Mutex<bool>,
         /// `current` cannot reach the server.
         pub unreachable: Mutex<bool>,
+        /// what the server gives for the box before sign-in; `None` is it not answering.
+        pub login_text: Mutex<Option<LoginText>>,
     }
 
     impl FakeWeb {
@@ -920,6 +975,11 @@ pub mod fake {
                 }
                 Ok(now)
             })
+        }
+
+        fn login_text(&self) -> LocalFuture<Option<LoginText>> {
+            let text = self.login_text.lock().unwrap().clone();
+            Box::pin(async move { text })
         }
 
         fn logout(&self) -> LocalFuture<()> {
@@ -1079,6 +1139,69 @@ mod tests {
         walk(login.view(&["x@y".into()]), &mut labels, &mut buttons);
         assert_eq!(labels, ["Username:", "Password:"]);
         assert_eq!(buttons, ["Log In"]);
+    }
+
+    /// the text drawn in the web box's view.
+    fn drawn(login: &mut LoginBox) -> Vec<String> {
+        fn walk(nodes: Vec<Node<Msg>>, texts: &mut Vec<String>) {
+            for node in nodes {
+                match node {
+                    Node::Text(text) => texts.push(text),
+                    Node::Columns(columns) => columns.into_iter().for_each(|(_, b)| walk(b, texts)),
+                    _ => {}
+                }
+            }
+        }
+        let mut texts = Vec::new();
+        walk(login.view(&[]), &mut texts);
+        texts
+    }
+
+    #[test]
+    fn the_web_box_shows_the_servers_title_and_message() {
+        let web = Rc::new(FakeWeb::default());
+        *web.login_text.lock().unwrap() = Some(LoginText {
+            title: "Lab Gateway".into(),
+            text: "Use your lab account.\nAsk Dana for help <b>.".into(),
+        });
+        let mut login = web_box(&web);
+        assert!(login.poll().is_none());
+        assert_eq!(login.title(), "Lab Gateway");
+        // plain text, as typed: markup is not interpreted
+        assert!(drawn(&mut login)
+            .contains(&"Use your lab account.\nAsk Dana for help <b>.".to_string()));
+    }
+
+    #[test]
+    fn the_web_box_keeps_its_own_words_when_the_server_has_none() {
+        let own = |login: &mut LoginBox| {
+            assert_eq!(login.title(), DEFAULT_TITLE);
+            assert!(drawn(login).contains(&DEFAULT_WEB_BODY.to_string()));
+        };
+        // not answering
+        let web = Rc::new(FakeWeb::default());
+        let mut login = web_box(&web);
+        login.poll();
+        own(&mut login);
+        // answering with nothing, or blanks
+        for (title, text) in [("", ""), ("  ", "\n")] {
+            *web.login_text.lock().unwrap() = Some(LoginText {
+                title: title.into(),
+                text: text.into(),
+            });
+            let mut login = web_box(&web);
+            login.poll();
+            own(&mut login);
+        }
+        // one of the two
+        *web.login_text.lock().unwrap() = Some(LoginText {
+            title: "Lab".into(),
+            text: String::new(),
+        });
+        let mut login = web_box(&web);
+        login.poll();
+        assert_eq!(login.title(), "Lab");
+        assert!(drawn(&mut login).contains(&DEFAULT_WEB_BODY.to_string()));
     }
 
     #[test]

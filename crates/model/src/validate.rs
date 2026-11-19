@@ -369,6 +369,22 @@ pub fn text_block(text: &str) -> Check {
     )
 }
 
+/// the title of the sign-in screen: one line, at most 64 characters.
+pub fn login_title(text: &str) -> Check {
+    if text.chars().count() > crate::login_text::TITLE_LIMIT {
+        return Err("is too long");
+    }
+    text_line(text)
+}
+
+/// the message of the sign-in screen: a few lines, at most 500 characters.
+pub fn login_text(text: &str) -> Check {
+    if text.chars().count() > crate::login_text::TEXT_LIMIT {
+        return Err("is too long");
+    }
+    text_block(text)
+}
+
 /// a samba log level: a short single line of digits, lowercase letters, `_`, `:` and spaces
 /// (`1`, `2 auth:3`).
 pub fn log_level(text: &str) -> Check {
@@ -493,6 +509,8 @@ const SECTIONS: &[(&str, Kind)] = &[
         "gateway",
         Kind::Map(&[
             ("motd", Kind::Text(text_block)),
+            ("login_title", Kind::Text(login_title)),
+            ("login_text", Kind::Text(login_text)),
             ("timezone", Kind::Text(time_zone)),
             ("ntp", Kind::List(&Kind::Text(time_server))),
             ("ntp_enabled", Kind::Flag),
@@ -581,7 +599,7 @@ const SECTIONS: &[(&str, Kind)] = &[
 
 /// the only fields that may hold more than one line; every other text is one line, so a value
 /// that reaches a template cannot add lines to a config file.
-const MULTILINE: &[&str] = &["gateway.motd"];
+const MULTILINE: &[&str] = &["gateway.motd", "gateway.login_text"];
 
 /// sections no playbook reads: they are kept in the settings file but never handed to ansible.
 const NOT_FOR_PLAYBOOKS: &[&str] = &["access", "firewall", "remote-commands"];

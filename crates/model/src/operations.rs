@@ -16,6 +16,7 @@ use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use crate::doctor::Report;
 use crate::identity::{AccountInfo, PasswordReport};
 use crate::leases::Lease;
+use crate::login_text::LoginText;
 use crate::netstatus::InterfaceStatus;
 use crate::network::Internal;
 use crate::power::{Outcome, Power};
@@ -300,6 +301,8 @@ pub enum Reply {
     /// how a password change went on each linked account.
     Password(PasswordReport),
     Access(Access),
+    /// the title and message of the sign-in screen; also what the web ui serves before sign-in.
+    LoginText(LoginText),
     /// the server needs the sudo password: a front end that cannot answer a prompt while an
     /// operation runs (the web ui) asks the person and sends the same operation again in a
     /// [`Request`] carrying it. the terminal and the desktop answer the prompt directly and never

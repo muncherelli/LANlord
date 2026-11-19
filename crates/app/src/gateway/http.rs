@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use lanlord_model::login_text::LoginText;
 use lanlord_model::operations::{Operation, Reply, Request};
 use lanlord_model::secret::Secret;
 use lanlord_model::signin::{Identity, SigninError};
@@ -168,11 +169,24 @@ impl WebSession for HttpSession {
         Box::pin(session_now())
     }
 
+    fn login_text(&self) -> LocalFuture<Option<LoginText>> {
+        Box::pin(async {
+            let (status, text) = fetch("GET", "/api/login-text", None).await.ok()?;
+            login_text_body(status, &text)
+        })
+    }
+
     fn logout(&self) -> LocalFuture<()> {
         Box::pin(async {
             let _ = fetch("POST", "/api/logout", Some(Zeroizing::new("{}".into()))).await;
         })
     }
+}
+
+/// the sign-in text a `/api/login-text` answer holds; anything but a good answer is none, and the
+/// logon box keeps its own words.
+fn login_text_body(status: u16, body: &str) -> Option<LoginText> {
+    (status == 200).then(|| serde_json::from_str(body).ok())?
 }
 
 /// who `/api/session` says is logged on, and whether they are an admin. the api does not tell a

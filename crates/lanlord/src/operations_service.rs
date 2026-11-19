@@ -34,6 +34,7 @@ use lanlord_core::access::{Caller, Denied, Refused};
 use lanlord_core::apply::ApplyEvent;
 use lanlord_core::log::{self, Kind};
 use lanlord_core::operations::{execute_in, login_uids, Operation, Reply, Response};
+use lanlord_core::settings::{login_text_with, LoginText};
 use lanlord_core::ssh::Session;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Semaphore;
@@ -157,6 +158,22 @@ impl Forwarded {
         let operation = serde_json::from_value(fields.remove("op")?).ok()?;
         Some(Self { account, operation })
     }
+}
+
+/// the one request that names no account: the sign-in screen's text, which the web ui serves
+/// before anyone has signed in. the service answers with those two fields and nothing else; the
+/// local socket never passes it on (`bind_account` refuses it).
+pub const PUBLIC_LOGIN_TEXT: &[u8] = b"{\"public\":\"login_text\"}\n";
+
+/// the answer to the public request in `line`, read with `read`; `None` for any other line.
+fn public_answer(line: &[u8], read: &dyn Fn() -> Result<LoginText>) -> Option<Response> {
+    (line == PUBLIC_LOGIN_TEXT).then(|| match read() {
+        Ok(text) => Response::Ok(Reply::LoginText(text)),
+        Err(e) => {
+            log::emit(Kind::Err, format!("reading the sign-in text failed: {e:#}"));
+            Response::Error(short(&e))
+        }
+    })
 }
 
 /// the answer for a second apply while one still runs.
@@ -359,6 +376,13 @@ fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
 /// as root through core's `execute_in`, which checks `Operation::requires`.
 fn system_answer(line: &[u8], emit: Emit) -> Response {
     let session = Session::local();
+    let read = || {
+        let mut ask = |_: &str| -> Result<String> { bail!("no sudo prompt: the service is root") };
+        login_text_with(&session, &mut ask)
+    };
+    if let Some(response) = public_answer(line, &read) {
+        return response;
+    }
     answer_line(
         line,
         &|account| Caller::of_account(&session, account),
@@ -691,6 +715,21 @@ async fn read_answer<R: tokio::io::AsyncRead + Unpin>(
     None
 }
 
+/// the sign-in text from the service listening on `socket`; it needs no account.
+pub async fn ask_login_text(socket: &Path) -> Result<LoginText, Unreachable> {
+    let mut stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .map_err(|_| Unreachable::Down)?;
+    let exchange = async {
+        stream.write_all(PUBLIC_LOGIN_TEXT).await.ok()?;
+        read_answer(&mut stream, &|_| {}).await
+    };
+    match tokio::time::timeout(READ_TIMEOUT, exchange).await {
+        Ok(Some(Response::Ok(Reply::LoginText(text)))) => Ok(text),
+        _ => Err(Unreachable::NoAnswer),
+    }
+}
+
 /// send `account`'s `operation` to the service listening on `socket`, pass the apply events on to
 /// `events` as they come, and read its answer.
 pub fn ask(socket: &Path, account: String, operation: Operation, events: Events) -> Asking {
@@ -742,6 +781,27 @@ mod tests {
                 Ok(Reply::Names(vec![caller.user.clone()]))
             },
         )
+    }
+
+    #[test]
+    fn the_public_request_answers_with_the_sign_in_text_only() {
+        let text = LoginText {
+            title: "Lab".into(),
+            text: "Hello".into(),
+        };
+        let found = text.clone();
+        let answer = public_answer(PUBLIC_LOGIN_TEXT, &move || Ok(found.clone()));
+        assert_eq!(answer, Some(Response::Ok(Reply::LoginText(text))));
+        let broken = public_answer(PUBLIC_LOGIN_TEXT, &|| bail!("no settings\nsecond line"));
+        assert_eq!(broken, Some(Response::Error("no settings".into())));
+        // any other line is not for it, and the machine's own accounts cannot send it
+        let other = br#"{"public":"settings"}"#;
+        assert_eq!(public_answer(other, &|| Ok(LoginText::default())), None);
+        assert!(bind_account(PUBLIC_LOGIN_TEXT, "ann").is_err());
+        assert_eq!(
+            answer_as(true, std::str::from_utf8(PUBLIC_LOGIN_TEXT).unwrap()),
+            Response::Error("not an operation".into())
+        );
     }
 
     const RESET: &str =

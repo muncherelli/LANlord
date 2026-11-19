@@ -973,6 +973,7 @@ impl Shell {
                 answer
             }
             Target::Settings => {
+                self.settings.admin = self.signed_in.as_ref().is_some_and(|s| s.identity.admin);
                 let nodes = self.settings.view(&self.services, host.as_deref());
                 let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
                 if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
