@@ -209,6 +209,32 @@ mod tests {
     }
 
     #[test]
+    fn every_check_the_probe_reports_says_what_it_is_for() {
+        let proxmox = "virt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\n";
+        let nested = "virt_container=docker\nvirt_vm=none\n";
+        let mut seen = std::collections::BTreeSet::new();
+        for probe in [proxmox, nested, "virt_container=none\nvirt_vm=none\n"] {
+            for check in Report::parse(probe).checks {
+                assert!(!purpose(&check.id).is_empty(), "{}", check.id);
+                assert!(!explain(&check.id).is_empty(), "{}", check.id);
+                seen.insert(check.id);
+            }
+        }
+        // 9 link kinds, and the 12 others the probe can add
+        assert_eq!(seen.len(), 9 + 12, "{seen:?}");
+    }
+
+    #[test]
+    fn the_explanation_names_the_purpose_and_the_components() {
+        assert_eq!(
+            explain("ip-forward"),
+            "routing between your networks and out to the internet"
+        );
+        let ntp = explain("ntp-port");
+        assert!(ntp.contains("udp port 123") && ntp.ends_with("used by Time Server (NTP)"));
+    }
+
+    #[test]
     fn an_unprivileged_container_without_features_blocks_docker_components() {
         let report = Report::parse(UNPRIVILEGED);
         let ids: Vec<&str> = blockers(&report, "nt4-domain")
