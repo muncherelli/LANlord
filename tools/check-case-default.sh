@@ -79,10 +79,20 @@ for f in "$@"; do
       # a heredoc opened on this line ends at its delimiter word; << is looked for
       # in the blanked text (so not in quotes or comments, nor inside arithmetic)
       # and the delimiter is read from the same place in the kept text
-      if (hd == "" && match(out, "(^|[^<])<<-?") && !arith_open(out, RSTART + 1)) {
-        rest = substr(kept, RSTART + RLENGTH); sub(/^[ \t]+/, "", rest)
-        if (match(rest, "^\\\\?[\"\047]?[A-Za-z_][A-Za-z_0-9]*")) {
-          hd = substr(rest, RSTART, RLENGTH); gsub(/[^A-Za-z_0-9]/, "", hd)
+      if (hd == "") {
+        off = 0; scan = out
+        while (match(scan, "(^|[^<])<<-?") ) {
+          pos = off + RSTART + (substr(scan, RSTART, 1) == "<" ? 0 : 1)
+          len = RLENGTH - (substr(scan, RSTART, 1) == "<" ? 0 : 1)
+          nextc = substr(out, pos + len, 1)
+          if (nextc != "<" && !arith_open(out, pos)) {
+            rest = substr(kept, pos + len); sub(/^[ \t]+/, "", rest)
+            if (match(rest, "^\\\\?[\"\047]?[A-Za-z_][A-Za-z_0-9]*")) {
+              hd = substr(rest, RSTART, RLENGTH); gsub(/[^A-Za-z_0-9]/, "", hd)
+              break
+            }
+          }
+          off += RSTART + RLENGTH - 1; scan = substr(out, off + 1)
         }
       }
       # nothing in a heredoc body is code

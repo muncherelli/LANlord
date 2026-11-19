@@ -94,7 +94,7 @@ expect arithmetic-shift.sh "2" <<'SH'
 n=$(( (a) << b ))
 case $a in x) ;; esac
 SH
-expect unclosed-one-line-run.yml "5" <<'YML'
+expect one-line-run-no-default.yml "5" <<'YML'
 jobs:
   a:
     steps:
@@ -109,6 +109,18 @@ jobs:
     - run: echo done
 YML
 
+expect heredoc-after-arithmetic.sh "6" <<'SH'
+n=$((a<<2)); cat <<TXT
+case the prose starts with the word
+esac
+TXT
+echo done
+case $a in x) ;; esac
+SH
+expect here-string.sh "2" <<'SH'
+cat <<< "$x"
+case $a in x) ;; esac
+SH
 expect unclosed.sh "2" <<'SH'
 echo start
 case $a in x) ;; *) ;;
