@@ -143,7 +143,7 @@ fn networks_show_a_tab_per_network_with_its_connection_and_activity() {
 }
 
 #[test]
-fn the_properties_box_lists_the_network_and_closes_with_ok() {
+fn the_properties_box_lists_the_network_and_closes_with_cancel() {
     let fake = Arc::new(Fake::new());
     settings(&fake);
     let mut shell = server(&fake);
@@ -153,14 +153,14 @@ fn the_properties_box_lists_the_network_and_closes_with_ok() {
     let text = press(&mut shell, "Properties...");
     for needle in [
         "retronet Properties",
-        "Kind",
-        "LANlord network",
+        "Name",
+        "Address",
         "MTU",
         "DHCP range",
     ] {
         assert!(text.contains(needle), "{needle}:\n{text}");
     }
-    let text = press(&mut shell, "[ OK ]");
+    let text = press(&mut shell, "[ Cancel ]");
     assert!(!text.contains("retronet Properties"), "{text}");
     // Escape closes it too
     press(&mut shell, "Properties...");
