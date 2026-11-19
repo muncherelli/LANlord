@@ -71,6 +71,44 @@ don't blank what follows
 TXT
 case $a in x) ;; esac
 SH
+expect heredoc-prose-case.sh "6" <<'SH'
+cat <<TXT
+case the prose starts with the word
+TXT
+echo done
+echo more
+case $a in x) ;; esac
+SH
+expect heredoc-in-quotes.sh "2" <<'SH'
+echo "use <<EOF to start one"
+case $a in x) ;; esac
+SH
+expect heredoc-in-quotes-real.sh "5" <<'SH'
+cat <<TXT; echo "a <<EOF b"
+don't blank what follows
+TXT
+echo done
+case $a in x) ;; esac
+SH
+expect arithmetic-shift.sh "2" <<'SH'
+n=$(( (a) << b ))
+case $a in x) ;; esac
+SH
+expect unclosed-one-line-run.yml "5" <<'YML'
+jobs:
+  a:
+    steps:
+      - name: x
+        run: case $x in a) ;; esac
+      - run: echo done
+YML
+expect unclosed-one-line-run2.yml "3" <<'YML'
+jobs:
+  a:
+    - run: case $x in a) ;; *) ;;
+    - run: echo done
+YML
+
 expect unclosed.sh "2" <<'SH'
 echo start
 case $a in x) ;; *) ;;
