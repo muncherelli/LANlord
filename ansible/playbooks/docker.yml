@@ -162,25 +162,14 @@
       changed_when: false
       when: internet_needed
 
-    # lanlord's own sysctl file is how it knows forwarding was its doing: when nothing needs it any
-    # more the file goes and forwarding is switched off now, not only at the next boot. a machine
-    # that never had the file keeps whatever forwarding it had (docker turns it on for itself).
-    - name: look for lanlord's ip forwarding file
-      ansible.builtin.stat:
-        path: /etc/sysctl.d/60-lanlord.conf
-      register: lanlord_sysctl
-      when: not internet_needed
-
+    # when nothing needs forwarding any more, lanlord's file goes so the next boot does not turn it
+    # on. the running value is left alone: docker sets it to 1 itself and bridged containers need
+    # it. the forward chain of the firewall drops what the lanlord networks forward either way.
     - name: stop turning ip forwarding on at boot
       ansible.builtin.file:
         path: /etc/sysctl.d/60-lanlord.conf
         state: absent
       when: not internet_needed
-
-    - name: turn ip forwarding off now
-      ansible.builtin.command: sysctl -w net.ipv4.ip_forward=0
-      changed_when: false
-      when: not internet_needed and lanlord_sysctl.stat.exists | default(false)
 
     # docker's iptables backend sets the FORWARD policy to DROP when it turns forwarding on, which
     # silently kills the nat below even though lanlord's own table accepts the traffic. docker 28

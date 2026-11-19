@@ -96,6 +96,21 @@ if have nft && nft list table inet lanlord >/dev/null 2>&1; then
   act "remove the firewall table inet lanlord" nft delete table inet lanlord
 fi
 
+# the key lanlord added to docker's settings for internet access: out again, the other keys stay
+# (the file is left as it is when nothing else is in it, since it may not be lanlord's)
+if exists "$ROOT/etc/lanlord/ip-forward-no-drop" && exists "$ROOT/etc/docker/daemon.json" && have python3; then
+  act "remove the ip-forward-no-drop key from /etc/docker/daemon.json" python3 -c '
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    config = json.load(f)
+config.pop("ip-forward-no-drop", None)
+with open(path, "w") as f:
+    json.dump(config, f, indent=4)
+    f.write("\n")
+' "$ROOT/etc/docker/daemon.json"
+fi
+
 netchanged=0
 for f in "$ROOT"/etc/systemd/network/*.network.d/lanlord.conf; do
   if exists "$f"; then
@@ -205,6 +220,7 @@ mod tests {
                 "opt/lanlord/install-state",
                 "opt/lanlord/nt4/lib/profiles/dana/ntuser.dat",
                 "etc/lanlord/firewall.nft",
+                "etc/lanlord/ip-forward-no-drop",
                 "etc/systemd/system/lanlord-firewall.service",
                 "etc/systemd/system/lanlord-status.timer",
                 "etc/systemd/network/eth1.network.d/lanlord.conf",
@@ -420,6 +436,37 @@ esac"#,
         }
         assert!(!log.contains("caddy"), "{log}");
         assert!(!log.contains("userdel -r"), "people stay by default: {log}");
+    }
+
+    #[test]
+    fn the_docker_key_lanlord_added_goes_and_the_others_stay() {
+        let fake = Fake::new("daemon", false);
+        let daemon = fake.root().join("etc/docker/daemon.json");
+        fs::create_dir_all(daemon.parent().unwrap()).unwrap();
+        fs::write(
+            &daemon,
+            r#"{"log-driver": "local", "ip-forward-no-drop": true}"#,
+        )
+        .unwrap();
+        let (code, out) = fake.run(true, OPTIONS);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("remove the ip-forward-no-drop key"), "{out}");
+        assert!(fs::read_to_string(&daemon).unwrap().contains("no-drop"));
+        let (code, out) = fake.run(false, OPTIONS);
+        assert_eq!(code, 0, "{out}");
+        let kept: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&daemon).unwrap()).unwrap();
+        assert_eq!(kept, serde_json::json!({"log-driver": "local"}));
+        assert!(!exists(&fake.root(), "etc/lanlord/ip-forward-no-drop"));
+        // without the marker the key is not lanlord's and stays
+        let other = Fake::new("daemon-not-ours", false);
+        let daemon = other.root().join("etc/docker/daemon.json");
+        fs::create_dir_all(daemon.parent().unwrap()).unwrap();
+        fs::write(&daemon, r#"{"ip-forward-no-drop": true}"#).unwrap();
+        fs::remove_file(other.root().join("etc/lanlord/ip-forward-no-drop")).unwrap();
+        let (code, out) = other.run(false, OPTIONS);
+        assert_eq!(code, 0, "{out}");
+        assert!(fs::read_to_string(&daemon).unwrap().contains("no-drop"));
     }
 
     #[test]
