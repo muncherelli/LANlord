@@ -99,3 +99,12 @@ impl fmt::Display for SigninError {
 }
 
 impl std::error::Error for SigninError {}
+
+/// the host name of the logon box's "This server" choice. `.localhost` names can never be
+/// delegated to another machine, so it cannot be somebody else's server.
+pub const THIS_SERVER: &str = "this-server.localhost";
+
+/// is `host` (a `user@host` target or a bare host) this machine's own operations service?
+pub fn is_this_server(host: &str) -> bool {
+    host.rsplit_once('@').map_or(host, |(_, host)| host) == THIS_SERVER
+}

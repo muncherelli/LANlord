@@ -27,18 +27,11 @@ use crate::ssh::Session;
 /// word on who connected, and serves only ordinary login accounts, each as itself.
 pub const LOCAL_SOCKET: &str = "/run/lanlord-operations/local.sock";
 
-/// the host name of the logon box's "This server" choice. `.localhost` names can never be
-/// delegated to another machine, so it cannot be somebody else's server.
-pub const THIS_SERVER: &str = "this-server.localhost";
+pub use lanlord_model::signin::{is_this_server, THIS_SERVER};
 
 /// the `user@host` target a local logon is kept under in the list of servers.
 pub fn this_server_target(user: &str) -> String {
     format!("{user}@{THIS_SERVER}")
-}
-
-/// is `host` (a `user@host` target or a bare host) this machine's own operations service?
-pub fn is_this_server(host: &str) -> bool {
-    host.rsplit_once('@').map_or(host, |(_, host)| host) == THIS_SERVER
 }
 
 /// does the operations service of this machine listen on `socket`? a socket file is only there

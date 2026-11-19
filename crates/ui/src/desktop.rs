@@ -276,7 +276,11 @@ impl Desktop {
         if self.services.is_local() {
             return;
         }
-        let last = self.hosts.selected().map(String::from);
+        let last = self
+            .hosts
+            .last()
+            .or(self.hosts.selected())
+            .map(String::from);
         self.login = Some(LoginBox::new(auth.clone(), &self.ctx, last.as_deref()));
         self.auth = Some(auth);
     }
@@ -645,6 +649,7 @@ impl Desktop {
             if let Err(error) = self.hosts.add(&signed_in.target) {
                 emit(Kind::Err, error);
             }
+            self.hosts.remember(&signed_in.target);
         }
         self.services.session_restored();
         self.reset_session_ui();

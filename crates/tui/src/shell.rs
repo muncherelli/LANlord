@@ -426,7 +426,11 @@ impl Shell {
         if self.services.is_local() {
             return;
         }
-        let last = self.hosts.selected().map(String::from);
+        let last = self
+            .hosts
+            .last()
+            .or(self.hosts.selected())
+            .map(String::from);
         self.login = Some(LoginBox::new(auth.clone(), Wake::none(), last.as_deref()));
         self.auth = Some(auth);
     }
@@ -443,6 +447,7 @@ impl Shell {
         if let Err(error) = self.hosts.add(&signed_in.target) {
             lanlord_core::log::emit(lanlord_core::log::Kind::Err, error);
         }
+        self.hosts.remember(&signed_in.target);
         self.windows.clear();
         self.active = None;
         self.selected = None;

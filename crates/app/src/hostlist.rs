@@ -30,6 +30,14 @@ mod hosts {
             "no hosts file here",
         ))
     }
+
+    pub fn load_last(_path: &Path) -> Option<String> {
+        None
+    }
+
+    pub fn save_last(_path: &Path, _target: &str) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// is `host` something ssh can reach, like user@gateway?
@@ -52,16 +60,33 @@ pub struct HostList {
     path: Option<PathBuf>,
     hosts: Vec<String>,
     selected: usize,
+    /// the target last signed in to; the this-server target is kept here, not in the list.
+    last: Option<String>,
 }
 
 impl HostList {
     /// read the list from `path`; without a path it only lives in memory.
     pub fn new(path: Option<PathBuf>) -> Self {
         let hosts = path.as_deref().map(hosts::load).unwrap_or_default();
+        let last = path.as_deref().and_then(hosts::load_last);
         Self {
             path,
             hosts,
             selected: 0,
+            last,
+        }
+    }
+
+    /// the target last signed in to, if one was kept.
+    pub fn last(&self) -> Option<&str> {
+        self.last.as_deref()
+    }
+
+    /// keep `target` as the last sign-in, so the next start opens on it.
+    pub fn remember(&mut self, target: &str) {
+        self.last = Some(target.to_string());
+        if let Some(path) = &self.path {
+            let _ = hosts::save_last(path, target);
         }
     }
 
@@ -180,6 +205,19 @@ mod tests {
         assert_eq!(hosts::load(&path), ["me@one"]);
         list.remove_selected().unwrap();
         assert!(list.selected().is_none());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn the_last_sign_in_survives_a_restart() {
+        let path = temp("last");
+        let mut list = HostList::new(Some(path.clone()));
+        assert_eq!(list.last(), None);
+        list.remember("me@this-server.localhost");
+        assert_eq!(list.last(), Some("me@this-server.localhost"));
+        assert!(list.hosts().is_empty());
+        let again = HostList::new(Some(path.clone()));
+        assert_eq!(again.last(), Some("me@this-server.localhost"));
         cleanup(&path);
     }
 

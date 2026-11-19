@@ -9,11 +9,11 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
 #[cfg(feature = "native")]
-use lanlord_core::operate::{is_this_server, offered_at, this_server_target, LOCAL_SOCKET};
+use lanlord_core::operate::{offered_at, this_server_target, LOCAL_SOCKET};
 #[cfg(feature = "native")]
 use lanlord_core::signin::{local_identity, Attempt, Signin};
 use lanlord_model::login_text::LoginText;
-use lanlord_model::signin::{Identity, SigninError};
+use lanlord_model::signin::{is_this_server, Identity, SigninError};
 use zeroize::Zeroizing;
 
 use crate::message::MessageBox;
@@ -262,14 +262,18 @@ const STATUS_GAP: f32 = 6.0;
 impl LoginBox {
     /// a box for `auth`, with the fields filled from `last` (`user@host`) when there is one.
     pub fn new(auth: Arc<dyn Auth>, wake: Wake, last: Option<&str>) -> Self {
-        let (user, host) = last
+        // the this-server target fills nothing: its host is not one to type
+        let other = last.filter(|l| !is_this_server(l) && l.contains('@'));
+        let (user, host) = other
             .and_then(|l| l.split_once('@'))
             .map_or((String::new(), String::new()), |(u, h)| {
                 (u.to_string(), h.to_string())
             });
         let here = auth.this_server();
         Self {
-            local: here.is_some(),
+            // open on the connection used last: another server stays picked even when this
+            // one is offered
+            local: here.is_some() && other.is_none(),
             here,
             backend: Backend::Ssh(auth),
             wake,
@@ -623,6 +627,7 @@ impl LoginBox {
 
     /// the box's contents; `known` are the servers used before.
     pub fn view(&mut self, known: &[String]) -> Vec<Node<Msg>> {
+        let known = &listed(known);
         let busy = self.busy() || self.overlay.is_some();
         let first = !self.focus;
         self.focus = true;
@@ -820,6 +825,7 @@ impl LoginBox {
 
     /// act on a click or keystroke; `known` are the servers the recent list showed.
     pub fn update(&mut self, msg: Msg, known: &[String]) -> Option<Outcome> {
+        let known = &listed(known);
         match msg {
             Msg::Recent(i) => {
                 if let Some(server) = known.get(i) {
@@ -881,6 +887,15 @@ impl LoginBox {
         self.stage = Stage::Credentials;
         self.password = Zeroizing::new(String::new());
     }
+}
+
+/// the recent servers to show: this server is a choice of its own, not a host to pick.
+fn listed(known: &[String]) -> Vec<String> {
+    known
+        .iter()
+        .filter(|server| !is_this_server(server))
+        .cloned()
+        .collect()
 }
 
 /// the ssh side of a box that only logs on through the web ui: never asked.
@@ -1231,6 +1246,45 @@ mod tests {
         assert_eq!(login.update(Msg::Recent(0), &known), None);
         assert_eq!(login.target().unwrap(), "bob@other");
         assert_eq!(login.update(Msg::ShutDown, &known), Some(Outcome::ShutDown));
+    }
+
+    fn here_auth() -> Arc<FakeAuth> {
+        let auth = FakeAuth::default();
+        *auth.here.lock().unwrap() = Some(this_server_target("ann"));
+        Arc::new(auth)
+    }
+
+    #[test]
+    fn last_on_another_server_opens_on_ssh_even_when_this_one_is_offered() {
+        let login = LoginBox::new(here_auth(), Wake::none(), Some("bob@gw.example.net"));
+        assert!(!login.local);
+        assert_eq!(
+            (login.user.as_str(), login.host.as_str()),
+            ("bob", "gw.example.net")
+        );
+    }
+
+    #[test]
+    fn last_on_this_server_opens_on_it_with_the_boxes_empty() {
+        let last = this_server_target("ann");
+        let login = LoginBox::new(here_auth(), Wake::none(), Some(&last));
+        assert!(login.local);
+        assert_eq!((login.user.as_str(), login.host.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn without_history_this_server_is_picked_when_offered_and_ssh_otherwise() {
+        assert!(LoginBox::new(here_auth(), Wake::none(), None).local);
+        let login = LoginBox::new(Arc::new(FakeAuth::default()), Wake::none(), None);
+        assert!(!login.local);
+    }
+
+    #[test]
+    fn this_server_is_not_a_recent_server() {
+        let mut login = LoginBox::new(here_auth(), Wake::none(), None);
+        let known = [this_server_target("ann"), "bob@other".to_string()];
+        login.update(Msg::Recent(0), &known);
+        assert_eq!(login.target().unwrap(), "bob@other");
     }
 
     fn choice_labels(login: &mut LoginBox) -> Vec<String> {
