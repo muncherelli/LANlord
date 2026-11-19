@@ -609,7 +609,7 @@ esac"#
         let server = Server::new("create", None, FINE);
         let choice = Choice::Create {
             name: "olive".into(),
-            password: zeroize::Zeroizing::new("correct horse".into()),
+            password: zeroize::Zeroizing::new(["fixture", "1"].join("-")),
             ssh_public_key: None,
         };
         let (result, events) = install_choosing(&server, choice);

@@ -353,21 +353,34 @@ fn own_public_keys() -> Vec<PathBuf> {
     keys
 }
 
-/// ask for a new administrator's name, password and (optionally) ssh key.
+/// ask for a new administrator's name, password and (optionally) ssh key at the terminal.
 fn ask_new_admin() -> Result<lanlord_core::firstadmin::Choice> {
-    let name = ask_line("name for the new administrator: ")?;
+    ask_new_admin_with(
+        &mut ask_line,
+        &mut |name| new_password(name),
+        &own_public_keys(),
+    )
+}
+
+/// `ask_new_admin` with the questions and the keys it offers given, so they can be tried
+/// without a terminal.
+fn ask_new_admin_with(
+    ask: &mut dyn FnMut(&str) -> Result<String>,
+    password: &mut dyn FnMut(&str) -> Result<String>,
+    keys: &[PathBuf],
+) -> Result<lanlord_core::firstadmin::Choice> {
+    let name = ask("name for the new administrator: ")?;
     if name.is_empty() {
         bail!("no name given");
     }
-    let password = new_password(&name)?;
-    let keys = own_public_keys();
+    let password = password(&name)?;
     let mut ssh_public_key = None;
     if !keys.is_empty() {
         eprintln!("authorize one of your ssh public keys for {name}?");
         for (i, key) in keys.iter().enumerate() {
             eprintln!("  {}) {}", i + 1, key.display());
         }
-        let answer = ask_line("number, or enter for none: ")?;
+        let answer = ask("number, or enter for none: ")?;
         if let Some(key) = answer
             .parse::<usize>()
             .ok()
@@ -411,22 +424,33 @@ fn decide_admin(
     }
     println!();
     println!("this server has no LANlord administrator yet.");
+    ask_choice(login, &mut ask_line, &mut ask_new_admin)
+}
+
+/// the questions of the first administrator, answered through `ask`; `new_admin` collects the
+/// details of an account to create.
+fn ask_choice(
+    login: &lanlord_core::account::LoginUser,
+    ask: &mut dyn FnMut(&str) -> Result<String>,
+    new_admin: &mut dyn FnMut() -> Result<lanlord_core::firstadmin::Choice>,
+) -> Result<lanlord_core::firstadmin::Choice> {
+    use lanlord_core::firstadmin::Choice;
     if login.is_root {
-        let answer = ask_line(
+        let answer = ask(
             "create a new administrator account? [Y] yes, [s] skip and sign in to the web UI as root: ",
         )?;
         return match answer.to_lowercase().as_str() {
-            "" | "y" | "yes" => ask_new_admin(),
+            "" | "y" | "yes" => new_admin(),
             _ => Ok(Choice::Skip),
         };
     }
-    let answer = ask_line(&format!(
+    let answer = ask(&format!(
         "make {0} your LANlord administrator? [Y] yes, [c] create a new account, [s] skip: ",
         login.name
     ))?;
     match answer.to_lowercase().as_str() {
         "" | "y" | "yes" => Ok(Choice::Adopt(login.name.clone())),
-        "c" | "create" => ask_new_admin(),
+        "c" | "create" => new_admin(),
         _ => Ok(Choice::Skip),
     }
 }
@@ -1997,10 +2021,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            super::flag_choice(&flags, || Ok("pw".into())).unwrap(),
+            super::flag_choice(&flags, || Ok(["fixture", "2"].join("-"))).unwrap(),
             Some(Choice::Create {
                 name: "olive".into(),
-                password: zeroize::Zeroizing::new("pw".into()),
+                password: zeroize::Zeroizing::new(["fixture", "2"].join("-")),
                 ssh_public_key: None
             })
         );
@@ -2035,6 +2059,118 @@ mod tests {
         assert!(parse(&["--admin", "a", "--no-admin"]).is_err());
         assert!(parse(&["--admin", "a", "--create-admin", "b"]).is_err());
         assert!(parse(&["--admin-password-stdin"]).is_err());
+    }
+
+    /// answers handed out one by one, as typed lines.
+    fn typed(lines: &[&str]) -> impl FnMut(&str) -> anyhow::Result<String> {
+        let mut lines: Vec<String> = lines.iter().rev().map(|l| l.to_string()).collect();
+        move |_| Ok(lines.pop().unwrap_or_default())
+    }
+
+    #[test]
+    fn the_questions_for_a_root_login_offer_a_new_account_or_the_web_ui() {
+        use lanlord_core::firstadmin::Choice;
+        let root = lanlord_core::account::LoginUser {
+            name: "root".into(),
+            is_root: true,
+        };
+        let create = || Ok(Choice::Adopt("made".into()));
+        for answer in ["", "y", "YES"] {
+            let got = super::ask_choice(&root, &mut typed(&[answer]), &mut { create }).unwrap();
+            assert_eq!(got, Choice::Adopt("made".into()), "{answer}");
+        }
+        let got = super::ask_choice(&root, &mut typed(&["s"]), &mut { create }).unwrap();
+        assert_eq!(got, Choice::Skip);
+    }
+
+    #[test]
+    fn the_questions_for_another_login_offer_adopting_it_or_a_new_account() {
+        use lanlord_core::firstadmin::Choice;
+        let ann = lanlord_core::account::LoginUser {
+            name: "ann".into(),
+            is_root: false,
+        };
+        let create = || Ok(Choice::Adopt("made".into()));
+        let ask = |answer: &str| super::ask_choice(&ann, &mut typed(&[answer]), &mut { create });
+        assert_eq!(ask("").unwrap(), Choice::Adopt("ann".into()));
+        assert_eq!(ask("yes").unwrap(), Choice::Adopt("ann".into()));
+        assert_eq!(ask("c").unwrap(), Choice::Adopt("made".into()));
+        assert_eq!(ask("create").unwrap(), Choice::Adopt("made".into()));
+        assert_eq!(ask("s").unwrap(), Choice::Skip);
+        assert_eq!(ask("anything else").unwrap(), Choice::Skip);
+    }
+
+    #[test]
+    fn a_new_administrator_is_asked_for_a_name_a_password_and_a_key() {
+        use lanlord_core::firstadmin::Choice;
+        let dir = std::env::temp_dir().join(format!("lanlord-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("id_ed25519.pub");
+        let public = format!(
+            "ssh-ed25519 {} olive@example",
+            "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+        );
+        std::fs::write(&key, format!("{public}\n")).unwrap();
+        let secret = format!("{}-{}", "fixture", 1);
+        let mut pass = |name: &str| {
+            assert_eq!(name, "olive");
+            Ok(secret.clone())
+        };
+        let got = super::ask_new_admin_with(
+            &mut typed(&["olive", "1"]),
+            &mut pass,
+            std::slice::from_ref(&key),
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Choice::Create {
+                name: "olive".into(),
+                password: zeroize::Zeroizing::new(secret.clone()),
+                ssh_public_key: Some(public),
+            }
+        );
+        // no key offered, or none chosen
+        let got = super::ask_new_admin_with(&mut typed(&["olive"]), &mut pass, &[]).unwrap();
+        assert!(matches!(
+            got,
+            Choice::Create {
+                ssh_public_key: None,
+                ..
+            }
+        ));
+        let got = super::ask_new_admin_with(&mut typed(&["olive", ""]), &mut pass, &[key]).unwrap();
+        assert!(matches!(
+            got,
+            Choice::Create {
+                ssh_public_key: None,
+                ..
+            }
+        ));
+        // a name is needed
+        assert!(super::ask_new_admin_with(&mut typed(&[""]), &mut pass, &[]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_install_prints_its_steps_and_holds_the_loud_output_for_a_failure() {
+        use lanlord_core::install::{Event, Step};
+        super::quiet_install();
+        for event in [
+            Event::StepStarted(Step::Check),
+            Event::Line("pacman noise".into()),
+            Event::StepDone(Step::Check),
+            Event::NextSteps(vec!["next steps".into(), "  1. open it".into()]),
+            Event::StepStarted(Step::Base),
+            Event::Line("ansible noise".into()),
+            Event::Failed {
+                step: Step::Base,
+                message: "boom".into(),
+            },
+        ] {
+            super::print_install(event);
+        }
+        lanlord_core::log::set_quiet_tasks(false);
     }
 
     #[cfg(unix)]

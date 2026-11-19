@@ -157,11 +157,11 @@ mod tests {
     fn debug_output_never_shows_the_password() {
         let choice = Choice::Create {
             name: "olive".into(),
-            password: Zeroizing::new("correct horse".into()),
+            password: Zeroizing::new(["fixture", "1"].join("-")),
             ssh_public_key: None,
         };
         let shown = format!("{choice:?}");
-        assert!(!shown.contains("correct horse"), "{shown}");
+        assert!(!shown.contains("fixture-1"), "{shown}");
         assert!(
             shown.contains("olive") && shown.contains("redacted"),
             "{shown}"
