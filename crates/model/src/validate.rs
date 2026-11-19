@@ -1974,17 +1974,15 @@ web-proxy:
             ),
             (
                 Operation::ChangeNetworks {
-                    edit: crate::lan_edit::Edit::Add(crate::lan_networks::LanNetwork::new(
-                        "lab",
-                        "eth2",
-                        "198.51.100.1",
+                    edit: Box::new(crate::lan_edit::Edit::Add(
+                        crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1"),
                     )),
                 },
                 "networks[0].address",
             ),
             (
                 Operation::ChangeNetworks {
-                    edit: crate::lan_edit::Edit::Remove("a b".into()),
+                    edit: Box::new(crate::lan_edit::Edit::Remove("a b".into())),
                 },
                 "name",
             ),
@@ -2020,10 +2018,8 @@ web-proxy:
                 updates: vec![],
             },
             Operation::ChangeNetworks {
-                edit: crate::lan_edit::Edit::Add(crate::lan_networks::LanNetwork::new(
-                    "lab",
-                    "eth2",
-                    "198.51.100.1/24",
+                edit: Box::new(crate::lan_edit::Edit::Add(
+                    crate::lan_networks::LanNetwork::new("lab", "eth2", "198.51.100.1/24"),
                 )),
             },
         ];

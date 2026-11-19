@@ -60,7 +60,7 @@ pub enum Operation {
     },
     /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
     /// docker and dns modules.
-    ChangeNetworks { edit: NetworkEdit },
+    ChangeNetworks { edit: Box<NetworkEdit> },
     /// the dhcp leases the gateway has handed out.
     Leases,
     /// the names of the logon scripts in the netlogon share.
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(Operation::Leases.requires(), Need::view(Area::Network));
         assert_eq!(
             Operation::ChangeNetworks {
-                edit: NetworkEdit::Remove("lab".into())
+                edit: Box::new(NetworkEdit::Remove("lab".into()))
             }
             .requires(),
             Need::manage(Area::Network)

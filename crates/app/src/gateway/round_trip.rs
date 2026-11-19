@@ -185,7 +185,7 @@ mod tests {
             },
             Operation::Bootstrap,
             Operation::ChangeNetworks {
-                edit: lanlord_model::lan_edit::Edit::Remove("lab".into()),
+                edit: Box::new(lanlord_model::lan_edit::Edit::Remove("lab".into())),
             },
         ] {
             assert!(timeout_ms(&operation) > 15 * 60 * 1000);

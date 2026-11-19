@@ -1056,7 +1056,7 @@ esac"#,
         assert!(is_denied(&go(&dana, reset.clone())));
         assert!(is_denied(&go(&dana, Operation::LoadAccess)));
         let networks = Operation::ChangeNetworks {
-            edit: lanlord_model::lan_edit::Edit::Remove("lab".into()),
+            edit: Box::new(lanlord_model::lan_edit::Edit::Remove("lab".into())),
         };
         assert!(is_denied(&go(&dana, networks)));
         assert!(is_denied(&go(

@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn changing_the_networks_needs_manage_on_network() {
         let change = Operation::ChangeNetworks {
-            edit: lanlord_model::lan_edit::Edit::Remove("lab".into()),
+            edit: Box::new(lanlord_model::lan_edit::Edit::Remove("lab".into())),
         };
         assert!(authorize(&grants(ADMINISTRATORS), &change).is_ok());
         assert!(authorize(&grants(OPERATORS), &change).is_ok());

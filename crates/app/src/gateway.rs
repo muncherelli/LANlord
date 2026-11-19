@@ -132,7 +132,9 @@ pub trait Gateway: Send + Sync {
 
     /// add, change or remove a lanlord network and apply the docker and dns modules.
     fn change_networks(&self, host: &str, edit: &NetworkEdit, ask: AskPassword) -> Result<()> {
-        let operation = Operation::ChangeNetworks { edit: edit.clone() };
+        let operation = Operation::ChangeNetworks {
+            edit: Box::new(edit.clone()),
+        };
         done(self.call(host, operation, ask)?, "change_networks")
     }
 
