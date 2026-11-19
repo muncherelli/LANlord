@@ -114,8 +114,8 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
         .start(
             canvas,
             eframe::WebOptions {
-                // a page that paints 30 times a second is plenty for this desktop
-                max_fps: Some(30),
+                // no frame cap: the browser's own rate keeps window drags smooth, and idle
+                // repaints are already stopped elsewhere
                 dithering: false,
                 ..eframe::WebOptions::default()
             },
