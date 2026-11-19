@@ -603,7 +603,7 @@ impl Default for Dhcp {
 }
 
 const DEFAULT_ZONE: &str = "retronet";
-const DEFAULT_LEASE: &str = "7d";
+pub const DEFAULT_LEASE: &str = "7d";
 
 /// the `dns` section; see ansible/playbooks/dns.yml for what each part does.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

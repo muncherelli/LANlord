@@ -327,6 +327,29 @@ fn window_boxes() -> Vec<Scene> {
             shell.refit_due = true;
             shell
         }),
+        scene("networks-new", |size| {
+            let mut shell = window(size, Target::Networks);
+            draw(&mut shell, size);
+            shell
+                .networks
+                .update(Networks::New, &shell.services, HOST, 0.0);
+            shell
+        }),
+        scene("networks-lanlord-properties", |size| {
+            let fake = Fake::new();
+            *fake.stored.lock().unwrap() = super::window_tests::NETWORKS.into();
+            let mut shell = desktop_with(size, fake);
+            shell.open(Target::Networks);
+            draw(&mut shell, size);
+            shell
+                .networks
+                .update(Networks::Tab(1), &shell.services, HOST, 0.0);
+            shell
+                .networks
+                .update(Networks::Properties, &shell.services, HOST, 0.0);
+            shell.refit_due = true;
+            shell
+        }),
         scene("networks-properties", |size| {
             let mut shell = window(size, Target::Networks);
             draw(&mut shell, size);

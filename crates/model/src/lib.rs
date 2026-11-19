@@ -11,6 +11,7 @@ pub mod components;
 pub mod doctor;
 pub mod format;
 pub mod identity;
+pub mod lan_edit;
 pub mod lan_networks;
 pub mod leases;
 pub mod log;

@@ -15,6 +15,7 @@ use crate::access::{Access, Area, Need, Profile};
 use crate::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use crate::doctor::Report;
 use crate::identity::{AccountInfo, PasswordReport};
+use crate::lan_edit::Edit as NetworkEdit;
 use crate::leases::Lease;
 use crate::login_text::LoginText;
 use crate::netstatus::InterfaceStatus;
@@ -62,6 +63,9 @@ pub enum Operation {
         ssh_key: Option<String>,
         passwordless_sudo: bool,
     },
+    /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
+    /// docker and dns modules.
+    ChangeNetworks { edit: Box<NetworkEdit> },
     /// first-run setup, for root's web session while no other administrator exists: create the
     /// administrator `name` (in admins and sudo) and set root's ssh
     /// access, which must be chosen. refused once an administrator other than root exists.
@@ -141,6 +145,7 @@ impl Operation {
             Operation::ChangeUsers { .. } => Need::manage(Area::Domain),
             Operation::ResetMachine { .. } => Need::manage(Area::Domain),
             Operation::CreateAdmin { .. } => Need::manage(Area::Users),
+            Operation::ChangeNetworks { .. } => Need::manage(Area::Network),
             // not given to any role: the server only runs it for root's setup session
             Operation::SetupFirstAdmin { .. } => Need::manage(Area::Users),
             Operation::RootSshState => Need::view(Area::Users),
@@ -202,6 +207,7 @@ impl Operation {
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
                 | Operation::MigrateStored { .. }
+                | Operation::ChangeNetworks { .. }
                 | Operation::ChangeUsers { .. }
                 | Operation::ClockApply { .. }
         )
@@ -515,6 +521,13 @@ mod tests {
             let _ = operation.requires();
         }
         assert_eq!(Operation::Leases.requires(), Need::view(Area::Network));
+        assert_eq!(
+            Operation::ChangeNetworks {
+                edit: Box::new(NetworkEdit::Remove("lab".into()))
+            }
+            .requires(),
+            Need::manage(Area::Network)
+        );
         assert_eq!(
             Operation::Purge {
                 remove_admins: false
