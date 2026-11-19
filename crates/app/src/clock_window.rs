@@ -42,6 +42,13 @@ fn local_datetime(utc_secs: i64, offset_secs: i32) -> NaiveDateTime {
         .unwrap_or_default()
 }
 
+/// the wait from `into_minute` seconds past a minute to the next one, plus a little so the
+/// frame lands after the change.
+pub fn delay_to_next_minute(into_minute: f64) -> std::time::Duration {
+    let left = (60.0 - into_minute.rem_euclid(60.0)).clamp(0.0, 60.0);
+    std::time::Duration::from_secs_f64(left + 0.05)
+}
+
 // the tray
 
 /// the server's clock for the taskbar: read once over ssh, then kept by counting the seconds
@@ -134,6 +141,23 @@ impl ClockFeed {
             }
             None => chrono::Local::now().format("%-I:%M %p").to_string(),
         }
+    }
+
+    /// how long until the shown time changes: the next whole minute on the same clock `text`
+    /// reads.
+    pub fn until_next_minute(&self) -> std::time::Duration {
+        let into_minute = match &self.state {
+            Some(state) => {
+                let t = (state.utc_secs + i64::from(state.offset_secs)) as f64
+                    + self.read_at.elapsed().as_secs_f64();
+                t.rem_euclid(60.0)
+            }
+            None => {
+                let now = chrono::Local::now();
+                f64::from(now.second()) + f64::from(now.nanosecond()) / 1e9
+            }
+        };
+        delay_to_next_minute(into_minute)
     }
 
     /// which clock it is, for the tooltip.
@@ -1009,6 +1033,28 @@ impl ClockFeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_next_repaint_is_at_the_next_minute() {
+        let near =
+            |secs: f64, want: f64| (delay_to_next_minute(secs).as_secs_f64() - want).abs() < 1e-6;
+        assert!(near(0.0, 60.05));
+        assert!(near(15.5, 44.55));
+        assert!(near(59.99, 0.06));
+        assert!(near(75.0, 45.05));
+    }
+
+    #[test]
+    fn the_feed_waits_for_the_minute_it_shows() {
+        let mut feed = ClockFeed::default();
+        let mut state = state();
+        state.utc_secs = 1_794_759_120;
+        state.offset_secs = 0;
+        feed.set("gw", state);
+        let wait = feed.until_next_minute().as_secs_f64();
+        assert!(wait > 59.0 && wait <= 60.05, "{wait}");
+        assert!(feed.until_next_minute() <= std::time::Duration::from_secs_f64(60.05));
+    }
 
     fn state() -> ClockState {
         ClockState {
