@@ -634,8 +634,8 @@ fn button_rows(regions: Vec<Region>) -> Vec<Vec<Rect>> {
         .collect()
 }
 
-/// what is wrong with one button row, if anything: its buttons are on one line, a cell apart,
-/// and it sits flush to the right or the left of its box.
+/// what is wrong with one button row, if anything: its buttons are on one line, at least a
+/// cell apart, and it sits flush to the right or the left of its box.
 fn row_faults(buf: &Buffer, rects: &[Rect]) -> Vec<&'static str> {
     let (first, last) = (rects[0], rects[rects.len() - 1]);
     let mut faults = Vec::new();
@@ -654,8 +654,8 @@ fn row_faults(buf: &Buffer, rects: &[Rect]) -> Vec<&'static str> {
     faults
 }
 
-/// every row of two or more buttons, in every window and dialog, is on one line with a cell
-/// between buttons, and sits flush to one side of its box: right for a button row, left for a
+/// every row of two or more buttons, in every window and dialog, is on one line with at least
+/// a cell between buttons, and sits flush to one side of its box: right for a button row, left for a
 /// toolbar.
 #[test]
 fn button_rows_are_flush_with_a_cell_between() {
