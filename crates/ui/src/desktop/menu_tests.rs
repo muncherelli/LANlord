@@ -30,7 +30,6 @@ fn the_menu_draws_with_its_sections() {
         Action::Power(Power::Reboot),
         Action::Power(Power::PowerOff),
         Action::About,
-        Action::Quit,
     ] {
         assert!(
             desktop.menu_item_at(screen(), &action).is_some(),
@@ -96,7 +95,7 @@ fn power_items_do_nothing_without_a_server() {
 }
 
 #[test]
-fn about_shows_the_version_and_quit_closes() {
+fn about_shows_the_version() {
     let (mut desktop, ctx, _) = desktop();
     open_menu(&mut desktop, &ctx);
     choose(&mut desktop, &ctx, &Action::About);
@@ -104,7 +103,6 @@ fn about_shows_the_version_and_quit_closes() {
     assert!(press(&mut desktop, &ctx, "OK"));
     frames(&mut desktop, &ctx, 2);
     assert!(desktop.confirm.is_none());
-    desktop.do_action(&ctx, Action::Quit);
 }
 
 #[test]

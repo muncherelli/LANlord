@@ -40,6 +40,6 @@
 │ ─────────────────────────── │
 │   Welcome...                │
 │   About LANlord             │
-│   Quit LANlord              │
+│   Ctrl+Q quits LANlord      │
 └─────────────────────────────┘
 [ L LANlord ]                                                                                                                                         12:00 PM

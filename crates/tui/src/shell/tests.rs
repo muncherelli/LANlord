@@ -122,7 +122,9 @@ fn the_lanlord_button_opens_the_menu_and_its_rows_open_windows() {
     click(&mut shell, middle(menu));
     let text = frame(&mut shell);
     assert!(
-        text.contains("Quit LANlord") && text.contains("Server: demo@gateway"),
+        text.contains("About LANlord")
+            && text.contains("Ctrl+Q quits LANlord")
+            && text.contains("Server: demo@gateway"),
         "{text}"
     );
     let rows = shell.menu_state();
@@ -275,7 +277,7 @@ fn the_menu_works_from_the_keyboard() {
         key(&mut shell, KeyCode::Down);
     }
     key(&mut shell, KeyCode::Enter);
-    assert!(shell.quit);
+    assert!(matches!(shell.modal, Some(Modal::About(_))));
 }
 
 #[test]
@@ -284,8 +286,8 @@ fn the_menu_highlight_stays_on_its_item_when_the_components_arrive() {
     let mut shell = demo();
     assert!(shell.enabled().is_none());
     shell.open_menu();
-    // quit, which is there before and after the rows change
-    shell.menu = Some(Action::Quit);
+    // about, which is there before and after the rows change
+    shell.menu = Some(Action::About);
     let before = shell.menu_state().len();
     let started = Instant::now();
     while shell.enabled().is_none() && started.elapsed() < Duration::from_secs(3) {
@@ -293,13 +295,14 @@ fn the_menu_highlight_stays_on_its_item_when_the_components_arrive() {
         frame(&mut shell);
     }
     assert!(shell.enabled().is_some(), "the components arrive");
-    assert_eq!(shell.menu, Some(Action::Quit));
+    assert_eq!(shell.menu, Some(Action::About));
     let rows = shell.menu_state();
     assert!(rows.len() > before, "the menu grew");
-    assert_eq!(menu_row_of(&rows, &Action::Quit), rows.len() - 1);
+    // the note about Ctrl+Q closes the menu
+    assert_eq!(menu_row_of(&rows, &Action::About), rows.len() - 2);
     // Enter picks that item, not whatever row the old index points at now
     key(&mut shell, KeyCode::Enter);
-    assert!(shell.quit);
+    assert!(matches!(shell.modal, Some(Modal::About(_))));
 }
 
 #[test]
@@ -1033,4 +1036,29 @@ fn an_apply_opens_its_progress_dialog_and_close_ends_it() {
     frame(&mut shell);
     frame(&mut shell);
     assert!(!shell.windows.iter().any(|w| w.target == Target::Progress));
+}
+
+#[test]
+fn a_status_bar_stays_on_the_last_row_below_a_body_that_scrolls() {
+    let mut nodes: Vec<Node<()>> = (0..40).map(|n| Node::Text(format!("line {n}"))).collect();
+    nodes.push(Node::Gap(6.0));
+    nodes.push(Node::Status {
+        text: "ready".into(),
+        error: false,
+    });
+    for scrolled in [0, 7, 1000] {
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        let mut state = ViewState::default();
+        state.scroll.insert("#body".into(), scrolled);
+        let mut pass = Pass::Draw {
+            area,
+            buf: &mut buf,
+            active: true,
+        };
+        drive(&nodes, &mut pass, &state, Palette::default());
+        let all = lines(&buf);
+        assert!(all[9].contains("ready"), "{scrolled}: {all:?}");
+        assert!(all[0].contains("line"), "{scrolled}: {all:?}");
+    }
 }

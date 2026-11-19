@@ -24,9 +24,10 @@ pub enum Action {
     /// look for an update now.
     CheckUpdates,
     About,
-    Quit,
     /// the server line at the top of the menu, which only names the server.
     ServerLine,
+    /// a line that only says something, such as how to quit, and does nothing.
+    Note,
 }
 
 pub enum Row {
@@ -124,10 +125,14 @@ fn power_rows(state: &State) -> Vec<Row> {
 
 /// the main menu.
 pub fn rows(state: &State) -> Vec<Row> {
-    let mut rows = vec![Row::Item(Item {
-        header: true,
-        ..Item::new(&server_line(state.host), Action::ServerLine)
-    })];
+    // the browser is always on its own server, so it gets no header
+    let mut rows = Vec::new();
+    if state.switch_server {
+        rows.push(Row::Item(Item {
+            header: true,
+            ..Item::new(&server_line(state.host), Action::ServerLine)
+        }));
+    }
     if let Some(who) = state.signed_in {
         if state.switch_server {
             rows.push(Row::Item(Item::new(
@@ -140,7 +145,9 @@ pub fn rows(state: &State) -> Vec<Row> {
             Action::LogOff,
         )));
     }
-    rows.push(Row::Separator);
+    if !rows.is_empty() {
+        rows.push(Row::Separator);
+    }
     rows.extend(
         state
             .modules
@@ -196,7 +203,6 @@ pub fn rows(state: &State) -> Vec<Row> {
         Action::Open(Target::Welcome),
     )));
     rows.push(Row::Item(Item::new("About LANlord", Action::About)));
-    rows.push(Row::Item(Item::new("Quit LANlord", Action::Quit)));
     rows
 }
 
@@ -256,6 +262,8 @@ mod tests {
         assert!(has(&state(true), "Switch server..."));
         assert!(!has(&state(false), "Switch server..."));
         assert!(has(&state(false), "Log off ann..."));
+        assert!(has(&state(true), "Server: local"));
+        assert!(!has(&state(false), "Server: local"));
     }
 
     #[test]

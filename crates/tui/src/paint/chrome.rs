@@ -552,7 +552,7 @@ mod tests {
             fixed: false,
         }
         .render(off, &mut buf);
-        let rows = [MenuRow::item("Quit"), MenuRow::Separator];
+        let rows = [MenuRow::item("About"), MenuRow::Separator];
         Menu {
             rows: &rows,
             selected: None,
