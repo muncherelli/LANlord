@@ -278,6 +278,7 @@ pub(crate) fn push_plain_if_missing_with(
     plaintext: &[u8],
     ask_password: AskPassword,
 ) -> Result<bool> {
+    let plaintext = stamped(Stored::Plain, plaintext)?;
     let script = format!(
         r#"# default settings, only if missing
 if [ -e /opt/lanlord/config/settings.yml ] || [ -e /opt/lanlord/config/settings.age ]; then
@@ -286,7 +287,7 @@ if [ -e /opt/lanlord/config/settings.yml ] || [ -e /opt/lanlord/config/settings.
 fi
 {}echo created
 "#,
-        push_plain_script(plaintext)
+        push_plain_script(&plaintext)
     );
     let admin = admin(session)?;
     let out = capture_as_root(session, &admin, script, ask_password)?;
@@ -473,8 +474,8 @@ esac"#
         let sent = std::fs::read_to_string(&record).unwrap();
         let check = sent.find("-e /opt/lanlord/config/settings.yml").unwrap();
         assert!(sent.contains("-e /opt/lanlord/config/settings.age"));
-        assert!(check < sent.find("tee /opt/lanlord/config/settings.yml").unwrap());
-        assert_eq!(payload(&sent), b"a: 1\n");
+        assert!(check < sent.find("> /opt/lanlord/config/settings.yml.tmp").unwrap());
+        assert_eq!(unstamped_bytes(&payload(&sent)), b"a: 1\n");
         let _ = std::fs::remove_file(&record);
     }
 
