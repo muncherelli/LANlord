@@ -19,8 +19,8 @@
    Console    │ │ eth1   172.16.120.1/22   MTU 1450   C│  DHCP Enabled         Yes                      │
               │ └──────────────────────────────────────│  IPv4 Address         192.0.2.10               │
               │ Editing networks comes next. For now yo│  IPv4 Subnet Mask     255.255.255.0            │
-      ▣       │ up to date                             │  Lease Obtained       11/18/2026 4:06:40 AM    │
-    Hosts     └────────────────────────────────────────│  Lease Expires        11/19/2026 4:06:40 AM    │
+      ▣       │ up to date                             │  Lease Obtained       2026-11-18 04:06:40 UTC  │
+    Hosts     └────────────────────────────────────────│  Lease Expires        2026-11-19 04:06:40 UTC  │
                                                        │  IPv4 Default Gateway 192.0.2.1                │
                                                        │  IPv4 DHCP Server     192.0.2.1                │
                                                        │  IPv4 DNS Server      198.51.100.53            │

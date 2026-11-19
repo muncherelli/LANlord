@@ -122,7 +122,9 @@ fn the_lanlord_button_opens_the_menu_and_its_rows_open_windows() {
     click(&mut shell, middle(menu));
     let text = frame(&mut shell);
     assert!(
-        text.contains("About LANlord") && text.contains("Server: demo@gateway"),
+        text.contains("About LANlord")
+            && text.contains("Ctrl+Q quits LANlord")
+            && text.contains("Server: demo@gateway"),
         "{text}"
     );
     let rows = shell.menu_state();
@@ -275,7 +277,7 @@ fn the_menu_works_from_the_keyboard() {
         key(&mut shell, KeyCode::Down);
     }
     key(&mut shell, KeyCode::Enter);
-    assert!(shell.quit);
+    assert!(matches!(shell.modal, Some(Modal::About(_))));
 }
 
 #[test]
@@ -296,7 +298,8 @@ fn the_menu_highlight_stays_on_its_item_when_the_components_arrive() {
     assert_eq!(shell.menu, Some(Action::About));
     let rows = shell.menu_state();
     assert!(rows.len() > before, "the menu grew");
-    assert_eq!(menu_row_of(&rows, &Action::About), rows.len() - 1);
+    // the note about Ctrl+Q closes the menu
+    assert_eq!(menu_row_of(&rows, &Action::About), rows.len() - 2);
     // Enter picks that item, not whatever row the old index points at now
     key(&mut shell, KeyCode::Enter);
     assert!(matches!(shell.modal, Some(Modal::About(_))));

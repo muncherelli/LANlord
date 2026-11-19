@@ -312,9 +312,10 @@ pub struct Shell {
     pub quit: bool,
 }
 
-/// the actions of the menu's item rows, top to bottom.
+/// the actions of the menu's item rows, top to bottom; a note (a header that is off) has none.
 fn menu_actions(rows: &[Row]) -> impl Iterator<Item = &Action> {
     rows.iter().filter_map(|row| match row {
+        Row::Item(item) if item.header && !item.enabled => None,
         Row::Item(item) => Some(&item.action),
         Row::Separator => None,
     })
@@ -745,7 +746,7 @@ impl Shell {
 
     fn menu_state(&self) -> Vec<Row> {
         let host = self.host();
-        menu::rows(&menu::State {
+        let mut rows = menu::rows(&menu::State {
             host: host.as_deref(),
             signed_in: self.signed_in.as_ref().map(|s| s.identity.user.as_str()),
             switch_server: true,
@@ -754,7 +755,14 @@ impl Shell {
             updates: Some(self.updates.enabled()),
             developer: self.rebuild.repo().is_some(),
             modules: desktop::modules(self.enabled().as_ref()),
-        })
+        });
+        // the menu has no quit item, so the key to quit with is written on its last row
+        rows.push(Row::Item(menu::Item {
+            header: true,
+            enabled: false,
+            ..menu::Item::new("Ctrl+Q quits LANlord", Action::ServerLine)
+        }));
+        rows
     }
 
     fn do_action(&mut self, action: Action) {
@@ -1617,8 +1625,6 @@ impl Shell {
 
     fn render_taskbar(&mut self, area: Rect, buf: &mut Buffer) {
         let clock = self.clock.clone().unwrap_or_else(|| self.feed.text());
-        // the menu has no quit item, so the key stays in sight
-        let clock = format!("Ctrl+Q quit  {clock}");
         let shown: Vec<(Target, bool)> = self
             .windows
             .iter()
