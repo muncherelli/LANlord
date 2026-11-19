@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- the update tests wait for the first background check to land before they pretend an update, so a slow runner no longer loses the update (and the Install button) mid test
 - the sign-in box no longer fills its fields from the "This server" target, and the last sign-in is written whole and private (mode 0600) with write errors logged
 
 ## [0.1.3] - 2026-11-19
