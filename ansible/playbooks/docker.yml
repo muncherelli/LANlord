@@ -191,12 +191,19 @@
           has it). upgrade docker, or turn internet access off.
       when: internet_needed and forward_policy.stdout | default('') == 'DROP'
 
+    - name: see whether docker has a daemon.json
+      ansible.builtin.stat:
+        path: /etc/docker/daemon.json
+      register: daemon_json_stat
+      when: docker_version.stdout is version('28.0', '>=')
+
     - name: read docker's daemon.json
       ansible.builtin.slurp:
         src: /etc/docker/daemon.json
       register: daemon_json
-      failed_when: false
-      when: docker_version.stdout is version('28.0', '>=')
+      when: >-
+        docker_version.stdout is version('28.0', '>=')
+        and daemon_json_stat.stat.exists | default(false)
 
     - name: work out docker's settings
       ansible.builtin.set_fact:
@@ -223,6 +230,17 @@
       when: >-
         internet_needed and docker_version.stdout is version('28.0', '>=')
         and 'ip-forward-no-drop' not in daemon_config
+
+    # docker only makes /etc/docker once it needs a daemon.json
+    - name: make a place for docker's daemon.json
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        owner: root
+        mode: "0755"
+      when: >-
+        internet_needed and docker_version.stdout is version('28.0', '>=')
+        and daemon_config['ip-forward-no-drop'] | default(false) != true
 
     - name: tell docker to leave the FORWARD policy alone
       ansible.builtin.copy:

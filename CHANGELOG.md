@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - every check on My Server's Compatibility tab says what it is for, along with the components that use it
 - the lease times of a network connection's details show the gateway's UTC offset, or UTC when its clock cannot be read
 - the sign-in box no longer fills its fields from the "This server" target, and the last sign-in is written whole and private (mode 0600) with write errors logged
+- turning internet access on no longer fails on a server where docker has no `/etc/docker` yet
 
 ## [0.1.3] - 2026-11-19
 
