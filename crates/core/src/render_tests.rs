@@ -304,7 +304,6 @@ fn ansible_renders_three_networks_each_pinned_to_its_own_address() {
     let retronet = lines(&out.join("dns/retronet/dnsmasq.conf"));
     for want in [
         "listen-address=172.16.120.1",
-        "interface=eth1",
         "except-interface=eth0",
         "except-interface=eth2",
         "except-interface=eth3",
@@ -317,10 +316,14 @@ fn ansible_renders_three_networks_each_pinned_to_its_own_address() {
     ] {
         assert!(has(&retronet, want), "{want} in\n{retronet:#?}");
     }
+    assert!(
+        !retronet.iter().any(|l| l.starts_with("interface=")),
+        "{retronet:#?}"
+    );
+    assert!(has(&retronet, "bind-dynamic"), "{retronet:#?}");
     let lab = lines(&out.join("dns/lab/dnsmasq.conf"));
     for want in [
         "listen-address=192.168.50.1",
-        "interface=eth2",
         "dhcp-range=192.168.50.100,192.168.50.200,255.255.255.0,7d",
         "host-record=lanlord.lab,192.168.50.1",
         "local=/lab/",
@@ -463,7 +466,6 @@ fn ansible_reads_the_older_single_network_settings_as_retronet() {
     let conf = lines(&out.join("dns/retronet/dnsmasq.conf"));
     for want in [
         "listen-address=172.16.120.1",
-        "interface=eth1",
         "dhcp-range=172.16.123.1,172.16.123.254,255.255.252.0,7d",
         "dhcp-host=02:00:00:00:00:01,172.16.121.1,ws1",
         "host-record=ntsrv1.retronet,172.16.120.10",

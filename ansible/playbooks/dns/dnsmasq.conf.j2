@@ -12,12 +12,13 @@ bogus-priv
 local=/{{ net.zone }}/
 domain={{ net.zone }}
 expand-hosts
-# this dnsmasq belongs to one network: its address and its interface, nothing else
+# this dnsmasq belongs to one address, nothing else: no interface= here, because it would also claim
+# every other address on the interface and a second service on another address could not bind port 53
+# (dhcp on udp 67 still binds per interface, so one dhcp server per network in the host namespace)
 listen-address={{ net.ip }}
 bind-dynamic
-interface={{ net.interface }}
 except-interface={{ host_interface }}
-# interface= adds lo by itself; a second network's dnsmasq then cannot bind 127.0.0.1
+# keeps a second network's dnsmasq from binding 127.0.0.1
 except-interface=lo
 {% for other in dns_others %}
 except-interface={{ other }}
