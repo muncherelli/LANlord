@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod clock;
 pub mod compat;
 pub mod components;
+pub mod dns_dhcp;
 pub mod doctor;
 pub mod format;
 pub mod identity;
