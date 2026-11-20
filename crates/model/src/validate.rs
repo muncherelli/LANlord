@@ -1193,7 +1193,8 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             key.as_deref()
                 .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
         }
-        Operation::AddMyKey { key } | Operation::RemoveMyKey { key } => named("key", ssh_key, key),
+        Operation::AddMyKey { key } => named("key", ssh_key, key),
+        Operation::RemoveMyKey { key } => named("key", ssh_key_id, key),
         Operation::ReadLogon { name } => flag(
             crate::logon::valid_script_name(name),
             "is not a script name",

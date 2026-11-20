@@ -563,7 +563,7 @@ mod tests {
                 key: "ssh-ed25519 AAAA example".into(),
             },
             Operation::RemoveMyKey {
-                key: "ssh-ed25519 AAAA example".into(),
+                key: "ssh-ed25519 AAAA".into(),
             },
             Operation::UpdateProfile {
                 profile: Profile {
@@ -732,14 +732,20 @@ mod tests {
     #[test]
     fn a_person_edits_only_their_own_ssh_keys() {
         let key: String = "ssh-ed25519 AAAA example".into();
+        // a key is removed by its id, whatever options its line has
+        let line = r#"from="192.0.2.7",command="true" ssh-ed25519 AAAA example"#;
+        let id = crate::sshauth::key_id(line).unwrap();
         for operation in [
             Operation::MyKeys,
             Operation::AddMyKey { key: key.clone() },
-            Operation::RemoveMyKey { key: key.clone() },
+            Operation::RemoveMyKey { key: id },
         ] {
             assert_eq!(operation.requires(), Need::SelfOnly, "{operation:?}");
             assert_eq!(operation.validate(), Ok(()));
         }
+        assert!(Operation::RemoveMyKey { key: line.into() }
+            .validate()
+            .is_err());
         let bad = Operation::AddMyKey { key: "nope".into() };
         assert_eq!(bad.validate().unwrap_err().field, "key");
         // the wire format of an older client, without a key, still reads

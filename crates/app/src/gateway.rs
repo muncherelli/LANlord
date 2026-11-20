@@ -1221,7 +1221,10 @@ mod fake {
                 }
                 Operation::RemoveMyKey { key } => {
                     self.enter(format!("remove-key {host}"), ask)?;
-                    self.keys.lock().unwrap().retain(|k| *k != key);
+                    self.keys
+                        .lock()
+                        .unwrap()
+                        .retain(|k| lanlord_model::sshauth::key_id(k).as_deref() != Some(&key));
                     Reply::Done
                 }
                 Operation::UpdateProfile { profile } => {
