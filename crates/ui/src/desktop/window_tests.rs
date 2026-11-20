@@ -1585,3 +1585,46 @@ fn pressing_any_edge_or_corner_of_settings_without_moving_paints_the_same_frame(
         }
     }
 }
+
+#[test]
+fn settings_left_edge_dragged_400_in_and_out_keeps_its_right_edge_and_its_contents_inside() {
+    use eframe::egui::{Event, PointerButton, Pos2, Vec2};
+    let size = Vec2::new(1280.0, 800.0);
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::Settings);
+    frames_on(&mut desktop, &ctx, size, 60);
+    let (start, _) = measured_of(&desktop, Target::Settings);
+    let least = crate::windows::least_size(&ctx, Target::Settings.title(), 0.0);
+    let button = |at, pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let from = Pos2::new(start.left() + 1.0, start.center().y);
+    frame_on(&mut desktop, &ctx, size, vec![Event::PointerMoved(from)]);
+    frame_on(&mut desktop, &ctx, size, vec![button(from, true)]);
+    // 400 px in, then 400 px back out, a few pixels a frame
+    let steps = (0..=80).map(|i| i as f32 * 5.0);
+    let path: Vec<f32> = steps.clone().chain(steps.rev()).collect();
+    for (i, dx) in path.into_iter().enumerate() {
+        let at = from + Vec2::new(dx, 0.0);
+        frame_on(&mut desktop, &ctx, size, vec![Event::PointerMoved(at)]);
+        let (r, content) = measured_of(&desktop, Target::Settings);
+        assert!(
+            (r.right() - start.right()).abs() < 1.5,
+            "frame {i}: right edge {r:?} moved from {start:?}"
+        );
+        // the contents sit in the frame: inside its border, under its title bar, and the frame is
+        // never narrower than its least, nor off the screen
+        let inside = r.shrink(crate::windows::FRAME);
+        assert!(inside.width() > 0.0 && content > 0.0, "frame {i}: {r:?}");
+        assert!(
+            r.width() >= least.x - 1.5,
+            "frame {i}: {r:?} under {least:?}"
+        );
+        assert!(r.left() >= 0.0 && r.right() <= size.x, "frame {i}: {r:?}");
+    }
+    frame_on(&mut desktop, &ctx, size, vec![button(from, false)]);
+}

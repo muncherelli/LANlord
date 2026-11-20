@@ -1488,11 +1488,7 @@ impl Shell {
             let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
             let title = dialog.title.clone();
             if let Some(msg) = msg {
-                let host = self
-                    .my_server
-                    .purge()
-                    .map(|p| p.host().to_string())
-                    .unwrap_or_default();
+                let host = self.my_server.dialog_host();
                 self.my_server.update(msg, &self.services, &host);
             }
             (title, answer)

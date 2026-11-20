@@ -509,9 +509,10 @@ impl Desktop {
             {
                 self.open(target);
                 if id == "my-server" {
-                    // @1 is the Advanced tab, @2 also asks before a purge
+                    // @1 is the Advanced tab, @2 also asks before a purge, @3 Compatibility, @4 SSH
                     let page = match tab {
                         "1" | "2" => my_server::ADVANCED,
+                        "4" | "ssh" => my_server::SSH,
                         "3" | "compat" => my_server::COMPATIBILITY,
                         _ => my_server::GENERAL,
                     };
