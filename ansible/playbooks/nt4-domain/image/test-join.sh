@@ -32,7 +32,7 @@ cat > "$work/smb.conf" <<EOF
    server schannel = auto
    allow nt4 crypto = yes
    reject md5 clients = no
-   add machine script = /bin/adduser -D -H -h /dev/null -s /sbin/nologin %u
+   add machine script = /bin/sh -c "echo '%u:x:5000:5000::/dev/null:/sbin/nologin' >> /etc/passwd"
    private dir = $work/priv
    lock dir = $work/lock
    state directory = $work/lib
@@ -48,6 +48,7 @@ export SMB_CONF_PATH="$work/smb.conf"
 net -s "$work/smb.conf" sam rights grant 'root' SeMachineAccountPrivilege >/dev/null 2>&1 || true
 # the compiled-in log and state folders
 mkdir -p /var/log/samba /run/samba /var/lib/samba /var/cache/samba
+echo "machines:x:5000:" >> /etc/group
 smbd -s "$work/smb.conf" --daemon --no-process-group -l "$work/log"
 trap 'kill "$(cat "$work/run/smbd.pid")" 2>/dev/null || true' EXIT
 sleep 3
