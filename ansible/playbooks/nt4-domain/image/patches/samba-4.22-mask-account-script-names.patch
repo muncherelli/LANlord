@@ -1,0 +1,44 @@
+# samba: mask the account name before it goes into the add user, add machine and delete user scripts
+#
+# what: _samr_CreateUser2() (pdb_interface.c, add user / add machine script) and smb_delete_user()
+#   (delete user script) put the account name into the script with talloc_all_string_sub(), which
+#   masks nothing. the script runs through /bin/sh -c, so a name that carries a single quote gets
+#   out of the quotes in smb.conf and runs commands as root.
+# why: switch both calls to talloc_string_sub2(..., true, false, true), the call mapping.c already
+#   uses for group names. it turns $ ` " ' ; % | & < > and control characters into _ and keeps a
+#   trailing $ (machine accounts). a masked name no longer matches the account, so the create
+#   fails closed with NT_STATUS_NO_SUCH_USER.
+# applies to: samba 4.22.11 (apply with patch -p1 from the top of the source tree). check it again
+#   when SAMBA_VERSION changes; the build fails when it does not apply.
+# samba is GPLv3 and so is this patch.
+#
+--- a/source3/passdb/pdb_interface.c
++++ b/source3/passdb/pdb_interface.c
+@@ -489,10 +489,11 @@
+ 		if (!strlower_m( name2 )) {
+ 			return NT_STATUS_INVALID_PARAMETER;
+ 		}
+-		add_script = talloc_all_string_sub(tmp_ctx,
++		add_script = talloc_string_sub2(tmp_ctx,
+ 					add_script,
+ 					"%u",
+-					name2);
++					name2,
++					true, false, true);
+ 		if (!add_script) {
+ 			return NT_STATUS_NO_MEMORY;
+ 		}
+@@ -576,10 +577,11 @@
+ 	if (!del_script || !*del_script) {
+ 		return -1;
+ 	}
+-	del_script = talloc_all_string_sub(talloc_tos(),
++	del_script = talloc_string_sub2(talloc_tos(),
+ 				del_script,
+ 				"%u",
+-				unix_user);
++				unix_user,
++				true, false, true);
+ 	if (!del_script) {
+ 		return -1;
+ 	}
