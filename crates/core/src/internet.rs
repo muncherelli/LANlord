@@ -29,15 +29,9 @@ pub fn change(
     change: &Change,
     ask_password: AskPassword,
 ) -> Result<()> {
-    let mut ask = cached(ask_password);
-    let stored = settings::load_document_with(session, identity, &mut ask)?;
-    if stored == settings::Document::default() {
-        bail!("no settings on {host}; run lanlord config push first");
-    }
-    let edited = edit_settings(&stored.plain, change, now())?;
-    settings::save_document_with(session, host, identity, &edited, &[], &mut ask)?;
-    let modules = MODULES.map(String::from);
-    apply::apply_with(session, host, Some(identity), &modules, &mut ask)
+    edit_and_apply(session, host, identity, ask_password, |plain| {
+        edit_settings(plain, change, now())
+    })
 }
 
 /// make an ssh `change` in the server's settings and apply the docker and dns modules: the
@@ -49,12 +43,25 @@ pub fn change_ssh(
     change: &SshChange,
     ask_password: AskPassword,
 ) -> Result<()> {
+    edit_and_apply(session, host, identity, ask_password, |plain| {
+        ssh_access::edit_settings(plain, change, now())
+    })
+}
+
+/// store the settings `edit` makes out of the stored ones, then apply the docker and dns modules.
+fn edit_and_apply(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    ask_password: AskPassword,
+    edit: impl FnOnce(&str) -> Result<String>,
+) -> Result<()> {
     let mut ask = cached(ask_password);
     let stored = settings::load_document_with(session, identity, &mut ask)?;
     if stored == settings::Document::default() {
         bail!("no settings on {host}; run lanlord config push first");
     }
-    let edited = ssh_access::edit_settings(&stored.plain, change, now())?;
+    let edited = edit(&stored.plain)?;
     settings::save_document_with(session, host, identity, &edited, &[], &mut ask)?;
     let modules = MODULES.map(String::from);
     apply::apply_with(session, host, Some(identity), &modules, &mut ask)

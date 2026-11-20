@@ -902,9 +902,9 @@ fn allow_change(
     }
 }
 
-fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Result<()> {
-    let text = change.describe();
-    match execute(host, &Operation::ChangeInternet { change }, &mut ask)? {
+/// send a change of the internet or ssh grants and say it was applied.
+fn send_grant(host: &str, text: String, operation: Operation) -> Result<()> {
+    match execute(host, &operation, &mut ask)? {
         Reply::Done => {
             println!("{text}; applied the docker and dns modules");
             Ok(())
@@ -913,18 +913,35 @@ fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Resul
     }
 }
 
+fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Result<()> {
+    send_grant(
+        host,
+        change.describe(),
+        Operation::ChangeInternet { change },
+    )
+}
+
+/// print the lines `details` makes of the network called `name`.
+fn print_details(
+    host: &str,
+    name: &str,
+    details: fn(&lanlord_model::lan_networks::LanNetwork) -> Vec<(String, String)>,
+) -> Result<()> {
+    let document = lanlord_core::remote::document(host, &mut ask)?;
+    let networks = lanlord_core::lan::read_networks(&document.plain)?;
+    let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
+        bail!("there is no network called {name}");
+    };
+    for (label, value) in details(network) {
+        println!("{label}: {value}");
+    }
+    Ok(())
+}
+
 /// `lanlord networks HOST internet NAME ...`.
 fn internet(host: &str, name: &str, action: InternetCommand) -> Result<()> {
     if matches!(action, InternetCommand::List) {
-        let document = lanlord_core::remote::document(host, &mut ask)?;
-        let networks = lanlord_core::lan::read_networks(&document.plain)?;
-        let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
-            bail!("there is no network called {name}");
-        };
-        for (label, value) in network.internet.details() {
-            println!("{label}: {value}");
-        }
-        return Ok(());
+        return print_details(host, name, |n| n.internet.details());
     }
     change_internet(
         host,
@@ -939,70 +956,42 @@ fn ssh_change(
     now: i64,
 ) -> Result<lanlord_model::ssh_access::Change> {
     use lanlord_model::ssh_access::Change;
-    let network_name = network.to_string();
-    match action {
-        SshCommand::On | SshCommand::Off => Ok(Change::Network {
-            network: network_name,
-            on: matches!(action, SshCommand::On),
-        }),
-        SshCommand::List => bail!("listing changes nothing"),
-        SshCommand::Deny { mac } => Ok(Change::Deny {
-            network: network_name,
-            mac,
-        }),
+    // the arguments of allow and deny and their reading are the internet ones'
+    let like = match action {
+        SshCommand::On | SshCommand::Off => {
+            return Ok(Change::Network {
+                network: network.to_string(),
+                on: matches!(action, SshCommand::On),
+            })
+        }
+        SshCommand::List => InternetCommand::List,
+        SshCommand::Deny { mac } => InternetCommand::Deny { mac },
         SshCommand::Allow {
             mac,
             duration,
             until,
             name,
-        } => {
-            let allow = InternetCommand::Allow {
-                mac,
-                duration,
-                until,
-                name,
-            };
-            // the arguments and their reading are the internet ones'
-            match allow_change(network, allow, now)? {
-                lanlord_model::internet::Change::Allow {
-                    network,
-                    mac,
-                    name,
-                    expiry,
-                } => Ok(Change::Allow {
-                    network,
-                    mac,
-                    name,
-                    expiry,
-                }),
-                _ => bail!("unexpected change"),
-            }
-        }
-    }
+        } => InternetCommand::Allow {
+            mac,
+            duration,
+            until,
+            name,
+        },
+    };
+    Ok(allow_change(network, like, now)?.into())
 }
 
 /// `lanlord networks HOST ssh NAME ...`.
 fn ssh_access(host: &str, name: &str, action: SshCommand) -> Result<()> {
     if matches!(action, SshCommand::List) {
-        let document = lanlord_core::remote::document(host, &mut ask)?;
-        let networks = lanlord_core::lan::read_networks(&document.plain)?;
-        let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
-            bail!("there is no network called {name}");
-        };
-        for (label, value) in network.ssh.details() {
-            println!("{label}: {value}");
-        }
-        return Ok(());
+        return print_details(host, name, |n| n.ssh.details());
     }
     let change = ssh_change(name, action, lanlord_core::internet::now())?;
-    let text = change.describe();
-    match execute(host, &Operation::ChangeSshAccess { change }, &mut ask)? {
-        Reply::Done => {
-            println!("{text}; applied the docker and dns modules");
-            Ok(())
-        }
-        _ => bail!("unexpected answer"),
-    }
+    send_grant(
+        host,
+        change.describe(),
+        Operation::ChangeSshAccess { change },
+    )
 }
 
 /// the gateway's clean-up of internet grants that have ended, run by its timer as root.

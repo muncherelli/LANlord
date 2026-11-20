@@ -15,12 +15,12 @@
 //! nothing here touches a machine; the docker module turns the grants into nft rules (see
 //! ansible/playbooks/docker/firewall.nft.j2). the host network is never affected.
 
-use anyhow::{anyhow, bail, Result};
-use serde_yaml_ng::{Mapping, Value};
+use anyhow::Result;
+use serde_yaml_ng::Mapping;
 
 use crate::internet::{
-    edit_list, format_time, grant_errors, host_from, hosts_value, missing, AllowedHost,
-    Change as InternetChange, Expiry,
+    apply_grant, edit_list, format_time, grant_details, grant_errors, read_grants, write_grants,
+    AllowedHost, Change as InternetChange, Expiry,
 };
 use crate::lan_networks::LanNetwork;
 use crate::settings::ValidationError;
@@ -33,62 +33,26 @@ pub struct SshAccess {
     pub allow: Vec<AllowedHost>,
 }
 
-/// one allowed computer in a list: its name and mac, and until when.
-pub fn host_line(host: &AllowedHost) -> String {
-    let who = match &host.name {
-        Some(name) => format!("{name} ({})", host.mac),
-        None => host.mac.clone(),
-    };
-    let until = host.until.map_or_else(
-        || "always".to_string(),
-        |t| format!("until {}", format_time(t)),
-    );
-    format!("{who}, {until}")
-}
-
 impl SshAccess {
     /// the lines of the networks window's read-only box.
     pub fn details(&self) -> Vec<(String, String)> {
-        let state = match (self.enabled, self.allow.is_empty()) {
-            (true, _) => "On for the whole network",
-            (false, true) => "Off",
-            (false, false) => "Only for the computers listed",
-        };
-        let mut lines = vec![("Allow ssh to this server".to_string(), state.to_string())];
-        for host in &self.allow {
-            lines.push(("Ssh allowed for".to_string(), host_line(host)));
-        }
-        lines
+        grant_details(
+            self.enabled,
+            &self.allow,
+            "Allow ssh to this server",
+            "Ssh allowed for",
+        )
     }
 
     /// read `ssh` and `ssh_allow` from a network's entry; both may be missing.
     pub fn from_entry(item: &Mapping, path: &str) -> Result<Self> {
-        let enabled = match item.get("ssh") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(on)) => *on,
-            Some(_) => bail!("{path}.ssh must be true or false"),
-        };
-        let allow = match item.get("ssh_allow") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Sequence(items)) => items
-                .iter()
-                .enumerate()
-                .map(|(i, v)| host_from(v, &format!("{path}.ssh_allow[{i}]")))
-                .collect::<Result<_>>()?,
-            Some(_) => bail!("{path}.ssh_allow must be a list"),
-        };
+        let (enabled, allow) = read_grants(item, "ssh", path)?;
         Ok(Self { enabled, allow })
     }
 
     /// write what differs from the defaults into a network's entry.
     pub fn put_in(&self, entry: &mut Mapping) {
-        let key = |s: &str| Value::String(s.into());
-        if self.enabled {
-            entry.insert(key("ssh"), Value::Bool(true));
-        }
-        if !self.allow.is_empty() {
-            entry.insert(key("ssh_allow"), hosts_value(&self.allow));
-        }
+        write_grants(entry, "ssh", self.enabled, &self.allow);
     }
 }
 
@@ -158,45 +122,31 @@ impl Change {
     }
 }
 
-/// apply one change to a list of networks. `now` is when it is made.
-pub fn apply_change(list: &mut [LanNetwork], change: &Change, now: i64) -> Result<()> {
-    change.check(now).map_err(|(f, m)| anyhow!("{f} {m}"))?;
-    let (Change::Network { network, .. }
-    | Change::Allow { network, .. }
-    | Change::Deny { network, .. }) = change;
-    let net = list
-        .iter_mut()
-        .find(|n| n.name.eq_ignore_ascii_case(network))
-        .ok_or_else(|| missing(network))?;
-    match change {
-        Change::Network { on, .. } => net.ssh.enabled = *on,
-        Change::Allow {
-            mac, name, expiry, ..
-        } => {
-            let mac = mac.to_ascii_lowercase();
-            // a grant for the same mac is replaced, keeping its label when none is given
-            let old = net.ssh.allow.iter().find(|h| h.mac == mac);
-            let name = name.clone().or_else(|| old.and_then(|h| h.name.clone()));
-            net.ssh.allow.retain(|h| h.mac != mac);
-            net.ssh.allow.push(AllowedHost {
+impl From<InternetChange> for Change {
+    fn from(change: InternetChange) -> Self {
+        match change {
+            InternetChange::Network { network, on } => Change::Network { network, on },
+            InternetChange::Allow {
+                network,
                 mac,
                 name,
-                until: match expiry {
-                    Expiry::Never => None,
-                    Expiry::At(t) => Some(*t),
-                },
-            });
-        }
-        Change::Deny { mac, .. } => {
-            let mac = mac.to_ascii_lowercase();
-            let before = net.ssh.allow.len();
-            net.ssh.allow.retain(|h| h.mac != mac);
-            if net.ssh.allow.len() == before {
-                bail!("{} has no ssh grant for {mac}", net.name);
-            }
+                expiry,
+            } => Change::Allow {
+                network,
+                mac,
+                name,
+                expiry,
+            },
+            InternetChange::Deny { network, mac } => Change::Deny { network, mac },
         }
     }
-    Ok(())
+}
+
+/// apply one change to a list of networks. `now` is when it is made.
+pub fn apply_change(list: &mut [LanNetwork], change: &Change, now: i64) -> Result<()> {
+    apply_grant(list, &change.like_internet(), now, "ssh", |n| {
+        (&mut n.ssh.enabled, &mut n.ssh.allow)
+    })
 }
 
 /// what is wrong with a network's ssh settings; empty means fine.

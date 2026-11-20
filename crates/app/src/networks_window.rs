@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use lanlord_model::clock;
+use lanlord_model::internet::host_line;
 use lanlord_model::internet::{parse_duration, parse_until_local, Expiry};
 use lanlord_model::lan_edit::{external_interface, network_users, Edit};
 use lanlord_model::lan_networks::{self, LanNetwork};
@@ -16,7 +17,7 @@ use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::networks::{self, Draft, NetworkRow, Role};
 use lanlord_model::server::Iface;
 use lanlord_model::settings::Settings;
-use lanlord_model::ssh_access::{host_line, Change as SshChange, SshAccess};
+use lanlord_model::ssh_access::{Change as SshChange, SshAccess};
 
 use crate::ask::AskPassword;
 use crate::gateway::Gateway;
