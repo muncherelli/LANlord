@@ -4,7 +4,8 @@
 
 use eframe::egui::{Pos2, Rect, Vec2};
 
-/// how far apart cascaded windows sit; the same step the desktop uses today
+/// how far apart cascaded windows sit; the same step the desktop uses today. PR 4 deletes
+/// `CASCADE_STEP` and `take_slot` in desktop.rs in favour of this module.
 pub const CASCADE_STEP: f32 = 22.0;
 
 /// the kinds of caption button a frame can hit-test
@@ -63,7 +64,9 @@ fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
 /// clamped against the opposite edge, which stays fixed. that is why a left or top drag can
 /// never make the window walk across the desktop. each dragged edge also stops at `bounds` (the
 /// work area), so a drag cannot push the caption off screen; moving the whole rect afterwards
-/// could not do that without moving the fixed edge. `max` may be infinite. when the limits
+/// could not do that without moving the fixed edge. an edge that starts outside `bounds` may
+/// stay where it is but goes no further out, so pressing it never makes it jump. `max` may be
+/// infinite. when the limits
 /// disagree (`max` below `min`, or less room in `bounds` than `min`) the minimum size wins.
 pub fn resize(start: Rect, delta: Vec2, s: Section, min: Vec2, max: Vec2, bounds: Rect) -> Rect {
     let max = max.max(min);
@@ -82,7 +85,7 @@ pub fn resize(start: Rect, delta: Vec2, s: Section, min: Vec2, max: Vec2, bounds
             start.max.x,
             min.x,
             max.x,
-            bounds.min.x,
+            bounds.min.x.min(start.min.x),
         );
     }
     if s.right() {
@@ -91,7 +94,7 @@ pub fn resize(start: Rect, delta: Vec2, s: Section, min: Vec2, max: Vec2, bounds
             start.min.x,
             min.x,
             max.x,
-            bounds.max.x,
+            bounds.max.x.max(start.max.x),
         );
     }
     if s.top() {
@@ -100,7 +103,7 @@ pub fn resize(start: Rect, delta: Vec2, s: Section, min: Vec2, max: Vec2, bounds
             start.max.y,
             min.y,
             max.y,
-            bounds.min.y,
+            bounds.min.y.min(start.min.y),
         );
     }
     if s.bottom() {
@@ -109,7 +112,7 @@ pub fn resize(start: Rect, delta: Vec2, s: Section, min: Vec2, max: Vec2, bounds
             start.min.y,
             min.y,
             max.y,
-            bounds.max.y,
+            bounds.max.y.max(start.max.y),
         );
     }
     r
@@ -117,8 +120,7 @@ pub fn resize(start: Rect, delta: Vec2, s: Section, min: Vec2, max: Vec2, bounds
 
 /// a resize or move in progress. everything is frozen at press time and the rect is always
 /// recomputed from `start` and the pointer's total travel, so the drag has no accumulated
-/// error and the limits cannot change mid-drag. PR 4 deletes `CASCADE_STEP` and `take_slot`
-/// in desktop.rs in favour of this module.
+/// error and the limits cannot change mid-drag.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Drag {
     pub section: Section,
@@ -131,13 +133,17 @@ pub struct Drag {
 impl Drag {
     /// the window's rect with the pointer at `pointer`: a caption drag moves it and keeps it
     /// inside `bounds` (as the egui constrain does today), an edge drag resizes it, anything
-    /// else leaves it alone.
+    /// else leaves it alone. a window that starts bigger than `bounds`, or partly outside it,
+    /// is kept inside `bounds` joined with where it started, so pressing it never makes it
+    /// jump and it can be dragged back in but no further out.
     pub fn apply(&self, pointer: Pos2, bounds: Rect) -> Rect {
         let delta = pointer - self.pointer_start;
         match self.section {
-            Section::Caption => {
-                clamp_to_work_area(move_by(self.start, delta), bounds, f32::INFINITY)
-            }
+            Section::Caption => clamp_to_work_area(
+                move_by(self.start, delta),
+                bounds.union(self.start),
+                f32::INFINITY,
+            ),
             s => resize(self.start, delta, s, self.min, self.max, bounds),
         }
     }
@@ -513,6 +519,54 @@ mod tests {
         );
         assert_eq!(l.max, inside.max);
         assert!(l.width() >= min.x);
+    }
+
+    #[test]
+    fn pressing_an_edge_already_outside_the_work_area_does_not_move_it() {
+        let b = area();
+        let big = Rect::from_min_max(Pos2::new(-50.0, -40.0), Pos2::new(1100.0, 800.0));
+        let (min, max) = (Vec2::new(120.0, 90.0), Vec2::INFINITY);
+        for s in EDGES {
+            assert_eq!(resize(big, Vec2::ZERO, s, min, max, b), big, "{s:?}");
+        }
+        // it may come in, but not go further out
+        let r = resize(big, Vec2::splat(300.0), Section::BottomRight, min, max, b);
+        assert_eq!(r.max, big.max);
+        let r = resize(big, Vec2::splat(-300.0), Section::TopLeft, min, max, b);
+        assert_eq!(r.min, big.min);
+        let r = resize(big, Vec2::splat(-300.0), Section::BottomRight, min, max, b);
+        assert_eq!(r.max, big.max - Vec2::splat(300.0));
+    }
+
+    #[test]
+    fn a_caption_press_on_an_oversized_window_does_not_jump() {
+        let b = area();
+        let big = Rect::from_min_max(Pos2::new(-50.0, 10.0), Pos2::new(1100.0, 800.0));
+        let d = Drag {
+            section: Section::Caption,
+            start: big,
+            pointer_start: Pos2::new(300.0, 20.0),
+            min: Vec2::splat(50.0),
+            max: Vec2::INFINITY,
+        };
+        assert_eq!(d.apply(d.pointer_start, b), big);
+        let moved = d.apply(Pos2::new(250.0, 5000.0), b);
+        assert_eq!(moved.size(), big.size());
+        assert!(moved.min.y >= big.min.y.min(b.min.y));
+        // it can come back in but never goes further out than it began
+        assert!(moved.min.x >= big.min.x && moved.max.x <= big.max.x.max(b.max.x));
+    }
+
+    #[test]
+    fn a_caption_press_on_a_window_that_fits_does_not_move_it() {
+        let d = Drag {
+            section: Section::Caption,
+            start: start(),
+            pointer_start: Pos2::new(300.0, 90.0),
+            min: Vec2::splat(50.0),
+            max: Vec2::INFINITY,
+        };
+        assert_eq!(d.apply(d.pointer_start, area()), start());
     }
 
     #[test]
