@@ -633,16 +633,40 @@ impl ClockPanel {
         match self.loaded.as_mut() {
             Some(loaded) => {
                 loaded.live();
-                let page = match self.tab {
-                    Tab::DateTime => loaded.date_time_tab(gates),
-                    Tab::Zone => loaded.zone_tab(services, host),
-                    Tab::Internet => loaded.internet_tab(gates),
+                // the zone page asks the server about the zone it shows, so it is built only
+                // when it is open; the others are always measured
+                let (page, others) = match self.tab {
+                    Tab::DateTime => (
+                        loaded.date_time_tab(gates),
+                        vec![(Tab::Internet as usize, loaded.internet_tab(gates))],
+                    ),
+                    Tab::Zone => (
+                        loaded.zone_tab(services, host),
+                        vec![
+                            (Tab::DateTime as usize, loaded.date_time_tab(gates)),
+                            (Tab::Internet as usize, loaded.internet_tab(gates)),
+                        ],
+                    ),
+                    Tab::Internet => (
+                        loaded.internet_tab(gates),
+                        vec![(Tab::DateTime as usize, loaded.date_time_tab(gates))],
+                    ),
                 };
+                // the pages that are always built stand for them all: the zone page is only
+                // there while it is open, so it is left out of the key
+                let mut kept: Vec<(usize, &[Node<Msg>])> =
+                    others.iter().map(|(t, n)| (*t, n.as_slice())).collect();
+                if self.tab != Tab::Zone {
+                    kept.push((self.tab as usize, &page));
+                }
+                let key = view::pages_fingerprint_of(kept);
                 nodes.push(Node::Tabs {
+                    key,
                     titles: view::titles(&["Date & Time", "Time Zone", "Internet Time"]),
                     current: self.tab as usize,
                     pick: Msg::Tab,
                     body: page,
+                    others,
                 });
             }
             None => nodes.push(Node::Text("Reading the server's clock...".into())),

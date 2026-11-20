@@ -178,6 +178,8 @@ pub struct NetworksWindow {
     confirm: Option<String>,
     /// a save or a removal is on its way, so its form stays open until it is known how it went.
     saving: bool,
+    /// a change was stored since `take_saved` was last asked.
+    saved_now: bool,
     /// set by the job of a save that was stored but could not be applied.
     warning: Arc<Mutex<Option<String>>>,
     /// when the status was last asked for, in seconds on the caller's clock.
@@ -229,13 +231,20 @@ impl NetworksWindow {
             if let Some(text) = warning {
                 // the change is stored and the list read again; only the apply failed
                 self.form = None;
+                self.saved_now = true;
                 self.rows.say(true, text);
             } else if arrived {
                 self.form = None;
+                self.saved_now = true;
             } else if let (Some(form), Some((true, text))) = (&mut self.form, &self.rows.note) {
                 form.error = Some(text.clone());
             }
         }
+    }
+
+    /// a network was added, changed or removed, once: the settings others cached are old.
+    pub fn take_saved(&mut self) -> bool {
+        std::mem::take(&mut self.saved_now)
     }
 
     fn reload(&mut self, services: &Services, host: &str) {
@@ -440,11 +449,20 @@ impl NetworksWindow {
         let chosen = &rows[self.selected];
         let status = self.status_of(chosen);
         let lanlord = chosen.role == Role::Lanlord;
+        let body = sized(chosen, status, error.as_deref());
+        let others: Vec<(usize, Vec<Node<Msg>>)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self.selected)
+            .map(|(i, r)| (i, sized(r, self.status_of(r), error.as_deref())))
+            .collect();
         let tabs = Node::Tabs {
             titles,
+            key: view::pages_fingerprint(self.selected, &body, &others),
             current: self.selected,
             pick: Msg::Tab,
-            body: page(chosen, status, error.as_deref()),
+            body,
+            others,
         };
         let buttons = Node::Buttons(vec![
             Button::new("Refresh", !self.reading(), Msg::Refresh),
@@ -704,10 +722,29 @@ impl NetworksWindow {
             label: label.into(),
             body: vec![body],
         };
+        // two boxes and the "to" between them, each wide enough for the longest dotted quad
+        let half = |field: Field, value: &str, hint: &str| match input(field, value, hint) {
+            Node::Input {
+                value,
+                focus,
+                hint,
+                edit,
+                enter,
+                ..
+            } => Node::Input {
+                value,
+                size: Size::Text(LONGEST_ADDRESS),
+                focus,
+                hint,
+                edit,
+                enter,
+            },
+            other => other,
+        };
         let range = Node::Row(vec![
-            input(Field::RangeStart, &draft.range_start, "start"),
-            Node::Text("  to  ".into()),
-            input(Field::RangeEnd, &draft.range_end, "end"),
+            half(Field::RangeStart, &draft.range_start, "start"),
+            Node::Text(" to ".into()),
+            half(Field::RangeEnd, &draft.range_end, "end"),
         ]);
         let mut body = vec![
             Node::Text(
@@ -852,6 +889,35 @@ fn connection_dialog(status: &InterfaceStatus, time: &dyn Fn(i64) -> String) -> 
     }
 }
 
+/// a network's page, as tall as the page of a lanlord network would be, so the window keeps its
+/// size from one tab to the next and when a network is added or removed, as a property sheet does.
+fn sized(
+    row: &NetworkRow,
+    status: Option<&InterfaceStatus>,
+    error: Option<&str>,
+) -> Vec<Node<Msg>> {
+    let lanlord = NetworkRow {
+        role: Role::Lanlord,
+        ..row.clone()
+    };
+    // what the page shows: the row, the status text and the error text
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (row.role as u8, row.details(), &row.link).hash(&mut hasher);
+        status
+            .map(|s| (s.connection.text(), s.speed()))
+            .hash(&mut hasher);
+        error.hash(&mut hasher);
+        hasher.finish()
+    };
+    vec![Node::SameSize {
+        key,
+        body: page(row, status, error),
+        others: vec![page(&lanlord, status, error)],
+    }]
+}
+
 /// one network's tab: Connection and Activity like a connection's Status box, and the lanlord
 /// network's dhcp.
 fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>) -> Vec<Node<Msg>> {
@@ -919,6 +985,9 @@ fn activity(status: &InterfaceStatus) -> Node<Msg> {
         })],
     }
 }
+
+/// the text of the longest address a DHCP range box has to show.
+const LONGEST_ADDRESS: &str = "255.255.255.255";
 
 fn lanlord_network(row: &NetworkRow) -> Node<Msg> {
     let dhcp = row.dhcp.clone().unwrap_or_else(|| "not served".into());
@@ -1242,6 +1311,8 @@ mod tests {
             ["External Network", "lab"]
         );
         assert!(fake.stored.lock().unwrap().contains("name: lab"));
+        assert!(window.take_saved(), "the other windows are told");
+        assert!(!window.take_saved(), "only once");
     }
 
     #[test]
