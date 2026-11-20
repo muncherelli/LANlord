@@ -206,9 +206,24 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # the samba build is long: the first build keeps its layers for the real build below
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        if: matrix.name == 'nt4-server-components' && matrix.arch == 'amd64'
+        with:
+          context: ${{ matrix.dir }}
+          target: build
+          load: true
+          tags: nt4-build:test
+          cache-from: type=gha,scope=nt4-amd64
+          cache-to: type=gha,scope=nt4-amd64,mode=max
+      # a nt4-style join (bare ntlmv1 smb1 logon, machine account password over samr) must work
+      - name: nt4 join regression test
+        if: matrix.name == 'nt4-server-components' && matrix.arch == 'amd64'
+        run: docker run --rm -v "$PWD/${{ matrix.dir }}/test-join.sh:/test-join.sh:ro" nt4-build:test sh /test-join.sh
       # only proves that the image builds on this architecture
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
+          cache-from: ${{ matrix.name == 'nt4-server-components' && matrix.arch == 'amd64' && 'type=gha,scope=nt4-amd64' || '' }}
           context: ${{ matrix.dir }}
           platforms: ${{ matrix.platform }}
           push: false

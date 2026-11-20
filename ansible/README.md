@@ -105,11 +105,15 @@ UDP 123 must be free on the host. `lanlord doctor` and the Compatibility tab hav
 
 The `nt4-domain` module in `domain` mode runs a Samba classic NT4-style domain controller, with the compatibility settings NT4 needs (`allow nt4 crypto`, `reject md5 clients = no`, `server schannel = auto`). They weaken the domain on purpose, so keep it on the isolated internal network.
 
-Windows NT 4.0 SP6a could not create its own machine account against Samba 4.22: the step that sets the new account's password failed with `NT_STATUS_NO_USER_SESSION_KEY`, and the client reported "The machine account for this computer either does not exist or is inaccessible". The reliable way is to create the accounts in advance:
+Windows NT 4.0 can join the domain on its own: in Identification Changes (or during NT setup) tick "Create a Computer Account in the Domain", then give the name and password of a domain administrator (`Administrator`, or a user you made a domain admin). The new account is created and its password set, so there is nothing to prepare.
+
+You can still create the accounts in advance, which needs no credentials on the NT4 machine:
 
 1. List the computers in your settings: `machines: [ws1, ws2]`.
 2. Apply the module. Each name gets an account whose first password is its own name in lowercase.
 3. On the NT4 machine, join the domain without ticking "Create a Computer Account in the Domain". No password prompt appears, because the account already exists.
+
+Samba 4.12 and later lose the session key of a plain (non-SPNEGO) SMB1 logon, which is how NT4 connects, so setting the new account's password failed with `NT_STATUS_NO_USER_SESSION_KEY`. The `lanlord-nt4-server-components` image carries a small patch for it: `ansible/playbooks/nt4-domain/image/patches/samba-4.22-bare-ntlm-session-key.patch`. Samba is GPLv3, so this is a modified build: the patch is applied to the unmodified upstream source at image build time, and the image labels (`org.opencontainers.image.description`, `io.lanlord.samba.patched`, `io.lanlord.samba.patches`) say so. CI joins a test account over such a logon to keep it working.
 
 Set `lanman_auth: true` and keep the Administrator password to 14 characters or fewer if an old client needs the LM hash. Raise `log_level` (for example `2 rpc_srv:10 passdb:10 auth:5`) to debug a join; the Samba helper logs are in `/var/log/samba` inside the container.
 

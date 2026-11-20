@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- NT 4.0 machines can join the domain with an administrator's name and password, creating their own computer account (the Samba in the nt4 image is patched to keep the session key of NT4's logon)
 - the web UI draws at the screen's full frame rate again, so dragging windows is smooth (it was capped at 30 frames a second in 0.1.4)
 
 ## [0.1.4] - 2026-11-19

@@ -44,9 +44,12 @@ export SMB_CONF_PATH="$work/smb.conf"
 # the domain admin: root maps to the samba account root
 (printf '%s\n%s\n' "$pw" "$pw") | smbpasswd -c "$work/smb.conf" -s -a root >/dev/null
 net -s "$work/smb.conf" sam rights grant 'root' SeMachineAccountPrivilege >/dev/null 2>&1 || true
-smbd -s "$work/smb.conf" --daemon --no-process-group
+# the compiled-in log and state folders
+mkdir -p /var/log/samba /run/samba /var/lib/samba /var/cache/samba
+smbd -s "$work/smb.conf" --daemon --no-process-group -l "$work/log"
 trap 'kill "$(cat "$work/run/smbd.pid")" 2>/dev/null || true' EXIT
 sleep 3
+cat "$work"/log/log.smbd 2>/dev/null | tail -5
 # what nt 4.0 speaks: smb1, no spnego, ntlmv1 only
 rpc() {
   rpcclient -s "$work/smb.conf" -U "root%$pw" \
