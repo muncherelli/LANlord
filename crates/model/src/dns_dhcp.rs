@@ -20,7 +20,7 @@ use crate::settings::{
 /// the dns cache size dnsmasq gets today; a server with another value cannot be projected.
 pub const DEFAULT_CACHE_SIZE: u32 = 150;
 
-const NETWORK_WORD: &str = "network";
+const HOST_WORD: &str = "host";
 const ALL_WORD: &str = "all";
 
 /// which servers something applies to: every one on its network, or the listed ids.
@@ -80,31 +80,33 @@ impl<'de> serde::Deserialize<'de> for Servers {
     }
 }
 
-/// where a dns server listens: the network's own address, or one of its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Listen {
-    Network,
-    Address(Ipv4Addr),
+/// where a service sits on its network: on the host's own address (the gateway, `.1`; the
+/// default, and where every existing install is), or on an address of its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Placement {
+    #[default]
+    Host,
+    Own(Ipv4Addr),
 }
 
-impl serde::Serialize for Listen {
+impl serde::Serialize for Placement {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Network => s.serialize_str(NETWORK_WORD),
-            Self::Address(a) => s.serialize_str(&a.to_string()),
+            Self::Host => s.serialize_str(HOST_WORD),
+            Self::Own(a) => s.serialize_str(&a.to_string()),
         }
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Listen {
+impl<'de> serde::Deserialize<'de> for Placement {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let text = String::deserialize(d)?;
-        if text == NETWORK_WORD {
-            return Ok(Self::Network);
+        if text == HOST_WORD {
+            return Ok(Self::Host);
         }
-        text.parse().map(Self::Address).map_err(|_| {
-            serde::de::Error::custom(format!("{text:?} is not `network` or an address"))
-        })
+        text.parse()
+            .map(Self::Own)
+            .map_err(|_| serde::de::Error::custom(format!("{text:?} is not `host` or an address")))
     }
 }
 
@@ -113,7 +115,8 @@ pub struct DnsServer {
     /// the default server of a network has the network's name as its id.
     pub id: String,
     pub network: String,
-    pub address: Listen,
+    #[serde(default)]
+    pub placement: Placement,
     pub zone: String,
     /// empty means internal only.
     #[serde(default)]
@@ -202,6 +205,8 @@ pub struct DhcpServer {
     pub id: String,
     pub network: String,
     #[serde(default)]
+    pub placement: Placement,
+    #[serde(default)]
     pub range: Option<(Ipv4Addr, Ipv4Addr)>,
     pub lease: String,
     #[serde(default = "yes")]
@@ -259,7 +264,7 @@ impl Services {
             out.dns_servers.push(DnsServer {
                 id: id.clone(),
                 network: id.clone(),
-                address: Listen::Network,
+                placement: Placement::Host,
                 zone: network.zone.clone(),
                 forwarders: Vec::new(),
                 cache_size: DEFAULT_CACHE_SIZE,
@@ -289,6 +294,7 @@ impl Services {
             out.dhcp_servers.push(DhcpServer {
                 id: id.clone(),
                 network: id.clone(),
+                placement: Placement::Host,
                 range,
                 lease: dhcp.lease.clone(),
                 authoritative: true,
@@ -350,9 +356,9 @@ impl Services {
         if dns.len() > 1 {
             why.push(format!("{name} has {} dns servers", dns.len()));
         }
-        let default = dns.iter().find(|s| s.address == Listen::Network).copied();
+        let default = dns.iter().find(|s| s.placement == Placement::Host).copied();
         for s in &dns {
-            if s.address != Listen::Network {
+            if s.placement != Placement::Host {
                 why.push(format!("dns server {} has its own address", s.id));
             }
             if !s.forwarders.is_empty() {
@@ -401,6 +407,9 @@ impl Services {
         }
         if s.register_into != default_dns {
             why.push(format!("dhcp server {} registers names elsewhere", s.id));
+        }
+        if s.placement != Placement::Host {
+            why.push(format!("dhcp server {} has its own address", s.id));
         }
         if !s.authoritative {
             why.push(format!("dhcp server {} is not authoritative", s.id));
@@ -456,7 +465,7 @@ impl Services {
         }
         for e in &self.dns_records {
             let placed = self.dns_servers.iter().any(|s| {
-                s.address == Listen::Network && s.zone == e.zone && e.servers.includes(&s.id)
+                s.placement == Placement::Host && s.zone == e.zone && e.servers.includes(&s.id)
             });
             if !placed {
                 why.push(format!("record {} is on no default dns server", e.name));
@@ -537,6 +546,7 @@ impl Services {
         self.check_dns_servers(networks, &subnet_of, &mut out);
         self.check_dhcp_servers(networks, &subnet_of, &mut out);
         self.check_reservations(&subnet_of, &mut out);
+        self.check_overlaps(&mut out);
         self.check_records(&mut out);
         self.check_forwarders(&mut out);
         out
@@ -549,44 +559,87 @@ impl Services {
             .and_then(LanNetwork::ip);
         let mut found: Vec<Ipv4Addr> = own.into_iter().collect();
         for s in self.dns_servers.iter().filter(|s| s.network == network) {
-            if let Listen::Address(a) = s.address {
+            if let Placement::Own(a) = s.placement {
+                found.push(a);
+            }
+        }
+        for s in self.dhcp_servers.iter().filter(|s| s.network == network) {
+            if let Placement::Own(a) = s.placement {
                 found.push(a);
             }
         }
         found
     }
 
+    /// where every dns and dhcp server sits: an own address must be a host address of the
+    /// subnet, not the gateway's, and not another service's; two dns servers cannot share an
+    /// address either, as both would hold port 53 on it.
     fn check_dns_servers(
         &self,
         networks: &[LanNetwork],
         subnet_of: &dyn Fn(&str) -> Option<Subnet>,
         out: &mut Vec<Finding>,
     ) {
-        let mut claimed = BTreeSet::new();
-        for (i, s) in self.dns_servers.iter().enumerate() {
-            let path = format!("dns_servers[{i}]");
-            let Some(subnet) = subnet_of(&s.network) else {
-                find(
-                    out,
-                    Severity::Error,
-                    &path,
-                    format!("{} is on no known network", s.id),
-                );
+        let gateway = |n: &str| {
+            networks
+                .iter()
+                .find(|x| x.name == n)
+                .and_then(LanNetwork::ip)
+        };
+        // (network, address, is a dns server) of the own addresses claimed so far
+        let mut own: Vec<(&str, Ipv4Addr, bool)> = Vec::new();
+        let mut dns_held = BTreeSet::new();
+        let services = self
+            .dns_servers
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                (
+                    format!("dns_servers[{i}]"),
+                    &s.id,
+                    &s.network,
+                    s.placement,
+                    true,
+                )
+            })
+            .chain(self.dhcp_servers.iter().enumerate().map(|(i, s)| {
+                (
+                    format!("dhcp_servers[{i}]"),
+                    &s.id,
+                    &s.network,
+                    s.placement,
+                    false,
+                )
+            }));
+        for (path, id, network, placement, is_dns) in services {
+            let Some(subnet) = subnet_of(network) else {
+                let message = format!("{id} is on no known network");
+                find(out, Severity::Error, &path, message);
                 continue;
             };
-            let address = match s.address {
-                Listen::Network => networks
-                    .iter()
-                    .find(|n| n.name == s.network)
-                    .and_then(LanNetwork::ip),
-                Listen::Address(a) => Some(a),
+            let address = match placement {
+                Placement::Host => gateway(network),
+                Placement::Own(a) => Some(a),
             };
             let Some(a) = address else { continue };
-            if !subnet.contains(a) || a == subnet.network || a == subnet.broadcast() {
-                let message = format!("{a} is not a host address of {subnet}");
-                find(out, Severity::Error, &path, message);
+            if let Placement::Own(a) = placement {
+                if !subnet.contains(a) || a == subnet.network || a == subnet.broadcast() {
+                    let message = format!("{a} is not a host address of {subnet}");
+                    find(out, Severity::Error, &path, message);
+                } else if Some(a) == gateway(network) {
+                    let message = format!("{a} is the gateway's address; use the host placement");
+                    find(out, Severity::Error, &path, message);
+                }
+                let taken = own
+                    .iter()
+                    .any(|(n, x, dns)| *n == network.as_str() && *x == a && !(*dns && is_dns));
+                if taken {
+                    let message = format!("{id} claims {a}, which another service already claimed");
+                    find(out, Severity::Error, &path, message);
+                }
+                own.push((network, a, is_dns));
             }
-            if !claimed.insert(a) {
+            if is_dns && !dns_held.insert((network, a)) {
                 let message = format!("another dns server already holds {a}:53");
                 find(out, Severity::Error, &path, message);
             }
@@ -603,8 +656,8 @@ impl Services {
         for (i, s) in self.dhcp_servers.iter().enumerate() {
             let path = format!("dhcp_servers[{i}]");
             if !seen.insert(&s.network) {
-                let message = format!("{} has more than one dhcp server", s.network);
-                find(out, Severity::Error, &path, message);
+                let message = format!("two dhcp servers serve {}", s.network);
+                find(out, Severity::Warning, &path, message);
             }
             if !valid_lease(&s.lease) {
                 let message = format!("lease {:?} is not 30m, 12h, 7d or infinite", s.lease);
@@ -699,7 +752,6 @@ impl Services {
         subnet_of: &dyn Fn(&str) -> Option<Subnet>,
         out: &mut Vec<Finding>,
     ) {
-        let mut seen = BTreeSet::new();
         for (i, r) in self.dhcp_reservations.iter().enumerate() {
             let path = format!("dhcp_reservations[{i}]");
             if !valid_mac(&r.mac) {
@@ -717,11 +769,46 @@ impl Services {
                         find(out, Severity::Error, &path, message);
                     }
                 }
-                let by_address = (s.id.clone(), false, r.address.to_string());
-                let by_mac = (s.id.clone(), true, r.mac.to_ascii_lowercase());
-                if !seen.insert(by_address) || !seen.insert(by_mac) {
-                    let message = format!("{} or its mac is reserved twice on {}", r.address, s.id);
-                    find(out, Severity::Error, &path, message);
+            }
+        }
+    }
+
+    /// dhcp servers on one network must not hand out the same addresses: their ranges must not
+    /// overlap, and no address or mac may be reserved twice.
+    fn check_overlaps(&self, out: &mut Vec<Finding>) {
+        for (i, a) in self.dhcp_servers.iter().enumerate() {
+            for (j, b) in self.dhcp_servers.iter().enumerate().skip(i + 1) {
+                if a.network != b.network {
+                    continue;
+                }
+                if let (Some((a1, a2)), Some((b1, b2))) = (a.range, b.range) {
+                    if a1 <= b2 && b1 <= a2 {
+                        let message = format!("the ranges of {} and {} overlap", a.id, b.id);
+                        find(out, Severity::Error, &format!("dhcp_servers[{j}]"), message);
+                    }
+                }
+            }
+        }
+        let on = |r: &Reservation, network: &str| {
+            self.dhcp_servers
+                .iter()
+                .any(|s| s.network == network && r.server.includes(&s.id))
+        };
+        for (i, a) in self.dhcp_reservations.iter().enumerate() {
+            for (j, b) in self.dhcp_reservations.iter().enumerate().skip(i + 1) {
+                let same = a.address == b.address || a.mac.eq_ignore_ascii_case(&b.mac);
+                let shared = self
+                    .dhcp_servers
+                    .iter()
+                    .any(|s| on(a, &s.network) && on(b, &s.network));
+                if same && shared {
+                    let message = format!("{} or its mac is reserved twice", a.address);
+                    find(
+                        out,
+                        Severity::Error,
+                        &format!("dhcp_reservations[{j}]"),
+                        message,
+                    );
                 }
             }
         }
@@ -771,9 +858,9 @@ impl Services {
             .dns_servers
             .iter()
             .enumerate()
-            .filter_map(|(i, s)| match s.address {
-                Listen::Address(a) => Some((i, a)),
-                Listen::Network => None,
+            .filter_map(|(i, s)| match s.placement {
+                Placement::Own(a) => Some((i, a)),
+                Placement::Host => None,
             })
             .collect();
         for (i, s) in self.dns_servers.iter().enumerate() {
@@ -838,7 +925,7 @@ mod tests {
         DnsServer {
             id: id.into(),
             network: "retronet".into(),
-            address: Listen::Address(Ipv4Addr::from(addr)),
+            placement: Placement::Own(Ipv4Addr::from(addr)),
             zone: "retronet".into(),
             forwarders: vec![Ipv4Addr::from(to)],
             cache_size: DEFAULT_CACHE_SIZE,
@@ -883,13 +970,13 @@ mod tests {
         assert_eq!(s.dns_servers.len(), 1);
         assert_eq!(s.dhcp_reservations[0].name, "pc1");
         let lists = format!(
-            "{text}dns_servers:\n  - {{id: alpha, network: alpha, address: network, zone: alpha}}\n  - {{id: extra, network: alpha, address: 192.0.2.5, zone: alpha, forwarders: [198.51.100.53]}}\ndns_records:\n  - {{name: www, zone: alpha, type: A, value: 192.0.2.30, ttl: 60, servers: all}}\n  - {{name: web, zone: alpha, type: CNAME, value: www, servers: [alpha]}}\n  - {{name: m, zone: alpha, type: MX, preference: 10, value: mail.alpha, servers: all}}\ndhcp_reservations:\n  - {{mac: '02:00:00:00:00:02', address: 192.0.2.21, server: all, tags: [x]}}\n"
+            "{text}dns_servers:\n  - {{id: alpha, network: alpha, placement: host, zone: alpha}}\n  - {{id: extra, network: alpha, placement: 192.0.2.5, zone: alpha, forwarders: [198.51.100.53]}}\ndns_records:\n  - {{name: www, zone: alpha, type: A, value: 192.0.2.30, ttl: 60, servers: all}}\n  - {{name: web, zone: alpha, type: CNAME, value: www, servers: [alpha]}}\n  - {{name: m, zone: alpha, type: MX, preference: 10, value: mail.alpha, servers: all}}\ndhcp_reservations:\n  - {{mac: '02:00:00:00:00:02', address: 192.0.2.21, server: all, tags: [x]}}\n"
         );
         let s = Services::read(&Settings::parse(&lists).unwrap()).unwrap();
         assert_eq!(s.dns_servers.len(), 2);
         assert_eq!(
-            s.dns_servers[1].address,
-            Listen::Address(Ipv4Addr::new(192, 0, 2, 5))
+            s.dns_servers[1].placement,
+            Placement::Own(Ipv4Addr::new(192, 0, 2, 5))
         );
         assert_eq!(s.dns_servers[0].cache_size, DEFAULT_CACHE_SIZE);
         assert_eq!(s.dns_records[0].servers, Servers::All);
@@ -956,7 +1043,10 @@ mod tests {
             .any(|f| f.severity == Severity::Warning && f.error.message.contains("no dns")));
         assert!(found
             .iter()
-            .any(|f| f.error.message.contains("more than one dhcp")));
+            .any(|f| f.severity == Severity::Warning && f.error.message.contains("serve")));
+        assert!(!errors(&s, &networks)
+            .iter()
+            .any(|m| m.contains("dhcp server")));
     }
 
     #[test]
@@ -1048,5 +1138,114 @@ mod tests {
         assert!(errors(&s, &networks)
             .iter()
             .any(|m| m.contains("reserved twice")));
+    }
+
+    fn dhcp(id: &str, range: ([u8; 4], [u8; 4]), placement: Placement) -> DhcpServer {
+        DhcpServer {
+            id: id.into(),
+            network: "retronet".into(),
+            placement,
+            range: Some((Ipv4Addr::from(range.0), Ipv4Addr::from(range.1))),
+            lease: "7d".into(),
+            authoritative: true,
+            dns_servers: vec!["retronet".into()],
+            register_into: vec!["retronet".into()],
+        }
+    }
+
+    #[test]
+    fn a_service_sits_on_the_host_unless_it_says_otherwise() {
+        assert_eq!(Placement::default(), Placement::Host);
+        let s = Services::synthesise(&two()).unwrap();
+        assert!(s.dns_servers.iter().all(|d| d.placement == Placement::Host));
+        assert_eq!(s.dhcp_servers[0].placement, Placement::Host);
+        let text = "networks:\n  - {name: alpha, interface: eth1, address: 192.0.2.1/24}\ndns_servers:\n  - {id: alpha, network: alpha, zone: alpha}\ndhcp_servers:\n  - {id: alpha, network: alpha, lease: 7d}\n";
+        let s = Services::read(&Settings::parse(text).unwrap()).unwrap();
+        assert_eq!(s.dns_servers[0].placement, Placement::Host);
+        assert_eq!(s.dhcp_servers[0].placement, Placement::Host);
+    }
+
+    #[test]
+    fn two_dhcp_servers_warn_and_overlapping_ranges_are_errors() {
+        let networks = two();
+        let mut s = Services::synthesise(&networks).unwrap();
+        s.dhcp_servers.push(dhcp(
+            "b",
+            ([192, 0, 2, 150], [192, 0, 2, 250]),
+            Placement::Own(Ipv4Addr::new(192, 0, 2, 6)),
+        ));
+        let found = s.validate(&networks);
+        assert!(found.iter().any(
+            |f| f.severity == Severity::Warning && f.error.message.contains("two dhcp servers")
+        ));
+        assert!(errors(&s, &networks).iter().any(|m| m.contains("overlap")));
+        s.dhcp_servers[1].range =
+            Some((Ipv4Addr::new(192, 0, 2, 201), Ipv4Addr::new(192, 0, 2, 250)));
+        assert!(
+            errors(&s, &networks).is_empty(),
+            "{:?}",
+            errors(&s, &networks)
+        );
+    }
+
+    #[test]
+    fn a_reservation_cannot_be_held_by_two_servers_of_a_network() {
+        let networks = two();
+        let mut s = Services::synthesise(&networks).unwrap();
+        s.dhcp_servers.push(dhcp(
+            "b",
+            ([192, 0, 2, 201], [192, 0, 2, 250]),
+            Placement::Host,
+        ));
+        let mut again = s.dhcp_reservations[0].clone();
+        again.server = Servers::Only(vec!["b".into()]);
+        s.dhcp_reservations.push(again);
+        assert!(errors(&s, &networks)
+            .iter()
+            .any(|m| m.contains("reserved twice")));
+    }
+
+    #[test]
+    fn own_addresses_must_be_free_and_inside_the_subnet() {
+        let networks = two();
+        let own = |a: [u8; 4]| Placement::Own(Ipv4Addr::from(a));
+        let mut s = Services::synthesise(&networks).unwrap();
+        s.dhcp_servers[0].placement = own([192, 0, 2, 6]);
+        s.dns_servers
+            .push(extra("x", [192, 0, 2, 6], [198, 51, 100, 1]));
+        assert!(errors(&s, &networks)
+            .iter()
+            .any(|m| m.contains("already claimed")));
+        let mut s = Services::synthesise(&networks).unwrap();
+        s.dns_servers
+            .push(extra("g", [192, 0, 2, 1], [198, 51, 100, 1]));
+        assert!(errors(&s, &networks)
+            .iter()
+            .any(|m| m.contains("gateway's address")));
+        let mut s = Services::synthesise(&networks).unwrap();
+        s.dns_servers
+            .push(extra("o", [198, 51, 100, 5], [198, 51, 100, 1]));
+        s.dhcp_servers[0].placement = own([192, 0, 2, 0]);
+        let msgs = errors(&s, &networks);
+        assert_eq!(
+            msgs.iter()
+                .filter(|m| m.contains("not a host address"))
+                .count(),
+            2,
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn an_own_dhcp_address_does_not_fit_older_gateways() {
+        let networks = two();
+        let mut s = Services::synthesise(&networks).unwrap();
+        s.dhcp_servers[0].placement = Placement::Own(Ipv4Addr::new(192, 0, 2, 6));
+        let Err(NotExpressible(why)) = s.project(&networks) else {
+            panic!("should not fit")
+        };
+        assert!(why
+            .iter()
+            .any(|w| w.contains("dhcp server retronet has its own address")));
     }
 }
