@@ -1,21 +1,63 @@
 #!/bin/bash
 # manages samba accounts. a password is read from stdin, never from arguments.
-#   lanlord-user add NAME [admin|user] [software]  create the account or set its password; admin makes it a domain
-#                             admin, software lets it write to the software share without being one
-#   lanlord-user sync         rebuild the software admins group (domain admins and the software list)
+#   lanlord-user add NAME [admin|user] [software]  create the account, or set its password; admin makes a
+#                             new account a domain admin, software lets it write to the software share
+#                             without being one. both only apply when the account is created: the
+#                             membership of an account that exists is whatever windows made of it
+#   lanlord-user sync         rebuild the software admins group and give every user its logon wrapper
+#   lanlord-user restore      recreate the unix groups, memberships and primary groups from the state
+#                             files (entrypoint.sh runs it when the container starts)
 #   lanlord-user admin        set the password of the domain administrator
 #   lanlord-user delete NAME  remove the account
 #   lanlord-user machine NAME create a machine account so an nt4 computer can join without creating it
 #   lanlord-user machine NAME reset  set an existing machine account back to its first password, so a
 #                             removed or reinstalled computer can join again
 #   lanlord-user list         list the accounts
+#   lanlord-user hook ACTION ARGUMENTS  what smbd runs for user manager for domains (see smb.conf):
+#                             useradd NAME | machine NAME | deluser NAME | addgroup GROUP | delgroup GROUP |
+#                             addmember GROUP USER | delmember GROUP USER | setprimary GROUP USER |
+#                             rename OLD NEW
 set -eu
 cmd=${1:-}
 name=${2:-}
 
+# what lives in the persistent samba directory (the container's unix accounts and groups do not):
+#   private/admins        domain admins, one name per line (the unix group admins)
+#   private/softadmins    software admins that are not domain admins
+#   private/members/NAME  members of any other group
+#   private/groups        NAME:GID of the groups that were made from windows
+#   private/primary       USER:GROUP, a user's primary group when it is not domusers
+#   private/changes.log   every change made through the hooks, for reading back into settings:
+#                         "EPOCH ACTION ARGUMENTS", never a password
+# a change made in user manager for domains goes through the hooks, which keep these files and the
+# unix side in step, so the next start (or apply) restores what windows set instead of reverting it
+private=${LANLORD_PRIVATE:-/var/lib/samba/private}
+netlogon=${LANLORD_NETLOGON:-/var/lib/samba/netlogon}
+smbconf=${LANLORD_SMB_CONF:-/etc/samba/smb.conf}
+# the groups lanlord makes itself; they cannot be deleted from windows
+fixed_groups=" admins domusers domguests machines softadmins "
+mkdir -p "$private"
+# one writer at a time: hooks, apply and start all edit the same files. the wait is bounded so a
+# hook never hangs smbd (which may hold a passdb transaction) behind a long apply
+exec 9> "$private/.lock"
+# (busybox flock has no -w, so it polls)
+tries=0
+until flock -n 9; do
+  tries=$((tries + 1))
+  [[ $tries -lt 60 ]] || { echo "lanlord-user is busy" >&2; exit 1; }
+  sleep 1
+done
+
 valid() {
   case "$1" in
     '' | *[!a-z0-9_.-]* | [!a-z]*) echo "invalid user name: $1" >&2; exit 2 ;;
+  esac
+}
+
+# a name that comes from windows (through a hook) is checked before it reaches a command
+safe() {
+  case "$1" in
+    '' | -* | .* | *[!A-Za-z0-9_.\$-]*) echo "invalid name: $1" >&2; exit 2 ;;
   esac
 }
 
@@ -24,27 +66,102 @@ read_password() {
   [[ -n $password ]] || { echo "the password is empty" >&2; exit 2; }
 }
 
+note() {
+  mkdir -p "$private"
+  echo "$(date +%s) $*" >> "$private/changes.log"
+}
 
-# domain admin membership is the unix group admins; it is also written to a file in the
-# persistent samba directory so entrypoint.sh can restore it when the container is replaced
+list_add() {
+  touch "$1"
+  grep -qxF -- "$2" "$1" || echo "$2" >> "$1"
+}
+
+list_del() {
+  [[ -f $1 ]] || return 0
+  local tmp
+  tmp=$(mktemp "$private/.tmp.XXXXXX")
+  grep -vxF -- "$2" "$1" > "$tmp" || true
+  mv "$tmp" "$1"
+}
+
+# the lines of a NAME:VALUE file, without the one whose NAME is $2 (a name is never a pattern)
+key_del() {
+  [[ -f $1 ]] || return 0
+  local tmp
+  tmp=$(mktemp "$private/.tmp.XXXXXX")
+  awk -F: -v n="$2" '$1 != n' "$1" > "$tmp" || true
+  mv "$tmp" "$1"
+}
+
+# the file that remembers who is in a group
+members_file() {
+  case "$1" in
+    admins) echo "$private/admins" ;;
+    softadmins) echo "$private/softadmins" ;;
+    *) mkdir -p "$private/members"; echo "$private/members/$1" ;;
+  esac
+}
+
+# domain admin membership is the unix group admins, and the file that restores it
 set_role() {
-  local name=$1 role=$2 list=/var/lib/samba/private/admins
-  touch "$list"
+  local name=$1 role=$2
   if [[ $role == admin ]]; then
     usermod -aG admins "$name"
-    grep -qx "$name" "$list" || echo "$name" >> "$list"
+    list_add "$private/admins" "$name"
   else
     gpasswd -d "$name" admins >/dev/null 2>&1 || true
-    sed -i "/^$name\$/d" "$list"
+    list_del "$private/admins" "$name"
   fi
 }
 
-# software admins are the domain admins plus the names in the softadmins file; the group is
-# rebuilt from both lists so removing a user from either takes effect
+# a user that is gone from samba is gone from every list
+forget_user() {
+  local file
+  for file in "$private/admins" "$private/softadmins" "$private"/members/*; do
+    list_del "$file" "$1"
+  done
+  key_del "$private/primary" "$1"
+}
+
+# nt and windows 9x run users\NAME.bat at logon (smb.conf: logon script = users\%U.bat). windows 9x
+# does not set %USERNAME% in a logon script, so the wrapper sets it and then runs lanlord.bat
+ensure_logon() {
+  grep -q '^[[:space:]]*domain logons = yes' "$smbconf" 2>/dev/null || return 0
+  local name=$1 wrapper_only=${2:-} server script current
+  [[ $name == *'$' ]] && return 0
+  server=$(testparm -s --parameter-name='netbios name' 2>/dev/null || true)
+  [[ -n $server ]] || server=$(hostname | cut -c1-15 | tr a-z A-Z)
+  install -d -o root -g admins -m 2775 "$netlogon/users"
+  script=$netlogon/users/$name.bat
+  printf '@echo off\r\nset USERNAME=%s\r\ncall \\\\%s\\netlogon\\lanlord.bat\r\n' "$name" "$server" > "$script"
+  chgrp admins "$script" 2>/dev/null || true
+  chmod 0664 "$script"
+  # the hooks run inside smbd's passdb transaction, so they only write the file; the next sync
+  # points the account at it
+  [[ -z $wrapper_only ]] || return 0
+  # a script that was set from windows stays; an empty one, the plain lanlord.bat and another
+  # user's wrapper (left over from a rename) are replaced
+  current=$(pdbedit -L -v -u "$name" 2>/dev/null | sed -n 's/^Logon Script: *//p' | tr -d '\r' || true)
+  case "$current" in
+    '' | lanlord.bat | 'users\'*.bat)
+      [[ $current == "users\\$name.bat" ]] || pdbedit -u "$name" -S "users\\$name.bat" >/dev/null 2>&1 || true
+      ;;
+    *) ;;
+  esac
+}
+
+# software admins are the names in the softadmins file, which windows edits through the hooks. domain
+# admins write to the share anyway (smb.conf), so the file is seeded from them once, when an older
+# version made the group out of both lists
 sync_software() {
-  local private=/var/lib/samba/private want have
+  local want have member
   touch "$private/admins" "$private/softadmins"
-  want=$(cat "$private/admins" "$private/softadmins" | sort -u)
+  if [[ ! -e $private/.softadmins-seeded ]]; then
+    cat "$private/admins" >> "$private/softadmins"
+    sort -u "$private/softadmins" -o "$private/softadmins"
+    touch "$private/.softadmins-seeded"
+  fi
+  want=$(cat "$private/softadmins")
   have=$(getent group softadmins | cut -d: -f4 | tr ',' '\n')
   for member in $have; do
     grep -qx "$member" <<<"$want" || gpasswd -d "$member" softadmins >/dev/null 2>&1 || true
@@ -55,12 +172,12 @@ sync_software() {
 }
 
 set_software() {
-  local list=/var/lib/samba/private/softadmins
+  local list=$private/softadmins
   touch "$list"
   if [[ ${1:-} == software ]]; then
-    grep -qx "$2" "$list" || echo "$2" >> "$list"
+    list_add "$list" "$2"
   else
-    sed -i "/^$2\$/d" "$list"
+    list_del "$list" "$2"
   fi
 }
 
@@ -69,21 +186,148 @@ make_home() {
   install -d -o "$1" -g domusers -m 0700 "/var/lib/samba/homes/$1"
 }
 
+# groups made from windows live in their own id range: below it are lanlord's groups (9000-9998),
+# the service account (9999) and people (10000 and up)
+add_group() {
+  local group=$1 gid=${2:-}
+  getent group "$group" >/dev/null && return 0
+  if [[ -n $gid ]]; then
+    groupadd -g "$gid" "$group"
+  else
+    groupadd -K GID_MIN=20000 -K GID_MAX=29999 "$group"
+  fi
+}
+
+# what smbd runs when user manager for domains changes something; each one keeps the unix side
+# and the state files in step and notes the change
+hook() {
+  local action=${1:-} a=${2:-} b=${3:-} gid
+  case "$action" in
+    useradd)
+      safe "$a"
+      id "$a" >/dev/null 2>&1 || useradd --badname -M -g domusers -s /usr/sbin/nologin "$a"
+      make_home "$a"
+      ensure_logon "$a" wrapper_only
+      ;;
+    machine)
+      safe "$a"
+      id "$a" >/dev/null 2>&1 || useradd --badname -M -g machines -d /dev/null -s /usr/sbin/nologin "$a"
+      ;;
+    deluser)
+      safe "$a"
+      userdel "$a" >/dev/null 2>&1 || true
+      forget_user "$a"
+      rm -f "$netlogon/users/$a.bat"
+      ;;
+    addgroup)
+      safe "$a"
+      add_group "$a"
+      gid=$(getent group "$a" | cut -d: -f3)
+      touch "$private/groups"
+      key_del "$private/groups" "$a"
+      echo "$a:$gid" >> "$private/groups"
+      ;;
+    delgroup)
+      safe "$a"
+      case "$fixed_groups" in
+        *" $a "*) echo "$a is part of lanlord and cannot be deleted" >&2; exit 1 ;;
+        *) ;;
+      esac
+      groupdel "$a"
+      key_del "$private/groups" "$a"
+      rm -f "$private/members/$a"
+      ;;
+    addmember)
+      safe "$a"; safe "$b"
+      gpasswd -a "$b" "$a" >/dev/null
+      list_add "$(members_file "$a")" "$b"
+      ;;
+    delmember)
+      safe "$a"; safe "$b"
+      gpasswd -d "$b" "$a" >/dev/null 2>&1 || true
+      list_del "$(members_file "$a")" "$b"
+      ;;
+    setprimary)
+      safe "$a"; safe "$b"
+      usermod -g "$a" "$b"
+      touch "$private/primary"
+      key_del "$private/primary" "$b"
+      # domusers is the default, so only another group is remembered
+      [[ $a == domusers ]] || echo "$b:$a" >> "$private/primary"
+      ;;
+    rename)
+      safe "$a"; safe "$b"
+      usermod -l "$b" "$a"
+      [[ -d /var/lib/samba/homes/$a && ! -e /var/lib/samba/homes/$b ]] && mv "/var/lib/samba/homes/$a" "/var/lib/samba/homes/$b"
+      local file tmp
+      for file in "$private/admins" "$private/softadmins" "$private"/members/*; do
+        if [[ -f $file ]] && grep -qxF -- "$a" "$file"; then
+          list_del "$file" "$a"
+          list_add "$file" "$b"
+        fi
+      done
+      if [[ -f $private/primary ]]; then
+        tmp=$(mktemp "$private/.tmp.XXXXXX")
+        awk -F: -v a="$a" -v b="$b" 'BEGIN { OFS = ":" } $1 == a { $1 = b } 1' "$private/primary" > "$tmp"
+        mv "$tmp" "$private/primary"
+      fi
+      # the old wrapper stays; the next sync points the account at the new one
+      ensure_logon "$b" wrapper_only
+      ;;
+    *)
+      echo "unknown hook: $action" >&2
+      exit 2
+      ;;
+  esac
+  note "$action" "$a" "$b"
+}
+
+# the unix groups, memberships and primary groups, from the state files
+restore() {
+  local line group member file
+  if [[ -f $private/groups ]]; then
+    while IFS=: read -r group gid; do
+      [[ -n $group && -n $gid ]] && add_group "$group" "$gid" || true
+    done < "$private/groups"
+  fi
+  for file in "$private/admins" "$private/softadmins" "$private"/members/*; do
+    [[ -f $file ]] || continue
+    case "$file" in
+      "$private/admins") group=admins ;;
+      "$private/softadmins") group=softadmins ;;
+      *) group=${file##*/} ;;
+    esac
+    getent group "$group" >/dev/null || continue
+    while read -r member; do
+      if [[ -n $member ]] && id "$member" >/dev/null 2>&1; then usermod -aG "$group" "$member"; fi
+    done < "$file"
+  done
+  if [[ -f $private/primary ]]; then
+    while IFS=: read -r member group; do
+      if [[ -n $member ]] && id "$member" >/dev/null 2>&1 && getent group "$group" >/dev/null; then
+        usermod -g "$group" "$member"
+      fi
+    done < "$private/primary"
+  fi
+}
+
 case "$cmd" in
   add)
     valid "$name"
     read_password
-    created=
-    if ! id "$name" >/dev/null 2>&1; then
-      useradd -M -g domusers -s /usr/sbin/nologin "$name"
-      created=1
-    fi
+    new=1
+    pdbedit -L -u "$name" >/dev/null 2>&1 && new=
+    id "$name" >/dev/null 2>&1 || useradd -M -g domusers -s /usr/sbin/nologin "$name"
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a "$name" >/dev/null
-    set_role "$name" "${3:-user}"
-    set_software "${4:-}" "$name"
+    # the settings only decide the membership of a new account; after that it belongs to windows
+    if [[ -n $new ]]; then
+      set_role "$name" "${3:-user}"
+      set_software "${4:-}" "$name"
+    fi
     sync_software
     make_home "$name"
-    if [[ -n $created ]]; then echo "created $name"; else echo "updated $name"; fi
+    ensure_logon "$name"
+    if [[ -n $new ]]; then echo "created $name"; else echo "updated $name"; fi
     ;;
   admin)
     read_password
@@ -115,18 +359,30 @@ case "$cmd" in
     smbpasswd -x "$name" >/dev/null 2>&1 || true
     set_role "$name" user
     set_software none "$name"
+    forget_user "$name"
     sync_software
     userdel "$name" >/dev/null 2>&1 || true
+    rm -f "$netlogon/users/$name.bat"
     echo "deleted $name"
     ;;
   sync)
     sync_software
+    pdbedit -L 2>/dev/null | cut -d: -f1 | while read -r user; do
+      [[ -n $user && $user != root && $user != *'$' ]] && ensure_logon "$user" || true
+    done
+    ;;
+  restore)
+    restore
+    ;;
+  hook)
+    shift
+    hook "$@"
     ;;
   list)
     pdbedit -L
     ;;
   *)
-    echo "usage: lanlord-user add NAME | admin | machine NAME [reset] | delete NAME | list" >&2
+    echo "usage: lanlord-user add NAME | admin | machine NAME [reset] | delete NAME | sync | restore | list | hook ACTION ..." >&2
     exit 2
     ;;
 esac
