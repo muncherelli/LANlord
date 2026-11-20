@@ -467,6 +467,8 @@ impl MyServer {
         vec![
             self.root_ssh_group(idle),
             Node::Gap(6.0),
+            ssh_networks_notice(),
+            Node::Gap(6.0),
             Node::Danger(vec![Node::Group {
                 title: "Danger zone".into(),
                 body,
@@ -678,6 +680,25 @@ impl MyServer {
                 }
             }
         }
+    }
+}
+
+/// what the firewall does to ssh from the LANlord networks, and where to turn it on. shown to
+/// everyone: an upgraded server has the block too, and its administrators should hear of it.
+fn ssh_networks_notice() -> Node<Msg> {
+    Node::Group {
+        title: "Ssh from LANlord networks".into(),
+        body: vec![
+            Node::Gap(4.0),
+            Node::Text(
+                "Ssh to this server from the computers on your LANlord networks is now off, \
+                 so a computer there can no longer reach the server's sshd. The host network \
+                 is not affected. To allow it, open the Networks window, pick the network and \
+                 tick \"Allow ssh to this server\"; single computers can be allowed on their \
+                 own with `lanlord networks <server> ssh <network> allow <mac>`."
+                    .into(),
+            ),
+        ],
     }
 }
 
@@ -1139,5 +1160,24 @@ mod tests {
         assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
         window.update(Msg::ApplyRootSsh, &services, "me@gw");
         assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
+    }
+
+    #[test]
+    fn the_advanced_page_tells_administrators_ssh_from_lanlord_networks_is_off() {
+        let Node::Group { title, body } = ssh_networks_notice() else {
+            panic!("a group");
+        };
+        assert_eq!(title, "Ssh from LANlord networks");
+        let text = body
+            .iter()
+            .find_map(|n| match n {
+                Node::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            text.contains("now off") && text.contains("Networks window"),
+            "{text}"
+        );
     }
 }

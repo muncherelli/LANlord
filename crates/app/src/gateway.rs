@@ -22,6 +22,7 @@ use lanlord_model::rootssh::{RootSsh, RootSshInfo};
 use lanlord_model::secret::Secret;
 use lanlord_model::server::ServerFacts;
 use lanlord_model::settings::{Document, Settings};
+use lanlord_model::ssh_access::Change as SshChange;
 use lanlord_model::users::Change;
 
 use crate::ask::{never, AskPassword};
@@ -139,6 +140,15 @@ pub trait Gateway: Send + Sync {
             change: change.clone(),
         };
         done(self.call(host, operation, ask)?, "change_internet")
+    }
+
+    /// switch ssh to the server on or off for a network, or allow or deny one computer, and apply
+    /// the docker and dns modules (the firewall).
+    fn change_ssh_access(&self, host: &str, change: &SshChange, ask: AskPassword) -> Result<()> {
+        let operation = Operation::ChangeSshAccess {
+            change: change.clone(),
+        };
+        done(self.call(host, operation, ask)?, "change_ssh_access")
     }
 
     /// add, change or remove a lanlord network and apply the docker and dns modules.
@@ -585,6 +595,16 @@ mod native {
                     Reply::Done
                 })
             }
+            Operation::ChangeSshAccess { change } => {
+                let mut saved = DEMO_SAVED.lock().unwrap_or_else(|e| e.into_inner());
+                let plain = saved.clone().unwrap_or_else(|| DEMO_SETTINGS.to_string());
+                // no clock in the browser: a time already past is not caught here
+                let now = 0;
+                lanlord_model::ssh_access::edit_settings(&plain, change, now).map(|text| {
+                    *saved = Some(text);
+                    Reply::Done
+                })
+            }
             Operation::Leases => Ok(Reply::Leases(leases::parse(DEMO_LEASES))),
             Operation::ServerFacts => Ok(Reply::Facts(Box::new(server::demo()))),
             Operation::Doctor => Ok(Reply::Doctor(Report::parse(DEMO_DOCTOR))),
@@ -598,7 +618,7 @@ mod native {
     /// the demo server is an unprivileged lxc container on proxmox without the features docker needs.
     const DEMO_DOCTOR: &str = "hostname=gateway\ndistro=debian\ndistro_version=13\ninit=systemd\nkernel=6.8.12-4-pve\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\nkeyctl=no\nlink_bridge=ok\nlink_macvlan=ok\nlink_ipvlan=ok\ntun=missing\nip_forward=1\nnft=ok\ndocker_installed=no\n";
 
-    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
+    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1, ssh_allow: [{mac: \"02:00:00:00:00:03\", name: nt4pc}]}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
 
     /// what the made-up server's settings were last saved as.
     static DEMO_SAVED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -919,6 +939,10 @@ mod fake {
                     self.change_internet(host, &change, ask)?;
                     Reply::Done
                 }
+                Operation::ChangeSshAccess { change } => {
+                    self.change_ssh_access(host, &change, ask)?;
+                    Reply::Done
+                }
                 Operation::ChangeNetworks { edit } => {
                     self.change_networks(host, &edit, ask)?;
                     Reply::Done
@@ -1144,6 +1168,22 @@ mod fake {
             ask: AskPassword,
         ) -> Result<()> {
             self.enter(format!("internet {host} {}", change.describe()), ask)
+        }
+
+        pub fn change_ssh_access(
+            &self,
+            host: &str,
+            change: &lanlord_model::ssh_access::Change,
+            ask: AskPassword,
+        ) -> Result<()> {
+            self.enter(format!("ssh-access {host} {}", change.describe()), ask)?;
+            let mut stored = self.stored.lock().unwrap();
+            *stored = lanlord_model::ssh_access::edit_settings(&stored, change, 0)?;
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("apply {host} [docker,dns]"));
+            Ok(())
         }
 
         pub fn change_networks(
@@ -1453,6 +1493,24 @@ mod fake {
         assert_eq!(gateway.clock_state(h).unwrap().timezone, "Europe/Berlin");
         assert_eq!(gateway.clock_update_now(h, &mut ask).unwrap().len(), 1);
         assert_eq!(fake.calls().len(), 18, "{:?}", fake.calls());
+    }
+
+    #[test]
+    fn an_ssh_change_goes_through_the_backend_as_one_operation() {
+        let fake = Fake::default();
+        let gateway: &dyn Gateway = &fake;
+        let mut ask = |_: &str| Ok(String::new());
+        let change = lanlord_model::ssh_access::Change::Deny {
+            network: "lab".into(),
+            mac: "02:00:00:00:00:01".into(),
+        };
+        gateway.change_ssh_access("a@b", &change, &mut ask).unwrap();
+        let operation = Operation::ChangeSshAccess { change };
+        assert_eq!(
+            gateway.call("a@b", operation, &mut ask).unwrap(),
+            Reply::Done
+        );
+        assert!(fake.calls()[0].starts_with("ssh-access a@b"));
     }
 
     #[test]

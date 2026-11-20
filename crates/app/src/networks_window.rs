@@ -15,6 +15,7 @@ use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::networks::{self, Draft, NetworkRow, Role};
 use lanlord_model::server::Iface;
 use lanlord_model::settings::Settings;
+use lanlord_model::ssh_access::Change as SshChange;
 
 use crate::ask::AskPassword;
 use crate::gateway::Gateway;
@@ -61,6 +62,8 @@ pub enum Msg {
     /// check the form, save the network and apply.
     Save,
     CloseForm,
+    /// switch ssh to the server on or off for the network of the tab that is open.
+    SetSsh(bool),
     /// ask to remove the network whose form is open.
     Remove,
     ConfirmRemove,
@@ -277,6 +280,35 @@ impl NetworksWindow {
         self.saving = self.rows.track(host, job, doing, done, false);
     }
 
+    /// store the ssh switch of the network of the open tab, apply the docker and dns modules (the
+    /// firewall) and read the networks again.
+    fn switch_ssh(&mut self, services: &Services, host: &str, on: bool) {
+        let Some(row) = self.chosen().filter(|r| r.role == Role::Lanlord) else {
+            return;
+        };
+        let change = SshChange::Network {
+            network: row.name.clone(),
+            on,
+        };
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.change_ssh_access(&target, &change, ask)?;
+            read(gateway, &target, ask)
+        });
+        let (doing, done) = if on {
+            (
+                "allowing ssh to the server and applying...",
+                "ssh to this server is on",
+            )
+        } else {
+            (
+                "stopping ssh to the server and applying...",
+                "ssh to this server is off",
+            )
+        };
+        self.saving = self.rows.track(host, job, doing, done, false);
+    }
+
     /// may a network be added or changed now: the networks are read, and nothing is running.
     fn can_edit(&self, services: &Services, host: &str) -> bool {
         self.rows.belongs_to(host) && !self.rows.busy() && !services.busy(host)
@@ -449,12 +481,13 @@ impl NetworksWindow {
         let chosen = &rows[self.selected];
         let status = self.status_of(chosen);
         let lanlord = chosen.role == Role::Lanlord;
-        let body = sized(chosen, status, error.as_deref());
+        let ssh_free = self.can_edit(services, host);
+        let body = sized(chosen, status, error.as_deref(), ssh_free);
         let others: Vec<(usize, Vec<Node<Msg>>)> = rows
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != self.selected)
-            .map(|(i, r)| (i, sized(r, self.status_of(r), error.as_deref())))
+            .map(|(i, r)| (i, sized(r, self.status_of(r), error.as_deref(), ssh_free)))
             .collect();
         let tabs = Node::Tabs {
             titles,
@@ -549,6 +582,7 @@ impl NetworksWindow {
                     }
                 }
             },
+            Msg::SetSsh(on) if self.can_edit(services, host) => self.switch_ssh(services, host, on),
             Msg::CloseForm => self.form = None,
             Msg::Remove => {
                 self.confirm = self.form.as_ref().and_then(|f| f.existing.clone());
@@ -565,6 +599,7 @@ impl NetworksWindow {
             | Msg::New
             | Msg::PickInterface(_)
             | Msg::Save
+            | Msg::SetSsh(_)
             | Msg::ConfirmRemove => {}
         }
         None
@@ -895,6 +930,7 @@ fn sized(
     row: &NetworkRow,
     status: Option<&InterfaceStatus>,
     error: Option<&str>,
+    ssh_free: bool,
 ) -> Vec<Node<Msg>> {
     let lanlord = NetworkRow {
         role: Role::Lanlord,
@@ -913,14 +949,19 @@ fn sized(
     };
     vec![Node::SameSize {
         key,
-        body: page(row, status, error),
-        others: vec![page(&lanlord, status, error)],
+        body: page(row, status, error, ssh_free),
+        others: vec![page(&lanlord, status, error, ssh_free)],
     }]
 }
 
 /// one network's tab: Connection and Activity like a connection's Status box, and the lanlord
 /// network's dhcp.
-fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>) -> Vec<Node<Msg>> {
+fn page(
+    row: &NetworkRow,
+    status: Option<&InterfaceStatus>,
+    error: Option<&str>,
+    ssh_free: bool,
+) -> Vec<Node<Msg>> {
     let state = status.map_or(row.link.clone(), |s| s.connection.text().to_string());
     let connection = Node::Group {
         title: "Connection".into(),
@@ -953,7 +994,7 @@ fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>)
     }
     if row.role == Role::Lanlord {
         nodes.push(Node::Gap(6.0));
-        nodes.push(lanlord_network(row));
+        nodes.push(lanlord_network(row, ssh_free));
     }
     nodes
 }
@@ -989,15 +1030,32 @@ fn activity(status: &InterfaceStatus) -> Node<Msg> {
 /// the text of the longest address a DHCP range box has to show.
 const LONGEST_ADDRESS: &str = "255.255.255.255";
 
-fn lanlord_network(row: &NetworkRow) -> Node<Msg> {
+fn lanlord_network(row: &NetworkRow, ssh_free: bool) -> Node<Msg> {
     let dhcp = row.dhcp.clone().unwrap_or_else(|| "not served".into());
     let clients = row.leases.map_or("-".to_string(), |n| n.to_string());
+    let mut body = vec![
+        Node::field("DHCP range:", dhcp),
+        Node::field("Clients with a lease:", clients),
+    ];
+    if let Some(ssh) = &row.ssh {
+        // the switch for the whole network, and below it the computers allowed on their own
+        body.push(Node::Gap(4.0));
+        body.push(Node::Check {
+            label: "Allow ssh to this server".into(),
+            checked: ssh.enabled,
+            enabled: ssh_free,
+            toggle: Msg::SetSsh(!ssh.enabled),
+        });
+        body.extend(
+            ssh.details()
+                .into_iter()
+                .skip(1)
+                .map(|(label, value)| Node::field(&format!("{label}:"), value)),
+        );
+    }
     Node::Group {
         title: "LANlord network".into(),
-        body: vec![
-            Node::field("DHCP range:", dhcp),
-            Node::field("Clients with a lease:", clients),
-        ],
+        body,
     }
 }
 
@@ -1357,6 +1415,40 @@ mod tests {
             .contains(&"networks gw changed the network lab".into()));
         assert!(fake.stored.lock().unwrap().contains("mtu: 1400"));
         assert!(!window.editing());
+    }
+
+    #[test]
+    fn the_ssh_switch_of_a_network_is_stored_applied_and_shown() {
+        let allowed =
+            format!("{LAB}    ssh_allow:\n      - {{mac: \"02:00:00:00:00:0a\", name: dana-pc}}\n");
+        let (fake, services) = services_with(&allowed);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        // the switch (as the toggle it would send) and the computers allowed on their own
+        let shown = |window: &NetworksWindow| {
+            let Node::Group { body, .. } = lanlord_network(window.chosen().unwrap(), true) else {
+                panic!("a group");
+            };
+            let toggle = body.iter().find_map(|n| match n {
+                Node::Check { label, toggle, .. } if label == "Allow ssh to this server" => {
+                    Some(toggle.clone())
+                }
+                _ => None,
+            });
+            (toggle, body.len())
+        };
+        let (toggle, rows) = shown(&window);
+        assert_eq!(toggle, Some(Msg::SetSsh(true)));
+        // dhcp, clients, the gap, the switch and the one computer
+        assert_eq!(rows, 5);
+        window.update(Msg::SetSsh(true), &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(fake
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("ssh-access gw turned ssh")));
+        assert!(fake.stored.lock().unwrap().contains("ssh: true"));
+        assert_eq!(shown(&window).0, Some(Msg::SetSsh(false)));
     }
 
     #[test]

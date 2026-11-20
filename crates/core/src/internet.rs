@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Result};
 use lanlord_model::internet::{edit_settings, prune_settings, Change};
+use lanlord_model::ssh_access::{self, Change as SshChange};
 
 use crate::apply;
 use crate::bootstrap::AskPassword;
@@ -39,7 +40,27 @@ pub fn change(
     apply::apply_with(session, host, Some(identity), &modules, &mut ask)
 }
 
-/// take the grants that have ended out of the settings and, when any went, apply the docker
+/// make an ssh `change` in the server's settings and apply the docker and dns modules: the
+/// firewall is what keeps sshd off the lanlord networks (see `lanlord_model::ssh_access`).
+pub fn change_ssh(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    change: &SshChange,
+    ask_password: AskPassword,
+) -> Result<()> {
+    let mut ask = cached(ask_password);
+    let stored = settings::load_document_with(session, identity, &mut ask)?;
+    if stored == settings::Document::default() {
+        bail!("no settings on {host}; run lanlord config push first");
+    }
+    let edited = ssh_access::edit_settings(&stored.plain, change, now())?;
+    settings::save_document_with(session, host, identity, &edited, &[], &mut ask)?;
+    let modules = MODULES.map(String::from);
+    apply::apply_with(session, host, Some(identity), &modules, &mut ask)
+}
+
+/// (internet and ssh) take the grants that have ended out of the settings and, when any went, apply the docker
 /// module so the rules match. `refresh` applies it anyway: after a boot, the rules were loaded
 /// with the time left when they were written. runs on the gateway as root (the timer).
 pub fn prune(
@@ -120,6 +141,59 @@ mod tests {
             };
             change(&gw.session, "gw", &id, &deny, &mut no_password).unwrap();
             assert!(!gw.plain().unwrap().contains(MAC));
+        }
+
+        #[test]
+        fn ssh_is_switched_allowed_and_denied_and_stored() {
+            use lanlord_model::ssh_access::Change as Ssh;
+            let (gw, id) = seeded("ssh-change", "");
+            let on = Ssh::Network {
+                network: "lab".into(),
+                on: true,
+            };
+            change_ssh(&gw.session, "gw", &id, &on, &mut no_password).unwrap();
+            assert!(gw.plain().unwrap().contains("ssh: true"));
+            let allow = Ssh::Allow {
+                network: "lab".into(),
+                mac: MAC.into(),
+                name: None,
+                expiry: Expiry::At(now() + 3_600),
+            };
+            change_ssh(&gw.session, "gw", &id, &allow, &mut no_password).unwrap();
+            let plain = gw.plain().unwrap();
+            assert!(
+                plain.contains("ssh_allow") && plain.contains("until:"),
+                "{plain}"
+            );
+            assert!(!plain.contains("internet"), "{plain}");
+            let deny = Ssh::Deny {
+                network: "lab".into(),
+                mac: MAC.into(),
+            };
+            change_ssh(&gw.session, "gw", &id, &deny, &mut no_password).unwrap();
+            assert!(!gw.plain().unwrap().contains(MAC));
+            // nothing is stored for a change that cannot be made
+            let before = gw.plain();
+            let unknown = Ssh::Network {
+                network: "nowhere".into(),
+                on: true,
+            };
+            assert!(change_ssh(&gw.session, "gw", &id, &unknown, &mut no_password).is_err());
+            assert_eq!(gw.plain(), before);
+        }
+
+        #[test]
+        fn prune_takes_ended_ssh_grants_out_too() {
+            let ended = format!(
+                "    ssh_allow:\n      - {{mac: \"{MAC}\", until: \"2001-01-01T00:00:00Z\"}}\n      - {{mac: \"02:00:00:00:00:0b\"}}\n"
+            );
+            let (gw, id) = seeded("ssh-prune", &ended);
+            assert_eq!(prune(&gw.session, &id, false, &mut no_password).unwrap(), 1);
+            let plain = gw.plain().unwrap();
+            assert!(
+                !plain.contains(MAC) && plain.contains("02:00:00:00:00:0b"),
+                "{plain}"
+            );
         }
 
         #[test]

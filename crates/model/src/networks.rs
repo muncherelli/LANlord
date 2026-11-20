@@ -12,6 +12,7 @@ use crate::lan_edit::{add_edit, apply_edit, set_edit, AddArgs, Edit, SetArgs};
 use crate::lan_networks::{self, split_address, LanNetwork};
 use crate::server::Iface;
 use crate::settings::{DnsSettings, Settings, Subnet};
+use crate::ssh_access::SshAccess;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Role {
@@ -35,6 +36,8 @@ pub struct NetworkRow {
     /// who may go out to the internet, for a lanlord network.
     #[serde(default)]
     pub internet: Option<Internet>,
+    /// who may reach the server's sshd, for a lanlord network.
+    pub ssh: Option<SshAccess>,
 }
 
 impl NetworkRow {
@@ -64,6 +67,9 @@ impl NetworkRow {
         if let Some(internet) = &self.internet {
             lines.extend(internet.details());
         }
+        if let Some(ssh) = &self.ssh {
+            lines.extend(ssh.details());
+        }
         lines
     }
 }
@@ -79,6 +85,7 @@ fn row(iface: &Iface, name: &str, role: Role) -> NetworkRow {
         dhcp: None,
         leases: None,
         internet: None,
+        ssh: None,
     }
 }
 
@@ -126,6 +133,7 @@ pub fn rows(ifaces: &[Iface], settings: &Settings, leases: Option<usize>) -> Vec
             .map(|d| format!("{} - {}", d.range_start, d.range_end));
         lanlord.leases = lanlord.dhcp.as_ref().and(leases);
         lanlord.internet = Some(Internet::default());
+        lanlord.ssh = Some(SshAccess::default());
         rows.push(lanlord);
     }
     rows
@@ -165,10 +173,12 @@ fn listed_rows(ifaces: &[Iface], list: &[lan_networks::LanNetwork]) -> Vec<Netwo
                 dhcp: None,
                 leases: None,
                 internet: None,
+                ssh: None,
             },
         };
         entry.dhcp = dhcp;
         entry.internet = Some(network.internet.clone());
+        entry.ssh = Some(network.ssh.clone());
         rows.push(entry);
     }
     rows

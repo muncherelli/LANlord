@@ -251,3 +251,106 @@ class InternetTest(unittest.TestCase):
             {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24',
              'internet_allow': [{'mac': 'aa:bb:cc:dd:ee:01', 'until': '2001-01-01T00:00:00Z'}]}]}
         self.assertEqual(lanlord.lanlord_networks(settings)[0]['internet_allow'], [])
+
+
+class SshAccessTest(unittest.TestCase):
+    NOW = 1_900_000_000
+
+    def network(self, **extra):
+        item = {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24'}
+        item.update(extra)
+        settings = {'networks_defined': True, 'networks': [item]}
+        return lanlord.lanlord_networks(settings, None, self.NOW)[0]
+
+    def test_off_by_default(self):
+        net = self.network()
+        self.assertFalse(net['ssh'])
+        self.assertEqual(net['ssh_allow'], [])
+        self.assertEqual(net['ssh_macs'], [])
+
+    def test_switch_and_none_mean_on_or_off(self):
+        self.assertTrue(self.network(ssh=True)['ssh'])
+        self.assertFalse(self.network(ssh=None)['ssh'])
+        with self.assertRaises(lanlord.Error):
+            self.network(ssh='yes')
+
+    def test_grants_carry_the_seconds_left_and_ended_ones_go(self):
+        net = self.network(ssh_allow=[
+            {'mac': 'AA:BB:CC:DD:EE:01'},
+            {'mac': 'AA:BB:CC:DD:EE:02', 'until': '2030-03-17T18:46:40Z'},
+            {'mac': 'AA:BB:CC:DD:EE:03', 'until': '2030-03-17T17:46:39Z'},
+        ])
+        self.assertEqual(net['ssh_macs'], ['aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02'])
+        self.assertIsNone(net['ssh_allow'][0]['seconds'])
+        self.assertEqual(net['ssh_allow'][1]['seconds'], 3600)
+        # ssh grants never turn the internet on
+        self.assertFalse(net['internet_any'])
+
+    def test_bad_grants_are_refused(self):
+        for bad in ('x', [3], [{'mac': 'nope'}],
+                    [{'mac': 'aa:bb:cc:dd:ee:01'}, {'mac': 'AA:BB:CC:DD:EE:01'}]):
+            with self.assertRaises(lanlord.Error, msg=repr(bad)):
+                self.network(ssh_allow=bad)
+
+
+class SshFirewallTemplateTest(unittest.TestCase):
+    """the input chain drops the sshd ports on the lanlord interfaces before the blanket accept."""
+
+    def render(self, nets, ports):
+        try:
+            import jinja2
+        except ImportError:
+            self.skipTest('no jinja2')
+        path = os.path.join(os.path.dirname(__file__), "..", "playbooks", "docker")
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(path), trim_blocks=True)
+        settings = {'networks_defined': True, 'networks': nets}
+        found = lanlord.lanlord_networks(settings, None, 1_900_000_000)
+        return env.get_template('firewall.nft.j2').render(
+            lanlord_networks=found, host_interface='eth0', ssh_ports=ports,
+            lan_interfaces=[n['interface'] for n in found])
+
+    def lines(self, text):
+        return [line.strip() for line in text.splitlines()]
+
+    def test_the_ports_come_from_the_variable_and_are_dropped_before_the_accept(self):
+        text = self.render([{'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24'}], [22, 2222])
+        rows = self.lines(text)
+        drop = 'iifname { "eth1" } tcp dport { 22, 2222 } drop'
+        keep = 'iifname { "eth1" } tcp dport { 22, 2222 } ct state established,related accept'
+        accept = 'iifname { "eth1" } accept'
+        self.assertIn(drop, rows)
+        self.assertIn(keep, rows)
+        self.assertLess(rows.index(keep), rows.index(drop))
+        self.assertLess(rows.index(drop), rows.index(accept))
+        # the host network is untouched
+        self.assertFalse([r for r in rows if r.startswith('iifname "eth0"') and 'dport { 22' in r])
+
+    def test_a_network_with_ssh_on_is_not_dropped(self):
+        text = self.render([
+            {'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24', 'ssh': True},
+            {'name': 'dmz', 'interface': 'eth2', 'address': '198.51.100.1/24'},
+        ], [22])
+        rows = self.lines(text)
+        self.assertIn('iifname { "eth2" } tcp dport { 22 } drop', rows)
+        self.assertFalse([r for r in rows if 'drop' in r and '"eth1"' in r and 'dport { 22 }' in r])
+
+    def test_computers_are_allowed_by_mac_in_a_timed_set(self):
+        text = self.render([{'name': 'lab-one', 'interface': 'eth1', 'address': '192.0.2.1/24',
+                             'ssh_allow': [{'mac': 'aa:bb:cc:dd:ee:01'}]}], [22])
+        rows = self.lines(text)
+        allow = 'iifname "eth1" tcp dport { 22 } ether saddr @ssh_lab_one accept'
+        self.assertIn('set ssh_lab_one {', rows)
+        self.assertIn(allow, rows)
+        self.assertLess(rows.index(allow), rows.index('iifname { "eth1" } tcp dport { 22 } drop'))
+
+    def test_no_sshd_means_no_ssh_rules(self):
+        text = self.render([{'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24'}], [])
+        self.assertNotIn('dport { 22', text)
+
+    def test_the_ports_are_read_from_sshd(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "playbooks", "docker.yml")
+        with open(path) as f:
+            text = f.read()
+        step = text.split("find the ports sshd listens on")[1].split("- name:")[0]
+        self.assertIn('-T', step)
+        self.assertIn('"port"', step)

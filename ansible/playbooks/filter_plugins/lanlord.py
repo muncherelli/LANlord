@@ -123,13 +123,13 @@ def _until(value, path):
     return int(parsed.replace(tzinfo=datetime.timezone.utc).timestamp())
 
 
-def _switch(item, path):
-    """the network-wide internet switch: true or false, absent meaning off."""
-    enabled = item.get('internet', False)
+def _switch(item, path, key='internet'):
+    """a network-wide switch (internet, ssh): true or false, absent meaning off."""
+    enabled = item.get(key, False)
     if enabled is None:
         return False
     if not isinstance(enabled, bool):
-        raise Error('%s.internet must be true or false' % path)
+        raise Error('%s.%s must be true or false' % (path, key))
     return enabled
 
 
@@ -146,15 +146,15 @@ def _grant(host, where, seen):
     return mac.lower(), _until(host.get('until'), where)
 
 
-def _grants(item, path, now):
-    """the computers allowed out, without the grants that have ended at `now`; the others carry
-    the seconds they have left, which is what the nft set element times out on."""
-    raw = item.get('internet_allow') or []
+def _grants(item, path, now, key='internet_allow'):
+    """the computers allowed (out, or in over ssh), without the grants that have ended at `now`;
+    the others carry the seconds they have left, which is what the nft set element times out on."""
+    raw = item.get(key) or []
     if not isinstance(raw, list):
-        raise Error('%s.internet_allow must be a list' % path)
+        raise Error('%s.%s must be a list' % (path, key))
     allow, seen = [], set()
     for i, host in enumerate(raw):
-        mac, until = _grant(host, '%s.internet_allow[%d]' % (path, i), seen)
+        mac, until = _grant(host, '%s.%s[%d]' % (path, key, i), seen)
         if until is None or until > now:
             allow.append({'mac': mac, 'until': until,
                           'seconds': None if until is None else until - now})
@@ -170,6 +170,17 @@ def _internet(item, path, now):
         'internet_allow': allow,
         'internet_any': enabled or bool(allow),
         'internet_macs': [h['mac'] for h in allow],
+    }
+
+
+def _ssh(item, path, now):
+    """who on the network may reach the server's sshd."""
+    enabled = _switch(item, path, 'ssh')
+    allow = _grants(item, path, now, 'ssh_allow')
+    return {
+        'ssh': enabled,
+        'ssh_allow': allow,
+        'ssh_macs': [h['mac'] for h in allow],
     }
 
 
@@ -202,6 +213,7 @@ def _network(item, path, strict, defaults=None, now=0):
         'dhcp': _dhcp(dhcp, network, ip, path + '.dhcp', strict) if dhcp else None,
     }
     result.update(_internet(item, path, now))
+    result.update(_ssh(item, path, now))
     return result
 
 

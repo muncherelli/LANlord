@@ -27,7 +27,10 @@
 #     internet_allow:            # optional; computers that may go out while the network is off
 #       - {mac: "aa:bb:cc:dd:ee:ff", name: label}                          # for good
 #       - {mac: "aa:bb:cc:dd:ee:00", until: "2030-01-31T09:00:00Z"}        # until a time (utc)
+#     ssh: false                 # optional; true lets every computer on the network reach sshd
+#     ssh_allow:                 # optional; computers that may while the network is off (as internet_allow)
 #
+# a network has no ssh to the server unless one of ssh and ssh_allow says so: see docker/firewall.nft.j2.
 # a network has no internet unless one of the two says so: see docker.yml (forwarding, nat and the
 # nft rules) and dns/dnsmasq.conf.j2 (the router option and dns forwarding). lanlord_now (seconds
 # since 1970) is for tests; without it the clock decides which grants have ended.

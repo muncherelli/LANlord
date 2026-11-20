@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- upgrade note: ssh to the server from the computers on your LANlord networks is now off. the firewall drops the sshd ports (read from `sshd -T`, not a fixed 22) on every LANlord interface unless the network is switched on with "Allow ssh to this server" (Networks window, or `lanlord networks HOST ssh NAME on`), or the computer is allowed on its own by mac, for good or until a time (`lanlord networks HOST ssh NAME allow MAC [--for 1h]`). the host network is untouched, and a session that is already open is not cut by the change. My Server tells you so; turn it on before you upgrade if you manage the server over ssh from a LANlord network
 - tabbed windows (My Server, NT4 Domain, DNS, Networks, Date/Time, Task Manager) keep one size on every tab: the page frame is as big as the largest page, so switching tabs no longer resizes or moves the window, and a tabbed dialog stays where it opened; the sizes are measured again when what a page shows changes, also while it is hidden
 - the lists on tabbed pages (DNS leases and records, NT4 logins, logon scripts) stretch to the bottom of the window when it grows
 - the Add/Remove Components wizard keeps one size on every page, so its buttons stay where they are

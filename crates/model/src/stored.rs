@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use crate::format::{always, check, current, run_steps, Context, Step, TooNew};
 use crate::settings::Settings;
-use crate::{access, internet, lan_networks};
+use crate::{access, internet, lan_networks, ssh_access};
 
 /// which settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +33,11 @@ pub const PLAIN_STEPS: &[Step<Settings>] = &[
     Step {
         name: "networks may allow internet access",
         run: internet::migrate_networks,
+        ready: always,
+    },
+    Step {
+        name: "networks may allow ssh to the server",
+        run: ssh_access::migrate_networks,
         ready: always,
     },
 ];

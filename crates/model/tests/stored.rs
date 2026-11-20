@@ -87,8 +87,8 @@ fn a_newer_file_is_refused_for_both_kinds_and_never_stamped_over() {
 #[test]
 fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V3, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(4));
-    assert_eq!(Kind::Plain.current(), 4);
+    assert_eq!(settings.format().unwrap().0, Some(5));
+    assert_eq!(Kind::Plain.current(), 5);
     assert!(settings.text().contains("name: lab"));
     assert!(!settings.text().contains("internet"));
     // a file with grants is current, and an older lanlord (format 3) refuses it
