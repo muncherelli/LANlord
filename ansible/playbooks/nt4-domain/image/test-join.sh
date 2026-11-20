@@ -25,10 +25,14 @@ cat > "$work/smb.conf" <<EOF
    # no spnego and ntlmv1 only (the command line options did not take effect)
    client min protocol = NT1
    client max protocol = NT1
+   client ipc min protocol = NT1
+   client ipc max protocol = NT1
    client use spnego = no
    client ntlmv2 auth = no
    client lanman auth = no
    client plaintext auth = no
+   client signing = off
+   client ipc signing = off
    security = user
    encrypt passwords = yes
    map to guest = never
@@ -62,7 +66,7 @@ trap 'kill "$(cat "$work/run/smbd.pid")" 2>/dev/null || true' EXIT
 sleep 3
 cat "$work"/log/log.smbd 2>/dev/null | tail -5
 rpc() {
-  rpcclient -s "$work/smb.conf" -U "root%$pw" ${RPC_EXTRA:-} 127.0.0.1 -c "$1"
+  rpcclient -s "$work/smb.conf" -U "root%$pw" -m NT1 ${RPC_EXTRA:-} 127.0.0.1 -c "$1"
 }
 rpc 'createdomuser ws1$'
 # level 24 carries the new password encrypted with the smb session key, like nt4 does
