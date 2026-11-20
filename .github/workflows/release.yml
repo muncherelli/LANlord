@@ -14,8 +14,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # the tag is only built from a tree whose version is the tag's
+  verify:
+    name: version matches the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+      - name: check the workspace version matches the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: tools/set-version.sh --check "${TAG#v}"
+
   build:
     name: ${{ matrix.name }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -43,7 +57,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ inputs.tag }}
-        run: echo "LANLORD_IMAGE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        run: |
+          echo "LANLORD_IMAGE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          # release builds show the plain version, not "-development"
+          echo "LANLORD_CHANNEL=release" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: install gui libraries
@@ -139,6 +156,7 @@ jobs:
   # the browser build the server's web ui serves; `lanlord install` downloads it by this name
   web:
     name: web-dist
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -153,7 +171,10 @@ jobs:
         shell: bash
         env:
           TAG: ${{ inputs.tag }}
-        run: echo "LANLORD_IMAGE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        run: |
+          echo "LANLORD_IMAGE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          # release builds show the plain version, not "-development"
+          echo "LANLORD_CHANNEL=release" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
