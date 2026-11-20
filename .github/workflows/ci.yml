@@ -60,6 +60,7 @@ jobs:
           "$HOME/lint-venv/bin/pip" install --quiet shellcheck-py==0.11.0.1 actionlint-py==1.7.12.25
           echo "$HOME/lint-venv/bin" >> "$GITHUB_PATH"
       - run: tools/lint-shell.sh
+      - run: tools/test-set-version.sh
 
   headless:
     name: build without gui

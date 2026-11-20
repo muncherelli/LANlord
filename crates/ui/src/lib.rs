@@ -37,6 +37,7 @@ mod view;
 mod view_wizard;
 mod widgets;
 mod windows;
+mod wm;
 
 use eframe::egui;
 

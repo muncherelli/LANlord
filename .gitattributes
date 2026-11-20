@@ -4,3 +4,7 @@ ansible/** text eol=lf
 
 # the tui layout snapshots are compared byte for byte
 crates/tui/src/shell/snapshots/*.txt text eol=lf
+
+# read by tools/set-version.sh, which edits them with unix tools
+*.sh text eol=lf
+Cargo.toml text eol=lf
