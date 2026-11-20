@@ -39,6 +39,7 @@ RUN apk add --no-cache \
       tar \
       zlib-dev
 COPY samba-pubkey.asc /tmp/samba-pubkey.asc
+COPY patches /patches
 WORKDIR /src
 RUN set -eux; \
     base=https://download.samba.org/pub/samba/stable/samba-${SAMBA_VERSION}; \
@@ -51,6 +52,8 @@ RUN set -eux; \
       | grep -q '^\[GNUPG:\] VALIDSIG .* 81F5E2832BD2545A1897B713AA99442FB680B620$'; \
     tar xf "samba-${SAMBA_VERSION}.tar"
 WORKDIR /src/samba-${SAMBA_VERSION}
+# lanlord's patch (see its header); the build fails when it does not apply to this samba version
+RUN patch -p1 < /patches/samba-4.22-bare-ntlm-session-key.patch
 RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstatedir=/var \
       --with-configdir=/etc/samba --with-privatedir=/var/lib/samba/private \
       --with-lockdir=/var/lib/samba --with-statedir=/var/lib/samba --with-cachedir=/var/cache/samba \
@@ -73,7 +76,11 @@ LABEL org.opencontainers.image.title="lanlord-nt4-server-components" \
       org.opencontainers.image.source="https://github.com/muncherelli/LANlord" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.revision="${IMAGE_REVISION}" \
-      io.lanlord.samba.version="${SAMBA_VERSION}"
+      org.opencontainers.image.description="samba ${SAMBA_VERSION} built from the upstream source with one lanlord patch (GPLv3: the patch is in the repository)" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      io.lanlord.samba.version="${SAMBA_VERSION}" \
+      io.lanlord.samba.patched="true" \
+      io.lanlord.samba.patches="https://github.com/muncherelli/LANlord/tree/trunk/ansible/playbooks/nt4-domain/image/patches"
 # only what smbd and nmbd link against, plus bash and shadow for the mounted scripts
 RUN apk add --no-cache acl-libs bash gettext-libs gnutls libarchive libcap libtirpc lmdb readline shadow
 COPY --from=build /out/usr/ /usr/

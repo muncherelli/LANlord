@@ -1,0 +1,63 @@
+# samba: keep the user session key on a bare ntlm (non-spnego) smb1 logon
+#
+# what: auth_check_password_session_info() in source3/auth/auth_generic.c asks for no session
+#   key from auth3_check_password_recv(), which moves it out of server_info, so a session set up
+#   without extended security ends up with no user session key.
+# why: windows nt 4.0 sets up its sessions this way. with no key, samr's SetUserInfo calls that
+#   carry a password (levels 18, 21, 23, 24, 25, 26) fail with NT_STATUS_NO_USER_SESSION_KEY, so
+#   nt4 could not create its own computer account while joining a domain ("create a computer
+#   account in the domain" ticked, or from nt setup). this patch hands the key back to the session.
+# caused by: samba commit d3d2e6df9c17 (samba 4.12 and later).
+# applies to: samba 4.22.11 (the version pinned in the Dockerfile; apply with patch -p1 from the
+#   top of the source tree). check it again when SAMBA_VERSION changes; the build fails when it
+#   does not apply.
+# samba is GPLv3 and so is this patch.
+#
+--- a/source3/auth/auth_generic.c
++++ b/source3/auth/auth_generic.c
+@@ -584,6 +584,7 @@
+ 	uint8_t authoritative = 1;
+ 	struct tevent_context *ev = NULL;
+ 	struct tevent_req *subreq = NULL;
++	DATA_BLOB nt_session_key = data_blob_null;
+ 	bool ok;
+ 
+ 	ev = samba_tevent_context_init(talloc_tos());
+@@ -607,7 +608,8 @@
+ 							   talloc_tos(),
+ 							   &authoritative,
+ 							   &server_info,
+-							   NULL, NULL);
++							   &nt_session_key,
++							   NULL);
+ 	TALLOC_FREE(ev);
+ 	if (!NT_STATUS_IS_OK(nt_status)) {
+ 		return nt_status;
+@@ -624,10 +626,27 @@
+ 	TALLOC_FREE(server_info);
+ 
+ 	if (!NT_STATUS_IS_OK(nt_status)) {
++		data_blob_clear_free(&nt_session_key);
+ 		return nt_status;
+ 	}
+ 
+ 	/*
++	 * auth3_check_password_recv() moves the user session key out of
++	 * server_info, so a bare NTLM (non-extended security) SMB1 session
++	 * setup ended up without a session key (and without signing or a
++	 * usable key for SAMR password sets). Put it back, as before 4.12.
++	 */
++	if (nt_session_key.length != 0) {
++		ok = session_info_set_session_key(*session_info,
++						  nt_session_key);
++		data_blob_clear_free(&nt_session_key);
++		if (!ok) {
++			TALLOC_FREE(*session_info);
++			return NT_STATUS_NO_MEMORY;
++		}
++	}
++
++	/*
+ 	 * This is rather redundant (the authentication has just been
+ 	 * logged, with much the same details), but because we want to
+ 	 * log all authorizations consistently (be they NLTM, NTLMSSP
