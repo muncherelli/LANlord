@@ -5,6 +5,7 @@ use std::net::Ipv4Addr;
 
 use crate::ask::AskPassword;
 use anyhow::Result;
+use lanlord_model::lan_networks::{self, LanNetwork};
 use lanlord_model::leases::Lease;
 use lanlord_model::network::Internal;
 use lanlord_model::settings::{
@@ -21,16 +22,27 @@ const MODULE: &str = "dns";
 
 pub struct DnsData {
     pub settings: DnsSettings,
-    /// the retronet the gateway is on, or why that is not known.
+    /// the networks in the settings.
+    pub networks: Vec<LanNetwork>,
+    /// the network the gateway is on, found by looking, or why that is not known; only asked
+    /// when no network is configured.
     pub internal: Result<Internal, String>,
     pub leases: Result<Vec<Lease>, String>,
 }
 
 fn load(gateway: &dyn Gateway, host: &str, ask: AskPassword) -> Result<DnsData> {
-    let settings = DnsSettings::from_settings(&gateway.load_settings(host, ask)?)?;
+    let stored = gateway.load_settings(host, ask)?;
+    let settings = DnsSettings::from_settings(&stored)?;
+    let networks = lan_networks::read(&stored)?.list;
+    let internal = if networks.iter().any(|n| n.subnet().is_some()) {
+        Err("the networks in the settings are used".into())
+    } else {
+        gateway.probe(host).map_err(|e| e.to_string())
+    };
     Ok(DnsData {
         settings,
-        internal: gateway.probe(host).map_err(|e| e.to_string()),
+        networks,
+        internal,
         leases: gateway.leases(host, ask).map_err(|e| e.to_string()),
     })
 }
@@ -115,11 +127,20 @@ impl DnsPanel {
     }
 
     fn errors(&self) -> Vec<ValidationError> {
-        let (subnet, gateway) = match self.remote.data.as_ref().map(|d| &d.internal) {
-            Some(Ok(internal)) => (internal.subnet(), internal.address),
-            _ => (Subnet::new(Ipv4Addr::UNSPECIFIED, 0), Ipv4Addr::UNSPECIFIED),
-        };
-        self.draft.validate(&subnet, gateway)
+        let mut nets: Vec<(Subnet, Ipv4Addr)> = self
+            .remote
+            .data
+            .iter()
+            .flat_map(|d| &d.networks)
+            .filter_map(|n| Some((n.subnet()?, n.ip()?)))
+            .collect();
+        if nets.is_empty() {
+            nets.push(match self.remote.data.as_ref().map(|d| &d.internal) {
+                Some(Ok(internal)) => (internal.subnet(), internal.address),
+                _ => (Subnet::new(Ipv4Addr::UNSPECIFIED, 0), Ipv4Addr::UNSPECIFIED),
+            });
+        }
+        self.draft.validate(&nets)
     }
 
     fn reload(&mut self, services: &Services, host: &str) {
@@ -209,14 +230,29 @@ impl DnsPanel {
         nodes
     }
 
-    fn settings_page(&self, errors: &[ValidationError]) -> Vec<Node<Msg>> {
-        let network = match self.remote.data.as_ref().map(|d| &d.internal) {
-            Some(Ok(internal)) => Node::Text(format!("Retronet: {}", internal.subnet())),
-            Some(Err(why)) => Node::Warning(format!(
-                "Retronet: unknown ({why}); addresses are not checked against it"
-            )),
-            None => Node::Text("Retronet: not loaded yet".into()),
+    /// the networks addresses are checked against, as the networks window names them.
+    fn networks_line(&self) -> Node<Msg> {
+        let Some(data) = &self.remote.data else {
+            return Node::Text("Networks: not loaded yet".into());
         };
+        let listed: Vec<String> = data
+            .networks
+            .iter()
+            .filter_map(|n| Some(format!("{} {}", n.name, n.subnet()?)))
+            .collect();
+        if !listed.is_empty() {
+            return Node::Text(format!("Networks: {}", listed.join(", ")));
+        }
+        match &data.internal {
+            Ok(internal) => Node::Text(format!("Network: {}", internal.subnet())),
+            Err(why) => Node::Warning(format!(
+                "Network: unknown ({why}); addresses are not checked against it"
+            )),
+        }
+    }
+
+    fn settings_page(&self, errors: &[ValidationError]) -> Vec<Node<Msg>> {
+        let network = self.networks_line();
         let edit = |label: &str, value: &str, msg: fn(String) -> Msg| Node::Labelled {
             label: label.into(),
             body: vec![Node::Input {
@@ -632,6 +668,47 @@ mod tests {
         panel.draft.dhcp = None;
         panel.update(Msg::AddLease, &services, "a@b");
         assert!(panel.form_mut().is_none(), "no lease box with dhcp off");
+    }
+
+    /// a panel loaded with devnet1 and devnet2, one record at `address`.
+    fn two_networks(address: &str) -> DnsPanel {
+        let mut panel = DnsPanel::default();
+        panel.draft.records = vec![Record {
+            name: "ntsrv1".into(),
+            address: address.into(),
+        }];
+        panel.remote.data = Some(DnsData {
+            settings: panel.draft.clone(),
+            networks: vec![
+                LanNetwork::new("devnet1", "eth1", "172.16.120.1/22"),
+                LanNetwork::new("devnet2", "eth2", "10.187.0.1/22"),
+            ],
+            internal: Err("could not tell the internal interface apart".into()),
+            leases: Ok(Vec::new()),
+        });
+        panel
+    }
+
+    #[test]
+    fn two_networks_are_listed_and_not_called_unknown() {
+        let panel = two_networks("10.187.1.10");
+        let Node::Text(line) = panel.networks_line() else {
+            panic!("expected a plain line");
+        };
+        assert_eq!(
+            line,
+            "Networks: devnet1 172.16.120.0/22, devnet2 10.187.0.0/22"
+        );
+        assert!(!line.contains("unknown"));
+    }
+
+    #[test]
+    fn an_address_is_checked_against_every_network() {
+        assert!(two_networks("10.187.1.10").errors().is_empty());
+        assert!(two_networks("172.16.121.10").errors().is_empty());
+        let outside = two_networks("203.0.113.10").errors();
+        assert_eq!(outside.len(), 1);
+        assert!(outside[0].message.contains("outside every network"));
     }
 
     #[test]

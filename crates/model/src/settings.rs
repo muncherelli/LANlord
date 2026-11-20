@@ -753,13 +753,13 @@ impl DnsSettings {
         settings.set_section("dns", Value::Mapping(dns));
     }
 
-    /// everything wrong with these settings, for the network the gateway
-    /// is on and the gateway's own address there. empty means fine.
-    pub fn validate(&self, subnet: &Subnet, gateway: Ipv4Addr) -> Vec<ValidationError> {
+    /// everything wrong with these settings, for the networks the gateway is on, each as its
+    /// subnet and the gateway's own address there. an address is fine inside any of them.
+    /// empty means fine.
+    pub fn validate(&self, networks: &[(Subnet, Ipv4Addr)]) -> Vec<ValidationError> {
         let mut check = Check {
             errors: Vec::new(),
-            subnet: *subnet,
-            gateway,
+            networks: networks.to_vec(),
         };
         if !valid_label(&self.zone) {
             check.fail("dns.zone", "must be a plain label like retronet");
@@ -823,8 +823,7 @@ pub fn valid_lease(lease: &str) -> bool {
 
 struct Check {
     errors: Vec<ValidationError>,
-    subnet: Subnet,
-    gateway: Ipv4Addr,
+    networks: Vec<(Subnet, Ipv4Addr)>,
 }
 
 impl Check {
@@ -841,16 +840,23 @@ impl Check {
         }
     }
 
-    /// an ipv4 address inside the subnet that is not the gateway, the network or the broadcast.
+    /// an ipv4 address inside one of the networks that is not a gateway, the network or the
+    /// broadcast.
     fn address(&mut self, path: &str, text: &str) -> Option<Ipv4Addr> {
         let Ok(address) = text.trim().parse::<Ipv4Addr>() else {
             self.fail(path, format!("{text:?} is not an ipv4 address"));
             return None;
         };
-        let subnet = self.subnet;
-        if !subnet.contains(address) {
-            self.fail(path, format!("{address} is outside {subnet}"));
-        } else if address == self.gateway {
+        let Some((subnet, _)) = self.networks.iter().find(|(s, _)| s.contains(address)) else {
+            let message = match self.networks.as_slice() {
+                [(only, _)] => format!("{address} is outside {only}"),
+                _ => format!("{address} is outside every network"),
+            };
+            self.fail(path, message);
+            return Some(address);
+        };
+        let subnet = *subnet;
+        if self.networks.iter().any(|(_, gateway)| *gateway == address) {
             self.fail(path, format!("{address} is the gateway's own address"));
         } else if subnet.prefix < 31 && (address == subnet.network || address == subnet.broadcast())
         {
@@ -931,7 +937,7 @@ mod tests {
     }
 
     fn errors(dns: &DnsSettings) -> Vec<String> {
-        dns.validate(&subnet(), GATEWAY)
+        dns.validate(&[(subnet(), GATEWAY)])
             .iter()
             .map(ToString::to_string)
             .collect()
@@ -1003,6 +1009,27 @@ mod tests {
     }
 
     #[test]
+    fn an_address_is_fine_inside_any_network() {
+        let second = (
+            Subnet::new(Ipv4Addr::new(198, 51, 100, 1), 24),
+            Ipv4Addr::new(198, 51, 100, 1),
+        );
+        let nets = [(subnet(), GATEWAY), second];
+        let mut dns = good();
+        dns.records = ["172.16.120.9", "198.51.100.9", "203.0.113.9", "198.51.100.1"]
+            .iter()
+            .map(|a| Record {
+                name: "x".into(),
+                address: a.to_string(),
+            })
+            .collect();
+        let found: Vec<String> = dns.validate(&nets).iter().map(ToString::to_string).collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(found[0].contains("203.0.113.9 is outside every network"));
+        assert!(found[1].contains("gateway"));
+    }
+
+    #[test]
     fn a_slash_31_has_no_reserved_addresses() {
         let tiny = Subnet::new(Ipv4Addr::new(10, 0, 0, 0), 31);
         let dns = DnsSettings {
@@ -1012,7 +1039,7 @@ mod tests {
             }],
             ..DnsSettings::default()
         };
-        assert!(dns.validate(&tiny, Ipv4Addr::new(10, 0, 0, 0)).is_empty());
+        assert!(dns.validate(&[(tiny, Ipv4Addr::new(10, 0, 0, 0))]).is_empty());
     }
 
     #[test]

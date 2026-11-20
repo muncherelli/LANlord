@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - the web UI draws at the screen's full frame rate again, so dragging windows is smooth (it was capped at 30 frames a second in 0.1.4)
+- the DNS panel checks addresses against the networks in the settings (inside any of them is fine) and lists them, instead of saying the retronet is unknown on a gateway with two networks; it only looks for the network itself when none is configured
 
 ## [0.1.4] - 2026-11-19
 

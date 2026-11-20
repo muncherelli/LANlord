@@ -1,5 +1,5 @@
-//! finds the gateway's internal (retro) network over ssh with read-only
-//! commands, the same way ansible/playbooks/network.yml picks it.
+//! finds the gateway's internal (retro) network over ssh with read-only commands, for a gateway
+//! with no networks in its settings yet (ansible/playbooks/network.yml picks it the same way).
 
 use std::net::Ipv4Addr;
 
@@ -115,7 +115,7 @@ pub fn choose(addresses: &[(String, Ipv4Addr, u8)], defaults: &[String]) -> Resu
         many => {
             let names: Vec<&str> = many.iter().map(|(n, _, _)| n.as_str()).collect();
             bail!(
-                "could not tell the internal interface apart (candidates: {}); set network.internal_interface in your settings",
+                "could not tell the internal interface apart (candidates: {}); add the network in the Networks window",
                 names.join(", ")
             )
         }
