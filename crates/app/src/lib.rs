@@ -5,6 +5,7 @@
 
 pub mod account_window;
 pub mod admin_setup;
+pub mod appearance;
 pub mod apply_progress;
 pub mod ask;
 #[cfg(target_arch = "wasm32")]
