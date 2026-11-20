@@ -973,6 +973,67 @@ impl MyServer {
         );
     }
 
+    fn confirm_passwords_off(&mut self, services: &Services, host: &str) {
+        if let Some((_, SshDialog::PasswordsOff(_))) = self.ssh_dialog.take() {
+            if !self.read_only && !self.auth.busy() {
+                self.set_passwords(services, host, false, true);
+            }
+        }
+    }
+
+    fn ask_add_key(&mut self, host: &str) {
+        if let (false, Some(account)) = (self.read_only, self.key_account()) {
+            let user = account.user.clone();
+            self.key_text.clear();
+            self.ssh_dialog = Some((host.to_string(), SshDialog::AddKey(user)));
+        }
+    }
+
+    fn apply_root_ssh(&mut self, services: &Services, host: &str) {
+        let Some(level) = self.ssh_pick else {
+            return;
+        };
+        let readable = self.ssh.data.as_ref().is_some_and(|i| i.dropins);
+        if self.read_only || !readable || self.ssh.busy() {
+            return;
+        }
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.set_root_ssh(&target, level, ask)?;
+            gateway.root_ssh(&target)
+        });
+        if self.ssh.track(
+            host,
+            job,
+            "setting root's ssh access...",
+            "root's ssh access is set",
+            false,
+        ) {
+            self.ssh_pick = None;
+        }
+    }
+
+    fn toggle_admins(&mut self, services: &Services) {
+        let is_root = self.facts.data.as_ref().is_some_and(|f| f.is_root);
+        if let Some(purge) = self.purge.as_mut() {
+            if is_root && !purge.running.busy() && !purge.preview.busy() {
+                purge.remove_admins = !purge.remove_admins;
+                purge.look(services);
+            }
+        }
+    }
+
+    fn remove_purge(&mut self, services: &Services) {
+        if self.read_only {
+            return;
+        }
+        if let Some(purge) = self.purge.as_mut() {
+            if purge.confirmed(services) {
+                purge.remove(services);
+            }
+        }
+    }
+
     /// act on a message. the rules the window shows are enforced here too, whatever the front
     /// end sends: no purge without the typed host name, no cancelling a purge that runs.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
@@ -991,13 +1052,7 @@ impl MyServer {
                 }
             }
             Msg::TogglePasswords => self.toggle_passwords(services, host),
-            Msg::ConfirmPasswordsOff => {
-                if let Some((_, SshDialog::PasswordsOff(_))) = self.ssh_dialog.take() {
-                    if !self.read_only && !self.auth.busy() {
-                        self.set_passwords(services, host, false, true);
-                    }
-                }
-            }
+            Msg::ConfirmPasswordsOff => self.confirm_passwords_off(services, host),
             Msg::PickKeyUser(i) => {
                 self.key_user = i;
                 self.key_pick = None;
@@ -1007,13 +1062,7 @@ impl MyServer {
                     self.key_pick = Some(i);
                 }
             }
-            Msg::AskAddKey => {
-                if let (false, Some(account)) = (self.read_only, self.key_account()) {
-                    let user = account.user.clone();
-                    self.key_text.clear();
-                    self.ssh_dialog = Some((host.to_string(), SshDialog::AddKey(user)));
-                }
-            }
+            Msg::AskAddKey => self.ask_add_key(host),
             Msg::KeyText(text) => self.key_text = text,
             Msg::AddKey => self.add_key(services, host),
             Msg::RemoveKey => self.remove_key(services, host),
@@ -1022,59 +1071,20 @@ impl MyServer {
                     self.ssh_pick = RootSsh::ALL.get(i).copied();
                 }
             }
-            Msg::ApplyRootSsh => {
-                let Some(level) = self.ssh_pick else {
-                    return;
-                };
-                let readable = self.ssh.data.as_ref().is_some_and(|i| i.dropins);
-                if self.read_only || !readable || self.ssh.busy() {
-                    return;
-                }
-                let target = host.to_string();
-                let job = services.spawn(host, move |gateway, ask| {
-                    gateway.set_root_ssh(&target, level, ask)?;
-                    gateway.root_ssh(&target)
-                });
-                if self.ssh.track(
-                    host,
-                    job,
-                    "setting root's ssh access...",
-                    "root's ssh access is set",
-                    false,
-                ) {
-                    self.ssh_pick = None;
-                }
-            }
+            Msg::ApplyRootSsh => self.apply_root_ssh(services, host),
             Msg::Cancel => {
                 self.ssh_dialog = None;
                 if !self.purge.as_ref().is_some_and(|p| p.running.busy()) {
                     self.purge = None;
                 }
             }
-            Msg::ToggleAdmins => {
-                let is_root = self.facts.data.as_ref().is_some_and(|f| f.is_root);
-                if let Some(purge) = self.purge.as_mut() {
-                    if is_root && !purge.running.busy() && !purge.preview.busy() {
-                        purge.remove_admins = !purge.remove_admins;
-                        purge.look(services);
-                    }
-                }
-            }
+            Msg::ToggleAdmins => self.toggle_admins(services),
             Msg::Typed(text) => {
                 if let Some(purge) = self.purge.as_mut() {
                     purge.typed = text;
                 }
             }
-            Msg::Remove => {
-                if self.read_only {
-                    return;
-                }
-                if let Some(purge) = self.purge.as_mut() {
-                    if purge.confirmed(services) {
-                        purge.remove(services);
-                    }
-                }
-            }
+            Msg::Remove => self.remove_purge(services),
         }
     }
 }
