@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- the DHCP server is an entry of its own in Add or Remove Components, next to the DNS server (the two share one dnsmasq per network). DNS on with DHCP off writes no dhcp-range, DHCP on with DNS off sets `port=0`, and with both off the container is removed. Settings from before the split come up with both ticked
 - My Server has an SSH tab: ssh sign-in with a password can be turned off and on (an sshd drop-in, `11-lanlord-auth.conf`, checked with `sshd -t` and `sshd -T` and rolled back when sshd would not take it), the administrators' ssh public keys can be listed, added and removed (keys LANlord adds are marked `# added by lanlord`, and the mark goes with the key). turning passwords off, or removing an account's last key while they are off, is refused unless you confirm, while an administrator, the signed-in account, or root (when it may sign in with a password) has no key, or when sshd reads keys from files other than the default ones, so nobody is locked out by accident
 
 ### Changed

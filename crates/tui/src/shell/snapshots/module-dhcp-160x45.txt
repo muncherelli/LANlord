@@ -1,0 +1,45 @@
+              ┌ ◆ DHCP ──────────────────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │ DHCP                                                                                      │
+  My Server   │ Status: available                                                                         │
+              │                                                                                           │
+              │ dnsmasq in Docker: optional gatewayless DHCP for Windows 98, 2000, NT4 and old Linux      │
+      □       │ clients. It shares one dnsmasq per network with the DNS server; its settings are the dhcp │
+   Networks   │ mapping of each network.                                                                  │
+              │ ───────────────────────────────────────────────────────────────────────────────────────── │
+              │ [ Settings ][ Static leases ][ Extra records ][ Current leases ]                          │
+      ►       │ ┌───────────────────────────────────────────────────────────────────────────────────────┐ │
+   Gateway    │ │Network: unknown (no network); addresses are not checked against it                    │ │
+              │ │┌ Names ──────────────────────────────────────────────────────────────────────────────┐│ │
+              │ ││ Zone  retronet                                                                      ││ │
+      ▦       │ │└─────────────────────────────────────────────────────────────────────────────────────┘│ │
+   Settings   │ │┌ DHCP ───────────────────────────────────────────────────────────────────────────────┐│ │
+              │ ││ [ ] DHCP server on                                                                  ││ │
+              │ │└─────────────────────────────────────────────────────────────────────────────────────┘│ │
+      >       │ └───────────────────────────────────────────────────────────────────────────────────────┘ │
+   Console    │                                          [ Save DNS ] [ Save DNS & apply ] [ Reload DNS ] │
+              │ loaded the dns settings                                                                   │
+              └───────────────────────────────────────────────────────────────────────────────────────────┘
+      ▣
+    Hosts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[ L LANlord ] [ ◆ DHCP ]                                                                                                                              12:00 PM

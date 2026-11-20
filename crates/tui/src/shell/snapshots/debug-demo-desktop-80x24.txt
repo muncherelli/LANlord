@@ -3,20 +3,20 @@
   My Server      DNS
 
 
-      □           ▦
-   Networks    Settings
+      □           ◆
+   Networks      DHCP
 
 
-      ►           >
-   Gateway     Console
+      ►           ▦
+   Gateway     Settings
 
 
-      ▓           ▣
-    Docker      Hosts
+      ▓           >
+    Docker     Console
 
 
-      ▌
-  NT4 Domain                            ┌─────────────────────────┐
+      ▌           ▣
+  NT4 Domain    Hosts                   ┌─────────────────────────┐
                                         │ ✓ Demo desktop          │
                                         │   Window manager debug  │
                                         │   Open all windows      │
