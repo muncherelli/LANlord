@@ -26,6 +26,7 @@ use crate::rootssh::{RootSsh, RootSshInfo};
 use crate::secret::Secret;
 use crate::server::ServerFacts;
 use crate::settings::Document;
+use crate::ssh_access::Change as SshChange;
 use crate::users::Change as UserChangeInMemory;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +68,9 @@ pub enum Operation {
     /// switch internet access on or off for a network, or allow or deny one computer, and apply
     /// the docker and dns modules.
     ChangeInternet { change: InternetChange },
+    /// switch ssh to the server on or off for a network, or allow or deny one computer, and apply
+    /// the docker and dns modules (the firewall is in the docker module).
+    ChangeSshAccess { change: SshChange },
     /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
     /// docker and dns modules.
     ChangeNetworks { edit: Box<NetworkEdit> },
@@ -159,6 +163,7 @@ impl Operation {
             Operation::ResetMachine { .. } => Need::manage(Area::Domain),
             Operation::CreateAdmin { .. } => Need::manage(Area::Users),
             Operation::ChangeInternet { .. } => Need::manage(Area::Network),
+            Operation::ChangeSshAccess { .. } => Need::manage(Area::Network),
             Operation::ChangeNetworks { .. } => Need::manage(Area::Network),
             // not given to any role: the server only runs it for root's setup session
             Operation::SetupFirstAdmin { .. } => Need::manage(Area::Users),
@@ -224,6 +229,7 @@ impl Operation {
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
                 | Operation::ChangeInternet { .. }
+                | Operation::ChangeSshAccess { .. }
                 | Operation::MigrateStored { .. }
                 | Operation::ChangeNetworks { .. }
                 | Operation::ChangeUsers { .. }
@@ -545,6 +551,12 @@ mod tests {
             Operation::ChangeNetworks {
                 edit: Box::new(NetworkEdit::Remove("lab".into())),
             },
+            Operation::ChangeSshAccess {
+                change: SshChange::Network {
+                    network: "lab".into(),
+                    on: true,
+                },
+            },
         ]
     }
 
@@ -594,6 +606,7 @@ mod tests {
             Operation::MyKeys => 39,
             Operation::AddMyKey { .. } => 40,
             Operation::RemoveMyKey { .. } => 41,
+            Operation::ChangeSshAccess { .. } => 42,
         }
     }
 
@@ -605,7 +618,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 42;
+    const VARIANTS: usize = 43;
 
     #[test]
     fn every_operation_says_what_it_needs() {

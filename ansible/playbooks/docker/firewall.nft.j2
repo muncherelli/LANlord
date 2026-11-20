@@ -3,10 +3,13 @@
 {% set whole = nets | selectattr('internet') | list %}
 {% set some = nets | rejectattr('internet') | selectattr('internet_allow') | list %}
 {% set reaching = whole + some %}
+{% set ports = ssh_ports | default([]) %}
+{% set ssh_blocked = nets | rejectattr('ssh') | list %}
+{% set ssh_some = ssh_blocked | selectattr('ssh_allow') | list %}
 # written by lanlord; changes here are overwritten
 # netbios, smb, dns and dhcp are kept off the host network ({{ host_interface }}). the lanlord networks
 # ({{ lan_interfaces | join(', ') if lan_interfaces | length > 0 else 'none' }}) are accepted first, so
-# these rules can never cut off one of them.
+# these rules can never cut off one of them (except sshd, see the input chain).
 {% if lan_interfaces | length > 0 %}
 # the lanlord networks never forward to each other or in from outside. they have no internet unless
 # a network says so, or a computer is allowed (by mac, for good or until a time) on a network that
@@ -24,8 +27,26 @@ table inet lanlord {
     flags timeout
   }
 {% endfor %}
+{% for net in ssh_some %}
+  # {{ net.name }}: the computers allowed to reach sshd, filled from internet-elements.nft like the
+  # internet set above (timed, empty at boot).
+  set ssh_{{ net.name | replace('-', '_') }} {
+    type ether_addr
+    flags timeout
+  }
+{% endfor %}
   chain input {
     type filter hook input priority -10; policy accept;
+{% if ports | length > 0 and ssh_blocked | length > 0 %}
+    # sshd is off on the lanlord networks unless a network (or a computer on it) is allowed. a
+    # connection that is already open is left alone, so an apply never cuts an administrator off;
+    # it ends when the session does. the ports are the ones sshd reports, not a fixed 22.
+    iifname { {% for net in ssh_blocked %}"{{ net.interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport { {{ ports | join(', ') }} } ct state established,related accept
+{% for net in ssh_some %}
+    iifname "{{ net.interface }}" tcp dport { {{ ports | join(', ') }} } ether saddr @ssh_{{ net.name | replace('-', '_') }} accept
+{% endfor %}
+    iifname { {% for net in ssh_blocked %}"{{ net.interface }}"{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport { {{ ports | join(', ') }} } drop
+{% endif %}
 {% if lan_interfaces | length > 0 %}
     iifname { {% for name in lan_interfaces %}"{{ name }}"{% if not loop.last %}, {% endif %}{% endfor %} } accept
 {% endif %}

@@ -3,3 +3,7 @@
 flush set inet lanlord internet_{{ net.name | replace('-', '_') }}
 add element inet lanlord internet_{{ net.name | replace('-', '_') }} { {% for host in net.internet_allow %}{{ host.mac }}{% if host.seconds is not none %} timeout {{ host.seconds }}s{% endif %}{% if not loop.last %}, {% endif %}{% endfor %} }
 {% endfor %}
+{% for net in nets | rejectattr('ssh') | selectattr('ssh_allow') %}
+flush set inet lanlord ssh_{{ net.name | replace('-', '_') }}
+add element inet lanlord ssh_{{ net.name | replace('-', '_') }} { {% for host in net.ssh_allow %}{{ host.mac }}{% if host.seconds is not none %} timeout {{ host.seconds }}s{% endif %}{% if not loop.last %}, {% endif %}{% endfor %} }
+{% endfor %}

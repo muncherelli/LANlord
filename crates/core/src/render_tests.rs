@@ -210,6 +210,7 @@ const HARNESS: &str = r#"
         src: docker/firewall.nft.j2
         dest: "{{ out }}/firewall.nft"
       vars:
+        ssh_ports: [22]
         lan_interfaces: "{{ lanlord_networks | default([]) | map(attribute='interface') | list }}"
     - ansible.builtin.template:
         src: docker/internet-elements.nft.j2
@@ -719,7 +720,10 @@ fn internet_is_off_by_default_and_nothing_routes() {
         "postrouting",
     ] {
         assert!(
-            !firewall.iter().any(|l| l.contains(gone)),
+            // the ssh rules keep open connections; that is not forwarding
+            !firewall
+                .iter()
+                .any(|l| l.contains(gone) && !l.contains("dport { 22 }")),
             "{gone} in\n{firewall:#?}"
         );
     }
@@ -824,6 +828,54 @@ fn an_allowed_machine_gets_a_router_and_a_timed_nft_element() {
     // lab has nothing
     let lab = lines(&out.join("dns/lab/dnsmasq.conf"));
     assert!(has(&lab, "no-resolv") && has(&lab, "dhcp-option=3"));
+}
+
+#[test]
+fn sshd_is_dropped_on_the_lanlord_networks_unless_allowed() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    // retronet lets one computer in for a while, lab has ssh on for everyone
+    let allow =
+        "    ssh_allow:\n      - {mac: \"02:00:00:00:00:AA\", until: \"2030-03-17T18:46:40Z\"}\n";
+    let out = render("ssh-rules", &internet_settings(allow, "    ssh: true\n")).unwrap();
+    let firewall = forward_lines(&out);
+    let position = |line: &str| {
+        firewall
+            .iter()
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("{line} in\n{firewall:#?}"))
+    };
+    let kept =
+        position("    iifname { \"eth1\" } tcp dport { 22 } ct state established,related accept");
+    let granted =
+        position("    iifname \"eth1\" tcp dport { 22 } ether saddr @ssh_retronet accept");
+    let dropped = position("    iifname { \"eth1\" } tcp dport { 22 } drop");
+    let blanket = position("    iifname { \"eth1\", \"eth2\" } accept");
+    assert!(kept < granted && granted < dropped && dropped < blanket);
+    assert!(has(&firewall, "  set ssh_retronet {"));
+    // lab has ssh on: nothing is dropped for it, and the host network is untouched
+    assert!(!firewall
+        .iter()
+        .any(|l| l.contains("\"eth2\"") && l.contains("dport { 22 }")));
+    assert!(!firewall
+        .iter()
+        .any(|l| l.contains("\"eth0\"") && l.contains("dport { 22 }")));
+    let elements = lines(&out.join("internet-elements.nft"));
+    assert!(
+        has(&elements, "flush set inet lanlord ssh_retronet"),
+        "{elements:#?}"
+    );
+    assert!(
+        has(
+            &elements,
+            "add element inet lanlord ssh_retronet { 02:00:00:00:00:aa timeout 3600s }"
+        ),
+        "{elements:#?}"
+    );
+    // ssh grants do not open the internet
+    assert!(!out.join("sysctl.conf").exists());
 }
 
 #[test]

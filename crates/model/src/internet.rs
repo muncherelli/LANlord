@@ -57,74 +57,109 @@ impl Internet {
 
     /// the lines of the networks window's read-only box.
     pub fn details(&self) -> Vec<(String, String)> {
-        let state = match (self.enabled, self.allow.is_empty()) {
-            (true, _) => "On for the whole network",
-            (false, true) => "Off",
-            (false, false) => "Only for the computers listed",
-        };
-        let mut lines = vec![("Internet access".to_string(), state.to_string())];
-        for host in &self.allow {
-            let who = match &host.name {
-                Some(name) => format!("{name} ({})", host.mac),
-                None => host.mac.clone(),
-            };
-            let until = host.until.map_or_else(
-                || "always".to_string(),
-                |t| format!("until {}", format_time(t)),
-            );
-            lines.push(("Internet for".to_string(), format!("{who}, {until}")));
-        }
-        lines
+        grant_details(self.enabled, &self.allow, "Internet access", "Internet for")
     }
 
     /// read `internet` and `internet_allow` from a network's entry; both may be missing.
     pub fn from_entry(item: &Mapping, path: &str) -> Result<Self> {
-        let enabled = match item.get("internet") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(on)) => *on,
-            Some(_) => bail!("{path}.internet must be true or false"),
-        };
-        let allow = match item.get("internet_allow") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Sequence(items)) => items
-                .iter()
-                .enumerate()
-                .map(|(i, v)| host_from(v, &format!("{path}.internet_allow[{i}]")))
-                .collect::<Result<_>>()?,
-            Some(_) => bail!("{path}.internet_allow must be a list"),
-        };
+        let (enabled, allow) = read_grants(item, "internet", path)?;
         Ok(Self { enabled, allow })
     }
 
     /// write what differs from the defaults into a network's entry.
     pub fn put_in(&self, entry: &mut Mapping) {
-        let key = |s: &str| Value::String(s.into());
-        if self.enabled {
-            entry.insert(key("internet"), Value::Bool(true));
-        }
-        if self.allow.is_empty() {
-            return;
-        }
-        let list = self
-            .allow
-            .iter()
-            .map(|host| {
-                let mut map = Mapping::new();
-                map.insert(key("mac"), key(&host.mac));
-                if let Some(name) = &host.name {
-                    map.insert(key("name"), key(name));
-                }
-                if let Some(until) = host.until {
-                    map.insert(key("until"), key(&format_rfc3339(until)));
-                }
-                Value::Mapping(map)
-            })
-            .collect();
-        entry.insert(key("internet_allow"), Value::Sequence(list));
+        write_grants(entry, "internet", self.enabled, &self.allow);
     }
 }
 
-fn host_from(value: &Value, path: &str) -> Result<AllowedHost> {
+/// the read-only lines of a switch and its list of computers: `first` names the switch, `each`
+/// the computers.
+pub(crate) fn grant_details(
+    enabled: bool,
+    allow: &[AllowedHost],
+    first: &str,
+    each: &str,
+) -> Vec<(String, String)> {
+    let state = match (enabled, allow.is_empty()) {
+        (true, _) => "On for the whole network",
+        (false, true) => "Off",
+        (false, false) => "Only for the computers listed",
+    };
+    let mut lines = vec![(first.to_string(), state.to_string())];
+    for host in allow {
+        lines.push((each.to_string(), host_line(host)));
+    }
+    lines
+}
+
+/// one allowed computer in a list: its name and mac, and until when.
+pub fn host_line(host: &AllowedHost) -> String {
+    let who = match &host.name {
+        Some(name) => format!("{name} ({})", host.mac),
+        None => host.mac.clone(),
+    };
+    let until = host.until.map_or_else(
+        || "always".to_string(),
+        |t| format!("until {}", format_time(t)),
+    );
+    format!("{who}, {until}")
+}
+
+/// read the switch `key` and the list `key_allow` from a network's entry; both may be missing.
+pub(crate) fn read_grants(
+    item: &Mapping,
+    key: &str,
+    path: &str,
+) -> Result<(bool, Vec<AllowedHost>)> {
+    let enabled = match item.get(key) {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(on)) => *on,
+        Some(_) => bail!("{path}.{key} must be true or false"),
+    };
+    let list = format!("{key}_allow");
+    let allow = match item.get(list.as_str()) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| host_from(v, &format!("{path}.{list}[{i}]")))
+            .collect::<Result<_>>()?,
+        Some(_) => bail!("{path}.{list} must be a list"),
+    };
+    Ok((enabled, allow))
+}
+
+/// write what differs from the defaults of the switch `key` and its list into a network's entry.
+pub(crate) fn write_grants(entry: &mut Mapping, key: &str, enabled: bool, allow: &[AllowedHost]) {
+    if enabled {
+        entry.insert(Value::String(key.into()), Value::Bool(true));
+    }
+    if !allow.is_empty() {
+        entry.insert(Value::String(format!("{key}_allow")), hosts_value(allow));
+    }
+}
+
+/// the grants as the yaml list a network's entry holds.
+pub(crate) fn hosts_value(allow: &[AllowedHost]) -> Value {
+    let key = |s: &str| Value::String(s.into());
+    let list = allow
+        .iter()
+        .map(|host| {
+            let mut map = Mapping::new();
+            map.insert(key("mac"), key(&host.mac));
+            if let Some(name) = &host.name {
+                map.insert(key("name"), key(name));
+            }
+            if let Some(until) = host.until {
+                map.insert(key("until"), key(&format_rfc3339(until)));
+            }
+            Value::Mapping(map)
+        })
+        .collect();
+    Value::Sequence(list)
+}
+
+pub(crate) fn host_from(value: &Value, path: &str) -> Result<AllowedHost> {
     let map = value
         .as_mapping()
         .ok_or_else(|| anyhow!("{path} must be a mapping with a mac"))?;
@@ -234,11 +269,31 @@ pub enum Change {
     Deny { network: String, mac: String },
 }
 
+/// the words that say what a grant is for, in the sentences that describe a change.
+pub(crate) struct Wording {
+    /// "turned {} on for NETWORK".
+    pub switch: &'static str,
+    /// "allowed MAC {} from NETWORK".
+    pub allow: &'static str,
+    /// "took {} access away from MAC".
+    pub access: &'static str,
+}
+
 impl Change {
     pub fn describe(&self) -> String {
+        self.describe_as(&Wording {
+            switch: "internet",
+            allow: "out to the internet",
+            access: "internet",
+        })
+    }
+
+    /// say what the change does, in the words of the grant it is for.
+    pub(crate) fn describe_as(&self, words: &Wording) -> String {
         match self {
             Change::Network { network, on } => format!(
-                "turned internet {} for {network}",
+                "turned {} {} for {network}",
+                words.switch,
                 if *on { "on" } else { "off" }
             ),
             Change::Allow {
@@ -247,14 +302,15 @@ impl Change {
                 expiry,
                 ..
             } => match expiry {
-                Expiry::Never => format!("allowed {mac} out to the internet from {network}"),
+                Expiry::Never => format!("allowed {mac} {} from {network}", words.allow),
                 Expiry::At(t) => format!(
-                    "allowed {mac} out to the internet from {network} until {}",
+                    "allowed {mac} {} from {network} until {}",
+                    words.allow,
                     format_time(*t)
                 ),
             },
             Change::Deny { network, mac } => {
-                format!("took internet access away from {mac} on {network}")
+                format!("took {} access away from {mac} on {network}", words.access)
             }
         }
     }
@@ -287,16 +343,30 @@ impl Change {
     }
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.chars().count()) && !name.chars().any(char::is_control)
 }
 
-fn missing(name: &str) -> anyhow::Error {
+pub(crate) fn missing(name: &str) -> anyhow::Error {
     anyhow!("there is no network called {name}")
 }
 
 /// apply one change to a list of networks. `now` is when it is made.
 pub fn apply_change(list: &mut [LanNetwork], change: &Change, now: i64) -> Result<()> {
+    apply_grant(list, change, now, "internet", |n| {
+        (&mut n.internet.enabled, &mut n.internet.allow)
+    })
+}
+
+/// apply a change to the switch and the list that `select` picks out of a network; `what` names
+/// the grant in the messages.
+pub(crate) fn apply_grant(
+    list: &mut [LanNetwork],
+    change: &Change,
+    now: i64,
+    what: &str,
+    select: impl for<'a> Fn(&'a mut LanNetwork) -> (&'a mut bool, &'a mut Vec<AllowedHost>),
+) -> Result<()> {
     change.check(now).map_err(|(f, m)| anyhow!("{f} {m}"))?;
     let (Change::Network { network, .. }
     | Change::Allow { network, .. }
@@ -305,17 +375,19 @@ pub fn apply_change(list: &mut [LanNetwork], change: &Change, now: i64) -> Resul
         .iter_mut()
         .find(|n| n.name.eq_ignore_ascii_case(network))
         .ok_or_else(|| missing(network))?;
+    let label = net.name.clone();
+    let (enabled, allow) = select(net);
     match change {
-        Change::Network { on, .. } => net.internet.enabled = *on,
+        Change::Network { on, .. } => *enabled = *on,
         Change::Allow {
             mac, name, expiry, ..
         } => {
             let mac = mac.to_ascii_lowercase();
             // a grant for the same mac is replaced, keeping its label when none is given
-            let old = net.internet.allow.iter().find(|h| h.mac == mac);
+            let old = allow.iter().find(|h| h.mac == mac);
             let name = name.clone().or_else(|| old.and_then(|h| h.name.clone()));
-            net.internet.allow.retain(|h| h.mac != mac);
-            net.internet.allow.push(AllowedHost {
+            allow.retain(|h| h.mac != mac);
+            allow.push(AllowedHost {
                 mac,
                 name,
                 until: match expiry {
@@ -326,10 +398,10 @@ pub fn apply_change(list: &mut [LanNetwork], change: &Change, now: i64) -> Resul
         }
         Change::Deny { mac, .. } => {
             let mac = mac.to_ascii_lowercase();
-            let before = net.internet.allow.len();
-            net.internet.allow.retain(|h| h.mac != mac);
-            if net.internet.allow.len() == before {
-                bail!("{} has no internet grant for {mac}", net.name);
+            let before = allow.len();
+            allow.retain(|h| h.mac != mac);
+            if allow.len() == before {
+                bail!("{label} has no {what} grant for {mac}");
             }
         }
     }
@@ -345,22 +417,38 @@ pub fn prune(list: &mut [LanNetwork], now: i64) -> usize {
             .allow
             .retain(|h| h.until.is_none_or(|until| until > now));
         gone += before - net.internet.allow.len();
+        // the ssh grants end the same way
+        let before = net.ssh.allow.len();
+        net.ssh
+            .allow
+            .retain(|h| h.until.is_none_or(|until| until > now));
+        gone += before - net.ssh.allow.len();
     }
     gone
 }
 
 /// do any networks have a grant that ends?
 pub fn has_timed(list: &[LanNetwork]) -> bool {
-    list.iter()
-        .any(|n| n.internet.allow.iter().any(|h| h.until.is_some()))
+    list.iter().any(|n| {
+        n.internet
+            .allow
+            .iter()
+            .chain(&n.ssh.allow)
+            .any(|h| h.until.is_some())
+    })
 }
 
 /// what is wrong with a network's internet settings; empty means fine.
 pub fn errors(network: &LanNetwork, path: &str) -> Vec<ValidationError> {
+    grant_errors(&network.internet.allow, &format!("{path}.internet_allow"))
+}
+
+/// what is wrong with a list of grants, found at `path` in the settings.
+pub(crate) fn grant_errors(allow: &[AllowedHost], path: &str) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for (i, host) in network.internet.allow.iter().enumerate() {
-        let here = format!("{path}.internet_allow[{i}]");
+    for (i, host) in allow.iter().enumerate() {
+        let here = format!("{path}[{i}]");
         let message = if !valid_mac(&host.mac) {
             "the mac must look like aa:bb:cc:dd:ee:ff".to_string()
         } else if !seen.insert(host.mac.to_ascii_lowercase()) {
@@ -394,7 +482,10 @@ pub fn prune_settings(plain: &str, now: i64) -> Result<(String, usize)> {
     Ok((if gone == 0 { plain.to_string() } else { text }, gone))
 }
 
-fn edit_list(plain: &str, edit: impl FnOnce(&mut Vec<LanNetwork>) -> Result<()>) -> Result<String> {
+pub(crate) fn edit_list(
+    plain: &str,
+    edit: impl FnOnce(&mut Vec<LanNetwork>) -> Result<()>,
+) -> Result<String> {
     let mut settings = Settings::parse(plain)?;
     let Networks { mut list, .. } = lan_networks::read(&settings)?;
     edit(&mut list)?;
@@ -410,10 +501,15 @@ fn edit_list(plain: &str, edit: impl FnOnce(&mut Vec<LanNetwork>) -> Result<()>)
     Ok(settings.text())
 }
 
-fn errors_of(list: &[LanNetwork]) -> Vec<String> {
+pub(crate) fn errors_of(list: &[LanNetwork]) -> Vec<String> {
     list.iter()
         .enumerate()
-        .flat_map(|(i, n)| errors(n, &format!("networks[{i}]")))
+        .flat_map(|(i, n)| {
+            let path = format!("networks[{i}]");
+            errors(n, &path)
+                .into_iter()
+                .chain(crate::ssh_access::errors(n, &path))
+        })
         .map(|e| e.to_string())
         .collect()
 }
