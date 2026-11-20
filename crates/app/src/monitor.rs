@@ -518,6 +518,7 @@ pub fn top_view(monitor: &Monitor, order: Order) -> Vec<crate::view::Node<TopMsg
         id: "top",
         lines,
         height: 300.0,
+        enabled: true,
     });
     body
 }

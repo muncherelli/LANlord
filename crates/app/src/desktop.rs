@@ -184,7 +184,8 @@ impl Target {
                 "remote-commands" => (580.0, 580.0),
                 _ => (480.0, 320.0),
             },
-            Self::MyServer => (440.0, 400.0),
+            // 6 more each way than the 8 pixel margin needed, for the 11 pixel margin
+            Self::MyServer => (446.0, 406.0),
             Self::Networks => (560.0, 440.0),
             Self::Console => (CONSOLE_COLS * CELL.0, CONSOLE_ROWS * CELL.1),
             Self::Hosts => (380.0, 280.0),

@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- tabbed windows (My Server, NT4 Domain, DNS, Networks, Date/Time, Task Manager) keep one size on every tab: the page frame is as big as the largest page, so switching tabs no longer resizes or moves the window, and a tabbed dialog stays where it opened; the sizes are measured again when what a page shows changes, also while it is hidden
+- the lists on tabbed pages (DNS leases and records, NT4 logins, logon scripts) stretch to the bottom of the window when it grows
+- the Add/Remove Components wizard keeps one size on every page, so its buttons stay where they are
+- the Compatibility page of My Server has a details box of a fixed height (longer text scrolls in it) and a fix box that is greyed, not removed, when there is no fix, so picking a check never changes the window
+- windows keep NT4's 11 pixel margin around their contents
+- a window you open, or bring back from the taskbar, the Start menu or a second double-click on its icon, comes to the front and its title bar turns navy
+- closing or minimizing the active window activates the one below it; clicking the empty desktop leaves every title bar gray
+- new windows open down and to the right of the last one in steps of 22 pixels, starting again at the corner of the desktop once a step would pass a quarter of its width or height; a window you reopen takes the next step, and one already open keeps its place
+
 ### Fixed
 
 - `lanlord upgrade` checks first whether the stored secrets are sealed to an old client key, and settles it (or stops with the exact `lanlord move-secrets` command) before changing anything, instead of failing at the last step
+- title bars reach the right edge of their window again (Date/Time Properties had a gap)
+- the Networks window no longer clips the Received column of its Activity table, and it keeps one size when a network is added or removed (its tabs are as tall as a LANlord network's)
 - the web UI draws at the screen's full frame rate again, so dragging windows is smooth (it was capped at 30 frames a second in 0.1.4)
+- the Add/Remove Components wizard lists the networks added in the Networks window (also on the web demo desktop), re-reads them when it opens, when a network is saved and when it goes to its Networks page, and shows only the message, with no empty boxes, when the server has none
+- a dialog that cannot be closed with Escape (the purge box, the update box) no longer has a close button that does nothing
+- dialogs opened from a window have a close button and a title bar that spans the box, and the DHCP range boxes of the network form fit it
 
 ## [0.1.4] - 2026-11-19
 

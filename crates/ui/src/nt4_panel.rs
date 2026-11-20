@@ -26,10 +26,23 @@ impl DerefMut for Nt4Panel {
 }
 
 impl Nt4Panel {
+    /// stands for what the page is made of, as `lanlord_app::view::fingerprint` has it.
+    pub fn key(&self, services: &Services, host: Option<&str>) -> u64 {
+        lanlord_app::view::fingerprint(&self.0.preview(services, host))
+    }
+
     pub fn show(&mut self, ui: &mut Ui, services: &Services, host: Option<&str>) {
-        let nodes = self.0.view(services, host);
+        // a page being measured is drawn unseen: it asks for nothing and answers nothing
+        let measuring = !ui.is_visible();
+        let nodes = if measuring {
+            self.0.preview(services, host)
+        } else {
+            self.0.view(services, host)
+        };
         if let (Some(msg), Some(host)) = (view::show(ui, &nodes), host) {
-            self.0.update(msg, services, host);
+            if !measuring {
+                self.0.update(msg, services, host);
+            }
         }
     }
 

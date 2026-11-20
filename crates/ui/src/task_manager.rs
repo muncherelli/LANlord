@@ -51,6 +51,7 @@ impl TaskManager {
         controls::tabs(
             ui,
             &["Processes", "Performance", "Networking"],
+            pages_key(monitor),
             &mut tab,
             |ui, tab| {
                 if !monitor.live() || monitor.history.last.is_none() {
@@ -83,22 +84,30 @@ impl TaskManager {
     }
 
     fn confirmation(&self, ctx: &egui::Context, pid: u32, name: &str) -> Option<bool> {
-        dialogs::modal(ctx, "end-process", "Task Manager Warning", |ui| {
-            ui.label(format!(
+        let (answer, closed) = dialogs::modal(
+            ctx,
+            "end-process",
+            "Task Manager Warning",
+            true,
+            |ui| {
+                ui.label(format!(
                 "Ending {name} (process {pid}) can make programs lose unsaved data or stop\nworking. Do you want to end it?"
             ));
-            ui.add_space(8.0);
-            let mut answer = None;
-            controls::buttons(ui, |ui| {
-                if theme::button(ui, "No", false).clicked() {
-                    answer = Some(false);
-                }
-                if theme::button(ui, "Yes", false).clicked() {
-                    answer = Some(true);
-                }
-            });
-            answer
-        })
+                ui.add_space(8.0);
+                let mut answer = None;
+                controls::buttons(ui, |ui| {
+                    if theme::button(ui, "No", false).clicked() {
+                        answer = Some(false);
+                    }
+                    if theme::button(ui, "Yes", false).clicked() {
+                        answer = Some(true);
+                    }
+                });
+                answer
+            },
+        );
+        // the close button is a No
+        answer.or(closed.then_some(false))
     }
 
     fn processes(&mut self, ui: &mut Ui, monitor: &Monitor, admin: bool) -> Option<Ask> {
@@ -223,6 +232,22 @@ impl TaskManager {
     }
 }
 
+/// stands for what the pages are made of, which is what the monitor has read so far: the page
+/// before the first read, how many cores, how many interfaces.
+fn pages_key(monitor: &Monitor) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let history = &monitor.history;
+    (monitor.live(), &monitor.problem, history.procs.is_some()).hash(&mut hasher);
+    history
+        .last
+        .as_ref()
+        .map(|s| s.cpu_per_core.len())
+        .hash(&mut hasher);
+    monitor::interfaces(history).hash(&mut hasher);
+    hasher.finish()
+}
+
 fn networking(ui: &mut Ui, monitor: &Monitor) {
     let history = &monitor.history;
     let names = monitor::interfaces(history);
@@ -232,7 +257,8 @@ fn networking(ui: &mut Ui, monitor: &Monitor) {
     }
     egui::ScrollArea::vertical()
         .id_salt("task-manager-networking")
-        .auto_shrink([false, false])
+        // measured unseen, the page is as tall as its graphs and not as the room it is offered
+        .auto_shrink([false, !ui.is_visible()])
         .show(ui, |ui| {
             for name in names {
                 let rx: Vec<f64> = series(&history.rates, &name, |n| n.rx_bytes_per_s);

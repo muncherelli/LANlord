@@ -185,14 +185,22 @@ impl Nt4Panel {
 
     /// the panel for `host`; loads the settings when it shows another host's.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
+        if let Some(host) = host {
+            if self.remote.wants_load(host, self.dirty()) {
+                self.reload(services, host);
+            }
+        }
+        self.preview(services, host)
+    }
+
+    /// the panel as it is, without asking the server for anything: for measuring a page that is
+    /// not open.
+    pub fn preview(&self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
             return vec![Node::Text(
                 "No host yet. Add one in the Hosts window first.".into(),
             )];
         };
-        if self.remote.wants_load(host, self.dirty()) {
-            self.reload(services, host);
-        }
         let gates = self.gates(services, host);
         let errors = self.draft.validate(self.password_set());
         let state = match (self.new_password.is_some(), self.password_set()) {

@@ -19,7 +19,7 @@
    Console                                        │ Name                                                     │
                                                   │ Interface   eth1 ▼                                       │
                                                   │ Address     172.16.120.1/22                              │
-      ▣                                           │ DHCP range  172.16.120.100    to      172.16.120.200     │
+      ▣                                           │ DHCP range  172.16.120.100   to    172.16.120.200        │
     Hosts                                         │ Lease time  7d                                           │
                                                   │ DNS zone    the name                                     │
                                                   │ MTU         1450                                         │
