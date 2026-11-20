@@ -1,6 +1,7 @@
 //! image snapshots of today's nt4 look, compared with zero tolerance, so a refactor that moves one
 //! pixel fails. the goldens live in `crates/ui/tests/snapshots` and are made on linux x86_64 with a
-//! software vulkan adapter (lavapipe), so the module is compiled there only.
+//! software vulkan adapter (lavapipe), without the devtools feature, so the module is compiled
+//! there only.
 //!
 //! to regenerate them after a deliberate change to the look, run
 //! `UPDATE_SNAPSHOTS=1 cargo test -p lanlord-ui snapshot_tests` and review the png diff.

@@ -1749,7 +1749,14 @@ mod login_tests;
 mod menu_tests;
 #[cfg(test)]
 mod server_tests;
-#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+// the goldens are the release look on linux x86_64: devtools adds icons, other systems draw text
+// differently
+#[cfg(all(
+    test,
+    target_os = "linux",
+    target_arch = "x86_64",
+    not(feature = "devtools")
+))]
 mod snapshot_tests;
 #[cfg(test)]
 mod update_tests;
