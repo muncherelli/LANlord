@@ -10,7 +10,7 @@ set -eu
 
 die() { echo "set-version: $*" >&2; exit 1; }
 
-mode=set
+mode=apply
 case "${1:-}" in
   --check) mode=check; shift ;;
   *) ;;
@@ -52,7 +52,7 @@ for f in Cargo.toml crates/*/Cargo.toml; do
   if ! cmp -s "$f" "$tmp"; then
     case "$mode" in
       check) bad="$bad $f" ;;
-      set) cat "$tmp" > "$f" ;;
+      apply) cat "$tmp" > "$f" ;;
       *) die "bad mode: $mode" ;;
     esac
   fi
@@ -63,7 +63,7 @@ case "$mode" in
     [ -z "$bad" ] || die "not at version $version:$bad"
     echo "set-version: all files are at $version"
     ;;
-  set)
+  apply)
     # the lock file records the workspace crates' versions; no network
     if [ -f Cargo.lock ]; then cargo update -w --offline; fi
     ;;
