@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- the NT4 server image is built with winbind and keeps `rpcclient` and `wbinfo`, so local and built-in groups can be made from User Manager for Domains
+- before an apply changes the NT4 mode, domain name or NetBIOS name, the server's Samba state is copied to `/opt/lanlord/nt4/snapshots` (the five newest are kept)
 - upgrade note: ssh to the server from the computers on your LANlord networks is now off. the firewall drops the sshd ports (read from `sshd -T`, not a fixed 22) on every LANlord interface unless the network is switched on with "Allow ssh to this server" (Networks window, or `lanlord networks HOST ssh NAME on`), or the computer is allowed on its own by mac, for good or until a time (`lanlord networks HOST ssh NAME allow MAC [--for 1h]`). the host network is untouched, and a session that is already open is not cut by the change. My Server tells you so; turn it on before you upgrade if you manage the server over ssh from a LANlord network
 - builds made between releases now say vX.Y.Z-development, with the number of the next release (v0.1.5-development after v0.1.4), in the title bar, About, Welcome, `lanlord --version` and the web UI, instead of the last release number; `lanlord install`, `lanlord reinstall` and `lanlord upgrade` from such a build stop and ask for `--server-binary`, `--web-dist` and `--auth-helper` (there is no release to download for it), and its update check tells you when that release comes out
 - tabbed windows (My Server, NT4 Domain, DNS, Networks, Date/Time, Task Manager) keep one size on every tab: the page frame is as big as the largest page, so switching tabs no longer resizes or moves the window, and a tabbed dialog stays where it opened; the sizes are measured again when what a page shows changes, also while it is hidden
@@ -22,8 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- the per-user logon script (`<username>.bat` in netlogon) now runs on Windows 95 and 98 too: every user gets a small generated script in `netlogon\users` that sets the user name, which Windows 9x does not, and runs `lanlord.bat`; with roaming profiles on, Windows 9x also maps its home folder to `H:`
+- changes made in User Manager for Domains stick: creating, renaming and deleting users, creating and deleting groups, group membership (Domain Admins included) and primary groups are applied and remembered across applies and container restarts; the Software Admins group is no longer rebuilt from the domain admins on every apply (it is filled from them once, then it is yours), settings now decide only new users, a password you set and `state: absent`, so `admin: true` and `software_admin: true` apply when an account is created and no longer revert a change made from Windows
 - NT 4.0 machines can join the domain with an administrator's name and password, creating their own computer account (the Samba in the nt4 image is patched to keep the session key of NT4's logon)
 - `lanlord upgrade` checks first whether the stored secrets are sealed to an old client key, and settles it (or stops with the exact `lanlord move-secrets` command) before changing anything, instead of failing at the last step
+- resizing a window by its edge or corner no longer flickers: the frame is drawn where its contents are and follows the pointer in the same frame, and dragging the left or top edge past the window's least size holds the opposite edge still instead of sliding the window
 - title bars reach the right edge of their window again (Date/Time Properties had a gap)
 - the Networks window no longer clips the Received column of its Activity table, and it keeps one size when a network is added or removed (its tabs are as tall as a LANlord network's)
 - the web UI draws at the screen's full frame rate again, so dragging windows is smooth (it was capped at 30 frames a second in 0.1.4)
