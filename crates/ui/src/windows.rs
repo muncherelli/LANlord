@@ -392,6 +392,28 @@ fn pad_to_floor(fit: bool, floor: f32, content_height: f32, reserve: f32) -> f32
     }
 }
 
+/// where a document window goes: kept on the desktop, at `start` from the first frame or whenever
+/// it is put there afresh.
+fn place_document<'a>(window: egui::Window<'a>, place: Placement) -> egui::Window<'a> {
+    let window = window.constrain_to(place.area);
+    if place.fresh {
+        window.current_pos(place.start)
+    } else {
+        window.default_pos(place.start)
+    }
+}
+
+/// where a dialog goes. `start` is where the middle of the window goes. a dialog of tabs is held
+/// by its top left from its second frame at one size, so it stays where it is whatever its page.
+fn place_dialog<'a>(window: egui::Window<'a>, place: Placement, seen: Dialog) -> egui::Window<'a> {
+    match (seen.stage, seen.rect) {
+        (Pivot::Switch, Some(r)) => window.pivot(Align2::LEFT_TOP).current_pos(r.min),
+        (Pivot::TopLeft, _) => window.pivot(Align2::LEFT_TOP),
+        _ if place.fresh => window.pivot(Align2::CENTER_CENTER).current_pos(place.start),
+        _ => window.pivot(Align2::CENTER_CENTER).default_pos(place.start),
+    }
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -448,21 +470,9 @@ pub fn show(
         seen = Dialog::default();
     }
     window = if dialog {
-        // `start` is where the middle of the window goes. a dialog of tabs is held by its top
-        // left from its second frame at one size, so it stays where it is whatever its page
-        match (seen.stage, seen.rect) {
-            (Pivot::Switch, Some(r)) => window.pivot(Align2::LEFT_TOP).current_pos(r.min),
-            (Pivot::TopLeft, _) => window.pivot(Align2::LEFT_TOP),
-            _ if place.fresh => window.pivot(Align2::CENTER_CENTER).current_pos(place.start),
-            _ => window.pivot(Align2::CENTER_CENTER).default_pos(place.start),
-        }
+        place_dialog(window, place, seen)
     } else {
-        let window = window.constrain_to(place.area);
-        let window = if place.fresh {
-            window.current_pos(place.start)
-        } else {
-            window.default_pos(place.start)
-        };
+        let window = place_document(window, place);
         match place.height.filter(|_| fixed) {
             Some(h) => window.fixed_size(Vec2::new(place.width, h.min(max_height))),
             None => open_size(window, place, least, before, fit, floor),

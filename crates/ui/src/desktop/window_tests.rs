@@ -358,7 +358,8 @@ fn dhcp_can_be_switched_off_and_a_failed_probe_is_reported() {
 fn nt4() -> (Desktop, egui::Context, Arc<Fake>) {
     let (mut desktop, ctx, fake) = open("nt4-domain", NT4);
     until(&mut desktop, &ctx, |d| d.nt4.settings.belongs_to("me@gw"));
-    frames(&mut desktop, &ctx, 2);
+    // the other tabs read too, and a page arriving moves the buttons: wait for all of it
+    settled(&mut desktop, &ctx);
     (desktop, ctx, fake)
 }
 
@@ -1171,7 +1172,11 @@ fn the_new_network_dialog_has_a_full_title_bar_and_every_field_inside_it() {
     let (mut desktop, ctx, _) = desktop();
     with_host(&mut desktop, &ctx);
     desktop.open(Target::Networks);
-    until(&mut desktop, &ctx, idle("me@gw"));
+    // the button is there once the interfaces are read, which takes as long as the gateway takes
+    until(&mut desktop, &ctx, |d| {
+        !d.services.busy("me@gw") && enabled(&ctx, "New network...") == Some(true)
+    });
+    settled(&mut desktop, &ctx);
     assert!(press(&mut desktop, &ctx, "New network..."));
     frames(&mut desktop, &ctx, 4);
     assert_modal_fits(&ctx, "network-form");
