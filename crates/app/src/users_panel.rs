@@ -115,14 +115,22 @@ impl UsersPanel {
 
     /// the panel for `host`; starts a load when it shows another host's logins.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
+        if let Some(host) = host {
+            if self.remote.wants_load(host, false) {
+                self.reload(services, host);
+            }
+        }
+        self.preview(services, host)
+    }
+
+    /// the panel as it is, without asking the server for anything: for measuring a page that is
+    /// not open.
+    pub fn preview(&self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
             return vec![Node::Text(
                 "No host yet. Add one in the Hosts window first.".into(),
             )];
         };
-        if self.remote.wants_load(host, false) {
-            self.reload(services, host);
-        }
         let gates = self.gates(services, host);
         let secrets = self.remote.data.as_ref().map(|d| &d.secrets_set);
         let rows: Vec<Vec<String>> = self
@@ -184,7 +192,7 @@ impl UsersPanel {
                 ),
                 Button::new("Reload logins", gates.reload, Msg::Reload),
             ]),
-            Node::Gap(6.0),
+            Node::Gap(4.0),
             view::status(&self.remote),
         ]);
         nodes

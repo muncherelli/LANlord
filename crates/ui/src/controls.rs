@@ -111,6 +111,56 @@ pub fn row<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// the width of the label column in `row`.
 pub const LABEL_WIDTH: f32 = 110.0;
 
+/// draws page 0 of `count` pages in room as tall as the tallest of them, which are laid out unseen
+/// to learn their height, so which one is open never changes the size of what it is in. the
+/// height is kept until `key`, which stands for what the pages are made of, the width or the scale
+/// change.
+pub fn same_size<R>(
+    ui: &mut Ui,
+    key: u64,
+    count: usize,
+    mut page: impl FnMut(&mut Ui, usize) -> R,
+) -> R {
+    let width = ui.available_width();
+    let ctx = ui.ctx().clone();
+    let id = ui.scope_id().with("same-size");
+    let ppp = ctx.pixels_per_point();
+    let kept: Option<(u64, f32, f32, usize, f32)> = ctx.data(|d| d.get_temp(id));
+    let tallest = match kept {
+        Some((k, w, p, n, tallest)) if (k, w, p, n) == (key, width, ppp, count) => tallest,
+        _ => {
+            let tallest = measure_pages(ui, count, width, &mut page)
+                .iter()
+                .map(|size| size.y)
+                .fold(0.0, f32::max);
+            ctx.data_mut(|d| d.insert_temp(id, (key, width, ppp, count, tallest)));
+            tallest
+        }
+    };
+    let from = ui.cursor().top();
+    let out = page(ui, 0);
+    let used = ui.min_rect().bottom() - from;
+    if used < tallest {
+        ui.add_space(tallest - used);
+    }
+    out
+}
+
+/// room for `lines` rows of text, which `add` fills and which scrolls when it needs more, so
+/// what is in it does not change the size of what it is in.
+pub fn fixed_lines<R>(ui: &mut Ui, lines: u8, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let row = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+    let height = row * f32::from(lines);
+    ui.set_min_width(ui.available_width());
+    egui::ScrollArea::vertical()
+        .id_salt("fixed-lines")
+        .max_height(height)
+        .min_scrolled_height(height)
+        .auto_shrink([false, false])
+        .show(ui, add)
+        .inner
+}
+
 /// an etched frame with a caption, around whatever `add` draws.
 pub fn group<R>(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     let width = ui.available_width();
@@ -166,6 +216,8 @@ pub struct Spare {
     pub extra: f32,
     /// the heights the parts that grow have on their own, added up
     pub claimed: f32,
+    /// a part took room that is whole: it is never to be sized below its natural height
+    pub whole: bool,
 }
 
 fn spare_id() -> egui::Id {
@@ -180,12 +232,38 @@ pub fn lend_room<R>(ctx: &egui::Context, extra: f32, contents: impl FnOnce() -> 
             Some(Spare {
                 extra,
                 claimed: 0.0,
+                whole: false,
             }),
         )
     });
     let result = contents();
     let back = ctx.data_mut(|d| d.remove_temp::<Option<Spare>>(spare_id()));
     (result, back.flatten().unwrap_or_default())
+}
+
+/// like `lend_room` for a part inside the window's contents: the room the window has lent is kept
+/// for what comes after.
+fn lend_nested<R>(ctx: &egui::Context, extra: f32, contents: impl FnOnce() -> R) -> (R, Spare) {
+    let outer = ctx.data_mut(|d| d.remove_temp::<Option<Spare>>(spare_id()));
+    let result = lend_room(ctx, extra, contents);
+    if let Some(outer) = outer {
+        ctx.data_mut(|d| d.insert_temp(spare_id(), outer));
+    }
+    result
+}
+
+/// the room the window has to spare, taken by a part that is as big as it is whatever the window
+/// does: it can never shrink below its natural height, unlike a list. none outside a window.
+fn take_whole(ctx: &egui::Context) -> f32 {
+    ctx.data_mut(
+        |d| match d.get_temp_mut_or_default::<Option<Spare>>(spare_id()) {
+            Some(spare) => {
+                spare.whole = true;
+                std::mem::take(&mut spare.extra)
+            }
+            None => 0.0,
+        },
+    )
 }
 
 /// the height of a part that can grow, whose height on its own is `natural`: that plus the room
@@ -258,13 +336,96 @@ fn tab_rect(left: f32, widths: &[f32], index: usize, bottom: f32, selected: bool
     )
 }
 
+/// how big each page of a tab strip is on its own, at the width and scale they were laid out at.
+#[derive(Clone, PartialEq)]
+struct PageSizes {
+    /// stands for what the pages are made of
+    key: u64,
+    width: f32,
+    ppp: f32,
+    heights: Vec<f32>,
+    /// how wide each is, which is more than `width` for a page that will not narrow
+    widths: Vec<f32>,
+}
+
+fn tabbed_id() -> egui::Id {
+    egui::Id::unique("window-has-tabs")
+}
+
+/// whether a tab strip was drawn since the last call: the window it is in is a tabbed one.
+pub(crate) fn take_tabbed(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(tabbed_id()))
+        .unwrap_or(false)
+}
+
+/// where the page frame of the last tab strip drawn was.
+#[cfg(test)]
+pub(crate) fn tab_frame(ctx: &egui::Context) -> Option<Rect> {
+    ctx.data(|d| d.get_temp::<Rect>(egui::Id::unique("tabs-frame")))
+}
+
+/// how many times the pages of a tab strip were laid out to be measured, to show it is not done
+/// every frame.
+#[cfg(test)]
+pub(crate) fn measure_passes(ctx: &egui::Context) -> u32 {
+    ctx.data(|d| d.get_temp::<u32>(egui::Id::unique("tab-measure-passes")))
+        .unwrap_or(0)
+}
+
+/// lay every page out once, unseen, to learn how big each is. the room a window lends is set
+/// aside meanwhile, so measuring takes none of it.
+fn measure_pages<R>(
+    ui: &mut Ui,
+    count: usize,
+    width: f32,
+    page: &mut impl FnMut(&mut Ui, usize) -> R,
+) -> Vec<Vec2> {
+    let ctx = ui.ctx().clone();
+    let held = ctx.data_mut(|d| d.remove_temp::<Option<Spare>>(spare_id()));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("tabs-measuring"), true));
+    let sizes: Vec<Vec2> = (0..count)
+        .map(|i| {
+            let rect = Rect::from_min_size(
+                ui.cursor().min,
+                Vec2::new(width, ui.available_height().max(1.0)),
+            );
+            let mut probe = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt(("tab-measure", i))
+                    .max_rect(rect)
+                    .invisible(),
+            );
+            page(&mut probe, i);
+            let size = probe.min_rect().size();
+            Vec2::new(size.x.ceil(), size.y.ceil())
+        })
+        .collect();
+    ctx.data_mut(|d| {
+        d.remove_temp::<bool>(egui::Id::unique("tabs-measuring"));
+        d.remove_temp::<Option<Spare>>(spare_id());
+        if let Some(held) = held {
+            d.insert_temp(spare_id(), held);
+        }
+    });
+    #[cfg(test)]
+    ctx.data_mut(|d| {
+        *d.get_temp_mut_or_default::<u32>(egui::Id::unique("tab-measure-passes")) += 1;
+    });
+    sizes
+}
+
 /// a strip of tabs over a raised page. the chosen tab is taller, joined to the page and the
-/// others sit behind it. `page` draws the page for the tab chosen at the start of the frame.
+/// others sit behind it. `page` draws the page at an index, and is called for every page once to
+/// measure it: the frame is as big as the biggest, so the window keeps its size whichever tab is
+/// open. the sizes are kept until the width, scale or `key` changes, or the open page is not the
+/// size it was measured at. `key` stands for what the pages are made of, so a page that grows
+/// while it is hidden is measured again.
 pub fn tabs<R>(
     ui: &mut Ui,
     labels: &[&str],
+    key: u64,
     selected: &mut usize,
-    page: impl FnOnce(&mut Ui, usize) -> R,
+    mut page: impl FnMut(&mut Ui, usize) -> R,
 ) -> R {
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -295,13 +456,64 @@ pub fn tabs<R>(
             theme::probe::record(ui, label, rect, true);
             paint_tab(ui, rect, label, false);
         }
+        let ctx = ui.ctx().clone();
+        ctx.data_mut(|d| d.insert_temp(tabbed_id(), true));
+        // the page sits in a frame with a 9 point margin
+        let inner = (ui.available_width() - 18.0).max(1.0);
+        let sizes_id = ui.scope_id().with("page-sizes");
+        let ppp = ctx.pixels_per_point();
+        let kept: Option<PageSizes> = ctx.data(|d| d.get_temp(sizes_id));
+        let mut sizes = match kept {
+            Some(k)
+                if k.key == key
+                    && k.width == inner
+                    && k.ppp == ppp
+                    && k.heights.len() == labels.len() =>
+            {
+                k
+            }
+            _ => {
+                let measured = measure_pages(ui, labels.len(), inner, &mut page);
+                PageSizes {
+                    key,
+                    width: inner,
+                    ppp,
+                    heights: measured.iter().map(|m| m.y).collect(),
+                    widths: measured.iter().map(|m| m.x).collect(),
+                }
+            }
+        };
+        ctx.data_mut(|d| d.insert_temp(sizes_id, sizes.clone()));
+        let open = (*selected).min(labels.len().saturating_sub(1));
+        let natural = sizes.heights.get(open).copied().unwrap_or(0.0);
+        let tallest = sizes.heights.iter().copied().fold(0.0, f32::max);
+        // a window with room to spare gives it to the frame, which gives it to the page's list
+        let frame_height = tallest + take_whole(&ctx);
+        let widest = sizes.widths.iter().copied().fold(0.0, f32::max);
+        let mut drawn = (0.0, 0.0);
         let framed = Frame::new()
             .fill(GRAY)
             .inner_margin(Margin::same(9))
             .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                page(ui, *selected)
+                ui.set_min_width(ui.available_width().max(widest));
+                ui.set_min_height(frame_height);
+                let from = ui.cursor().top();
+                let (out, back) = lend_nested(&ctx, frame_height - natural, || page(ui, *selected));
+                drawn = (
+                    ui.cursor().top() - from,
+                    frame_height - natural - back.extra,
+                );
+                out
             });
+        // the open page is not what it was measured as: measure it again, alone
+        let (height, used) = drawn;
+        if (height - used - natural).abs() > 1.0 {
+            sizes.heights[open] = (height - used).ceil();
+            ctx.data_mut(|d| d.insert_temp(sizes_id, sizes));
+            ctx.request_repaint();
+        }
+        #[cfg(test)]
+        ctx.data_mut(|d| d.insert_temp(egui::Id::unique("tabs-frame"), framed.response.rect));
         theme::bevel(ui.painter(), framed.response.rect, true);
         // the chosen tab is drawn last so it covers the page's top edge and joins it
         let rect = tab_rect(left, &widths, *selected, bottom, true);
@@ -415,7 +627,7 @@ mod tests {
             testkit::run(&ctx, events, |ui| {
                 theme::apply(ui.ctx());
                 check(ui, &mut on, "Tick me");
-                tabs(ui, &["One", "Two"], &mut tab, |ui, _| {
+                tabs(ui, &["One", "Two"], 0, &mut tab, |ui, _| {
                     let mut text = String::from("x");
                     edit(ui, &mut text, 80.0);
                     group(ui, "Caption", |ui| {
@@ -439,5 +651,40 @@ mod tests {
         }
         assert!(on);
         assert_eq!(tab, 1);
+    }
+
+    #[test]
+    fn a_page_that_grows_while_hidden_is_measured_again_when_its_key_changes() {
+        let ctx = egui::Context::default();
+        let mut tab = 0usize;
+        let mut extra = 0usize;
+        let frame = |tab: &mut usize, extra: usize| {
+            testkit::run(&ctx, Vec::new(), |ui| {
+                theme::apply(ui.ctx());
+                tabs(ui, &["One", "Two"], extra as u64, tab, |ui, i| {
+                    ui.label("page");
+                    for _ in 0..if i == 1 { extra } else { 0 } {
+                        ui.label("more");
+                    }
+                });
+            });
+            tab_frame(&ctx).expect("a frame").height()
+        };
+        for _ in 0..3 {
+            frame(&mut tab, extra);
+        }
+        let before = frame(&mut tab, extra);
+        // the hidden page gets longer, and the key says so: the frame follows at once
+        extra = 6;
+        for _ in 0..3 {
+            frame(&mut tab, extra);
+        }
+        let grown = frame(&mut tab, extra);
+        assert!(grown > before + 50.0, "{before} {grown}");
+        // and does not change when that page is opened
+        tab = 1;
+        for _ in 0..3 {
+            assert_eq!(frame(&mut tab, extra), grown);
+        }
     }
 }

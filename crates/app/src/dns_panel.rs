@@ -193,15 +193,21 @@ impl DnsPanel {
         }
         let idle = !services.busy(host) && !self.remote.busy();
         let errors = self.errors();
-        let page = match self.tab {
-            1 => self.leases_page(&errors),
-            2 => self.records_page(&errors),
-            3 => self.current_page(),
-            _ => self.settings_page(&errors),
-        };
+        let mut pages = vec![
+            (0, self.settings_page(&errors)),
+            (1, self.leases_page(&errors)),
+            (2, self.records_page(&errors)),
+            (3, self.current_page()),
+        ];
+        let at = pages
+            .iter()
+            .position(|(tab, _)| *tab == self.tab)
+            .unwrap_or(0);
+        let (_, page) = pages.remove(at);
         let ok = self.can_save(services, host);
         let mut nodes = vec![
             Node::Tabs {
+                key: view::pages_fingerprint(self.tab, &page, &pages),
                 titles: view::titles(&[
                     "Settings",
                     "Static leases",
@@ -211,6 +217,7 @@ impl DnsPanel {
                 current: self.tab,
                 pick: Msg::Tab,
                 body: page,
+                others: pages,
             },
             Node::Gap(6.0),
             Node::Buttons(vec![

@@ -38,9 +38,18 @@ impl Nt4Window {
             Tab::Logins => 1,
             Tab::Logon => 2,
         };
+        // the pages are measured again when what any of them shows changes
+        let key = [
+            self.settings.key(services, host),
+            self.users.key(services, host),
+            self.logon.key(services, host),
+        ]
+        .iter()
+        .fold(0u64, |k, n| k.rotate_left(21) ^ n);
         controls::tabs(
             ui,
             &["Settings", "Logins", "Logon scripts"],
+            key,
             &mut chosen,
             |ui, open| match chosen_tab(open) {
                 Tab::Settings => self.settings.show(ui, services, host),

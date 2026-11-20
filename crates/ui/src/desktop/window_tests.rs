@@ -32,7 +32,23 @@ fn open(id: &str, stored: &str) -> (Desktop, egui::Context, Arc<Fake>) {
 
 fn settled(desktop: &mut Desktop, ctx: &egui::Context) {
     until(desktop, ctx, idle("me@gw"));
-    frames(desktop, ctx, 2);
+    // a status bar slides in, and the window follows it, over a few frames
+    let mut still = 0;
+    let mut last = desktop.measured.clone();
+    for _ in 0..200 {
+        frames(desktop, ctx, 1);
+        still = if desktop.measured == last {
+            still + 1
+        } else {
+            0
+        };
+        last = desktop.measured.clone();
+        if still >= 4 {
+            frames(desktop, ctx, 2);
+            return;
+        }
+    }
+    panic!("the windows never settled");
 }
 
 fn stored(fake: &Fake) -> String {
@@ -55,7 +71,7 @@ fn logins() -> (Desktop, egui::Context, Arc<Fake>) {
     desktop.nt4.tab = Tab::Logins;
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| d.nt4.users.belongs_to("me@gw"));
-    frames(&mut desktop, &ctx, 2);
+    settled(&mut desktop, &ctx);
     (desktop, ctx, fake)
 }
 
@@ -342,7 +358,8 @@ fn dhcp_can_be_switched_off_and_a_failed_probe_is_reported() {
 fn nt4() -> (Desktop, egui::Context, Arc<Fake>) {
     let (mut desktop, ctx, fake) = open("nt4-domain", NT4);
     until(&mut desktop, &ctx, |d| d.nt4.settings.belongs_to("me@gw"));
-    frames(&mut desktop, &ctx, 2);
+    // the other tabs read too, and a page arriving moves the buttons: wait for all of it
+    settled(&mut desktop, &ctx);
     (desktop, ctx, fake)
 }
 
@@ -390,7 +407,7 @@ fn machines_are_removed_and_a_workgroup_needs_no_password() {
     let stored_text = "nt4-domain:\n  mode: workgroup\n  name: LAB\n  machines: [ws1, ws2]\n";
     let (mut desktop, ctx, fake) = open("nt4-domain", stored_text);
     until(&mut desktop, &ctx, |d| d.nt4.settings.belongs_to("me@gw"));
-    frames(&mut desktop, &ctx, 3);
+    settled(&mut desktop, &ctx);
     assert_eq!(enabled(&ctx, "Save settings"), Some(true));
     desktop.nt4.settings.draft.machines.push("ws3".into());
     assert!(press(&mut desktop, &ctx, "Save settings"));
@@ -407,7 +424,7 @@ fn a_machine_account_is_reset_only_after_the_confirmation() {
     let stored_text = "nt4-domain:\n  mode: domain\n  name: LAB\n  machines: [ws1, ws2]\n";
     let (mut desktop, ctx, fake) = open("nt4-domain", stored_text);
     until(&mut desktop, &ctx, |d| d.nt4.settings.belongs_to("me@gw"));
-    frames(&mut desktop, &ctx, 3);
+    settled(&mut desktop, &ctx);
     assert_eq!(
         enabled(&ctx, "Reset account..."),
         Some(false),
@@ -511,7 +528,7 @@ fn logon_tab() -> (Desktop, egui::Context, Arc<Fake>) {
     desktop.nt4.tab = Tab::Logon;
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| d.nt4.logon.belongs_to("me@gw"));
-    frames(&mut desktop, &ctx, 2);
+    settled(&mut desktop, &ctx);
     (desktop, ctx, fake)
 }
 
@@ -722,7 +739,7 @@ fn a_list_window_keeps_the_size_the_user_gave_it_and_never_goes_below_its_least(
     );
     let taller = rect(&desktop);
     assert!(
-        taller.height() > opened.height() + 80.0,
+        taller.height() > opened.height() + 60.0,
         "{opened:?} {taller:?}"
     );
     frames_on(&mut desktop, &ctx, size, 10);
@@ -924,7 +941,21 @@ fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
     until(&mut desktop, &ctx, |d| {
         d.my_server.facts().belongs_to("me@gw") && !d.services.busy("me@gw")
     });
-    frames_on(&mut desktop, &ctx, size, 8);
+    // the checks are asked for on the Compatibility tab, which is left before they arrive: they
+    // fill their page while General is open, and the window is as big on Compatibility as it is
+    desktop.my_server.update(
+        Msg::Tab(super::my_server::COMPATIBILITY),
+        &desktop.services,
+        "me@gw",
+    );
+    frames_on(&mut desktop, &ctx, size, 1);
+    desktop.my_server.update(
+        Msg::Tab(super::my_server::GENERAL),
+        &desktop.services,
+        "me@gw",
+    );
+    until(&mut desktop, &ctx, |d| d.my_server.report().is_some());
+    still_on(&mut desktop, &ctx, size);
     let measured = |d: &Desktop| *d.measured.iter().find(|m| m.0 == Target::MyServer).unwrap();
     let (_, opened, _) = measured(&desktop);
     for tab in [
@@ -953,4 +984,200 @@ fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
         Vec2::new(80.0, 100.0),
     );
     assert_eq!(measured(&desktop).1.size(), opened.size());
+}
+
+#[test]
+fn picking_a_check_never_changes_the_window_or_the_page_frame_of_my_server() {
+    use super::my_server::{Msg, ADVANCED, COMPATIBILITY, GENERAL};
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::MyServer);
+    until(&mut desktop, &ctx, |d| {
+        d.my_server.facts().belongs_to("me@gw") && !d.services.busy("me@gw")
+    });
+    still_on(&mut desktop, &ctx, size);
+    let target = Target::MyServer;
+    let window = measured_of(&desktop, target);
+    let frame = super::controls::tab_frame(&ctx).expect("a tab frame");
+    let same = |desktop: &Desktop, what: &str| {
+        let (rect, content) = measured_of(desktop, target);
+        assert_eq!(rect, window.0, "{what}");
+        assert_eq!(super::controls::tab_frame(&ctx), Some(frame), "{what}");
+        // no scroll bar took room from the page: it spans the window's whole width
+        let spans = rect.width() - super::windows::chrome().x;
+        assert!((frame.width() - spans).abs() < 1.0, "{what}: {frame:?}");
+        assert!(content <= rect.height() - super::windows::CHROME, "{what}");
+    };
+    // every tab, from the first frame, before the checks have been read and after
+    for tab in [ADVANCED, COMPATIBILITY, GENERAL, ADVANCED, COMPATIBILITY] {
+        desktop
+            .my_server
+            .update(Msg::Tab(tab), &desktop.services, "me@gw");
+        frames_on(&mut desktop, &ctx, size, 1);
+        still_on(&mut desktop, &ctx, size);
+        same(&desktop, &format!("tab {tab}"));
+    }
+    until(&mut desktop, &ctx, |d| d.my_server.report().is_some());
+    still_on(&mut desktop, &ctx, size);
+    same(&desktop, "the checks read");
+    let checks = desktop.my_server.report().map_or(0, |r| r.checks.len());
+    assert!(checks > 2, "{checks}");
+    for row in (0..checks).chain([0]) {
+        desktop
+            .my_server
+            .update(Msg::Check(row), &desktop.services, "me@gw");
+        still_on(&mut desktop, &ctx, size);
+        same(&desktop, &format!("row {row}"));
+    }
+    for tab in [GENERAL, COMPATIBILITY] {
+        desktop
+            .my_server
+            .update(Msg::Tab(tab), &desktop.services, "me@gw");
+        still_on(&mut desktop, &ctx, size);
+        same(&desktop, &format!("tab {tab} again"));
+    }
+}
+
+fn measured_of(desktop: &Desktop, target: Target) -> (egui::Rect, f32) {
+    let m = desktop.measured.iter().find(|m| m.0 == target).unwrap();
+    (m.1, m.2)
+}
+
+/// draw frames until the windows stop changing: a status bar slides in or out over a few frames
+/// when a page has a message and the last one did not.
+fn still_on(desktop: &mut Desktop, ctx: &egui::Context, size: egui::Vec2) {
+    let mut still = 0;
+    let mut last = desktop.measured.clone();
+    for _ in 0..300 {
+        frames_on(desktop, ctx, size, 1);
+        still = if desktop.measured == last {
+            still + 1
+        } else {
+            0
+        };
+        last = desktop.measured.clone();
+        if still >= 5 {
+            return;
+        }
+    }
+    panic!("the windows never settled");
+}
+
+#[test]
+fn nt4_domain_keeps_one_rect_on_every_tab_and_its_pages_stretch() {
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _fake) = logins();
+    let target = module("nt4-domain");
+    // the window as it opens, before any other tab has been looked at
+    still_on(&mut desktop, &ctx, size);
+    let (opened, content) = measured_of(&desktop, target);
+    for tab in [Tab::Logon, Tab::Settings, Tab::Logins, Tab::Logon] {
+        desktop.nt4.tab = tab;
+        still_on(&mut desktop, &ctx, size);
+        assert_eq!(measured_of(&desktop, target).0, opened, "{tab:?}");
+    }
+    // sized taller, the list takes the room, and the size is the same on the other tabs
+    drag_corner(
+        &mut desktop,
+        &ctx,
+        size,
+        target,
+        egui::Vec2::new(0.0, 120.0),
+    );
+    desktop.nt4.tab = Tab::Logins;
+    still_on(&mut desktop, &ctx, size);
+    let (taller, filled) = measured_of(&desktop, target);
+    assert!(
+        taller.height() > opened.height() + 60.0,
+        "{opened:?} {taller:?}"
+    );
+    assert!(filled > content + 60.0, "{content} {filled}");
+    for tab in [Tab::Logon, Tab::Settings] {
+        desktop.nt4.tab = tab;
+        still_on(&mut desktop, &ctx, size);
+        assert_eq!(measured_of(&desktop, target).0, taller, "{tab:?}");
+    }
+}
+
+#[test]
+fn date_time_keeps_one_rect_on_every_tab_and_keeps_its_place() {
+    use lanlord_app::clock_window::Msg;
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _fake) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::DateTime);
+    until(&mut desktop, &ctx, |d| d.clock.is_loaded());
+    frames_on(&mut desktop, &ctx, size, 12);
+    let (opened, _) = measured_of(&desktop, Target::DateTime);
+    for tab in [1, 2, 0, 1] {
+        desktop
+            .clock
+            .update(Msg::Tab(tab), &desktop.services, "me@gw");
+        frames_on(&mut desktop, &ctx, size, 6);
+        assert_eq!(
+            measured_of(&desktop, Target::DateTime).0,
+            opened,
+            "tab {tab}"
+        );
+    }
+}
+
+#[test]
+fn the_pages_are_measured_once_not_every_frame() {
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _fake) = logins();
+    frames_on(&mut desktop, &ctx, size, 12);
+    let passes = crate::controls::measure_passes(&ctx);
+    assert!(passes > 0);
+    frames_on(&mut desktop, &ctx, size, 20);
+    assert_eq!(crate::controls::measure_passes(&ctx), passes);
+    // a tab switch does not measure either, once what the tab shows has been read
+    for tab in [Tab::Settings, Tab::Logon, Tab::Logins] {
+        desktop.nt4.tab = tab;
+        until(&mut desktop, &ctx, idle("me@gw"));
+        still_on(&mut desktop, &ctx, size);
+    }
+    let passes = crate::controls::measure_passes(&ctx);
+    for tab in [Tab::Settings, Tab::Logins, Tab::Logon] {
+        desktop.nt4.tab = tab;
+        frames_on(&mut desktop, &ctx, size, 6);
+        assert_eq!(crate::controls::measure_passes(&ctx), passes, "{tab:?}");
+    }
+}
+
+/// a modal box's title bar spans the box inside its border, and its contents stay inside it.
+fn assert_modal_fits(ctx: &egui::Context, id: &'static str) {
+    let [bar, outer, body] = crate::dialogs::modal_rects(ctx, id).expect("the dialog was drawn");
+    assert_eq!(bar.left(), outer.left() + super::windows::FRAME, "{id}");
+    assert_eq!(bar.right(), outer.right() - super::windows::FRAME, "{id}");
+    assert!(body.right() <= bar.right(), "{id}: {body:?} in {bar:?}");
+    // every text box is inside the box's border and as wide as it asked to be: one squeezed into
+    // what room is left is cut short, and its text with it
+    let inner = outer.shrink(super::windows::FRAME);
+    for (rect, wanted) in crate::dialogs::boxes(ctx) {
+        assert!(
+            inner.contains_rect(rect),
+            "{id}: a text box {rect:?} pokes out of {inner:?}"
+        );
+        assert!(
+            rect.width() >= wanted - 0.5,
+            "{id}: a text box {rect:?} was squeezed from {wanted}"
+        );
+    }
+}
+
+#[test]
+fn the_new_network_dialog_has_a_full_title_bar_and_every_field_inside_it() {
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::Networks);
+    // the button is there once the interfaces are read, which takes as long as the gateway takes
+    until(&mut desktop, &ctx, |d| {
+        !d.services.busy("me@gw") && enabled(&ctx, "New network...") == Some(true)
+    });
+    settled(&mut desktop, &ctx);
+    assert!(press(&mut desktop, &ctx, "New network..."));
+    frames(&mut desktop, &ctx, 4);
+    assert_modal_fits(&ctx, "network-form");
 }

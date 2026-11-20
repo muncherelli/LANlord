@@ -140,6 +140,10 @@ pub struct MyServer {
     ssh_pick: Option<RootSsh>,
 }
 
+/// the height of the list of checks, and of the box holding the fix of the picked one.
+const COMPAT_ROWS: f32 = 150.0;
+const COMPAT_FIX: f32 = 54.0;
+
 impl MyServer {
     pub fn tab(&self) -> usize {
         self.tab
@@ -245,17 +249,24 @@ impl MyServer {
 
     /// the window's contents; `idle` when nothing runs against the server.
     pub fn view(&self, idle: bool) -> Vec<Node<Msg>> {
-        let page = match self.tab {
-            GENERAL => self.general(),
-            COMPATIBILITY => self.compatibility(idle),
-            _ => self.advanced(idle),
-        };
+        let mut pages = vec![
+            (GENERAL, self.general()),
+            (COMPATIBILITY, self.compatibility(idle)),
+            (ADVANCED, self.advanced(idle)),
+        ];
+        let at = pages
+            .iter()
+            .position(|(tab, _)| *tab == self.tab)
+            .unwrap_or(pages.len() - 1);
+        let (_, page) = pages.remove(at);
         vec![
             Node::Tabs {
+                key: view::pages_fingerprint(self.tab, &page, &pages),
                 titles: view::titles(&["General", "Advanced", "Compatibility"]),
                 current: self.tab,
                 pick: Msg::Tab,
                 body: page,
+                others: pages,
             },
             Node::Gap(6.0),
             if self.tab == COMPATIBILITY {
@@ -275,18 +286,15 @@ impl MyServer {
             idle && !self.checking,
             Msg::Recheck,
         ));
+        // the page has the same parts, of the same sizes, with or without the report and whatever
+        // is picked, so the window is the same size on every tab
         let Some(report) = &self.report else {
             let text = if self.checking {
                 "Checking what this server can do..."
             } else {
                 "This server has not been checked yet."
             };
-            return vec![
-                Node::Gap(4.0),
-                Node::Text(text.into()),
-                Node::Gap(4.0),
-                recheck,
-            ];
+            return Self::compat_page(text.into(), None, "Details", Vec::new(), None, recheck);
         };
         let what = report.environment.describe();
         let article = if what.starts_with(['a', 'e', 'i', 'o', 'u']) {
@@ -295,64 +303,104 @@ impl MyServer {
             "a"
         };
         let picked = self.picked.min(report.checks.len().saturating_sub(1));
-        let rows = report
-            .checks
-            .iter()
-            .map(|c| {
-                vec![
-                    mark(c.status).to_string(),
-                    c.title.clone(),
-                    compat::explain(&c.id),
-                ]
-            })
-            .collect();
-        let mut page = vec![
-            Node::Text(format!("This server is {article} {what}.")),
-            Node::Gap(4.0),
+        let table = Some(Node::Table(view::Table {
+            id: "compat-checks",
+            headings: vec!["", "Check", "Needed for"],
+            widths: vec![36.0, 150.0],
+            rows: report
+                .checks
+                .iter()
+                .map(|c| {
+                    vec![
+                        mark(c.status).to_string(),
+                        c.title.clone(),
+                        compat::explain(&c.id),
+                    ]
+                })
+                .collect(),
+            selected: Some(picked),
+            bad: report
+                .checks
+                .iter()
+                .map(|c| c.status == Status::Fail)
+                .collect(),
+            height: COMPAT_ROWS,
+            select: Msg::Check,
+        }));
+        let (title, mut detail, fix) = match report.checks.get(picked) {
+            Some(c) => (
+                c.title.as_str(),
+                vec![Node::Text(c.detail.clone())],
+                c.fix.as_deref(),
+            ),
+            None => ("Details", Vec::new(), None),
+        };
+        if fix.is_some() && report.environment.is_lxc() {
+            detail.push(Node::Text(
+                "These changes are made on the Proxmox host, and the host must restart this \
+                 container before they take effect. LANlord cannot do it from inside."
+                    .into(),
+            ));
+        }
+        Self::compat_page(
+            format!("This server is {article} {what}."),
+            table,
+            title,
+            detail,
+            fix,
+            recheck,
+        )
+    }
+
+    /// the Compatibility page: what the server is, the list of checks, the details of the picked
+    /// one in a box of 3 rows, and its fix in a box of its own.
+    fn compat_page(
+        intro: String,
+        table: Option<Node<Msg>>,
+        title: &str,
+        detail: Vec<Node<Msg>>,
+        fix: Option<&str>,
+        recheck: Node<Msg>,
+    ) -> Vec<Node<Msg>> {
+        let table = table.unwrap_or_else(|| {
             Node::Table(view::Table {
                 id: "compat-checks",
                 headings: vec!["", "Check", "Needed for"],
                 widths: vec![36.0, 150.0],
-                rows,
-                selected: Some(picked),
-                bad: report
-                    .checks
-                    .iter()
-                    .map(|c| c.status == Status::Fail)
-                    .collect(),
-                height: 150.0,
+                rows: Vec::new(),
+                selected: None,
+                bad: Vec::new(),
+                height: COMPAT_ROWS,
                 select: Msg::Check,
-            }),
+            })
+        });
+        vec![
+            Node::Text(intro),
             Node::Gap(4.0),
-        ];
-        if let Some(check) = report.checks.get(picked) {
-            let mut body = vec![Node::Text(check.detail.clone())];
-            if let Some(fix) = &check.fix {
-                body.push(Node::Gap(4.0));
-                body.push(Node::Text("To fix it (you can copy this):".into()));
-                body.push(Node::Lines {
-                    id: "compat-fix",
-                    lines: fix.lines().map(str::to_string).collect(),
-                    height: 90.0,
-                });
-                if report.environment.is_lxc() {
-                    body.push(Node::Gap(4.0));
-                    body.push(Node::Text(
-                        "These changes are made on the Proxmox host, and the host must restart \
-                         this container before they take effect. LANlord cannot do it from \
-                         inside."
-                            .into(),
-                    ));
-                }
-            }
-            page.push(Node::Group {
-                title: check.title.clone(),
-                body,
-            });
-            page.push(Node::Gap(4.0));
-        }
-        page.push(recheck);
-        page
+            table,
+            Node::Gap(4.0),
+            Node::Details {
+                title: title.into(),
+                lines: 3,
+                body: detail,
+            },
+            Node::Gap(4.0),
+            Node::Text(if fix.is_some() {
+                "To fix it (you can copy this):".into()
+            } else {
+                " ".into()
+            }),
+            Node::Lines {
+                id: "compat-fix",
+                lines: fix
+                    .map(|f| f.lines().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                height: COMPAT_FIX,
+                enabled: fix.is_some(),
+            },
+            Node::Gap(4.0),
+            recheck,
+        ]
     }
 
     fn general(&self) -> Vec<Node<Msg>> {
@@ -507,6 +555,7 @@ impl MyServer {
                 id: "purge-lines",
                 lines: purge.preview.data.clone().unwrap_or_default(),
                 height: 150.0,
+                enabled: true,
             },
             Node::Gap(4.0),
             Node::Check {
@@ -833,7 +882,14 @@ mod tests {
     /// the page of the open tab.
     fn page(nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
         match nodes.into_iter().next() {
-            Some(Node::Tabs { body, .. }) => body,
+            // the box of details shows the picked check, as a plain group
+            Some(Node::Tabs { body, .. }) => body
+                .into_iter()
+                .map(|n| match n {
+                    Node::Details { title, body, .. } => Node::Group { title, body },
+                    n => n,
+                })
+                .collect(),
             _ => panic!("no tabs"),
         }
     }
@@ -885,10 +941,7 @@ mod tests {
         let fix = body
             .iter()
             .find_map(|n| match n {
-                Node::Group { body, .. } => body.iter().find_map(|n| match n {
-                    Node::Lines { lines, .. } => Some(lines.join("\n")),
-                    _ => None,
-                }),
+                Node::Lines { lines, .. } => Some(lines.join("\n")),
                 _ => None,
             })
             .expect("the fix box");
@@ -914,12 +967,35 @@ mod tests {
                         .collect::<Vec<_>>()
                         .join("\n"),
                 ),
+                Node::Lines { lines, .. } => Some(lines.join("\n")),
                 _ => None,
             })
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("lxc.cgroup2.devices.allow: c 10:200 rwm"));
         assert!(text.contains("host must restart"));
+    }
+
+    #[test]
+    fn the_fix_box_is_disabled_unless_the_picked_check_has_a_fix() {
+        let (mut window, services, _) = compat_window(UNPRIVILEGED);
+        let fix_box = |window: &MyServer| {
+            page(window.view(true))
+                .into_iter()
+                .find_map(|n| match n {
+                    Node::Lines { enabled, lines, .. } => Some((enabled, lines.len())),
+                    _ => None,
+                })
+                .expect("the fix box")
+        };
+        let checks = window.report().expect("a report").checks.clone();
+        let with = checks.iter().position(|c| c.fix.is_some()).expect("a fix");
+        let without = checks.iter().position(|c| c.fix.is_none()).expect("no fix");
+        window.update(Msg::Check(with), &services, "me@gw");
+        let (enabled, lines) = fix_box(&window);
+        assert!(enabled && lines > 0);
+        window.update(Msg::Check(without), &services, "me@gw");
+        assert_eq!(fix_box(&window), (false, 0));
     }
 
     #[test]

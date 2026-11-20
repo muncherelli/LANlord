@@ -183,9 +183,11 @@ fn find<'a, M>(nodes: &'a [Node<M>], path: &[usize]) -> Option<&'a Node<M>> {
         return Some(node);
     }
     match node {
-        Node::Group { body, .. } | Node::Tabs { body, .. } | Node::Scroll { body, .. } => {
-            find(body, rest)
-        }
+        Node::Group { body, .. }
+        | Node::Details { body, .. }
+        | Node::SameSize { body, .. }
+        | Node::Tabs { body, .. }
+        | Node::Scroll { body, .. } => find(body, rest),
         Node::Danger(body) | Node::Row(body) | Node::Disabled(body) => find(body, rest),
         // the next step of a path through columns packs the column and the node in it
         Node::Columns(columns) => {
@@ -499,7 +501,7 @@ impl<'a> Painter<'a> {
             }
             Node::Labelled { body, .. } => self.label_column.get() + self.natural_width(body),
             Node::Table(table) => table_width(table),
-            Node::Group { title, body } => {
+            Node::Group { title, body } | Node::Details { title, body, .. } => {
                 self.natural_width(body).max(title.chars().count() as u16) + BOXED
             }
             Node::Danger(body) => self.natural_width(body) + BOXED,
@@ -515,6 +517,10 @@ impl<'a> Painter<'a> {
                 size: Size::Points(w),
                 ..
             } => cols(*w),
+            Node::Input {
+                size: Size::Text(t),
+                ..
+            } => t.chars().count() as u16 + 2,
             Node::Input { .. } | Node::Secret { .. } => 32,
             Node::Row(body) => {
                 body.iter().map(|n| self.node_width(n)).sum::<u16>()
@@ -522,7 +528,7 @@ impl<'a> Painter<'a> {
             }
             Node::Description(t) | Node::Code(t) => longest(t) + 2 * INSET,
             Node::TextArea { hint, .. } => longest(hint) + 2 * INSET,
-            Node::Disabled(body) => self.natural_width(body),
+            Node::Disabled(body) | Node::SameSize { body, .. } => self.natural_width(body),
             _ => 0,
         }
     }
@@ -590,8 +596,13 @@ impl<'a> Painter<'a> {
             Node::Text(text) => wrap(text, width).len() as u16,
             Node::Bullet(text) => wrap(text, width.saturating_sub(BULLET)).len() as u16,
             Node::Gap(height) => rows(*height),
-            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(BOXED)),
+            // a details box is as tall as what it holds here: a terminal has no rows to spare for
+            // the fixed height it has on a desktop
+            Node::Group { body, .. } | Node::Details { body, .. } => {
+                2 + inner(body, width.saturating_sub(BOXED))
+            }
             Node::Table(table) => rows(table.height).max(3),
+            // the open page only: a terminal has no room to spare for the tallest of the others
             Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(2)),
             Node::Danger(body) => 2 + inner(body, width.saturating_sub(BOXED)),
             Node::Lines { height, .. } => rows(*height).max(2),
@@ -628,7 +639,7 @@ impl<'a> Painter<'a> {
                     1
                 }
             }
-            Node::Disabled(body) => inner(body, width),
+            Node::Disabled(body) | Node::SameSize { body, .. } => inner(body, width),
             Node::Labelled { body, .. } => inner(
                 body,
                 width.saturating_sub(self.label_column.get().min(label_share(width))),
@@ -793,7 +804,7 @@ impl<'a> Painter<'a> {
                     self.st(SHADOW, GRAY),
                 );
             }
-            Node::Group { title, body } => {
+            Node::Group { title, body } | Node::Details { title, body, .. } => {
                 frame_box(buf, area, p, SHADOW, Some(title));
                 self.draw(body, boxed(area), buf, path);
             }
@@ -1105,6 +1116,7 @@ impl<'a> Painter<'a> {
                 let rest = Rect::new(area.x + width, area.y, area.width - width, area.height);
                 self.draw(body, rest, buf, path);
             }
+            Node::SameSize { body, .. } => self.draw(body, area, buf, path),
             Node::Disabled(body) => {
                 let before = self.regions.len();
                 self.draw(body, area, buf, path);
@@ -1324,17 +1336,23 @@ impl<'a> Painter<'a> {
                     self.push(line, path, Part::Row(n), false);
                 }
             }
-            Node::Lines { lines, .. } => {
-                // no inset: the lines may be columns under buttons, and nothing is selected
-                let inner = self.sunken(area, buf, WHITE);
+            Node::Lines { lines, enabled, .. } => {
+                // no inset: the lines may be columns under buttons, and nothing is selected; a
+                // box that is not in use has a gray face and dim text
+                let (fg, bg) = if *enabled {
+                    (BLACK, WHITE)
+                } else {
+                    (SHADOW, GRAY)
+                };
+                let inner = self.sunken(area, buf, bg);
                 let key = scroll_key(path);
                 self.scrolled_lines(
-                    lines.iter().map(|l| (l.as_str(), BLACK)),
+                    lines.iter().map(|l| (l.as_str(), fg)),
                     inner,
                     buf,
                     &key,
                     false,
-                    WHITE,
+                    bg,
                 );
                 self.push(inner, path, Part::Scroll, false);
             }
@@ -1441,35 +1459,47 @@ impl<'a> Painter<'a> {
             }
             Node::Scroll { body, .. } => {
                 let inner = self.sunken(area, buf, WHITE);
-                self.push(inner, path, Part::Scroll, false);
-                let total = self.height_at(body, inner.width, None, path);
-                let offset = self
-                    .state
-                    .scroll
-                    .get(&scroll_key(path))
-                    .copied()
-                    .unwrap_or(0)
-                    .min(usize::from(total.saturating_sub(inner.height)))
-                    as u16;
-                if total <= inner.height {
-                    self.draw(body, inner, buf, path);
-                    return;
-                }
-                let mut tall = Buffer::empty(Rect::new(0, 0, inner.width, total));
-                let whole = tall.area;
-                fill(&mut tall, whole, p, WHITE);
-                let mut inside = Painter::new(p, self.state, self.active);
-                inside.draw(body, whole, &mut tall, path);
-                blit(&tall, offset, inner, buf);
-                for mut region in inside.regions {
-                    if region.rect.y < offset || region.rect.bottom() > offset + inner.height {
-                        continue;
-                    }
-                    region.rect.x += inner.x;
-                    region.rect.y = region.rect.y - offset + inner.y;
-                    self.regions.push(region);
-                }
+                self.scrolled_body(body, inner, buf, path, WHITE);
             }
+        }
+    }
+
+    /// `body` in `inner`, scrolled by the wheel when it is taller than the room.
+    fn scrolled_body<M>(
+        &mut self,
+        body: &[Node<M>],
+        inner: Rect,
+        buf: &mut Buffer,
+        path: &[usize],
+        bg: Rgb,
+    ) {
+        let p = self.palette;
+        self.push(inner, path, Part::Scroll, false);
+        let total = self.height_at(body, inner.width, None, path);
+        let offset = self
+            .state
+            .scroll
+            .get(&scroll_key(path))
+            .copied()
+            .unwrap_or(0)
+            .min(usize::from(total.saturating_sub(inner.height))) as u16;
+        if total <= inner.height {
+            self.draw(body, inner, buf, path);
+            return;
+        }
+        let mut tall = Buffer::empty(Rect::new(0, 0, inner.width, total));
+        let whole = tall.area;
+        fill(&mut tall, whole, p, bg);
+        let mut inside = Painter::new(p, self.state, self.active);
+        inside.draw(body, whole, &mut tall, path);
+        blit(&tall, offset, inner, buf);
+        for mut region in inside.regions {
+            if region.rect.y < offset || region.rect.bottom() > offset + inner.height {
+                continue;
+            }
+            region.rect.x += inner.x;
+            region.rect.y = region.rect.y - offset + inner.y;
+            self.regions.push(region);
         }
     }
 
@@ -1495,7 +1525,7 @@ impl<'a> Painter<'a> {
                     | Node::ClockFace { .. }
                     | Node::KeyedInput(_)
                     | Node::Input {
-                        size: Size::Points(_),
+                        size: Size::Points(_) | Size::Text(_),
                         ..
                     }
                     | Node::Secret {
@@ -1597,6 +1627,10 @@ impl<'a> Painter<'a> {
                     size: Size::Points(w),
                     ..
                 } => Some(cols(*w)),
+                Node::Input {
+                    size: Size::Text(t),
+                    ..
+                } => Some(t.chars().count() as u16 + 2),
                 Node::Icon(_) => Some(1),
                 Node::Spin { text, .. } => Some(spin_cells(text) + 4),
                 Node::ClockFace { .. } => Some(8),
@@ -1700,6 +1734,8 @@ impl<'a> Painter<'a> {
 fn size_cells(size: &Size, room: u16) -> u16 {
     match size {
         Size::Points(width) => cols(*width).min(room),
+        // the text and the two cells the box's frame and cursor take
+        Size::Text(text) => (text.chars().count() as u16 + 2).min(room),
         Size::FillLess(less) => room.saturating_sub(cols(*less)).max(4).min(room),
     }
 }
@@ -1744,7 +1780,7 @@ const BULLET: u16 = 4;
 fn fills<M>(node: &Node<M>) -> bool {
     match node {
         Node::Log { height: None, .. } | Node::List { .. } | Node::TextArea { .. } => true,
-        Node::Group { body, .. } => body.iter().any(fills),
+        Node::Group { body, .. } | Node::Details { body, .. } => body.iter().any(fills),
         _ => false,
     }
 }
@@ -1956,8 +1992,10 @@ mod tests {
             Node::Heading("Accounts".into()),
             Node::Tabs {
                 titles: lanlord_app::view::titles(&["General", "Advanced"]),
+                key: 0,
                 current: 0,
                 pick: Msg::Tab,
+                others: Vec::new(),
                 body: vec![
                     Node::List {
                         id: "people",

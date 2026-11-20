@@ -3,18 +3,18 @@
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
 │ │┌ Connection ──────────────────────┐ ┌ Activity ─────────────────────────┐│ │
 │ ││ Status:    Connected             │ │           Sent         Received   ││ │
-│ ││ Inter┌ retronet Properties ────────────────────────────── _ □ × ┐,011  ││ │
-│ ││ Speed│ Change this network. Saving applies it to the server.    │0     ││ │
-│ ││ Addre│ Name       retronet                                      │──────┘│ │
-│ │└──────│ Interface   eth1 ▼                                       │       │ │
-│ │┌ LANlo│ Address     172.16.120.1/22                              │──────┐│ │
-│ ││ DHCP │ DHCP range  172.16.120.100    to      172.16.120.200     │      ││ │
-│ ││ Clien│ Lease time  7d                                           │      ││ │
-│ │└──────│ DNS zone    retronet                                     │──────┘│ │
-│ └───────│ MTU         the card's own                               │───────┘ │
-│         │ Leave the DHCP range empty for a network without DHCP.   │efresh ] │
-│         │        [ Remove network... ] [ Save & apply ] [ Cancel ] │ork... ] │
-│ ┌ Networ└──────────────────────────────────────────────────────────┘───────┐ │
+│ ││ Interf┌ retronet Properties ──────────────────────────── _ □ × ┐0,011  ││ │
+│ ││ Speed:│ Change this network. Saving applies it to the server.  │90     ││ │
+│ ││ Addres│ Name       retronet                                    │───────┘│ │
+│ │└───────│ Interface   eth1 ▼                                     │        │ │
+│ │┌ LANlor│ Address     172.16.120.1/22                            │───────┐│ │
+│ ││ DHCP r│ DHCP range  172.16.120.100   to    172.16.120.200      │       ││ │
+│ ││ Client│ Lease time  7d                                         │       ││ │
+│ │└───────│ DNS zone    retronet                                   │───────┘│ │
+│ └────────│ MTU         the card's own                             │────────┘ │
+│          │ Leave the DHCP range empty for a network without DHCP. │Refresh ] │
+│          │      [ Remove network... ] [ Save & apply ] [ Cancel ] │work... ] │
+│ ┌ Network└────────────────────────────────────────────────────────┘────────┐ │
 │ │  eth0   192.0.2.10/24   MTU 1500   Connected                             │ │
 │ │  eth1   172.16.120.1/22   MTU 1450   Connected                           │ │
 │ └──────────────────────────────────────────────────────────────────────────┘ │

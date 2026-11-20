@@ -15,10 +15,10 @@
    Se│  [ ] ◆ Time Server (NTP)                        ?  Docker, 1+ network   │
      │                                                                         │
      │                                                                         │
-     │  Baseline for the gateway: its state record and message of the day.     │
-   Co│ [ Details... ]   [ Compatibility... ]                                   │
+     │ ┌ Gateway ────────────────────────────────────────────────────────────┐ │
+   Co│ │ Baseline for the gateway: its state record and message of the day.  │ │
+     │ └─────────────────────────────────────────────────────────────────────┘ │
+     │ [ Details... ]   [ Compatibility... ]                                   │
      │                                        [ < Back ] [ Next > ] [ Cancel ] │
      └─────────────────────────────────────────────────────────────────────────┘
-
-
 [ L LANlord ] [ ◆ LANlord Components ]                                12:00 PM

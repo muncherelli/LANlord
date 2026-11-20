@@ -1,24 +1,24 @@
-             ┌ ≡ My Server ─────────────────────────────────────────────── _ × ┐
-      ≡      │ [ General ][ Advanced ][ Compatibility ]                        │
-  My Server  │ ┌─────────────────────────────────────────────────────────────┐ │
-             │ │┌ Computer ─────────────────────────────────────────────────┐│ │
-             │ ││ Server       demo                                         ││ │
-      □      │ ││ Signed in as root                                         ││ │
-   Networks  │ ││ System       Arch Linux                                   ││ │
-             │ ││ Kernel       Linux 6.12.7-arch1-1                         ││ │
-             │ ││ Up for       3 days, 4 hours, 5 minutes                   ││ │
-      ►      │ ││ Processor    Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz     ││ │
-   Gateway   │ ││ Cores        2                                            ││ │
-             │ ││ Threads      4                                            ││ │
-             │ ││ Memory       4096 MB, 3328 MB free                        ││ │
-      ▦      │ ││ LANlord      Installed, version 0.1.0                     ││ │
-   Settings  │ ││ Last applied 2026-11-16 02:41 UTC                         ││ │
-             │ │└───────────────────────────────────────────────────────────┘│ │
-             │ └─────────────────────────────────────────────────────────────┘ │
-      >      │                                                                 │
-   Console   │                                                                 │
-             │                                                                 │
-             │                                                                 │
-             │ up to date                                                      │
-             └─────────────────────────────────────────────────────────────────┘
+            ┌ ≡ My Server ──────────────────────────────────────────────── _ × ┐
+      ≡     │ [ General ][ Advanced ][ Compatibility ]                         │
+  My Server │ ┌──────────────────────────────────────────────────────────────┐ │
+            │ │┌ Computer ──────────────────────────────────────────────────┐│ │
+            │ ││ Server       demo                                          ││ │
+      □     │ ││ Signed in as root                                          ││ │
+   Networks │ ││ System       Arch Linux                                    ││ │
+            │ ││ Kernel       Linux 6.12.7-arch1-1                          ││ │
+            │ ││ Up for       3 days, 4 hours, 5 minutes                    ││ │
+      ►     │ ││ Processor    Intel(R) Core(TM) i7-4790K CPU @ 4.00GHz      ││ │
+   Gateway  │ ││ Cores        2                                             ││ │
+            │ ││ Threads      4                                             ││ │
+            │ ││ Memory       4096 MB, 3328 MB free                         ││ │
+      ▦     │ ││ LANlord      Installed, version 0.1.0                      ││ │
+   Settings │ ││ Last applied 2026-11-16 02:41 UTC                          ││ │
+            │ │└────────────────────────────────────────────────────────────┘│ │
+            │ └──────────────────────────────────────────────────────────────┘ │
+      >     │                                                                  │
+   Console  │                                                                  │
+            │                                                                  │
+            │                                                                  │
+            │ up to date                                                       │
+            └──────────────────────────────────────────────────────────────────┘
 [ L LANlord ] [ ≡ My Server ]                                         12:00 PM

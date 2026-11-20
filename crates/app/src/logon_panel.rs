@@ -126,17 +126,25 @@ impl LogonPanel {
 
     /// the panel for `host`; loads the scripts when it shows another host's.
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
+        if let Some(host) = host {
+            if let Some(name) = self.want.take() {
+                self.selected = name;
+                self.reload(services, host);
+            } else if self.remote.wants_load(host, self.dirty()) {
+                self.reload(services, host);
+            }
+        }
+        self.preview(services, host)
+    }
+
+    /// the panel as it is, without asking the server for anything: for measuring a page that is
+    /// not open.
+    pub fn preview(&self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
             return vec![Node::Text(
                 "No host yet. Add one in the Hosts window first.".into(),
             )];
         };
-        if let Some(name) = self.want.take() {
-            self.selected = name;
-            self.reload(services, host);
-        } else if self.remote.wants_load(host, self.dirty()) {
-            self.reload(services, host);
-        }
         let idle = !services.busy(host) && !self.remote.busy();
         let names = self.entries();
         let on_gateway = |name: &String| {

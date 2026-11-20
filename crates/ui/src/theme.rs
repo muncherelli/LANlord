@@ -186,6 +186,9 @@ pub fn apply(ctx: &egui::Context) {
             handle_min_length: SCROLL_BAR_WIDTH,
             ..egui::style::ScrollStyle::solid()
         };
+        // nt4 had no animation: a scroll bar coming or going takes its whole width at once, not a
+        // fraction of it that depends on how long the frames take, so sizes stay whole pixels
+        style.animation_time = 0.0;
     });
 }
 
@@ -197,12 +200,40 @@ pub mod probe {
     use eframe::egui::{Context, Id, Rect, Ui};
 
     type Buttons = HashMap<String, (Rect, bool)>;
+    type Cells = HashMap<String, (Rect, Rect)>;
 
     pub fn record(ui: &Ui, text: &str, rect: Rect, enabled: bool) {
+        // a page being measured is not on the screen
+        if ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(Id::unique("tabs-measuring")))
+            == Some(true)
+        {
+            return;
+        }
         ui.ctx().data_mut(|d| {
             let buttons: &mut Buttons = d.get_temp_mut_or_default(Id::unique("test-buttons"));
             buttons.insert(text.to_string(), (rect, enabled));
         });
+    }
+
+    /// a table cell's text and the column it sits in.
+    pub fn record_cell(ui: &Ui, text: &str, text_rect: Rect, column: Rect) {
+        if text.is_empty() {
+            return;
+        }
+        ui.ctx().data_mut(|d| {
+            let cells: &mut Cells = d.get_temp_mut_or_default(Id::unique("test-cells"));
+            cells.insert(text.to_string(), (text_rect, column));
+        });
+    }
+
+    /// where the text of a table cell was drawn last, and the column it was drawn in.
+    pub fn find_cell(ctx: &Context, text: &str) -> Option<(Rect, Rect)> {
+        ctx.data(|d| {
+            d.get_temp::<Cells>(Id::unique("test-cells"))
+                .and_then(|c| c.get(text).copied())
+        })
     }
 
     /// where the button labelled `text` was drawn last, and whether it was enabled.
@@ -217,6 +248,13 @@ pub mod probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_animates_so_sizes_do_not_depend_on_timing() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        assert_eq!(ctx.global_style().animation_time, 0.0);
+    }
 
     #[test]
     fn scroll_bars_are_solid_sixteen_wide_and_always_there() {
