@@ -59,7 +59,7 @@ rpc() {
     --option='client min protocol=NT1' --option='client max protocol=NT1' \
     --option='client use spnego=no' --option='client ntlmv2 auth=no' \
     --option='client lanman auth=no' --option='client plaintext auth=no' \
-    127.0.0.1 -c "$1"
+    ${RPC_EXTRA:-} 127.0.0.1 -c "$1"
 }
 rpc 'createdomuser ws1$'
 # level 24 carries the new password encrypted with the smb session key, like nt4 does
