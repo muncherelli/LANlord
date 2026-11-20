@@ -1,3 +1,4 @@
-// the window manager's pure parts. the window-host PR wires them in; until then nothing calls them
+// the window manager's pure parts. the geometry is not called yet: the window-host change wires it in
 #[allow(dead_code)]
 mod geometry;
+pub(crate) mod host;
