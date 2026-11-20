@@ -40,7 +40,13 @@ mkdir -p "$private"
 # one writer at a time: hooks, apply and start all edit the same files. the wait is bounded so a
 # hook never hangs smbd (which may hold a passdb transaction) behind a long apply
 exec 9> "$private/.lock"
-flock -w 60 9 || { echo "lanlord-user is busy" >&2; exit 1; }
+# (busybox flock has no -w, so it polls)
+tries=0
+until flock -n 9; do
+  tries=$((tries + 1))
+  [[ $tries -lt 60 ]] || { echo "lanlord-user is busy" >&2; exit 1; }
+  sleep 1
+done
 
 valid() {
   case "$1" in
