@@ -316,11 +316,17 @@ fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
     let Some(r) = ctx.memory(|m| m.area_rect(Id::unique(id))) else {
         return false;
     };
+    // a press that has not moved sizes nothing
     let Some(p) = ctx.input(|i| {
         i.pointer
             .primary_down()
             .then(|| i.pointer.press_origin())
             .flatten()
+            .filter(|p| {
+                i.pointer
+                    .latest_pos()
+                    .is_some_and(|now| now.distance(*p) >= 1.0)
+            })
     }) else {
         return false;
     };
@@ -332,6 +338,151 @@ fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
         && ctx
             .layer_id_at(p)
             .is_none_or(|layer| layer.id == Id::unique(id))
+}
+
+/// which of a window's edges a press at `p` takes hold of, by the zones egui grabs: a few pixels
+/// either side of an edge, and a larger square around a corner.
+fn grab_zones(ctx: &egui::Context, rect: Rect, p: Pos2) -> (bool, bool, bool, bool) {
+    let interaction = ctx.global_style().interaction.clone();
+    let (side, corner) = (
+        interaction.resize_grab_radius_side,
+        interaction.resize_grab_radius_corner,
+    );
+    let near = |a: f32, b: f32, r: f32| (a - b).abs() <= r;
+    let mut zones = [
+        near(p.x, rect.left(), side),
+        near(p.x, rect.right(), side),
+        near(p.y, rect.top(), side),
+        near(p.y, rect.bottom(), side),
+    ];
+    // a corner takes both its edges
+    for (x, y, h, v) in [
+        (rect.left(), rect.top(), 0, 2),
+        (rect.right(), rect.top(), 1, 2),
+        (rect.left(), rect.bottom(), 0, 3),
+        (rect.right(), rect.bottom(), 1, 3),
+    ] {
+        if near(p.x, x, corner) && near(p.y, y, corner) {
+            zones[h] = true;
+            zones[v] = true;
+        }
+    }
+    (zones[0], zones[1], zones[2], zones[3])
+}
+
+/// a drag on a window's edge or corner. a drag on the left or top edge moves the window's origin
+/// as well as its size, and egui puts the window at the pointer whatever its least size is, so a
+/// window already at its least slid sideways and its far edge moved. this holds the far edge.
+#[derive(Clone, Copy)]
+struct EdgeDrag {
+    /// where the window was when the drag began
+    start: Rect,
+    left: bool,
+    top: bool,
+    /// the width and height the window has turned out to be when it was no smaller than it goes,
+    /// nothing while it is as small as the pointer asks
+    least: Vec2,
+}
+
+impl EdgeDrag {
+    /// where the window goes this frame: the pointer's place, held so that the far edges stay
+    /// where they were once the window cannot get any smaller.
+    fn held(self, pos: Pos2) -> Pos2 {
+        let least = self.least;
+        Pos2::new(
+            if self.left {
+                pos.x.min(self.start.right() - least.x)
+            } else {
+                pos.x
+            },
+            if self.top {
+                pos.y.min(self.start.bottom() - least.y)
+            } else {
+                pos.y
+            },
+        )
+    }
+
+    /// put the window where the drag holds it this frame: its place now, as egui has moved it on
+    /// from the pointer. where that is, if the window is on screen.
+    fn place<'a>(
+        self,
+        ctx: &egui::Context,
+        id: &str,
+        window: egui::Window<'a>,
+    ) -> (egui::Window<'a>, Option<Pos2>) {
+        match egui::AreaState::load(ctx, layer(id).id) {
+            Some(state) => {
+                let pos = state.left_top_pos();
+                (window.current_pos(self.held(pos)), Some(pos))
+            }
+            None => (window, None),
+        }
+    }
+
+    /// learn from the window drawn: when it is bigger than the pointer asked for it is as small as
+    /// it goes, so it is held by its far edge at that size, which is more than its least when a
+    /// control will not narrow. it is drawn again if that moved it. a window egui has kept on the
+    /// desktop is not asking for anything.
+    fn after(mut self, ctx: &egui::Context, key: Id, pos: Pos2, drawn: Rect, area: Rect) {
+        let asked = self.start.max - pos;
+        let held_in = |at: f32, edge: f32| at > edge + 0.5;
+        let least = Vec2::new(
+            if self.left && held_in(pos.x, area.left()) && drawn.width() > asked.x + 0.5 {
+                drawn.width()
+            } else {
+                0.0
+            },
+            if self.top && held_in(pos.y, area.top()) && drawn.height() > asked.y + 0.5 {
+                drawn.height()
+            } else {
+                0.0
+            },
+        );
+        if least == self.least {
+            return;
+        }
+        self.least = least;
+        ctx.data_mut(|d| d.insert_temp(key, self));
+        let moved = (drawn.max - self.start.max).abs();
+        if (self.left && moved.x > 0.5) || (self.top && moved.y > 0.5) {
+            ctx.request_discard("window held by its far edge");
+        }
+    }
+
+    /// the drag, noted when it begins and followed until the button is let go.
+    fn follow(ctx: &egui::Context, id: &str, key: Id) -> Option<Self> {
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            ctx.data_mut(|d| d.remove::<Self>(key));
+            return None;
+        }
+        if let Some(drag) = ctx.data(|d| d.get_temp::<Self>(key)) {
+            return Some(drag);
+        }
+        // only a press that begins on the edge: egui grabs a few pixels either side of it
+        let start = ctx.memory(|m| m.area_rect(Id::unique(id)))?;
+        let p = ctx.input(|i| {
+            i.pointer
+                .primary_pressed()
+                .then(|| i.pointer.press_origin())
+        })??;
+        let (left, right, top, bottom) = grab_zones(ctx, start, p);
+        let on_it = (left || right || top || bottom)
+            && ctx
+                .layer_id_at(p)
+                .is_none_or(|layer| layer.id == Id::unique(id));
+        if !on_it {
+            return None;
+        }
+        let drag = EdgeDrag {
+            start,
+            left,
+            top,
+            least: Vec2::ZERO,
+        };
+        ctx.data_mut(|d| d.insert_temp(key, drag));
+        Some(drag)
+    }
 }
 
 /// keep what a growable window's contents were, to share its room out the next frame, and draw
@@ -414,6 +565,45 @@ fn place_dialog<'a>(window: egui::Window<'a>, place: Placement, seen: Dialog) ->
     }
 }
 
+/// what a dialog was last frame. a window that is not on screen yet, or whose place was forgotten,
+/// opens in the middle again.
+fn dialog_seen(ctx: &egui::Context, id: &str, key: Id) -> Dialog {
+    if ctx.memory(|m| m.area_rect(Id::unique(id))).is_none() {
+        return Dialog::default();
+    }
+    ctx.data(|d| d.get_temp(key)).unwrap_or_default()
+}
+
+/// keep where a dialog was drawn, and take the tab key press that drew it, for the next frame.
+fn remember_dialog(ctx: &egui::Context, key: Id, seen: Option<Dialog>, drawn: Rect) {
+    let tabbed = controls::take_tabbed(ctx);
+    if let Some(seen) = seen {
+        ctx.data_mut(|d| d.insert_temp(key, seen.after(drawn, tabbed)));
+    }
+}
+
+/// the room the contents took. a fixed window keeps its width: the scroll bar takes room from the
+/// contents, and a control that will not narrow must not widen the window.
+fn taken_by(inner: &Ui, fixed: bool, width: f32) -> Rect {
+    let mut taken = inner.min_rect();
+    if fixed {
+        taken.set_width(width);
+    }
+    taken
+}
+
+/// how many times egui may draw a window in one frame. when a resize begins egui draws it again,
+/// and a window held by its far edge is drawn once more after that: allow for both while a window
+/// is held, and only then.
+fn allow_passes(ctx: &egui::Context, held: bool) {
+    if held || !ctx.input(|i| i.pointer.primary_down()) {
+        let passes = if held { 3 } else { 2 };
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(passes).unwrap_or(o.max_passes)
+        });
+    }
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -464,11 +654,7 @@ pub fn show(
                 .inner_margin(Margin::same(FRAME as i8)),
         );
     let dialog_key = Id::unique(("window-dialog", id));
-    let mut seen: Dialog = ctx.data(|d| d.get_temp(dialog_key)).unwrap_or_default();
-    if ctx.memory(|m| m.area_rect(Id::unique(id))).is_none() {
-        // not on screen yet, or its place was forgotten: it opens in the middle again
-        seen = Dialog::default();
-    }
+    let seen = dialog_seen(ctx, id, dialog_key);
     window = if dialog {
         place_dialog(window, place, seen)
     } else {
@@ -478,8 +664,21 @@ pub fn show(
             None => open_size(window, place, least, before, fit, floor),
         }
     };
+    let held_height = sized || (fixed && place.height.is_some());
+    // a drag on the left or top edge keeps the far edges where they are
+    let edge_key = Id::unique(("window-edge", id));
+    let edge = EdgeDrag::follow(ctx, id, edge_key).filter(|_| growable);
+    // egui draws a window again when a resize begins, and the window held by its far edge is drawn
+    // once more after that: allow for both while a window is held, and only then
+    allow_passes(ctx, edge.is_some());
+    let mut wanted = None;
+    if let Some(drag) = edge {
+        (window, wanted) = drag.place(ctx, id, window);
+    }
     let mut bar_rect = Rect::NOTHING;
+    let mut origin = Pos2::ZERO;
     let shown = window.show(ctx, |ui| {
+        origin = ui.cursor().min;
         // the title bar spans the window inside its 3 pixel border; the contents sit in
         // an 8 pixel margin on every side
         if dialog {
@@ -496,10 +695,11 @@ pub fn show(
         // could never grow
         // a growable window gives its contents the room it has, so they follow its size
         let held = ui.available_height();
-        let room = if sized || (fixed && place.height.is_some()) {
-            held.clamp(40.0, (max_height - CHROME).max(40.0))
+        let most = (max_height - CHROME).max(40.0);
+        let room = if held_height {
+            held.clamp(40.0, most)
         } else {
-            (max_height - CHROME).max(40.0)
+            most
         };
         // the room above what the contents need on their own, for the growable part to take
         let extra = spare_room(before, sized, fit, room, floor);
@@ -507,6 +707,10 @@ pub fn show(
         let scroll_room = (room - reserve).max(40.0);
         let from = ui.cursor().min;
         let room_width = ui.available_width();
+        // when a resize begins egui lays the contents out once at the narrowest the window goes
+        // and throws that pass away, to learn how far they can narrow. what the contents keep
+        // from it (scroll bars, rooms) must not outlive it, so it is laid out under its own ids
+        let sizing = growable && ui.is_sizing_pass();
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_size(
@@ -518,16 +722,17 @@ pub fn show(
         let ((_, spare), pinned) = view::pin_status(ctx, || {
             controls::lend_room(ctx, extra, || {
                 egui::ScrollArea::vertical()
-                    .id_salt(("window-scroll", id))
+                    .id_salt(("window-scroll", id, sizing))
                     .max_height(scroll_room)
                     .min_scrolled_height((least.y - CHROME - reserve).max(0.0))
-                    .auto_shrink([false, !sized && !(fixed && place.height.is_some())])
+                    .auto_shrink([false, !held_height])
                     .show(&mut inner, |ui| {
                         let framed = egui::Frame::new()
                             .inner_margin(Margin::same(MARGIN as i8))
                             .show(ui, |ui| {
                                 ui.spacing_mut().item_spacing = spacing;
-                                content(ui)
+                                // what the contents keep under these ids is not shared with the narrow pass
+                                ui.push_id(("sizing", sizing), content).inner
                             });
                         content_height = framed.response.rect.height();
                         // near empty contents leave the window the height it is meant to open at
@@ -538,17 +743,13 @@ pub fn show(
                     });
             })
         });
-        if growable {
+        if growable && !sizing {
             let natural = content_height - (extra - spare.extra) + reserve;
             remember_room(ctx, id, key, before, natural, spare, fit);
         }
         // a fixed window keeps its width: the scroll bar takes room from the contents, and a
         // control that will not narrow must not widen the window
-        let mut taken = inner.min_rect();
-        if fixed {
-            taken.set_width(room_width);
-        }
-        ui.allocate_rect(taken, Sense::hover());
+        ui.allocate_rect(taken_by(&inner, fixed, room_width), Sense::hover());
         let bar = Rect::from_min_max(
             bar_top,
             Pos2::new(ui.min_rect().right(), bar_top.y + TITLE_BAR),
@@ -558,19 +759,24 @@ pub fn show(
         // the status bar, if the contents end in one, sits below the scrolling part: on the
         // bottom edge of the window, and always in view
         let strip = pinned_strip(ui, pinned.as_ref());
-        ctx.data_mut(|d| d.insert_temp(pin_key, strip));
+        if !sizing {
+            ctx.data_mut(|d| d.insert_temp(pin_key, strip));
+        }
         content_height += strip;
     })?;
-    let tabbed = controls::take_tabbed(ctx);
-    if dialog {
-        ctx.data_mut(|d| d.insert_temp(dialog_key, seen.after(shown.response.rect, tabbed)));
+    // where the window was drawn. egui has moved its place on by now, to where a drag puts it
+    // for the next frame, so its response is a frame ahead of the contents drawn in it
+    let drawn = Rect::from_min_size(origin - Vec2::splat(FRAME), shown.response.rect.size());
+    if let Some((drag, pos)) = edge.zip(wanted) {
+        drag.after(ctx, edge_key, pos, drawn, place.area);
     }
+    remember_dialog(ctx, dialog_key, dialog.then_some(seen), drawn);
     let painter = ctx.layer_painter(shown.response.layer_id);
-    bevel(&painter, shown.response.rect, true);
+    bevel(&painter, drawn, true);
     Some(Shown {
         actions,
         clicked: shown.response.is_pointer_button_down_on(),
-        rect: shown.response.rect,
+        rect: drawn,
         bar: bar_rect,
         content: content_height,
     })
@@ -1078,5 +1284,84 @@ mod tests {
         assert_eq!(dialog.stage, Pivot::Middle);
         let grown = dialog.after(Rect::from_min_size(rect.min, Vec2::new(300.0, 260.0)), true);
         assert_eq!(grown.steady, 0, "a new size starts the count again");
+    }
+
+    #[test]
+    fn a_right_edge_drag_down_to_the_least_width_keeps_the_scroll_and_the_focus() {
+        use eframe::egui::{
+            Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, TextEdit, TouchPhase,
+        };
+        let ctx = egui::Context::default();
+        let field = Id::unique("field");
+        let mut text = String::new();
+        let (mut rect, mut marker) = (Rect::NOTHING, 0.0);
+        let mut frame = |events: Vec<Event>| {
+            testkit::run(&ctx, events, |ui| {
+                let place = Placement {
+                    icon: "t",
+                    fresh: false,
+                    start: Pos2::new(100.0, 50.0),
+                    width: 400.0,
+                    area: Rect::from_min_size(Pos2::ZERO, testkit::SCREEN),
+                    growable: true,
+                    fixed: false,
+                    floor: 0.0,
+                    height: Some(200.0),
+                };
+                let shown = show(ui.ctx(), "r", "R", place, true, false, |ui| {
+                    ui.add(TextEdit::singleline(&mut text).id(field));
+                    ui.allocate_space(Vec2::new(10.0, 1000.0));
+                    // where the end of the contents is, which moves as they scroll
+                    marker = ui.cursor().min.y;
+                });
+                rect = shown.map_or(rect, |s| s.rect);
+            });
+            (marker, ctx.memory(|m| m.has_focus(field)), rect)
+        };
+        for _ in 0..8 {
+            frame(Vec::new());
+        }
+        ctx.memory_mut(|m| m.request_focus(field));
+        let (top, _, rect) = frame(Vec::new());
+        let inside = rect.center();
+        frame(vec![Event::PointerMoved(inside)]);
+        frame(vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Wheel,
+            delta: Vec2::new(0.0, -100.0),
+            modifiers: Modifiers::NONE,
+        }]);
+        for _ in 0..90 {
+            frame(Vec::new());
+        }
+        let (scrolled, focused, _) = frame(Vec::new());
+        assert!(scrolled < top - 50.0, "the contents did not scroll");
+        assert!(focused, "the field has no focus to keep");
+        let edge = Pos2::new(rect.right() - 1.0, rect.center().y);
+        let button = |pressed| Event::PointerButton {
+            pos: edge,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(vec![Event::PointerMoved(edge)]);
+        frame(vec![button(true)]);
+        // the resize begins with a short step, and one far step then takes the window to its least
+        // width in a single frame
+        frame(vec![Event::PointerMoved(edge - Vec2::new(4.0, 0.0))]);
+        frame(Vec::new());
+        let to = Pos2::new(rect.left() + 10.0, edge.y);
+        let mut kept = vec![frame(vec![Event::PointerMoved(to)])];
+        for _ in 0..4 {
+            kept.push(frame(Vec::new()));
+        }
+        for (i, (y, focus, _)) in kept.into_iter().enumerate() {
+            assert_eq!(
+                y, scrolled,
+                "frame {i}: the scroll offset was lost (top {top})"
+            );
+            assert!(focus, "frame {i}: the focus was lost");
+        }
     }
 }
