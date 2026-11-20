@@ -60,6 +60,7 @@ pub fn timeout_ms(operation: &Operation) -> i32 {
         | Operation::Power { .. }
         | Operation::ClockApply { .. }
         | Operation::ChangeInternet { .. }
+        | Operation::ChangeSshAccess { .. }
         | Operation::ChangeNetworks { .. }
         | Operation::Purge { .. }
         | Operation::Run { .. }
@@ -187,6 +188,12 @@ mod tests {
             Operation::Bootstrap,
             Operation::ChangeInternet {
                 change: lanlord_model::internet::Change::Deny {
+                    network: "lab".into(),
+                    mac: "02:00:00:00:00:01".into(),
+                },
+            },
+            Operation::ChangeSshAccess {
+                change: lanlord_model::ssh_access::Change::Deny {
                     network: "lab".into(),
                     mac: "02:00:00:00:00:01".into(),
                 },

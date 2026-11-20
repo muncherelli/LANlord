@@ -238,7 +238,7 @@ pub fn modules(enabled: Option<&Selection>) -> Vec<usize> {
 /// gateway itself (server mode, which is also what the web ui is).
 pub fn app_title(local: bool) -> String {
     let side = if local { "Server" } else { "Client" };
-    format!("LANlord {side} v{}", env!("CARGO_PKG_VERSION"))
+    format!("LANlord {side} v{}", lanlord_model::version::display())
 }
 
 /// the title of the whole app: its name and version, plus the server once someone is signed in.
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn the_title_names_the_side_and_the_server() {
-        let version = env!("CARGO_PKG_VERSION");
+        let version = lanlord_model::version::display();
         assert_eq!(
             window_title(false, None),
             format!("LANlord Client v{version}")

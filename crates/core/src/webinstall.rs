@@ -91,7 +91,28 @@ impl WebSource {
         web_dist: Option<PathBuf>,
         auth_helper: Option<PathBuf>,
     ) -> Result<Self> {
+        Self::choose_for(
+            lanlord_model::version::is_development(),
+            server_binary,
+            web_dist,
+            auth_helper,
+        )
+    }
+
+    /// `choose`, with whether this is a development build spelled out. a development build has
+    /// no release of its own to download, so it must be told where the files are.
+    fn choose_for(
+        development: bool,
+        server_binary: Option<PathBuf>,
+        web_dist: Option<PathBuf>,
+        auth_helper: Option<PathBuf>,
+    ) -> Result<Self> {
         match (server_binary, web_dist, auth_helper) {
+            (None, None, None) if development => bail!(
+                "this is a development build ({}), and there is no release to download for it; \
+                 pass --server-binary, --web-dist and --auth-helper, or use a release build",
+                lanlord_model::version::display()
+            ),
             (None, None, None) => Ok(Self::release()),
             (Some(server_binary), Some(web_dist), Some(auth_helper)) => {
                 let local = Local {
@@ -594,9 +615,20 @@ mod tests {
         std::fs::write(dir.join("helper"), "").unwrap();
         let some = |name: &str| Some(dir.join(name));
 
+        // no flags on a development build: refused, and the message says what to pass
+        let err = WebSource::choose_for(true, None, None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("development build"), "{err}");
+        assert!(
+            err.contains("--server-binary, --web-dist and --auth-helper"),
+            "{err}"
+        );
+        // the flags still work on one
+        assert!(WebSource::choose_for(true, some("lanlord"), some("dist"), some("helper")).is_ok());
         // no flags: this version's release
         assert_eq!(
-            WebSource::choose(None, None, None).unwrap(),
+            WebSource::choose_for(false, None, None, None).unwrap(),
             WebSource::Release {
                 tag: format!("v{}", env!("CARGO_PKG_VERSION"))
             }

@@ -379,6 +379,10 @@ fn dispatch(
             internet::change(session, host, &key()?, change, ask)?;
             Reply::Done
         }
+        Operation::ChangeSshAccess { change } => {
+            internet::change_ssh(session, host, &key()?, change, ask)?;
+            Reply::Done
+        }
         Operation::ChangeNetworks { edit } => {
             lan::change(session, host, &key()?, edit, ask)?;
             Reply::Done
@@ -1156,6 +1160,13 @@ esac"#,
             },
         };
         assert!(is_denied(&go(&dana, internet)));
+        let ssh = Operation::ChangeSshAccess {
+            change: lanlord_model::ssh_access::Change::Network {
+                network: "lab".into(),
+                on: true,
+            },
+        };
+        assert!(is_denied(&go(&dana, ssh)));
         let networks = Operation::ChangeNetworks {
             edit: Box::new(lanlord_model::lan_edit::Edit::Remove("lab".into())),
         };

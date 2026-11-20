@@ -9,12 +9,16 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use lanlord_model::clock;
+use lanlord_model::internet::host_line;
+use lanlord_model::internet::{parse_duration, parse_until_local, Expiry};
 use lanlord_model::lan_edit::{external_interface, network_users, Edit};
 use lanlord_model::lan_networks::{self, LanNetwork};
+use lanlord_model::lockout::{self, Lockout};
 use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::networks::{self, Draft, NetworkRow, Role};
 use lanlord_model::server::Iface;
 use lanlord_model::settings::Settings;
+use lanlord_model::ssh_access::{Change as SshChange, SshAccess};
 
 use crate::ask::AskPassword;
 use crate::gateway::Gateway;
@@ -35,6 +39,14 @@ pub enum Field {
     Lease,
     Zone,
     Mtu,
+}
+
+/// a text field of the form that allows a computer to ssh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshField {
+    Mac,
+    Name,
+    When,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +73,25 @@ pub enum Msg {
     /// check the form, save the network and apply.
     Save,
     CloseForm,
+    /// switch ssh to the server on or off for the network of the tab that is open.
+    SetSsh(bool),
+    /// pick a computer of the list allowed to ssh on its own.
+    SshPick(usize),
+    /// open the form that allows one more computer.
+    SshAdd,
+    /// a field of that form was edited.
+    SshEdit(SshField, String),
+    /// the form's "for how long" choice: 0 always, 1 for a while, 2 until a time.
+    SshHow(usize),
+    /// check the form, store the grant and apply.
+    SshSave,
+    SshClose,
+    /// take the picked computer's grant away.
+    SshRemove,
+    /// go on with the ssh change that would cut this connection off.
+    ConfirmLockout,
+    /// leave the settings as they are.
+    CancelLockout,
     /// ask to remove the network whose form is open.
     Remove,
     ConfirmRemove,
@@ -120,6 +151,59 @@ struct NetForm {
     error: Option<String>,
 }
 
+/// the form that allows one computer to ssh to the server, for good or for a while.
+struct SshForm {
+    /// the network the computer is on.
+    network: String,
+    mac: String,
+    name: String,
+    /// 0 always, 1 for a while (`when` is a length like 1h), 2 until a time (`when` is
+    /// like 2030-01-31 09:00).
+    how: usize,
+    when: String,
+    touched: bool,
+    error: Option<String>,
+}
+
+impl SshForm {
+    /// the change this form asks for, or why it cannot be made. `now` is unix seconds.
+    fn change(&self, now: i64) -> Result<SshChange, String> {
+        let expiry = match self.how {
+            0 => Expiry::Never,
+            1 => Expiry::At(now + parse_duration(&self.when).map_err(|e| e.to_string())?),
+            _ => Expiry::At(parse_until_local(&self.when).map_err(|e| e.to_string())?),
+        };
+        let name = self.name.trim();
+        let change = SshChange::Allow {
+            network: self.network.clone(),
+            mac: self.mac.trim().to_string(),
+            name: (!name.is_empty()).then(|| name.to_string()),
+            expiry,
+        };
+        change
+            .check(now)
+            .map_err(|(field, why)| format!("{field} {why}"))?;
+        Ok(change)
+    }
+}
+
+/// an ssh change that would cut this connection off, held until the person says yes.
+#[derive(Clone)]
+struct Held {
+    host: String,
+    lockout: Lockout,
+    change: SshChange,
+    doing: String,
+    done: String,
+}
+
+/// seconds since 1970 on this computer's clock.
+pub(crate) fn unix_now() -> i64 {
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 /// read the networks, the interfaces and the lanlord networks of the settings.
 fn read(gateway: &dyn Gateway, target: &str, ask: AskPassword) -> Result<Networks> {
     let facts = gateway.server_facts(target, ask)?;
@@ -176,6 +260,14 @@ pub struct NetworksWindow {
     form: Option<NetForm>,
     /// the network a confirmation to remove is open for.
     confirm: Option<String>,
+    /// the form that allows a computer to ssh.
+    ssh_form: Option<SshForm>,
+    /// the computer picked in the list allowed to ssh, of the tab that is open.
+    ssh_pick: Option<usize>,
+    /// the ssh change a confirmation is open for, because it would cut this connection off.
+    held: Option<Held>,
+    /// set by the job of an ssh change that was held instead of made.
+    cut_off: Arc<Mutex<Option<Held>>>,
     /// a save or a removal is on its way, so its form stays open until it is known how it went.
     saving: bool,
     /// a change was stored since `take_saved` was last asked.
@@ -218,7 +310,10 @@ impl NetworksWindow {
 
     /// is a form (new network or properties) or the remove confirmation open?
     pub fn editing(&self) -> bool {
-        self.form.is_some() || self.confirm.is_some()
+        self.form.is_some()
+            || self.confirm.is_some()
+            || self.ssh_form.is_some()
+            || self.held.is_some()
     }
 
     pub fn poll(&mut self) {
@@ -227,16 +322,25 @@ impl NetworksWindow {
         if self.saving && !self.rows.busy() {
             self.saving = false;
             self.confirm = None;
+            self.ssh_pick = None;
             let warning = self.warning.lock().ok().and_then(|mut w| w.take());
-            if let Some(text) = warning {
+            let cut_off = self.cut_off.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(held) = cut_off {
+                // nothing was changed: the person is asked first
+                self.held = Some(held);
+                self.rows.say(false, "waiting for your answer");
+            } else if let Some(text) = warning {
                 // the change is stored and the list read again; only the apply failed
                 self.form = None;
                 self.saved_now = true;
                 self.rows.say(true, text);
             } else if arrived {
                 self.form = None;
+                self.ssh_form = None;
                 self.saved_now = true;
             } else if let (Some(form), Some((true, text))) = (&mut self.form, &self.rows.note) {
+                form.error = Some(text.clone());
+            } else if let (Some(form), Some((true, text))) = (&mut self.ssh_form, &self.rows.note) {
                 form.error = Some(text.clone());
             }
         }
@@ -275,6 +379,175 @@ impl NetworksWindow {
             read(gateway, &target, ask)
         });
         self.saving = self.rows.track(host, job, doing, done, false);
+    }
+
+    /// store the ssh switch of the network of the open tab, apply the docker and dns modules (the
+    /// firewall) and read the networks again.
+    fn switch_ssh(&mut self, services: &Services, host: &str, on: bool) {
+        let Some(row) = self.chosen().filter(|r| r.role == Role::Lanlord) else {
+            return;
+        };
+        let change = SshChange::Network {
+            network: row.name.clone(),
+            on,
+        };
+        let (doing, done) = if on {
+            (
+                "allowing ssh to the server and applying...",
+                "ssh to this server is on",
+            )
+        } else {
+            (
+                "stopping ssh to the server and applying...",
+                "ssh to this server is off",
+            )
+        };
+        self.change_ssh(services, host, change, doing, done);
+    }
+
+    /// store one ssh change, apply the docker and dns modules and read the networks again. a
+    /// change that takes access away from the network this connection comes from is held first.
+    fn change_ssh(
+        &mut self,
+        services: &Services,
+        host: &str,
+        change: SshChange,
+        doing: &str,
+        done: &str,
+    ) {
+        self.send_ssh(services, host, change, doing, done, false);
+    }
+
+    fn send_ssh(
+        &mut self,
+        services: &Services,
+        host: &str,
+        change: SshChange,
+        doing: &str,
+        done: &str,
+        confirmed: bool,
+    ) {
+        let target = host.to_string();
+        let cut_off = self.cut_off.clone();
+        let (said_doing, said_done) = (doing.to_string(), done.to_string());
+        let job = services.spawn(host, move |gateway, ask| {
+            if !confirmed && lockout::takes_access(&change) {
+                // no ssh connection at all (the browser) is nothing to cut; one that cannot be
+                // placed is asked about, like one that would be cut
+                let held = match gateway.client_spot(&target) {
+                    Ok(None) => None,
+                    Ok(Some(spot)) => {
+                        let networks = read(gateway, &target, ask)?;
+                        lockout::after(&spot, &networks.lan, &change, unix_now())
+                            .ok()
+                            .flatten()
+                            .map(|held| (held, networks))
+                    }
+                    Err(_) => Some((Lockout::unknown(None), read(gateway, &target, ask)?)),
+                };
+                if let Some((lockout, networks)) = held {
+                    if let Ok(mut slot) = cut_off.lock() {
+                        *slot = Some(Held {
+                            host: target.clone(),
+                            lockout,
+                            change: change.clone(),
+                            doing: said_doing.clone(),
+                            done: said_done.clone(),
+                        });
+                        return Ok(networks);
+                    }
+                }
+            }
+            gateway.change_ssh_access(&target, &change, ask)?;
+            read(gateway, &target, ask)
+        });
+        self.saving = self.rows.track(host, job, doing, done, false);
+    }
+
+    /// the computers of the open tab that are allowed to ssh on their own.
+    fn ssh_hosts(&self) -> Vec<lanlord_model::internet::AllowedHost> {
+        self.chosen()
+            .and_then(|r| r.ssh.as_ref())
+            .map_or_else(Vec::new, |s| s.allow.clone())
+    }
+
+    fn ssh_update(&mut self, msg: Msg, services: &Services, host: &str) {
+        match msg {
+            Msg::SshPick(i) => self.ssh_pick = Some(i).filter(|i| *i < self.ssh_hosts().len()),
+            Msg::SshAdd if self.can_edit(services, host) => {
+                let network = self
+                    .chosen()
+                    .filter(|r| r.role == Role::Lanlord)
+                    .map(|r| r.name.clone());
+                if let Some(network) = network {
+                    self.ssh_form = Some(SshForm {
+                        network,
+                        mac: String::new(),
+                        name: String::new(),
+                        how: 0,
+                        when: String::new(),
+                        touched: false,
+                        error: None,
+                    });
+                }
+            }
+            Msg::SshEdit(field, text) => {
+                if let Some(form) = &mut self.ssh_form {
+                    match field {
+                        SshField::Mac => form.mac = text,
+                        SshField::Name => form.name = text,
+                        SshField::When => form.when = text,
+                    }
+                    form.touched = true;
+                    form.error = None;
+                }
+            }
+            Msg::SshHow(how) => {
+                if let Some(form) = &mut self.ssh_form {
+                    form.how = how.min(2);
+                    form.when.clear();
+                    form.error = None;
+                }
+            }
+            Msg::SshSave if self.can_edit(services, host) => {
+                let made = self.ssh_form.as_ref().map(|f| f.change(unix_now()));
+                match made {
+                    Some(Ok(change)) => self.change_ssh(
+                        services,
+                        host,
+                        change,
+                        "allowing the computer and applying...",
+                        "computer allowed to ssh",
+                    ),
+                    Some(Err(why)) => {
+                        if let Some(form) = &mut self.ssh_form {
+                            form.touched = true;
+                            form.error = Some(why);
+                        }
+                    }
+                    None => {}
+                }
+            }
+            Msg::SshClose => self.ssh_form = None,
+            Msg::SshRemove if self.can_edit(services, host) => {
+                let picked = self.ssh_pick.and_then(|i| self.ssh_hosts().get(i).cloned());
+                let network = self.chosen().map(|r| r.name.clone());
+                if let (Some(entry), Some(network)) = (picked, network) {
+                    let change = SshChange::Deny {
+                        network,
+                        mac: entry.mac,
+                    };
+                    self.change_ssh(
+                        services,
+                        host,
+                        change,
+                        "taking the computer's ssh access away and applying...",
+                        "computer no longer allowed to ssh",
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 
     /// may a network be added or changed now: the networks are read, and nothing is running.
@@ -449,12 +722,19 @@ impl NetworksWindow {
         let chosen = &rows[self.selected];
         let status = self.status_of(chosen);
         let lanlord = chosen.role == Role::Lanlord;
-        let body = sized(chosen, status, error.as_deref());
+        let ssh_free = self.can_edit(services, host);
+        let pick = self.ssh_pick;
+        let body = sized(chosen, status, error.as_deref(), ssh_free, pick);
         let others: Vec<(usize, Vec<Node<Msg>>)> = rows
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != self.selected)
-            .map(|(i, r)| (i, sized(r, self.status_of(r), error.as_deref())))
+            .map(|(i, r)| {
+                (
+                    i,
+                    sized(r, self.status_of(r), error.as_deref(), ssh_free, pick),
+                )
+            })
             .collect();
         let tabs = Node::Tabs {
             titles,
@@ -508,7 +788,10 @@ impl NetworksWindow {
 
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str, now: f64) -> Option<Ask> {
         match msg {
-            Msg::Tab(i) => self.selected = i,
+            Msg::Tab(i) => {
+                self.selected = i;
+                self.ssh_pick = None;
+            }
             Msg::Refresh if !self.reading() => {
                 self.reload(services, host);
                 self.reload_status(services, host, now);
@@ -549,6 +832,23 @@ impl NetworksWindow {
                     }
                 }
             },
+            Msg::SetSsh(on) if self.can_edit(services, host) => self.switch_ssh(services, host, on),
+            Msg::SshPick(_)
+            | Msg::SshAdd
+            | Msg::SshEdit(..)
+            | Msg::SshHow(_)
+            | Msg::SshSave
+            | Msg::SshClose
+            | Msg::SshRemove => self.ssh_update(msg, services, host),
+            Msg::ConfirmLockout if self.can_edit(services, host) => {
+                if let Some(held) = self.held.take() {
+                    self.send_ssh(services, host, held.change, &held.doing, &held.done, true);
+                }
+            }
+            Msg::CancelLockout => {
+                self.held = None;
+                self.rows.say(false, "nothing was changed");
+            }
             Msg::CloseForm => self.form = None,
             Msg::Remove => {
                 self.confirm = self.form.as_ref().and_then(|f| f.existing.clone());
@@ -565,6 +865,8 @@ impl NetworksWindow {
             | Msg::New
             | Msg::PickInterface(_)
             | Msg::Save
+            | Msg::SetSsh(_)
+            | Msg::ConfirmLockout
             | Msg::ConfirmRemove => {}
         }
         None
@@ -611,6 +913,12 @@ impl NetworksWindow {
                 None => connection_dialog(status, &|secs| zoned_time(secs, zone.as_ref())),
             });
         }
+        if let Some(held) = &self.held {
+            return Some(self.lockout_dialog(held));
+        }
+        if let Some(form) = &self.ssh_form {
+            return Some(self.ssh_dialog(form));
+        }
         if let Some(name) = &self.confirm {
             return Some(self.remove_dialog(name));
         }
@@ -618,6 +926,122 @@ impl NetworksWindow {
             return Some(self.form_dialog(form));
         }
         self.details.as_ref().map(properties_dialog)
+    }
+
+    /// the question before an ssh change that would end this connection: what happens, how to
+    /// keep the connection, and the choice to go on or leave things as they are.
+    fn lockout_dialog(&self, held: &Held) -> Dialog<Msg> {
+        let busy = self.rows.busy();
+        let mut sentence = held.lockout.sentence();
+        if let Some(first) = sentence.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        let mut body = vec![Node::Alert(match &held.lockout.network {
+            Some(network) => format!("Cut off this connection ({network})?"),
+            None => "Can't tell where you are connected from".into(),
+        })];
+        body.push(Node::Gap(4.0));
+        body.push(Node::Text(format!("{sentence}.")));
+        body.push(Node::Gap(4.0));
+        body.push(Node::Text(if held.lockout.is_unknown() {
+            "Go on only if you can still reach the server another way.".into()
+        } else {
+            "To keep it, allow this computer (or the whole network) first; the command line \
+             does the same with:"
+                .into()
+        }));
+        let keep = held
+            .lockout
+            .commands(&held.host)
+            .into_iter()
+            .map(Node::Text)
+            .collect::<Vec<_>>();
+        body.extend(keep);
+        body.push(Node::Gap(6.0));
+        body.push(Node::Buttons(vec![
+            Button::new("Cancel", !busy, Msg::CancelLockout),
+            Button::new("Go on anyway", !busy, Msg::ConfirmLockout),
+        ]));
+        Dialog {
+            id: "ssh-lockout",
+            title: "Ssh to this server".into(),
+            body,
+            escape: Some(Msg::CancelLockout),
+        }
+    }
+
+    /// the form that allows one computer to ssh to the server: its mac, a name for people and
+    /// how long, like the command line's `ssh NAME allow MAC`.
+    fn ssh_dialog(&self, form: &SshForm) -> Dialog<Msg> {
+        let busy = self.rows.busy();
+        let input = |field: SshField, value: &str, hint: &str| Node::Input {
+            value: value.to_string(),
+            size: Size::FillLess(10.0),
+            focus: false,
+            hint: hint.to_string(),
+            edit: Box::new(move |text| Msg::SshEdit(field, text)),
+            enter: None,
+        };
+        let labelled = |label: &str, body: Node<Msg>| Node::Labelled {
+            label: label.into(),
+            body: vec![body],
+        };
+        let how = Node::Choice {
+            id: "ssh-how",
+            current: ["Always", "For a while", "Until a time"][form.how.min(2)].into(),
+            width: 160.0,
+            options: vec![
+                (0, "Always".into()),
+                (1, "For a while".into()),
+                (2, "Until a time".into()),
+            ],
+            pick: Msg::SshHow,
+        };
+        let mut body = vec![
+            Node::Text(format!(
+                "Let one computer on {} reach this server over ssh, even while the network is off.",
+                form.network
+            )),
+            Node::Gap(6.0),
+            labelled(
+                "MAC address:",
+                input(SshField::Mac, &form.mac, "like 02:00:00:00:00:0a"),
+            ),
+            labelled("Name:", input(SshField::Name, &form.name, "optional")),
+            labelled("Allowed:", how),
+        ];
+        match form.how {
+            1 => body.push(labelled(
+                "For:",
+                input(SshField::When, &form.when, "like 30m, 1h or 1d12h"),
+            )),
+            2 => body.push(labelled(
+                "Until:",
+                input(SshField::When, &form.when, "like 2030-01-31 09:00"),
+            )),
+            _ => {}
+        }
+        body.push(Node::Gap(6.0));
+        let problem = form.error.clone().or_else(|| {
+            form.touched
+                .then(|| form.change(unix_now()).err())
+                .flatten()
+        });
+        body.push(Node::Warning(problem.clone().unwrap_or_default()));
+        body.push(Node::Buttons(vec![
+            Button::new("Cancel", !busy, Msg::SshClose),
+            Button::new(
+                "Allow",
+                !busy && form.touched && problem.is_none(),
+                Msg::SshSave,
+            ),
+        ]));
+        Dialog {
+            id: "ssh-allow",
+            title: "Allow a computer to ssh".into(),
+            body,
+            escape: Some(Msg::SshClose),
+        }
     }
 
     fn remove_dialog(&self, name: &str) -> Dialog<Msg> {
@@ -895,9 +1319,13 @@ fn sized(
     row: &NetworkRow,
     status: Option<&InterfaceStatus>,
     error: Option<&str>,
+    ssh_free: bool,
+    pick: Option<usize>,
 ) -> Vec<Node<Msg>> {
     let lanlord = NetworkRow {
         role: Role::Lanlord,
+        // the switch is on every LANlord page, so the window has room for it on each tab
+        ssh: row.ssh.clone().or_else(|| Some(SshAccess::default())),
         ..row.clone()
     };
     // what the page shows: the row, the status text and the error text
@@ -913,14 +1341,20 @@ fn sized(
     };
     vec![Node::SameSize {
         key,
-        body: page(row, status, error),
-        others: vec![page(&lanlord, status, error)],
+        body: page(row, status, error, ssh_free, pick),
+        others: vec![page(&lanlord, status, error, ssh_free, pick)],
     }]
 }
 
 /// one network's tab: Connection and Activity like a connection's Status box, and the lanlord
 /// network's dhcp.
-fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>) -> Vec<Node<Msg>> {
+fn page(
+    row: &NetworkRow,
+    status: Option<&InterfaceStatus>,
+    error: Option<&str>,
+    ssh_free: bool,
+    pick: Option<usize>,
+) -> Vec<Node<Msg>> {
     let state = status.map_or(row.link.clone(), |s| s.connection.text().to_string());
     let connection = Node::Group {
         title: "Connection".into(),
@@ -953,7 +1387,7 @@ fn page(row: &NetworkRow, status: Option<&InterfaceStatus>, error: Option<&str>)
     }
     if row.role == Role::Lanlord {
         nodes.push(Node::Gap(6.0));
-        nodes.push(lanlord_network(row));
+        nodes.push(lanlord_network(row, ssh_free, pick));
     }
     nodes
 }
@@ -989,15 +1423,44 @@ fn activity(status: &InterfaceStatus) -> Node<Msg> {
 /// the text of the longest address a DHCP range box has to show.
 const LONGEST_ADDRESS: &str = "255.255.255.255";
 
-fn lanlord_network(row: &NetworkRow) -> Node<Msg> {
+fn lanlord_network(row: &NetworkRow, ssh_free: bool, pick: Option<usize>) -> Node<Msg> {
     let dhcp = row.dhcp.clone().unwrap_or_else(|| "not served".into());
     let clients = row.leases.map_or("-".to_string(), |n| n.to_string());
+    let mut body = vec![
+        Node::field("DHCP range:", dhcp),
+        Node::field("Clients with a lease:", clients),
+    ];
+    if let Some(ssh) = &row.ssh {
+        // the switch for the whole network, and below it the computers allowed on their own
+        body.push(Node::Gap(4.0));
+        body.push(Node::Check {
+            label: "Allow ssh to this server".into(),
+            checked: ssh.enabled,
+            enabled: ssh_free,
+            toggle: Msg::SetSsh(!ssh.enabled),
+        });
+        // the computers allowed on their own, a list with Add and Remove under it
+        body.push(Node::Text("Computers allowed to ssh on their own:".into()));
+        body.push(Node::List {
+            id: "ssh-allowed",
+            min_height: 18.0 * 3.0,
+            items: ssh.allow.iter().map(host_line).collect(),
+            selected: pick.filter(|i| *i < ssh.allow.len()),
+            empty: "no computers".into(),
+            select: Msg::SshPick,
+        });
+        body.push(Node::Toolbar(vec![
+            Button::new("Add...", ssh_free, Msg::SshAdd),
+            Button::new(
+                "Remove",
+                ssh_free && pick.is_some_and(|i| i < ssh.allow.len()),
+                Msg::SshRemove,
+            ),
+        ]));
+    }
     Node::Group {
         title: "LANlord network".into(),
-        body: vec![
-            Node::field("DHCP range:", dhcp),
-            Node::field("Clients with a lease:", clients),
-        ],
+        body,
     }
 }
 
@@ -1357,6 +1820,262 @@ mod tests {
             .contains(&"networks gw changed the network lab".into()));
         assert!(fake.stored.lock().unwrap().contains("mtu: 1400"));
         assert!(!window.editing());
+    }
+
+    #[test]
+    fn the_ssh_switch_of_a_network_is_stored_applied_and_shown() {
+        let allowed =
+            format!("{LAB}    ssh_allow:\n      - {{mac: \"02:00:00:00:00:0a\", name: dana-pc}}\n");
+        let (fake, services) = services_with(&allowed);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        // the switch (as the toggle it would send) and the computers allowed on their own
+        let shown = |window: &NetworksWindow| {
+            let Node::Group { body, .. } = lanlord_network(window.chosen().unwrap(), true, None)
+            else {
+                panic!("a group");
+            };
+            let toggle = body.iter().find_map(|n| match n {
+                Node::Check { label, toggle, .. } if label == "Allow ssh to this server" => {
+                    Some(toggle.clone())
+                }
+                _ => None,
+            });
+            (toggle, body.len())
+        };
+        let (toggle, rows) = shown(&window);
+        assert_eq!(toggle, Some(Msg::SetSsh(true)));
+        // dhcp, clients, the gap, the switch, the list's heading, the list and its buttons
+        assert_eq!(rows, 7);
+        window.update(Msg::SetSsh(true), &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(fake
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("ssh-access gw turned ssh")));
+        assert!(fake.stored.lock().unwrap().contains("ssh: true"));
+        assert_eq!(shown(&window).0, Some(Msg::SetSsh(false)));
+    }
+
+    /// say the connection to the gateway comes from the lab network, from this mac.
+    fn connected_from(fake: &crate::gateway::Fake, interface: &str, mac: Option<&str>) {
+        *fake.spot.lock().unwrap() = Some(lanlord_model::lockout::Spot {
+            address: "192.0.2.50".into(),
+            interface: interface.into(),
+            mac: mac.map(str::to_string),
+            routed: false,
+        });
+    }
+
+    fn asked(fake: &crate::gateway::Fake) -> bool {
+        fake.calls().iter().any(|c| c.starts_with("ssh-access"))
+    }
+
+    #[test]
+    fn turning_ssh_off_on_the_network_this_connection_is_on_asks_first_and_names_it() {
+        let (fake, services) = services_with(&format!("{LAB}    ssh: true\n"));
+        connected_from(&fake, "eth1", Some("02:00:00:00:00:0a"));
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        window.update(Msg::SetSsh(false), &services, "gw", 0.0);
+        settle(&mut window, &services);
+        // nothing was stored or applied yet
+        assert!(!asked(&fake));
+        assert!(fake.stored.lock().unwrap().contains("ssh: true"));
+        assert!(window.editing());
+        let dialog = window.dialog().unwrap();
+        assert_eq!(dialog.id, "ssh-lockout");
+        let names_lab = dialog
+            .body
+            .iter()
+            .any(|n| matches!(n, Node::Alert(t) if t.contains("lab")));
+        assert!(names_lab);
+        let says_mac = dialog
+            .body
+            .iter()
+            .any(|n| matches!(n, Node::Text(t) if t.contains("02:00:00:00:00:0a")));
+        assert!(says_mac);
+        // yes: the change is made
+        window.update(Msg::ConfirmLockout, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(asked(&fake));
+        assert!(!fake.stored.lock().unwrap().contains("ssh: true"));
+        assert!(window.dialog().is_none());
+    }
+
+    #[test]
+    fn a_connection_that_cannot_be_placed_asks_first_in_other_words() {
+        let places: [fn(&crate::gateway::Fake); 2] = [
+            // the gateway found an address but no interface (an fe80 client, say)
+            |fake| connected_from(fake, "", Some("02:00:00:00:00:0a")),
+            // or could not be asked at all
+            |fake| *fake.spot_fails.lock().unwrap() = true,
+        ];
+        for place in places {
+            let (fake, services) = services_with(&format!("{LAB}    ssh: true\n"));
+            place(&fake);
+            let mut window = loaded(&services);
+            window.update(Msg::Tab(1), &services, "gw", 0.0);
+            window.update(Msg::SetSsh(false), &services, "gw", 0.0);
+            settle(&mut window, &services);
+            assert!(!asked(&fake));
+            let dialog = window.dialog().unwrap();
+            assert_eq!(dialog.id, "ssh-lockout");
+            let says = |text: &str| {
+                dialog
+                    .body
+                    .iter()
+                    .any(|n| matches!(n, Node::Alert(t) | Node::Text(t) if t.contains(text)))
+            };
+            assert!(says("Can't tell where you are connected from"));
+            assert!(says("an't tell which network"));
+            // no command is offered: none would be the right one
+            assert!(!says("lanlord networks"));
+            window.update(Msg::ConfirmLockout, &services, "gw", 0.0);
+            settle(&mut window, &services);
+            assert!(asked(&fake));
+        }
+    }
+
+    #[test]
+    fn cancelling_the_question_leaves_the_settings_alone() {
+        let (fake, services) = services_with(&format!("{LAB}    ssh: true\n"));
+        connected_from(&fake, "eth1", None);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        window.update(Msg::SetSsh(false), &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(window.dialog().is_some());
+        window.update(Msg::CancelLockout, &services, "gw", 0.0);
+        assert!(window.dialog().is_none());
+        assert!(!window.editing());
+        assert!(!asked(&fake));
+        assert!(fake.stored.lock().unwrap().contains("ssh: true"));
+        // a confirmation with nothing held does nothing
+        window.update(Msg::ConfirmLockout, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(!asked(&fake));
+    }
+
+    #[test]
+    fn denying_the_computer_this_connection_is_from_asks_first_but_another_one_does_not() {
+        let allowed =
+            format!("{LAB}    ssh_allow:\n      - {{mac: \"02:00:00:00:00:0a\", name: dana-pc}}\n      - {{mac: \"02:00:00:00:00:0b\"}}\n");
+        let (fake, services) = services_with(&allowed);
+        connected_from(&fake, "eth1", Some("02:00:00:00:00:0a"));
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        // the second computer is not this one
+        window.update(Msg::SshPick(1), &services, "gw", 0.0);
+        window.update(Msg::SshRemove, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(asked(&fake));
+        assert!(window.dialog().is_none());
+        // the first is
+        let sent = |fake: &crate::gateway::Fake| {
+            fake.calls()
+                .iter()
+                .filter(|c| c.starts_with("ssh-access"))
+                .count()
+        };
+        let before = sent(&fake);
+        window.update(Msg::SshPick(0), &services, "gw", 0.0);
+        window.update(Msg::SshRemove, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert_eq!(sent(&fake), before, "nothing was sent");
+        assert_eq!(window.dialog().map(|d| d.id), Some("ssh-lockout"));
+    }
+
+    #[test]
+    fn no_question_without_a_known_place_or_on_another_network_or_for_a_change_that_gives_access() {
+        for spot in [None, Some("eth9")] {
+            let (fake, services) = services_with(&format!("{LAB}    ssh: true\n"));
+            if let Some(interface) = spot {
+                connected_from(&fake, interface, Some("02:00:00:00:00:0a"));
+            }
+            let mut window = loaded(&services);
+            window.update(Msg::Tab(1), &services, "gw", 0.0);
+            window.update(Msg::SetSsh(false), &services, "gw", 0.0);
+            settle(&mut window, &services);
+            assert!(asked(&fake), "{spot:?}");
+            assert!(window.dialog().is_none());
+        }
+        let (fake, services) = services_with(LAB);
+        connected_from(&fake, "eth1", Some("02:00:00:00:00:0a"));
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        window.update(Msg::SetSsh(true), &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(asked(&fake));
+        assert!(window.dialog().is_none());
+    }
+
+    fn type_ssh(window: &mut NetworksWindow, services: &Services, mac: &str, name: &str) {
+        window.update(Msg::SshAdd, services, "gw", 0.0);
+        window.update(Msg::SshEdit(SshField::Mac, mac.into()), services, "gw", 0.0);
+        window.update(
+            Msg::SshEdit(SshField::Name, name.into()),
+            services,
+            "gw",
+            0.0,
+        );
+    }
+
+    #[test]
+    fn a_computer_is_allowed_to_ssh_from_the_form_and_taken_away_again() {
+        let (fake, services) = services_with(LAB);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        type_ssh(&mut window, &services, "02:00:00:00:00:0b", "dana-pc");
+        assert_eq!(window.dialog().unwrap().id, "ssh-allow");
+        window.update(Msg::SshSave, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(window.dialog().is_none());
+        assert!(fake.calls().iter().any(|c| c.starts_with("ssh-access gw")));
+        let stored = fake.stored.lock().unwrap().clone();
+        assert!(stored.contains("02:00:00:00:00:0b") && stored.contains("dana-pc"));
+        assert_eq!(window.ssh_hosts().len(), 1);
+        window.update(Msg::SshPick(0), &services, "gw", 0.0);
+        window.update(Msg::SshRemove, &services, "gw", 0.0);
+        settle(&mut window, &services);
+        assert!(window.ssh_hosts().is_empty());
+        assert!(!fake.stored.lock().unwrap().contains("02:00:00:00:00:0b"));
+    }
+
+    #[test]
+    fn the_ssh_form_refuses_a_bad_address_and_a_bad_time_and_can_be_cancelled() {
+        let (fake, services) = services_with(LAB);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        type_ssh(&mut window, &services, "not-a-mac", "");
+        window.update(Msg::SshSave, &services, "gw", 0.0);
+        assert_eq!(window.dialog().unwrap().id, "ssh-allow");
+        assert!(window.ssh_form.as_ref().unwrap().error.is_some());
+        window.update(
+            Msg::SshEdit(SshField::Mac, "02:00:00:00:00:0b".into()),
+            &services,
+            "gw",
+            0.0,
+        );
+        window.update(Msg::SshHow(1), &services, "gw", 0.0);
+        window.update(
+            Msg::SshEdit(SshField::When, "soon".into()),
+            &services,
+            "gw",
+            0.0,
+        );
+        window.update(Msg::SshSave, &services, "gw", 0.0);
+        assert!(window.ssh_form.as_ref().unwrap().error.is_some());
+        window.update(
+            Msg::SshEdit(SshField::When, "2h".into()),
+            &services,
+            "gw",
+            0.0,
+        );
+        assert!(window.ssh_form.as_ref().unwrap().change(1000).is_ok());
+        window.update(Msg::SshClose, &services, "gw", 0.0);
+        assert!(window.dialog().is_none());
+        assert!(fake.calls().iter().all(|c| !c.starts_with("ssh-access")));
     }
 
     #[test]
