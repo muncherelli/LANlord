@@ -15,7 +15,7 @@ use lanlord_model::netstatus::InterfaceStatus;
 use lanlord_model::networks::{self, Draft, NetworkRow, Role};
 use lanlord_model::server::Iface;
 use lanlord_model::settings::Settings;
-use lanlord_model::ssh_access::Change as SshChange;
+use lanlord_model::ssh_access::{Change as SshChange, SshAccess};
 
 use crate::ask::AskPassword;
 use crate::gateway::Gateway;
@@ -934,6 +934,8 @@ fn sized(
 ) -> Vec<Node<Msg>> {
     let lanlord = NetworkRow {
         role: Role::Lanlord,
+        // the switch is on every LANlord page, so the window has room for it on each tab
+        ssh: row.ssh.clone().or_else(|| Some(SshAccess::default())),
         ..row.clone()
     };
     // what the page shows: the row, the status text and the error text
