@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- NT 4.0 machines can join the domain with an administrator's name and password, creating their own computer account (the Samba in the nt4 image is patched to keep the session key of NT4's logon)
 - `lanlord upgrade` checks first whether the stored secrets are sealed to an old client key, and settles it (or stops with the exact `lanlord move-secrets` command) before changing anything, instead of failing at the last step
 - title bars reach the right edge of their window again (Date/Time Properties had a gap)
 - the Networks window no longer clips the Received column of its Activity table, and it keeps one size when a network is added or removed (its tabs are as tall as a LANlord network's)
