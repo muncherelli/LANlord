@@ -44,6 +44,12 @@ impl<T> Remote<T> {
         self.source.as_deref() == Some(host)
     }
 
+    /// pretend `data` came from `host`, for tests that skip the load job.
+    #[cfg(test)]
+    pub fn set_source(&mut self, host: &str) {
+        self.source = Some(host.into());
+    }
+
     /// should the window fetch `host` now? yes when it shows another host's
     /// data, nothing is going on and you have no edits to lose.
     pub fn wants_load(&self, host: &str, dirty: bool) -> bool {

@@ -57,9 +57,7 @@ impl Desktop {
             return;
         }
         self.reset_session_ui();
-        let gateway = Fake::new();
-        *gateway.local.lock().unwrap() = true;
-        *gateway.stored.lock().unwrap() = lanlord_app::gateway::DEMO_NETWORKS.into();
+        let gateway = Fake::demo();
         let services = Services::new(Arc::new(gateway), crate::wake(&self.ctx));
         self.devtools.stash = Some(Stash {
             services: std::mem::replace(&mut self.services, services),

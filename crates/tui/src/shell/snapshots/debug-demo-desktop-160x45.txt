@@ -11,6 +11,18 @@
    Gateway
 
 
+      ▓
+    Docker
+
+
+      ▌
+  NT4 Domain
+
+
+      ┬
+     DNS
+
+
       ▦
    Settings
 
@@ -21,18 +33,6 @@
 
       ▣
     Hosts
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
