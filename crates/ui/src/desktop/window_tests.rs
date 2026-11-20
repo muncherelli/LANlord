@@ -2,6 +2,7 @@
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use lanlord_model::leases::Lease;
@@ -1187,9 +1188,13 @@ fn the_new_network_dialog_has_a_full_title_bar_and_every_field_inside_it() {
 /// frames on a screen of `size` until the host has answered, the networks it lists have arrived
 /// when `networks` is asked for, and the windows have stopped moving.
 fn settled_on(desktop: &mut Desktop, ctx: &egui::Context, size: egui::Vec2, networks: bool) {
-    until(desktop, ctx, idle("me@gw"));
-    if networks {
-        until(desktop, ctx, |d| d.networks.rows().belongs_to("me@gw"));
+    let start = Instant::now();
+    while desktop.services.busy("me@gw")
+        || (networks && !desktop.networks.rows().belongs_to("me@gw"))
+    {
+        assert!(start.elapsed() < Duration::from_secs(60), "timed out");
+        frames_on(desktop, ctx, size, 1);
+        std::thread::sleep(Duration::from_millis(5));
     }
     let mut still = 0;
     let mut last = desktop.measured.clone();
@@ -1280,30 +1285,45 @@ fn dragging_the_left_or_top_edge_past_the_least_size_keeps_the_far_edges_still()
     }
 }
 
-static NOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6000);
+/// what one frame painted: the shapes as text, how many of them are rects, and where the window
+/// stood once the frame was done.
+struct Painted {
+    text: String,
+    rects: usize,
+    window: egui::Rect,
+}
 
-/// draw one frame and give back what was painted, as text, to compare frames.
+fn count_rects(shape: &egui::Shape) -> usize {
+    match shape {
+        egui::Shape::Rect(_) => 1,
+        egui::Shape::Vec(inner) => inner.iter().map(count_rects).sum(),
+        _ => 0,
+    }
+}
+
+/// draw one frame and give back what was painted, to compare frames. a rect count changes when a
+/// stray scroll bar is drawn or a page is narrowed.
 fn painted(
     desktop: &mut Desktop,
     ctx: &egui::Context,
     size: egui::Vec2,
+    target: Target,
     events: Vec<egui::Event>,
-) -> String {
+) -> Painted {
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
         events,
         // time passes between frames, as in a browser, so what egui eases in has time to show
-        time: Some(f64::from(NOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) / 60.0),
+        time: Some(ctx.input(|i| i.time) + 1.0 / 60.0),
         ..Default::default()
     };
     let mut out = ctx.run_ui(input, |ui| desktop.show(ui));
     out.textures_delta.clear();
-    format!("{:?}", out.shapes)
-}
-
-/// how many rects a frame painted, which a stray scroll bar or a narrowed page changes.
-fn rects(frame: &str) -> usize {
-    frame.matches("Rect").count()
+    Painted {
+        rects: out.shapes.iter().map(|s| count_rects(&s.shape)).sum(),
+        text: format!("{:?}", out.shapes),
+        window: desktop.measured.iter().find(|m| m.0 == target).unwrap().1,
+    }
 }
 
 #[test]
@@ -1322,7 +1342,7 @@ fn pressing_a_window_edge_without_moving_changes_nothing_on_screen() {
             .1
     };
     let before = rect(&desktop);
-    let still = painted(&mut desktop, &ctx, size, Vec::new());
+    let still = painted(&mut desktop, &ctx, size, Target::Settings, Vec::new());
     let at = Pos2::new(before.left() + 1.0, before.center().y);
     let button = |pressed| Event::PointerButton {
         pos: at,
@@ -1330,14 +1350,18 @@ fn pressing_a_window_edge_without_moving_changes_nothing_on_screen() {
         pressed,
         modifiers: egui::Modifiers::NONE,
     };
-    painted(&mut desktop, &ctx, size, vec![Event::PointerMoved(at)]);
-    let mut frames = vec![painted(&mut desktop, &ctx, size, vec![button(true)])];
+    let mut paint = |events| painted(&mut desktop, &ctx, size, Target::Settings, events);
+    paint(vec![Event::PointerMoved(at)]);
+    let mut frames = vec![paint(vec![button(true)])];
     for _ in 0..8 {
-        frames.push(painted(&mut desktop, &ctx, size, Vec::new()));
+        frames.push(paint(Vec::new()));
     }
     for (i, f) in frames.iter().enumerate() {
-        assert_eq!(rect(&desktop), before, "the window changed under a press");
-        assert_eq!(rects(f), rects(&still), "frame {i} painted other shapes");
+        assert_eq!(
+            f.window, before,
+            "frame {i}: the window changed under a press"
+        );
+        assert_eq!(f.rects, still.rects, "frame {i} painted other shapes");
     }
 }
 
@@ -1357,7 +1381,7 @@ fn a_slow_drag_of_the_left_edge_never_paints_a_stray_scroll_bar() {
             .1
     };
     let start = rect(&desktop);
-    let still = painted(&mut desktop, &ctx, size, Vec::new());
+    let still = painted(&mut desktop, &ctx, size, Target::Settings, Vec::new());
     let mut at = Pos2::new(start.left() + 1.0, start.center().y);
     let button = |at, pressed| Event::PointerButton {
         pos: at,
@@ -1365,19 +1389,21 @@ fn a_slow_drag_of_the_left_edge_never_paints_a_stray_scroll_bar() {
         pressed,
         modifiers: egui::Modifiers::NONE,
     };
-    painted(&mut desktop, &ctx, size, vec![Event::PointerMoved(at)]);
-    painted(&mut desktop, &ctx, size, vec![button(at, true)]);
-    for step in 0..12 {
+    let mut paint = |events| painted(&mut desktop, &ctx, size, Target::Settings, events);
+    paint(vec![Event::PointerMoved(at)]);
+    paint(vec![button(at, true)]);
+    let mut steps = Vec::new();
+    for _ in 0..12 {
         at.x -= 1.0;
-        let frame = painted(&mut desktop, &ctx, size, vec![Event::PointerMoved(at)]);
+        steps.push(paint(vec![Event::PointerMoved(at)]));
+    }
+    for (step, frame) in steps.iter().enumerate() {
         assert_eq!(
-            rect(&desktop).max,
-            start.max,
+            frame.window.max, start.max,
             "step {step}: the far edge moved"
         );
         assert_eq!(
-            rects(&frame),
-            rects(&still),
+            frame.rects, still.rects,
             "step {step}: other shapes were painted"
         );
     }
@@ -1406,19 +1432,23 @@ fn a_window_is_painted_where_it_is_measured_while_its_left_edge_is_dragged() {
         pressed,
         modifiers: egui::Modifiers::NONE,
     };
-    painted(&mut desktop, &ctx, size, vec![Event::PointerMoved(at)]);
-    painted(&mut desktop, &ctx, size, vec![button(at, true)]);
-    for step in 0..16 {
+    let mut paint = |events| painted(&mut desktop, &ctx, size, Target::Networks, events);
+    paint(vec![Event::PointerMoved(at)]);
+    paint(vec![button(at, true)]);
+    let mut steps = Vec::new();
+    for _ in 0..16 {
         at.x -= 6.0;
-        let frame = painted(&mut desktop, &ctx, size, vec![Event::PointerMoved(at)]);
-        let r = rect(&desktop);
+        steps.push(paint(vec![Event::PointerMoved(at)]));
+    }
+    for (step, frame) in steps.iter().enumerate() {
+        let r = frame.window;
         // the frame's fill is the rect the window reports, so the frame and what is in it agree
         let fill = format!(
             "rect: [[{:?} {:?}] - [{:?} {:?}]]",
             r.min.x, r.min.y, r.max.x, r.max.y
         );
         assert!(
-            frame.contains(&fill),
+            frame.text.contains(&fill),
             "step {step}: nothing painted at {r:?}"
         );
     }
@@ -1529,7 +1559,7 @@ fn pressing_any_edge_or_corner_of_settings_without_moving_paints_the_same_frame(
                 .1
         };
         let before = rect(&desktop);
-        let still = painted(&mut desktop, &ctx, size, Vec::new());
+        let still = painted(&mut desktop, &ctx, size, Target::Settings, Vec::new());
         let at = grab(before);
         let button = |pressed| Event::PointerButton {
             pos: at,
@@ -1538,28 +1568,18 @@ fn pressing_any_edge_or_corner_of_settings_without_moving_paints_the_same_frame(
             modifiers: egui::Modifiers::NONE,
         };
         // hover, then press, then hold, each in a frame of its own
-        let mut frames = vec![painted(
-            &mut desktop,
-            &ctx,
-            size,
-            vec![Event::PointerMoved(at)],
-        )];
-        frames.push(painted(&mut desktop, &ctx, size, Vec::new()));
-        frames.push(painted(
-            &mut desktop,
-            &ctx,
-            size,
-            vec![Event::PointerMoved(at), button(true)],
-        ));
+        let mut paint = |events| painted(&mut desktop, &ctx, size, Target::Settings, events);
+        let mut frames = vec![paint(vec![Event::PointerMoved(at)])];
+        frames.push(paint(Vec::new()));
+        frames.push(paint(vec![Event::PointerMoved(at), button(true)]));
         for _ in 0..8 {
-            frames.push(painted(&mut desktop, &ctx, size, Vec::new()));
+            frames.push(paint(Vec::new()));
         }
-        frames.push(painted(&mut desktop, &ctx, size, vec![button(false)]));
+        frames.push(paint(vec![button(false)]));
         for (i, f) in frames.iter().enumerate() {
-            assert_eq!(rect(&desktop), before, "{name}: the window changed");
+            assert_eq!(f.window, before, "{name}: frame {i}: the window changed");
             assert_eq!(
-                rects(f),
-                rects(&still),
+                f.rects, still.rects,
                 "{name}: frame {i} painted other shapes"
             );
         }

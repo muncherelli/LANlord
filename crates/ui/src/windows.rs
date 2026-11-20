@@ -370,17 +370,6 @@ fn grab_zones(ctx: &egui::Context, rect: Rect, p: Pos2) -> (bool, bool, bool, bo
     (zones[0], zones[1], zones[2], zones[3])
 }
 
-/// egui lays a window out once at the narrowest it goes when a resize begins, which it throws away
-/// again: this is that pass, from the width the contents were given.
-fn sizing_pass(ctx: &egui::Context, id: &str, width: f32, least: f32) -> bool {
-    ctx.current_pass_index() == 0
-        && ctx.input(|i| i.pointer.primary_down())
-        && (width - (least - 2.0 * FRAME)).abs() < 0.01
-        && egui::AreaState::load(ctx, layer(id).id)
-            .and_then(|state| state.size)
-            .is_some_and(|size| size.x > least + 1.0)
-}
-
 /// a drag on a window's edge or corner. a drag on the left or top edge moves the window's origin
 /// as well as its size, and egui puts the window at the pointer whatever its least size is, so a
 /// window already at its least slid sideways and its far edge moved. this holds the far edge.
@@ -721,7 +710,7 @@ pub fn show(
         // when a resize begins egui lays the contents out once at the narrowest the window goes
         // and throws that pass away, to learn how far they can narrow. what the contents keep
         // from it (scroll bars, rooms) must not outlive it, so it is laid out under its own ids
-        let sizing = growable && sizing_pass(ctx, id, room_width, least.x);
+        let sizing = growable && ui.is_sizing_pass();
         let mut inner = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(Rect::from_min_size(
@@ -1295,5 +1284,84 @@ mod tests {
         assert_eq!(dialog.stage, Pivot::Middle);
         let grown = dialog.after(Rect::from_min_size(rect.min, Vec2::new(300.0, 260.0)), true);
         assert_eq!(grown.steady, 0, "a new size starts the count again");
+    }
+
+    #[test]
+    fn a_right_edge_drag_down_to_the_least_width_keeps_the_scroll_and_the_focus() {
+        use eframe::egui::{
+            Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, TextEdit, TouchPhase,
+        };
+        let ctx = egui::Context::default();
+        let field = Id::unique("field");
+        let mut text = String::new();
+        let (mut rect, mut marker) = (Rect::NOTHING, 0.0);
+        let mut frame = |events: Vec<Event>| {
+            testkit::run(&ctx, events, |ui| {
+                let place = Placement {
+                    icon: "t",
+                    fresh: false,
+                    start: Pos2::new(100.0, 50.0),
+                    width: 400.0,
+                    area: Rect::from_min_size(Pos2::ZERO, testkit::SCREEN),
+                    growable: true,
+                    fixed: false,
+                    floor: 0.0,
+                    height: Some(200.0),
+                };
+                let shown = show(ui.ctx(), "r", "R", place, true, false, |ui| {
+                    ui.add(TextEdit::singleline(&mut text).id(field));
+                    ui.allocate_space(Vec2::new(10.0, 1000.0));
+                    // where the end of the contents is, which moves as they scroll
+                    marker = ui.cursor().min.y;
+                });
+                rect = shown.map_or(rect, |s| s.rect);
+            });
+            (marker, ctx.memory(|m| m.has_focus(field)), rect)
+        };
+        for _ in 0..8 {
+            frame(Vec::new());
+        }
+        ctx.memory_mut(|m| m.request_focus(field));
+        let (top, _, rect) = frame(Vec::new());
+        let inside = rect.center();
+        frame(vec![Event::PointerMoved(inside)]);
+        frame(vec![Event::MouseWheel {
+            unit: MouseWheelUnit::Point,
+            phase: TouchPhase::Move,
+            source: MouseWheelSource::Wheel,
+            delta: Vec2::new(0.0, -100.0),
+            modifiers: Modifiers::NONE,
+        }]);
+        for _ in 0..90 {
+            frame(Vec::new());
+        }
+        let (scrolled, focused, _) = frame(Vec::new());
+        assert!(scrolled < top - 50.0, "the contents did not scroll");
+        assert!(focused, "the field has no focus to keep");
+        let edge = Pos2::new(rect.right() - 1.0, rect.center().y);
+        let button = |pressed| Event::PointerButton {
+            pos: edge,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        frame(vec![Event::PointerMoved(edge)]);
+        frame(vec![button(true)]);
+        // the resize begins with a short step, and one far step then takes the window to its least
+        // width in a single frame
+        frame(vec![Event::PointerMoved(edge - Vec2::new(4.0, 0.0))]);
+        frame(Vec::new());
+        let to = Pos2::new(rect.left() + 10.0, edge.y);
+        let mut kept = vec![frame(vec![Event::PointerMoved(to)])];
+        for _ in 0..4 {
+            kept.push(frame(Vec::new()));
+        }
+        for (i, (y, focus, _)) in kept.into_iter().enumerate() {
+            assert_eq!(
+                y, scrolled,
+                "frame {i}: the scroll offset was lost (top {top})"
+            );
+            assert!(focus, "frame {i}: the focus was lost");
+        }
     }
 }
