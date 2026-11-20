@@ -1209,8 +1209,13 @@ impl NetworksWindow {
                 shown.push(problem);
                 continue;
             };
+            // under its own field the path is noise: the field says which value is meant
+            let text = problem
+                .split_once(": ")
+                .map_or(problem.as_str(), |(_, rest)| rest)
+                .to_string();
             lines.push(Node::HeldError {
-                text: problem,
+                text,
                 partial,
                 field: HeldFor::Above(above),
             });
@@ -2253,16 +2258,16 @@ mod tests {
         let mut window = loaded(&services);
         window.update(Msg::New, &services, "gw", 0.0);
         typed(&mut window, &services, Field::Name, "lab");
-        for (field, whole, key, above) in [
-            (Field::Address, "172.16.120.1/22", "address", 0),
-            (Field::RangeStart, "172.16.120.100", "range[0]", 1),
-            (Field::RangeEnd, "172.16.120.200", "range[1]", 0),
+        for (field, whole, above) in [
+            (Field::Address, "172.16.120.1/22", 0),
+            (Field::RangeStart, "172.16.120.100", 1),
+            (Field::RangeEnd, "172.16.120.200", 0),
         ] {
             let mut text = String::new();
             for ch in whole.chars() {
                 text.push(ch);
                 typed(&mut window, &services, field, &text);
-                let (held, warnings) = lines(&window, key);
+                let (held, warnings) = lines(&window, &format!("\"{text}\""));
                 // never a plain warning for this field while it is typed in
                 assert_eq!(warnings, 0, "{text:?}");
                 if text != whole {
@@ -2271,10 +2276,13 @@ mod tests {
                     }
                 }
             }
-            // a value that can never be valid is not held
+            // a value that can never be valid is not held, and its line has no path in front
             typed(&mut window, &services, field, &format!("{whole}x"));
-            let (held, _) = lines(&window, key);
+            let (held, _) = lines(&window, &format!("\"{whole}x\""));
             assert!(held.iter().any(|(partial, _)| !partial), "{whole}x");
+            assert!(!window.dialog().unwrap().body.iter().any(
+                |n| matches!(n, Node::HeldError { text, .. } if text.starts_with("networks["))
+            ));
             typed(&mut window, &services, field, whole);
         }
     }
