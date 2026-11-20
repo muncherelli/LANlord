@@ -10,17 +10,17 @@
       ►       │ │┌ LANlord network ───────────────────────────────────────────────────────────┐│ │
    Gateway    │ ││ DHCP range:           172.16.120.100 - 172.16.120.200                      ││ │
               │ ││ Clients with a lease: 0                                                    ││ │
-              │ │└────────────────────────────────────────────────────────────────────────────┘│ │
-      ▓       │ └──────────────────────────────────────────────────────────────────────────────┘ │
-    Docker    │                   [ Properties... ] [ DNS & DHCP... ] [ Details... ] [ Refresh ] │
-              │                                                               [ New network... ] │
-              │ ┌ Network interfaces ──────────────┌ retronet Properties ──────────────────────────── _ □ × ┐
-      ┬       │ │  eth0   192.0.2.10/24   MTU 1500 │ Change this network. Saving applies it to the server.  │
-     DNS      │ │  eth1   172.16.120.1/22   MTU 145│ Name       retronet                                    │
-              │ └──────────────────────────────────│ Interface   eth1 ▼                                     │
-              │ up to date                         │ Address     172.16.120.1/22                            │
-      ▦       └────────────────────────────────────│ DHCP range  172.16.120.100   to    172.16.120.200      │
-   Settings                                        │ Lease time  7d                                         │
+              │ ││ [ ] Allow ssh to this server                                               ││ │
+      ▓       │ │└────────────────────────────────────────────────────────────────────────────┘│ │
+    Docker    │ └──────────────────────────────────────────────────────────────────────────────┘ │
+              │                   [ Properties... ] [ DNS & DHCP... ] [ Details... ] [ Refresh ] │
+              │                                    ┌ retronet Properties ──────────────────────────── _ □ × ┐
+      ┬       │ ┌ Network interfaces ──────────────│ Change this network. Saving applies it to the server.  │
+     DNS      │ │  eth0   192.0.2.10/24   MTU 1500 │ Name       retronet                                    │
+              │ │  eth1   172.16.120.1/22   MTU 145│ Interface   eth1 ▼                                     │
+              │ └──────────────────────────────────│ Address     172.16.120.1/22                            │
+      ▦       │ up to date                         │ DHCP range  172.16.120.100   to    172.16.120.200      │
+   Settings   └────────────────────────────────────│ Lease time  7d                                         │
                                                    │ DNS zone    retronet                                   │
                                                    │ MTU         the card's own                             │
       >                                            │ Leave the DHCP range empty for a network without DHCP. │

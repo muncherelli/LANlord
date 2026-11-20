@@ -691,11 +691,8 @@ fn ssh_networks_notice() -> Node<Msg> {
         body: vec![
             Node::Gap(4.0),
             Node::Text(
-                "Ssh to this server from the computers on your LANlord networks is now off, \
-                 so a computer there can no longer reach the server's sshd. The host network \
-                 is not affected. To allow it, open the Networks window, pick the network and \
-                 tick \"Allow ssh to this server\"; single computers can be allowed on their \
-                 own with `lanlord networks <server> ssh <network> allow <mac>`."
+                "Ssh from the LANlord networks is now off. To allow it, tick \"Allow ssh to \
+                 this server\" on a network in the Networks window."
                     .into(),
             ),
         ],
