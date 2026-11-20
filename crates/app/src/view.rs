@@ -54,6 +54,9 @@ pub enum Node<M> {
     /// a row of tabs over the page of the `current` one; clicking a tab sends `pick(tab)`.
     Tabs {
         titles: Vec<String>,
+        /// stands for what the pages are made of (see `fingerprint`): the sizes of the pages are
+        /// measured again when it changes
+        key: u64,
         current: usize,
         pick: fn(usize) -> M,
         body: Vec<Node<M>>,
@@ -356,5 +359,133 @@ mod tests {
             [false, true, false],
             "[1] must not match [10]"
         );
+    }
+}
+
+/// a number that changes when what `nodes` show changes in a way that can change their size: the
+/// text, the rows and the parts, not what is typed, ticked or picked. a window that sizes itself
+/// to its pages measures them again when it changes.
+pub fn fingerprint<M>(nodes: &[Node<M>]) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hash_nodes(nodes, &mut hasher);
+    hasher.finish()
+}
+
+/// the `fingerprint` of the pages of a tab strip: the open one, `body` at tab `current`, and
+/// `others` by tab number, the same whichever is open.
+pub fn pages_fingerprint<M>(
+    current: usize,
+    body: &[Node<M>],
+    others: &[(usize, Vec<Node<M>>)],
+) -> u64 {
+    let mut pages: Vec<(usize, &[Node<M>])> =
+        others.iter().map(|(t, n)| (*t, n.as_slice())).collect();
+    pages.push((current, body));
+    pages_fingerprint_of(pages)
+}
+
+/// the same, for pages given as tab numbers and nodes.
+pub fn pages_fingerprint_of<'a, M: 'a>(
+    pages: impl IntoIterator<Item = (usize, &'a [Node<M>])>,
+) -> u64 {
+    use std::hash::Hasher;
+    let mut pages: Vec<(usize, u64)> = pages
+        .into_iter()
+        .map(|(tab, nodes)| (tab, fingerprint(nodes)))
+        .collect();
+    pages.sort_unstable();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&pages, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    nodes.len().hash(h);
+    for node in nodes {
+        std::mem::discriminant(node).hash(h);
+        match node {
+            Node::Text(t)
+            | Node::Heading(t)
+            | Node::Bullet(t)
+            | Node::Code(t)
+            | Node::FieldError(t)
+            | Node::Alert(t)
+            | Node::Warning(t)
+            | Node::Description(t) => t.hash(h),
+            Node::Gap(g) => g.to_bits().hash(h),
+            Node::Group { title, body } | Node::Fold { title, body, .. } => {
+                title.hash(h);
+                hash_nodes(body, h);
+            }
+            Node::SameSize { key, body, others } => {
+                key.hash(h);
+                hash_nodes(body, h);
+                others.iter().for_each(|o| hash_nodes(o, h));
+            }
+            Node::Details { title, lines, body } => {
+                (title, lines).hash(h);
+                hash_nodes(body, h);
+            }
+            Node::Table(t) => {
+                t.headings.hash(h);
+                t.rows.hash(h);
+                t.height.to_bits().hash(h);
+            }
+            Node::Buttons(b) | Node::Toolbar(b) => b.iter().for_each(|b| b.label.hash(h)),
+            Node::Button(b) => (&b.label, b.width.map(f32::to_bits)).hash(h),
+            Node::Field { label, value } => (label, value).hash(h),
+            Node::Status { text, error } => (text, error).hash(h),
+            Node::Tabs {
+                titles,
+                key,
+                body,
+                others,
+                ..
+            } => {
+                (titles, key).hash(h);
+                hash_nodes(body, h);
+                others.iter().for_each(|(_, o)| hash_nodes(o, h));
+            }
+            Node::Danger(body) | Node::Disabled(body) => hash_nodes(body, h),
+            Node::Check { label, .. } => label.hash(h),
+            Node::Input { hint, .. } | Node::TextArea { hint, .. } => hint.hash(h),
+            Node::Secret { .. }
+            | Node::Separator
+            | Node::Bar { .. }
+            | Node::Calendar { .. }
+            | Node::ClockFace { .. }
+            | Node::Spin { .. }
+            | Node::KeyedInput(_) => {}
+            Node::Lines { lines, height, .. } => (lines, height.to_bits()).hash(h),
+            Node::Log { lines, .. } => lines.len().hash(h),
+            Node::List { items, empty, .. } => (items, empty).hash(h),
+            Node::Header { icon, title, lines } => (icon, title, lines).hash(h),
+            Node::Row(body) => hash_nodes(body, h),
+            Node::Choice {
+                current, options, ..
+            } => (current, options).hash(h),
+            Node::Labelled { label, body } => {
+                label.hash(h);
+                hash_nodes(body, h);
+            }
+            Node::Icon(i) => i.hash(h),
+            Node::Columns(cols) => cols.iter().for_each(|(w, body)| {
+                w.map(f32::to_bits).hash(h);
+                hash_nodes(body, h);
+            }),
+            Node::Scroll {
+                max_height, body, ..
+            } => {
+                max_height.to_bits().hash(h);
+                hash_nodes(body, h);
+            }
+            Node::Banner(b) => (&b.title, &b.subtitle, b.icon).hash(h),
+            Node::CheckList(c) => c
+                .rows
+                .iter()
+                .for_each(|r| (r.icon, &r.label, &r.detail).hash(h)),
+        }
     }
 }

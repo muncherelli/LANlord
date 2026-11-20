@@ -42,11 +42,12 @@ impl TextDialog {
 
 /// a modal box with a navy title bar and a close button, drawn on top of everything. the bar
 /// spans the box whatever its contents do, so it is drawn once they are laid out. gives back what
-/// `body` did and whether the close button was clicked.
+/// `body` did and whether the close button was clicked; a box that `closable` is not has none.
 pub fn modal<R>(
     ctx: &egui::Context,
     id: &'static str,
     title: &str,
+    closable: bool,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (R, bool) {
     let frame = Frame::new().fill(GRAY).inner_margin(Margin::same(3));
@@ -75,7 +76,7 @@ pub fn modal<R>(
                 theme::font(),
                 WHITE,
             );
-            closed = windows::dialog_close(ui, bar, Id::unique((id, "close")));
+            closed = closable && windows::dialog_close(ui, bar, Id::unique((id, "close")));
             rects = [bar, framed.response.rect];
             framed.inner
         });
@@ -218,6 +219,15 @@ mod tests {
 
     /// one frame of a box whose contents are `wide` across, clicking at `at` if given.
     fn modal_frame(ctx: &egui::Context, wide: f32, events: Vec<Event>) -> bool {
+        modal_frame_with(ctx, wide, true, events)
+    }
+
+    fn modal_frame_with(
+        ctx: &egui::Context,
+        wide: f32,
+        closable: bool,
+        events: Vec<Event>,
+    ) -> bool {
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0))),
             events,
@@ -226,7 +236,7 @@ mod tests {
         let mut closed = false;
         ctx.run_ui(input, |ui| {
             theme::apply(ui.ctx());
-            closed = modal(ui.ctx(), "wide", "Wide", |ui| {
+            closed = modal(ui.ctx(), "wide", "Wide", closable, |ui| {
                 ui.allocate_space(Vec2::new(wide, 20.0));
             })
             .1;
@@ -253,5 +263,20 @@ mod tests {
             closed |= modal_frame(&ctx, 500.0, events);
         }
         assert!(closed);
+    }
+
+    #[test]
+    fn a_box_that_cannot_be_closed_has_no_close_button_to_click() {
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            modal_frame_with(&ctx, 500.0, false, Vec::new());
+        }
+        let [bar, ..] = modal_rects(&ctx, "wide").expect("drawn");
+        let at = Pos2::new(bar.right() - 2.0 - 8.0, bar.top() + 3.0 + 7.0);
+        let mut closed = false;
+        for events in click(at).into_iter().map(|e| vec![e]) {
+            closed |= modal_frame_with(&ctx, 500.0, false, events);
+        }
+        assert!(!closed);
     }
 }

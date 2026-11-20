@@ -37,7 +37,6 @@ fn settled(desktop: &mut Desktop, ctx: &egui::Context) {
     let mut last = desktop.measured.clone();
     for _ in 0..200 {
         frames(desktop, ctx, 1);
-        std::thread::sleep(std::time::Duration::from_millis(2));
         still = if desktop.measured == last {
             still + 1
         } else {
@@ -45,10 +44,11 @@ fn settled(desktop: &mut Desktop, ctx: &egui::Context) {
         };
         last = desktop.measured.clone();
         if still >= 4 {
-            break;
+            frames(desktop, ctx, 2);
+            return;
         }
     }
-    frames(desktop, ctx, 2);
+    panic!("the windows never settled");
 }
 
 fn stored(fake: &Fake) -> String {
@@ -940,19 +940,20 @@ fn my_server_is_a_fixed_dialog_of_one_size_on_every_tab() {
     until(&mut desktop, &ctx, |d| {
         d.my_server.facts().belongs_to("me@gw") && !d.services.busy("me@gw")
     });
-    // the Compatibility page is as tall as its checks once they are read, and the window as the
-    // largest page: read them first, as the size is of the pages as they will be
+    // the checks are asked for on the Compatibility tab, which is left before they arrive: they
+    // fill their page while General is open, and the window is as big on Compatibility as it is
     desktop.my_server.update(
         Msg::Tab(super::my_server::COMPATIBILITY),
         &desktop.services,
         "me@gw",
     );
-    until(&mut desktop, &ctx, |d| d.my_server.report().is_some());
+    frames_on(&mut desktop, &ctx, size, 1);
     desktop.my_server.update(
         Msg::Tab(super::my_server::GENERAL),
         &desktop.services,
         "me@gw",
     );
+    until(&mut desktop, &ctx, |d| d.my_server.report().is_some());
     still_on(&mut desktop, &ctx, size);
     let measured = |d: &Desktop| *d.measured.iter().find(|m| m.0 == Target::MyServer).unwrap();
     let (_, opened, _) = measured(&desktop);
@@ -1049,7 +1050,6 @@ fn still_on(desktop: &mut Desktop, ctx: &egui::Context, size: egui::Vec2) {
     let mut last = desktop.measured.clone();
     for _ in 0..300 {
         frames_on(desktop, ctx, size, 1);
-        std::thread::sleep(std::time::Duration::from_millis(2));
         still = if desktop.measured == last {
             still + 1
         } else {
@@ -1068,23 +1068,13 @@ fn nt4_domain_keeps_one_rect_on_every_tab_and_its_pages_stretch() {
     let size = egui::Vec2::new(1280.0, 720.0);
     let (mut desktop, ctx, _fake) = logins();
     let target = module("nt4-domain");
-    // each page loads when it is first open, and may change a little with what it loads
-    for tab in [Tab::Logon, Tab::Settings, Tab::Logins] {
-        desktop.nt4.tab = tab;
-        still_on(&mut desktop, &ctx, size);
-    }
+    // the window as it opens, before any other tab has been looked at
+    still_on(&mut desktop, &ctx, size);
     let (opened, content) = measured_of(&desktop, target);
     for tab in [Tab::Logon, Tab::Settings, Tab::Logins, Tab::Logon] {
         desktop.nt4.tab = tab;
         still_on(&mut desktop, &ctx, size);
-        // the pinned status strip may differ by a pixel or two between pages; the frame does not
-        let now = measured_of(&desktop, target).0;
-        assert_eq!(now.min, opened.min, "{tab:?}");
-        assert_eq!(now.width(), opened.width(), "{tab:?}");
-        assert!(
-            (now.height() - opened.height()).abs() <= 3.0,
-            "{tab:?} {now:?}"
-        );
+        assert_eq!(measured_of(&desktop, target).0, opened, "{tab:?}");
     }
     // sized taller, the list takes the room, and the size is the same on the other tabs
     drag_corner(
@@ -1141,10 +1131,18 @@ fn the_pages_are_measured_once_not_every_frame() {
     assert!(passes > 0);
     frames_on(&mut desktop, &ctx, size, 20);
     assert_eq!(crate::controls::measure_passes(&ctx), passes);
-    // a tab switch does not measure either
-    desktop.nt4.tab = Tab::Logon;
-    frames_on(&mut desktop, &ctx, size, 6);
-    assert_eq!(crate::controls::measure_passes(&ctx), passes);
+    // a tab switch does not measure either, once what the tab shows has been read
+    for tab in [Tab::Settings, Tab::Logon, Tab::Logins] {
+        desktop.nt4.tab = tab;
+        until(&mut desktop, &ctx, idle("me@gw"));
+        still_on(&mut desktop, &ctx, size);
+    }
+    let passes = crate::controls::measure_passes(&ctx);
+    for tab in [Tab::Settings, Tab::Logins, Tab::Logon] {
+        desktop.nt4.tab = tab;
+        frames_on(&mut desktop, &ctx, size, 6);
+        assert_eq!(crate::controls::measure_passes(&ctx), passes, "{tab:?}");
+    }
 }
 
 /// a modal box's title bar spans the box inside its border, and its contents stay inside it.

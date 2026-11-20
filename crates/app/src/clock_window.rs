@@ -652,7 +652,16 @@ impl ClockPanel {
                         vec![(Tab::DateTime as usize, loaded.date_time_tab(gates))],
                     ),
                 };
+                // the pages that are always built stand for them all: the zone page is only
+                // there while it is open, so it is left out of the key
+                let mut kept: Vec<(usize, &[Node<Msg>])> =
+                    others.iter().map(|(t, n)| (*t, n.as_slice())).collect();
+                if self.tab != Tab::Zone {
+                    kept.push((self.tab as usize, &page));
+                }
+                let key = view::pages_fingerprint_of(kept);
                 nodes.push(Node::Tabs {
+                    key,
                     titles: view::titles(&["Date & Time", "Time Zone", "Internet Time"]),
                     current: self.tab as usize,
                     pick: Msg::Tab,

@@ -186,6 +186,7 @@ impl DnsPanel {
         let ok = self.can_save(services, host);
         let mut nodes = vec![
             Node::Tabs {
+                key: view::pages_fingerprint(self.tab, &page, &pages),
                 titles: view::titles(&[
                     "Settings",
                     "Static leases",

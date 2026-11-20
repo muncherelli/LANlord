@@ -100,11 +100,17 @@ pub fn draw_pinned(ui: &mut Ui, pinned: &Pinned) {
 
 /// draw a modal box; the message of a click inside it, if there was one.
 pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
-    let (sent, closed) = dialogs::modal(ctx, dialog.id, &dialog.title, |ui| {
-        let sent = nodes_ui(ui, &dialog.body);
-        let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
-        sent.or_else(|| escaped.then(|| dialog.escape.clone()).flatten())
-    });
+    let (sent, closed) = dialogs::modal(
+        ctx,
+        dialog.id,
+        &dialog.title,
+        dialog.escape.is_some(),
+        |ui| {
+            let sent = nodes_ui(ui, &dialog.body);
+            let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            sent.or_else(|| escaped.then(|| dialog.escape.clone()).flatten())
+        },
+    );
     // the close button does what escape does
     let sent = sent.or_else(|| closed.then(|| dialog.escape.clone()).flatten());
     if sent.is_some() {
@@ -278,6 +284,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             .then(|| button.press.clone()),
         Node::Tabs {
             titles,
+            key,
             current,
             pick,
             body,
@@ -285,7 +292,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         } => {
             let mut tab = *current;
             let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
-            let inside = controls::tabs(ui, &labels, &mut tab, |ui, i| {
+            let inside = controls::tabs(ui, &labels, *key, &mut tab, |ui, i| {
                 if i == *current {
                     nodes_ui(ui, body)
                 } else {

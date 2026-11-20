@@ -596,10 +596,13 @@ impl<'a> Painter<'a> {
             Node::Text(text) => wrap(text, width).len() as u16,
             Node::Bullet(text) => wrap(text, width.saturating_sub(BULLET)).len() as u16,
             Node::Gap(height) => rows(*height),
+            // a details box is as tall as what it holds here: a terminal has no rows to spare for
+            // the fixed height it has on a desktop
             Node::Group { body, .. } | Node::Details { body, .. } => {
                 2 + inner(body, width.saturating_sub(BOXED))
             }
             Node::Table(table) => rows(table.height).max(3),
+            // the open page only: a terminal has no room to spare for the tallest of the others
             Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(2)),
             Node::Danger(body) => 2 + inner(body, width.saturating_sub(BOXED)),
             Node::Lines { height, .. } => rows(*height).max(2),
@@ -1333,17 +1336,23 @@ impl<'a> Painter<'a> {
                     self.push(line, path, Part::Row(n), false);
                 }
             }
-            Node::Lines { lines, .. } => {
-                // no inset: the lines may be columns under buttons, and nothing is selected
-                let inner = self.sunken(area, buf, WHITE);
+            Node::Lines { lines, enabled, .. } => {
+                // no inset: the lines may be columns under buttons, and nothing is selected; a
+                // box that is not in use has a gray face and dim text
+                let (fg, bg) = if *enabled {
+                    (BLACK, WHITE)
+                } else {
+                    (SHADOW, GRAY)
+                };
+                let inner = self.sunken(area, buf, bg);
                 let key = scroll_key(path);
                 self.scrolled_lines(
-                    lines.iter().map(|l| (l.as_str(), BLACK)),
+                    lines.iter().map(|l| (l.as_str(), fg)),
                     inner,
                     buf,
                     &key,
                     false,
-                    WHITE,
+                    bg,
                 );
                 self.push(inner, path, Part::Scroll, false);
             }
@@ -1450,35 +1459,47 @@ impl<'a> Painter<'a> {
             }
             Node::Scroll { body, .. } => {
                 let inner = self.sunken(area, buf, WHITE);
-                self.push(inner, path, Part::Scroll, false);
-                let total = self.height_at(body, inner.width, None, path);
-                let offset = self
-                    .state
-                    .scroll
-                    .get(&scroll_key(path))
-                    .copied()
-                    .unwrap_or(0)
-                    .min(usize::from(total.saturating_sub(inner.height)))
-                    as u16;
-                if total <= inner.height {
-                    self.draw(body, inner, buf, path);
-                    return;
-                }
-                let mut tall = Buffer::empty(Rect::new(0, 0, inner.width, total));
-                let whole = tall.area;
-                fill(&mut tall, whole, p, WHITE);
-                let mut inside = Painter::new(p, self.state, self.active);
-                inside.draw(body, whole, &mut tall, path);
-                blit(&tall, offset, inner, buf);
-                for mut region in inside.regions {
-                    if region.rect.y < offset || region.rect.bottom() > offset + inner.height {
-                        continue;
-                    }
-                    region.rect.x += inner.x;
-                    region.rect.y = region.rect.y - offset + inner.y;
-                    self.regions.push(region);
-                }
+                self.scrolled_body(body, inner, buf, path, WHITE);
             }
+        }
+    }
+
+    /// `body` in `inner`, scrolled by the wheel when it is taller than the room.
+    fn scrolled_body<M>(
+        &mut self,
+        body: &[Node<M>],
+        inner: Rect,
+        buf: &mut Buffer,
+        path: &[usize],
+        bg: Rgb,
+    ) {
+        let p = self.palette;
+        self.push(inner, path, Part::Scroll, false);
+        let total = self.height_at(body, inner.width, None, path);
+        let offset = self
+            .state
+            .scroll
+            .get(&scroll_key(path))
+            .copied()
+            .unwrap_or(0)
+            .min(usize::from(total.saturating_sub(inner.height))) as u16;
+        if total <= inner.height {
+            self.draw(body, inner, buf, path);
+            return;
+        }
+        let mut tall = Buffer::empty(Rect::new(0, 0, inner.width, total));
+        let whole = tall.area;
+        fill(&mut tall, whole, p, bg);
+        let mut inside = Painter::new(p, self.state, self.active);
+        inside.draw(body, whole, &mut tall, path);
+        blit(&tall, offset, inner, buf);
+        for mut region in inside.regions {
+            if region.rect.y < offset || region.rect.bottom() > offset + inner.height {
+                continue;
+            }
+            region.rect.x += inner.x;
+            region.rect.y = region.rect.y - offset + inner.y;
+            self.regions.push(region);
         }
     }
 
@@ -1971,6 +1992,7 @@ mod tests {
             Node::Heading("Accounts".into()),
             Node::Tabs {
                 titles: lanlord_app::view::titles(&["General", "Advanced"]),
+                key: 0,
                 current: 0,
                 pick: Msg::Tab,
                 others: Vec::new(),

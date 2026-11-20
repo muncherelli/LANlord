@@ -261,6 +261,7 @@ impl MyServer {
         let (_, page) = pages.remove(at);
         vec![
             Node::Tabs {
+                key: view::pages_fingerprint(self.tab, &page, &pages),
                 titles: view::titles(&["General", "Advanced", "Compatibility"]),
                 current: self.tab,
                 pick: Msg::Tab,

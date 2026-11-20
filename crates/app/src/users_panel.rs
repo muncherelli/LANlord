@@ -192,7 +192,7 @@ impl UsersPanel {
                 ),
                 Button::new("Reload logins", gates.reload, Msg::Reload),
             ]),
-            Node::Gap(6.0),
+            Node::Gap(4.0),
             view::status(&self.remote),
         ]);
         nodes

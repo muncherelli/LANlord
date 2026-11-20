@@ -1191,6 +1191,7 @@ impl Shell {
         let mut top: Vec<Node<usize>> = module_window::header(module);
         top.push(Node::Tabs {
             titles: lanlord_app::view::titles(&["Settings", "Logins", "Logon scripts"]),
+            key: 0,
             current: self.nt4_tab,
             pick: |tab| tab,
             others: Vec::new(),

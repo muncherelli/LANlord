@@ -449,17 +449,20 @@ impl NetworksWindow {
         let chosen = &rows[self.selected];
         let status = self.status_of(chosen);
         let lanlord = chosen.role == Role::Lanlord;
+        let body = sized(chosen, status, error.as_deref());
+        let others: Vec<(usize, Vec<Node<Msg>>)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self.selected)
+            .map(|(i, r)| (i, sized(r, self.status_of(r), error.as_deref())))
+            .collect();
         let tabs = Node::Tabs {
             titles,
+            key: view::pages_fingerprint(self.selected, &body, &others),
             current: self.selected,
             pick: Msg::Tab,
-            body: sized(chosen, status, error.as_deref()),
-            others: rows
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| *i != self.selected)
-                .map(|(i, r)| (i, sized(r, self.status_of(r), error.as_deref())))
-                .collect(),
+            body,
+            others,
         };
         let buttons = Node::Buttons(vec![
             Button::new("Refresh", !self.reading(), Msg::Refresh),
@@ -897,10 +900,19 @@ fn sized(
         role: Role::Lanlord,
         ..row.clone()
     };
+    // what the page shows: the row, the status text and the error text
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (row.role as u8, row.details(), &row.link).hash(&mut hasher);
+        status
+            .map(|s| (s.connection.text(), s.speed()))
+            .hash(&mut hasher);
+        error.hash(&mut hasher);
+        hasher.finish()
+    };
     vec![Node::SameSize {
-        key: format!("{:?}{}{}", row.role, status.is_some(), error.is_some())
-            .bytes()
-            .fold(0u64, |k, b| k.wrapping_mul(31).wrapping_add(u64::from(b))),
+        key,
         body: page(row, status, error),
         others: vec![page(&lanlord, status, error)],
     }]

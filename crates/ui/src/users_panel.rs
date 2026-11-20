@@ -26,6 +26,11 @@ impl DerefMut for UsersPanel {
 }
 
 impl UsersPanel {
+    /// stands for what the page is made of, as `lanlord_app::view::fingerprint` has it.
+    pub fn key(&self, services: &Services, host: Option<&str>) -> u64 {
+        lanlord_app::view::fingerprint(&self.0.preview(services, host))
+    }
+
     pub fn show(&mut self, ui: &mut Ui, services: &Services, host: Option<&str>) {
         // a page being measured is drawn unseen: it asks for nothing and answers nothing
         let measuring = !ui.is_visible();

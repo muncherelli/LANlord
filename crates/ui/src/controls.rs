@@ -339,6 +339,8 @@ fn tab_rect(left: f32, widths: &[f32], index: usize, bottom: f32, selected: bool
 /// how big each page of a tab strip is on its own, at the width and scale they were laid out at.
 #[derive(Clone, PartialEq)]
 struct PageSizes {
+    /// stands for what the pages are made of
+    key: u64,
     width: f32,
     ppp: f32,
     heights: Vec<f32>,
@@ -415,11 +417,13 @@ fn measure_pages<R>(
 /// a strip of tabs over a raised page. the chosen tab is taller, joined to the page and the
 /// others sit behind it. `page` draws the page at an index, and is called for every page once to
 /// measure it: the frame is as big as the biggest, so the window keeps its size whichever tab is
-/// open. the sizes are kept until the width or scale changes, or the open page is not the size it
-/// was measured at.
+/// open. the sizes are kept until the width, scale or `key` changes, or the open page is not the
+/// size it was measured at. `key` stands for what the pages are made of, so a page that grows
+/// while it is hidden is measured again.
 pub fn tabs<R>(
     ui: &mut Ui,
     labels: &[&str],
+    key: u64,
     selected: &mut usize,
     mut page: impl FnMut(&mut Ui, usize) -> R,
 ) -> R {
@@ -460,10 +464,18 @@ pub fn tabs<R>(
         let ppp = ctx.pixels_per_point();
         let kept: Option<PageSizes> = ctx.data(|d| d.get_temp(sizes_id));
         let mut sizes = match kept {
-            Some(k) if k.width == inner && k.ppp == ppp && k.heights.len() == labels.len() => k,
+            Some(k)
+                if k.key == key
+                    && k.width == inner
+                    && k.ppp == ppp
+                    && k.heights.len() == labels.len() =>
+            {
+                k
+            }
             _ => {
                 let measured = measure_pages(ui, labels.len(), inner, &mut page);
                 PageSizes {
+                    key,
                     width: inner,
                     ppp,
                     heights: measured.iter().map(|m| m.y).collect(),
@@ -615,7 +627,7 @@ mod tests {
             testkit::run(&ctx, events, |ui| {
                 theme::apply(ui.ctx());
                 check(ui, &mut on, "Tick me");
-                tabs(ui, &["One", "Two"], &mut tab, |ui, _| {
+                tabs(ui, &["One", "Two"], 0, &mut tab, |ui, _| {
                     let mut text = String::from("x");
                     edit(ui, &mut text, 80.0);
                     group(ui, "Caption", |ui| {
@@ -639,5 +651,40 @@ mod tests {
         }
         assert!(on);
         assert_eq!(tab, 1);
+    }
+
+    #[test]
+    fn a_page_that_grows_while_hidden_is_measured_again_when_its_key_changes() {
+        let ctx = egui::Context::default();
+        let mut tab = 0usize;
+        let mut extra = 0usize;
+        let mut frame = |tab: &mut usize, extra: usize| {
+            testkit::run(&ctx, Vec::new(), |ui| {
+                theme::apply(ui.ctx());
+                tabs(ui, &["One", "Two"], extra as u64, tab, |ui, i| {
+                    ui.label("page");
+                    for _ in 0..if i == 1 { extra } else { 0 } {
+                        ui.label("more");
+                    }
+                });
+            });
+            tab_frame(&ctx).expect("a frame").height()
+        };
+        for _ in 0..3 {
+            frame(&mut tab, extra);
+        }
+        let before = frame(&mut tab, extra);
+        // the hidden page gets longer, and the key says so: the frame follows at once
+        extra = 6;
+        for _ in 0..3 {
+            frame(&mut tab, extra);
+        }
+        let grown = frame(&mut tab, extra);
+        assert!(grown > before + 50.0, "{before} {grown}");
+        // and does not change when that page is opened
+        tab = 1;
+        for _ in 0..3 {
+            assert_eq!(frame(&mut tab, extra), grown);
+        }
     }
 }

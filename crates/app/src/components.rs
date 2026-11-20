@@ -507,10 +507,17 @@ impl Components {
             (Step::Attach, self.attach()),
             (Step::Summary, self.summary()),
         ];
+        // what the pages show, which can make one taller
+        let key = view::pages_fingerprint_of(
+            pages
+                .iter()
+                .enumerate()
+                .map(|(i, (_, nodes))| (i, nodes.as_slice())),
+        );
         let at = pages.iter().position(|(s, _)| *s == self.step).unwrap_or(0);
         let (_, body) = pages.remove(at);
         let mut page = vec![Node::SameSize {
-            key: self.pages_key(),
+            key,
             body,
             others: pages.into_iter().map(|(_, p)| p).collect(),
         }];
@@ -535,19 +542,6 @@ impl Components {
             page.push(view::status(&self.saving));
         }
         page
-    }
-
-    /// a number that changes when what the pages show changes, which can make one taller.
-    fn pages_key(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        let (candidate, problems) = self.candidate();
-        format!(
-            "{candidate:?}{problems:?}{:?}{:?}",
-            self.networks, self.current
-        )
-        .hash(&mut hasher);
-        hasher.finish()
     }
 
     fn choose(&self) -> Vec<Node<Msg>> {
