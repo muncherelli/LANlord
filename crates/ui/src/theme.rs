@@ -173,6 +173,9 @@ pub fn apply(ctx: &egui::Context) {
         widget.bg_fill = GRAY;
     }
     ctx.set_visuals(visuals);
+    // a window dragged by an edge is drawn again once egui has sized it, and once more when it
+    // took more than the pointer gave it
+    ctx.options_mut(|o| o.max_passes = std::num::NonZeroUsize::new(3).unwrap_or(o.max_passes));
     ctx.global_style_mut(|style| {
         for font_id in style.text_styles.values_mut() {
             font_id.size = TEXT;

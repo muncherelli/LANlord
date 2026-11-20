@@ -1181,3 +1181,108 @@ fn the_new_network_dialog_has_a_full_title_bar_and_every_field_inside_it() {
     frames(&mut desktop, &ctx, 4);
     assert_modal_fits(&ctx, "network-form");
 }
+
+/// drag a window from the point `grab` picks in its rect by `by`, in steps, and give back its
+/// rect after every frame.
+fn drag_from(
+    desktop: &mut Desktop,
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    target: Target,
+    grab: impl Fn(egui::Rect) -> egui::Pos2,
+    by: egui::Vec2,
+) -> Vec<egui::Rect> {
+    use eframe::egui::{Event, PointerButton};
+    let rect = |d: &Desktop| d.measured.iter().find(|m| m.0 == target).unwrap().1;
+    let from = grab(rect(desktop));
+    let button = |at, pressed| Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame_on(desktop, ctx, size, vec![Event::PointerMoved(from)]);
+    frame_on(desktop, ctx, size, vec![button(from, true)]);
+    let mut seen = Vec::new();
+    for i in 1..=12 {
+        let at = from + by * (i as f32 / 12.0);
+        frame_on(desktop, ctx, size, vec![Event::PointerMoved(at)]);
+        seen.push(rect(desktop));
+    }
+    frame_on(desktop, ctx, size, vec![button(from + by, false)]);
+    frames_on(desktop, ctx, size, 3);
+    seen
+}
+
+#[test]
+fn dragging_the_left_or_top_edge_past_the_least_size_keeps_the_far_edges_still() {
+    use eframe::egui::{Pos2, Vec2};
+    let size = Vec2::new(1280.0, 720.0);
+    type Grab = fn(egui::Rect) -> Pos2;
+    // in from the left, in from the top, and in from the top left corner, each far past the least
+    let cases: [(Grab, Vec2); 3] = [
+        (
+            |r| Pos2::new(r.left() + 1.0, r.center().y),
+            Vec2::new(900.0, 0.0),
+        ),
+        (
+            |r| Pos2::new(r.center().x, r.top() + 1.0),
+            Vec2::new(0.0, 900.0),
+        ),
+        (
+            |r| Pos2::new(r.left() + 1.0, r.top() + 1.0),
+            Vec2::new(900.0, 900.0),
+        ),
+    ];
+    for (grab, by) in cases {
+        let (mut desktop, ctx, _) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Networks);
+        frames_on(&mut desktop, &ctx, size, 30);
+        let start = desktop
+            .measured
+            .iter()
+            .find(|m| m.0 == Target::Networks)
+            .unwrap()
+            .1;
+        let seen = drag_from(&mut desktop, &ctx, size, Target::Networks, grab, by);
+        // the first frames of a grab settle the window's size, as its contents are measured again
+        for r in &seen[3..] {
+            // the window is drawn from one rect: the far edges never leave where they began
+            assert!((r.right() - start.right()).abs() < 1.5, "{start:?} {r:?}");
+            assert!((r.bottom() - start.bottom()).abs() < 1.5, "{start:?} {r:?}");
+        }
+    }
+}
+
+#[test]
+fn a_window_follows_the_pointer_in_the_same_frame_when_its_left_edge_is_dragged_out() {
+    use eframe::egui::{Pos2, Vec2};
+    let size = Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(Target::Networks);
+    frames_on(&mut desktop, &ctx, size, 30);
+    let start = desktop
+        .measured
+        .iter()
+        .find(|m| m.0 == Target::Networks)
+        .unwrap()
+        .1;
+    let grab = |r: egui::Rect| Pos2::new(r.left() + 1.0, r.center().y);
+    let seen = drag_from(
+        &mut desktop,
+        &ctx,
+        size,
+        Target::Networks,
+        grab,
+        Vec2::new(-96.0, 0.0),
+    );
+    for (i, r) in seen.iter().enumerate().skip(3) {
+        // the frame is where the pointer is, not where it was a frame before, and what is drawn
+        // in it is as wide: the right edge stays and the left edge is the pointer's
+        let want = start.left() - 8.0 * (i as f32 + 1.0);
+        assert!((r.left() - want).abs() < 1.5, "{i}: {r:?} {want}");
+        assert!((r.right() - start.right()).abs() < 1.5, "{i}: {r:?}");
+    }
+}

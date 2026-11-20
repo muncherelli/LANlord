@@ -334,6 +334,75 @@ fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
             .is_none_or(|layer| layer.id == Id::unique(id))
 }
 
+/// a drag on a window's edge or corner. a drag on the left or top edge moves the window's origin
+/// as well as its size, and egui puts the window at the pointer whatever its least size is, so a
+/// window already at its least slid sideways and its far edge moved. this holds the far edge.
+#[derive(Clone, Copy)]
+struct EdgeDrag {
+    /// where the window was when the drag began
+    start: Rect,
+    left: bool,
+    top: bool,
+    /// the width and height the window has turned out to be when it was no smaller than it goes,
+    /// nothing while it is as small as the pointer asks
+    least: Vec2,
+}
+
+impl EdgeDrag {
+    /// where the window goes this frame: the pointer's place, held so that the far edges stay
+    /// where they were once the window cannot get any smaller.
+    fn held(self, pos: Pos2) -> Pos2 {
+        let least = self.least;
+        Pos2::new(
+            if self.left {
+                pos.x.min(self.start.right() - least.x)
+            } else {
+                pos.x
+            },
+            if self.top {
+                pos.y.min(self.start.bottom() - least.y)
+            } else {
+                pos.y
+            },
+        )
+    }
+
+    /// the drag, noted when it begins and followed until the button is let go.
+    fn follow(ctx: &egui::Context, id: &str, key: Id) -> Option<Self> {
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            ctx.data_mut(|d| d.remove::<Self>(key));
+            return None;
+        }
+        if let Some(drag) = ctx.data(|d| d.get_temp::<Self>(key)) {
+            return Some(drag);
+        }
+        // only a press that begins on the edge: egui grabs a few pixels either side of it
+        let start = ctx.memory(|m| m.area_rect(Id::unique(id)))?;
+        let p = ctx.input(|i| {
+            i.pointer
+                .primary_pressed()
+                .then(|| i.pointer.press_origin())
+        })??;
+        const GRAB: f32 = 6.0;
+        let on_it = start.expand(GRAB).contains(p)
+            && !start.shrink(GRAB).contains(p)
+            && ctx
+                .layer_id_at(p)
+                .is_none_or(|layer| layer.id == Id::unique(id));
+        if !on_it {
+            return None;
+        }
+        let drag = EdgeDrag {
+            start,
+            left: p.x < start.left() + GRAB,
+            top: p.y < start.top() + GRAB,
+            least: Vec2::ZERO,
+        };
+        ctx.data_mut(|d| d.insert_temp(key, drag));
+        Some(drag)
+    }
+}
+
 /// keep what a growable window's contents were, to share its room out the next frame, and draw
 /// again until they settle.
 fn remember_room(
@@ -478,8 +547,19 @@ pub fn show(
             None => open_size(window, place, least, before, fit, floor),
         }
     };
+    // a drag on the left or top edge keeps the far edges where they are
+    let edge_key = Id::unique(("window-edge", id));
+    let edge = EdgeDrag::follow(ctx, id, edge_key).filter(|_| growable);
+    let mut wanted = None;
+    if let Some((drag, state)) = edge.zip(egui::AreaState::load(ctx, layer(id).id)) {
+        let pos = state.left_top_pos();
+        wanted = Some(pos);
+        window = window.current_pos(drag.held(pos));
+    }
     let mut bar_rect = Rect::NOTHING;
+    let mut origin = Pos2::ZERO;
     let shown = window.show(ctx, |ui| {
+        origin = ui.cursor().min;
         // the title bar spans the window inside its 3 pixel border; the contents sit in
         // an 8 pixel margin on every side
         if dialog {
@@ -561,16 +641,52 @@ pub fn show(
         ctx.data_mut(|d| d.insert_temp(pin_key, strip));
         content_height += strip;
     })?;
+    // where the window was drawn. egui has moved its place on by now, to where a drag puts it
+    // for the next frame, so its response is a frame ahead of the contents drawn in it
+    let drawn = Rect::from_min_size(origin - Vec2::splat(FRAME), shown.response.rect.size());
+    if let Some(mut drag) = edge {
+        let pass = ctx.current_pass_index();
+        if pass == 0 && ctx.input(|i| i.pointer.delta() != Vec2::ZERO) {
+            // egui sizes and places a window from the pointer once it is drawn, for the next
+            // frame: draw again now, so the frame follows the pointer instead of trailing it
+            ctx.request_discard("window follows its edge");
+        } else if let Some(pos) = wanted.filter(|_| pass > 0) {
+            // the window is bigger than the pointer asked for, so it is as small as it goes: hold
+            // it by its far edge at that size, which is more than its least when a control will
+            // not narrow, and draw again if it moved
+            let asked = drag.start.max - pos;
+            let least = Vec2::new(
+                if drag.left && drawn.width() > asked.x + 0.5 {
+                    drawn.width()
+                } else {
+                    0.0
+                },
+                if drag.top && drawn.height() > asked.y + 0.5 {
+                    drawn.height()
+                } else {
+                    0.0
+                },
+            );
+            if least != drag.least {
+                drag.least = least;
+                ctx.data_mut(|d| d.insert_temp(edge_key, drag));
+                let moved = (drawn.max - drag.start.max).abs();
+                if (drag.left && moved.x > 0.5) || (drag.top && moved.y > 0.5) {
+                    ctx.request_discard("window held by its far edge");
+                }
+            }
+        }
+    }
     let tabbed = controls::take_tabbed(ctx);
     if dialog {
-        ctx.data_mut(|d| d.insert_temp(dialog_key, seen.after(shown.response.rect, tabbed)));
+        ctx.data_mut(|d| d.insert_temp(dialog_key, seen.after(drawn, tabbed)));
     }
     let painter = ctx.layer_painter(shown.response.layer_id);
-    bevel(&painter, shown.response.rect, true);
+    bevel(&painter, drawn, true);
     Some(Shown {
         actions,
         clicked: shown.response.is_pointer_button_down_on(),
-        rect: shown.response.rect,
+        rect: drawn,
         bar: bar_rect,
         content: content_height,
     })
