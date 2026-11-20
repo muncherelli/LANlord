@@ -269,11 +269,31 @@ pub enum Change {
     Deny { network: String, mac: String },
 }
 
+/// the words that say what a grant is for, in the sentences that describe a change.
+pub(crate) struct Wording {
+    /// "turned {} on for NETWORK".
+    pub switch: &'static str,
+    /// "allowed MAC {} from NETWORK".
+    pub allow: &'static str,
+    /// "took {} access away from MAC".
+    pub access: &'static str,
+}
+
 impl Change {
     pub fn describe(&self) -> String {
+        self.describe_as(&Wording {
+            switch: "internet",
+            allow: "out to the internet",
+            access: "internet",
+        })
+    }
+
+    /// say what the change does, in the words of the grant it is for.
+    pub(crate) fn describe_as(&self, words: &Wording) -> String {
         match self {
             Change::Network { network, on } => format!(
-                "turned internet {} for {network}",
+                "turned {} {} for {network}",
+                words.switch,
                 if *on { "on" } else { "off" }
             ),
             Change::Allow {
@@ -282,14 +302,15 @@ impl Change {
                 expiry,
                 ..
             } => match expiry {
-                Expiry::Never => format!("allowed {mac} out to the internet from {network}"),
+                Expiry::Never => format!("allowed {mac} {} from {network}", words.allow),
                 Expiry::At(t) => format!(
-                    "allowed {mac} out to the internet from {network} until {}",
+                    "allowed {mac} {} from {network} until {}",
+                    words.allow,
                     format_time(*t)
                 ),
             },
             Change::Deny { network, mac } => {
-                format!("took internet access away from {mac} on {network}")
+                format!("took {} access away from {mac} on {network}", words.access)
             }
         }
     }

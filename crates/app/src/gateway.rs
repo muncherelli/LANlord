@@ -1185,7 +1185,13 @@ mod fake {
             change: &lanlord_model::ssh_access::Change,
             ask: AskPassword,
         ) -> Result<()> {
-            self.enter(format!("ssh-access {host} {}", change.describe()), ask)?;
+            self.enter(
+                format!(
+                    "ssh-access {host} {}",
+                    lanlord_model::ssh_access::describe(change)
+                ),
+                ask,
+            )?;
             let mut stored = self.stored.lock().unwrap();
             *stored = lanlord_model::ssh_access::edit_settings(&stored, change, 0)?;
             self.calls

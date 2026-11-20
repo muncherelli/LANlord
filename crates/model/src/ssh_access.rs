@@ -19,8 +19,8 @@ use anyhow::Result;
 use serde_yaml_ng::Mapping;
 
 use crate::internet::{
-    apply_grant, edit_list, format_time, grant_details, grant_errors, read_grants, write_grants,
-    AllowedHost, Change as InternetChange, Expiry,
+    apply_grant, edit_list, grant_details, grant_errors, read_grants, write_grants, AllowedHost,
+    Change as InternetChange, Wording,
 };
 use crate::lan_networks::LanNetwork;
 use crate::settings::ValidationError;
@@ -56,95 +56,21 @@ impl SshAccess {
     }
 }
 
-/// one change to the ssh settings.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Change {
-    /// switch the whole network on or off.
-    Network { network: String, on: bool },
-    /// let one computer reach sshd; a grant for the same mac is replaced.
-    Allow {
-        network: String,
-        mac: String,
-        name: Option<String>,
-        expiry: Expiry,
-    },
-    /// take one computer's grant away.
-    Deny { network: String, mac: String },
-}
+/// one change to the ssh settings: the same arguments, checks and wire form as an internet one.
+pub type Change = InternetChange;
 
-impl Change {
-    pub fn describe(&self) -> String {
-        match self {
-            Change::Network { network, on } => format!(
-                "turned ssh to this server {} for {network}",
-                if *on { "on" } else { "off" }
-            ),
-            Change::Allow {
-                network,
-                mac,
-                expiry,
-                ..
-            } => match expiry {
-                Expiry::Never => format!("allowed {mac} to use ssh to this server from {network}"),
-                Expiry::At(t) => format!(
-                    "allowed {mac} to use ssh to this server from {network} until {}",
-                    format_time(*t)
-                ),
-            },
-            Change::Deny { network, mac } => {
-                format!("took ssh access away from {mac} on {network}")
-            }
-        }
-    }
-
-    /// the same change as an internet one, which has the same arguments and the same checks.
-    fn like_internet(&self) -> InternetChange {
-        match self.clone() {
-            Change::Network { network, on } => InternetChange::Network { network, on },
-            Change::Allow {
-                network,
-                mac,
-                name,
-                expiry,
-            } => InternetChange::Allow {
-                network,
-                mac,
-                name,
-                expiry,
-            },
-            Change::Deny { network, mac } => InternetChange::Deny { network, mac },
-        }
-    }
-
-    /// check the arguments on their own; `now` is when the request is made.
-    pub fn check(&self, now: i64) -> Result<(), (String, String)> {
-        self.like_internet().check(now)
-    }
-}
-
-impl From<InternetChange> for Change {
-    fn from(change: InternetChange) -> Self {
-        match change {
-            InternetChange::Network { network, on } => Change::Network { network, on },
-            InternetChange::Allow {
-                network,
-                mac,
-                name,
-                expiry,
-            } => Change::Allow {
-                network,
-                mac,
-                name,
-                expiry,
-            },
-            InternetChange::Deny { network, mac } => Change::Deny { network, mac },
-        }
-    }
+/// say what a change does to ssh to the server.
+pub fn describe(change: &Change) -> String {
+    change.describe_as(&Wording {
+        switch: "ssh to this server",
+        allow: "to use ssh to this server",
+        access: "ssh",
+    })
 }
 
 /// apply one change to a list of networks. `now` is when it is made.
 pub fn apply_change(list: &mut [LanNetwork], change: &Change, now: i64) -> Result<()> {
-    apply_grant(list, &change.like_internet(), now, "ssh", |n| {
+    apply_grant(list, change, now, "ssh", |n| {
         (&mut n.ssh.enabled, &mut n.ssh.allow)
     })
 }
@@ -172,6 +98,7 @@ pub fn migrate_networks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::internet::Expiry;
     use crate::lan_networks;
     use crate::settings::Settings;
 

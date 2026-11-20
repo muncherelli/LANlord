@@ -978,7 +978,7 @@ fn ssh_change(
             name,
         },
     };
-    Ok(allow_change(network, like, now)?.into())
+    allow_change(network, like, now)
 }
 
 /// `lanlord networks HOST ssh NAME ...`.
@@ -989,7 +989,7 @@ fn ssh_access(host: &str, name: &str, action: SshCommand) -> Result<()> {
     let change = ssh_change(name, action, lanlord_core::internet::now())?;
     send_grant(
         host,
-        change.describe(),
+        lanlord_model::ssh_access::describe(&change),
         Operation::ChangeSshAccess { change },
     )
 }
