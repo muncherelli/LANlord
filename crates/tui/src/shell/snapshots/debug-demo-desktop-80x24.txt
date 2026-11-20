@@ -1,22 +1,22 @@
 
-      ≡           ▣
-  My Server     Hosts
+      ≡           ┬
+  My Server      DNS
 
 
-      □
-   Networks
+      □           ▦
+   Networks    Settings
 
 
-      ►
-   Gateway
+      ►           >
+   Gateway     Console
 
 
-      ▦
-   Settings
+      ▓           ▣
+    Docker      Hosts
 
 
-      >
-   Console                              ┌─────────────────────────┐
+      ▌
+  NT4 Domain                            ┌─────────────────────────┐
                                         │ ✓ Demo desktop          │
                                         │   Window manager debug  │
                                         │   Open all windows      │

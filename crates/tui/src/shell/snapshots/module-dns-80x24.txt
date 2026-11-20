@@ -7,7 +7,7 @@
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ [ Settings ][ Static leases ][ Extra records ][ Current leases ]             │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
-│ │Retronet: unknown (no network); addresses are not checked against it      │ │
+│ │Network: unknown (no network); addresses are not checked against it       │ │
 │ │┌ Names ─────────────────────────────────────────────────────────────────┐│ │
 │ ││ Zone  retronet                                                         ││ │
 │ │└────────────────────────────────────────────────────────────────────────┘│ │
