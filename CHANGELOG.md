@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- builds made between releases now say vX.Y.Z-development (title bar, About, Welcome, `lanlord --version`, the web UI) instead of the last release number; `lanlord install` and `lanlord upgrade` from such a build stop and ask for `--server-binary`, `--web-dist` and `--auth-helper` (there is no release to download for it), and its update check tells you when that release comes out
 - tabbed windows (My Server, NT4 Domain, DNS, Networks, Date/Time, Task Manager) keep one size on every tab: the page frame is as big as the largest page, so switching tabs no longer resizes or moves the window, and a tabbed dialog stays where it opened; the sizes are measured again when what a page shows changes, also while it is hidden
 - the lists on tabbed pages (DNS leases and records, NT4 logins, logon scripts) stretch to the bottom of the window when it grows
 - the Add/Remove Components wizard keeps one size on every page, so its buttons stay where they are

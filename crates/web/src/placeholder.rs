@@ -14,7 +14,7 @@ const TITLE_BAR: f32 = 18.0;
 
 /// the page and window title: the web ui only runs on the gateway, so it is always the server.
 pub fn title() -> String {
-    format!("LANlord Server v{}", env!("CARGO_PKG_VERSION"))
+    format!("LANlord Server v{}", lanlord_model::version::display())
 }
 
 /// paint the placeholder into `ui`; returns the window's rect so tests can find it.
@@ -78,7 +78,7 @@ mod tests {
     fn the_title_names_the_server_and_its_version() {
         assert_eq!(
             title(),
-            format!("LANlord Server v{}", env!("CARGO_PKG_VERSION"))
+            format!("LANlord Server v{}", lanlord_model::version::display())
         );
     }
 

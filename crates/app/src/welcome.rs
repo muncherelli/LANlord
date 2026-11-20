@@ -394,7 +394,7 @@ mod tests {
         });
         assert_eq!(
             heading.unwrap(),
-            format!("Welcome to LANlord v{}", env!("CARGO_PKG_VERSION"))
+            format!("Welcome to LANlord v{}", lanlord_model::version::display())
         );
         let last = Welcome::topics() - 1;
         w.update(Msg::Topic(last), &icons());
