@@ -288,7 +288,7 @@ impl Desktop {
             Action::Power(power) => self.ask_power(power),
             Action::About => {
                 let text = format!(
-                    "LANlord {}\nManages a retro network gateway: DNS, DHCP, an NT4 domain and more.",
+                    "LANlord {}\nManages a retro network gateway: DNS, DHCP, an NT4 Server and more.",
                     lanlord_model::version::display()
                 );
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));

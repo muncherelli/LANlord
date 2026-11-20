@@ -147,7 +147,7 @@ page() {
   machines
   section_end
 
-  section_start 'NT4 domain'
+  section_start 'NT4 Server'
   domain=''
   role=''
   if [[ -r $smb_conf ]]; then
@@ -158,7 +158,7 @@ page() {
     row 'Name' "$(esc "$domain")"
     row 'Role' "$(esc "${role:-unknown}")"
   else
-    note 'No NT4 domain is configured.'
+    note 'No NT4 Server is configured.'
   fi
   section_end
 

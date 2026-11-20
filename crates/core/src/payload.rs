@@ -297,7 +297,7 @@ mod tests {
         let page = run_status("empty", false);
         assert!(page.contains("<title>LANlord"));
         assert!(page.contains("No machines were found"));
-        assert!(page.contains("No NT4 domain is configured"));
+        assert!(page.contains("No NT4 Server is configured"));
         assert!(page.contains("No sites are hosted"));
     }
 }
