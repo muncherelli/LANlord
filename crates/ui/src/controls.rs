@@ -658,7 +658,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut tab = 0usize;
         let mut extra = 0usize;
-        let mut frame = |tab: &mut usize, extra: usize| {
+        let frame = |tab: &mut usize, extra: usize| {
             testkit::run(&ctx, Vec::new(), |ui| {
                 theme::apply(ui.ctx());
                 tabs(ui, &["One", "Two"], extra as u64, tab, |ui, i| {
