@@ -40,14 +40,55 @@ pub fn field<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// a one-line edit box `width` points wide (the text area; the frame adds a few more).
 pub fn edit(ui: &mut Ui, text: &mut String, width: f32) -> Response {
-    field(ui, |ui| {
+    let response = field(ui, |ui| {
         ui.add(
             eframe::egui::TextEdit::singleline(text)
                 .desired_width(width)
                 .frame(Frame::new())
                 .margin(Margin::ZERO),
         )
-    })
+    });
+    note_edit(ui.ctx(), response.id);
+    response
+}
+
+/// remember the text fields drawn last (the most recent at the end), so a line drawn under
+/// them (a held error) can tell whether the keyboard is in the field it is about.
+pub fn note_edit(ctx: &eframe::egui::Context, id: eframe::egui::Id) {
+    let key = eframe::egui::Id::unique("recent-text-edits");
+    ctx.data_mut(|d| {
+        let recent = d.get_temp_mut_or_default::<Vec<eframe::egui::Id>>(key);
+        // a frame draws the same fields again: start over when the first one comes round
+        if recent.first() == Some(&id) {
+            recent.clear();
+        }
+        recent.push(id);
+        if recent.len() > 8 {
+            recent.remove(0);
+        }
+    });
+}
+
+/// remember which text field a wizard key belongs to.
+pub fn note_keyed(ctx: &eframe::egui::Context, key: (usize, usize), id: eframe::egui::Id) {
+    ctx.data_mut(|d| d.insert_temp(eframe::egui::Id::unique("keyed-text-edit").with(key), id));
+}
+
+/// does the keyboard sit in the field a held error is about: the one `above` fields before
+/// the line, or the wizard field with `key`?
+pub fn field_has_keyboard(ctx: &eframe::egui::Context, which: lanlord_app::view::HeldFor) -> bool {
+    use lanlord_app::view::HeldFor;
+    let field = match which {
+        HeldFor::Above(n) => ctx.data(|d| {
+            let recent =
+                d.get_temp::<Vec<eframe::egui::Id>>(eframe::egui::Id::unique("recent-text-edits"))?;
+            recent.len().checked_sub(n + 1).map(|at| recent[at])
+        }),
+        HeldFor::Keyed(key) => ctx.data(|d| {
+            d.get_temp::<eframe::egui::Id>(eframe::egui::Id::unique("keyed-text-edit").with(key))
+        }),
+    };
+    field.is_some() && ctx.egui_wants_keyboard_input() && ctx.memory(|m| m.focused()) == field
 }
 
 /// a check box with its label; `changed` is set when it was toggled.

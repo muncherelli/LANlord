@@ -551,16 +551,14 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.label(RichText::new(text.as_str()).color(RED).small());
             None
         }
-        Node::HeldError { text, partial } => {
+        Node::HeldError {
+            text,
+            partial,
+            field,
+        } => {
             // hidden, not removed, while a field is being typed in: the room stays so the
             // fields below do not jump when the focus leaves
-            let focused = ui.ctx().memory(|m| m.focused());
-            let typing = ui.ctx().egui_wants_keyboard_input()
-                && focused.is_some_and(|id| {
-                    ui.ctx()
-                        .read_response(id)
-                        .is_some_and(|r| ui.clip_rect().intersects(r.rect))
-                });
+            let typing = controls::field_has_keyboard(ui.ctx(), *field);
             let colour = if *partial && typing {
                 egui::Color32::TRANSPARENT
             } else {
@@ -717,6 +715,7 @@ fn line_edit(
                 .margin(egui::Margin::ZERO),
         )
     });
+    controls::note_edit(ui.ctx(), response.id);
     #[cfg(test)]
     dialogs::note_box(ui.ctx(), response.rect, width);
     if focus {
@@ -1052,6 +1051,15 @@ mod tests {
         nodes: &[Node<String>],
         events: Vec<egui::Event>,
     ) -> (bool, Option<String>) {
+        drawn_as(ctx, nodes, events, "not an address")
+    }
+
+    fn drawn_as(
+        ctx: &egui::Context,
+        nodes: &[Node<String>],
+        events: Vec<egui::Event>,
+        message: &str,
+    ) -> (bool, Option<String>) {
         fn seen(shape: &Shape, message: &str) -> Option<bool> {
             match shape {
                 Shape::Text(t) if t.galley.text() == message => {
@@ -1074,7 +1082,7 @@ mod tests {
         let visible = output
             .shapes
             .iter()
-            .find_map(|s| seen(&s.shape, "not an address"))
+            .find_map(|s| seen(&s.shape, message))
             .unwrap_or(false);
         (visible, sent)
     }
@@ -1134,6 +1142,59 @@ mod tests {
         text.push('x');
         let (shown, _) = drawn(&ctx, &page(&text, true), vec![]);
         assert!(shown);
+    }
+
+    #[test]
+    fn leaving_a_field_for_the_next_one_shows_the_error_of_the_one_left() {
+        use lanlord_app::view::HeldFor;
+        let ctx = egui::Context::default();
+        let page = |first_has_it: bool| -> Vec<Node<String>> {
+            let field = |focus: bool| Node::Input {
+                value: "10.".into(),
+                size: Size::Points(120.0),
+                hint: String::new(),
+                focus,
+                edit: Box::new(|t| t),
+                enter: None,
+            };
+            let held = |text: &str| Node::HeldError {
+                text: text.into(),
+                partial: true,
+                field: HeldFor::Above(0),
+            };
+            vec![
+                field(first_has_it),
+                held("first is not an address"),
+                field(!first_has_it),
+                held("second is not an address"),
+            ]
+        };
+        let seen = |first_has_it: bool, message: &str| {
+            drawn_as(&ctx, &page(first_has_it), vec![], message).0
+        };
+        for _ in 0..4 {
+            seen(true, "first is not an address");
+        }
+        assert!(
+            !seen(true, "first is not an address"),
+            "hidden in the first field"
+        );
+        assert!(
+            seen(true, "second is not an address"),
+            "the other one is not hidden"
+        );
+        // tab to the next field: the one left is called wrong, the one entered is held
+        for _ in 0..4 {
+            seen(false, "first is not an address");
+        }
+        assert!(
+            seen(false, "first is not an address"),
+            "shown after leaving"
+        );
+        assert!(
+            !seen(false, "second is not an address"),
+            "hidden in the second field"
+        );
     }
 
     #[test]

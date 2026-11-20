@@ -20,7 +20,7 @@ use lanlord_model::validate::ipv4_partial;
 
 use crate::remote::Remote;
 use crate::services::Services;
-use crate::view::{self, Button, Dialog, Node};
+use crate::view::{self, Button, Dialog, HeldFor, Node};
 use crate::view_wizard::{CheckList, CheckRow, KeyedInput};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -257,6 +257,23 @@ impl Components {
             }
         }
         (selection, problems)
+    }
+
+    /// the address field a problem line is about, when it quotes one: its wizard key and
+    /// whether the text could still become an address.
+    fn typed_address_for(&self, problem: &str) -> Option<((usize, usize), bool)> {
+        let joining = self.joining();
+        self.typed.iter().find_map(|((id, network), text)| {
+            let text = text.trim();
+            if text.parse::<Ipv4Addr>().is_ok()
+                || *problem != format!("{text:?} is not an ipv4 address")
+            {
+                return None;
+            }
+            let c = joining.iter().position(|comp| comp.id() == id)?;
+            let n = self.networks.iter().position(|net| net.id == *network)?;
+            Some(((c, n), ipv4_partial(text)))
+        })
     }
 
     /// what is wrong with the choice so far, first problem first.
@@ -716,21 +733,18 @@ impl Components {
         }
         if let Some(problem) = self.problems().first() {
             page.push(Node::Gap(4.0));
-            // an address still being typed is not called wrong until the focus leaves it
-            let typing = self
-                .typed
-                .values()
-                .any(|t| t.trim().parse::<Ipv4Addr>().is_err() && ipv4_partial(t.trim_end()));
-            if typing && problem.contains("is not an ipv4 address") {
-                page.push(Node::HeldError {
+            // an address still being typed is not called wrong until the focus leaves its own
+            // field: the problem is matched to the address it quotes
+            match self.typed_address_for(problem) {
+                Some((field, true)) => page.push(Node::HeldError {
                     text: problem.clone(),
                     partial: true,
-                });
-            } else {
-                page.push(Node::Status {
+                    field: HeldFor::Keyed(field),
+                }),
+                _ => page.push(Node::Status {
                     text: problem.clone(),
                     error: true,
-                });
+                }),
             }
         }
         page
@@ -1027,6 +1041,41 @@ mod tests {
             .attach()
             .iter()
             .any(|n| matches!(n, Node::Status { error: true, .. })));
+    }
+
+    #[test]
+    fn the_held_line_is_the_one_for_the_address_still_being_typed() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window.update(Msg::Next, &services, "gw");
+        let at = |w: &Components, id: &str| w.joining().iter().position(|c| c.id() == id).unwrap();
+        let (nt4, dns) = (at(&window, "nt4-domain"), at(&window, "dns"));
+        let held = |w: &Components| {
+            w.attach().into_iter().find_map(|n| match n {
+                Node::HeldError { field, .. } => Some(field),
+                _ => None,
+            })
+        };
+        // one finished but wrong address, the other whole: the wrong one is called wrong
+        window.update(Msg::Address((nt4, 1), "192.0.2.x".into()), &services, "gw");
+        window.update(Msg::Address((dns, 1), "192.0.2.5".into()), &services, "gw");
+        assert_eq!(held(&window), None);
+        assert!(window.attach().iter().any(
+            |n| matches!(n, Node::Status { error: true, text } if text.contains("192.0.2.x"))
+        ));
+        // a half typed address is held for its own field, whichever one it is
+        window.update(Msg::Address((dns, 1), "192.0.".into()), &services, "gw");
+        assert_eq!(held(&window), Some(HeldFor::Keyed((dns, 1))));
+        window.update(Msg::Address((dns, 1), "192.0.2.5".into()), &services, "gw");
+        window.update(Msg::Address((nt4, 1), " 192.0. ".into()), &services, "gw");
+        assert_eq!(held(&window), Some(HeldFor::Keyed((nt4, 1))));
+        // padding on either side does not make a whole address wrong
+        window.update(
+            Msg::Address((nt4, 1), "  192.0.2.6 ".into()),
+            &services,
+            "gw",
+        );
+        assert!(window.problems().is_empty());
     }
 
     #[test]

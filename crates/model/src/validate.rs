@@ -145,6 +145,35 @@ pub fn ipv4_partial(text: &str) -> bool {
     parts.len() <= 4 && done.iter().all(|p| !p.is_empty() && octet(p)) && octet(last)
 }
 
+/// like `ipv4_partial`, for an address with a prefix like `172.16.120.1/22`: the part before the
+/// slash can still become an address, and what follows it is digits that can still become a
+/// prefix from 8 to 30. `172.16.120.1` and `172.16.120.1/` are partial, `172.16.120.1/22` is not.
+pub fn cidr_partial(text: &str) -> bool {
+    match text.split_once('/') {
+        None => ipv4_partial(text),
+        Some((address, prefix)) => {
+            let whole = address.parse::<std::net::Ipv4Addr>().is_ok();
+            let digits = prefix.bytes().all(|b| b.is_ascii_digit()) && prefix.len() <= 2;
+            let can_grow = match prefix.parse::<u8>() {
+                Err(_) => prefix.is_empty(),
+                Ok(n) => prefix.len() == 1 && (1..=3).contains(&n),
+            };
+            whole && digits && can_grow
+        }
+    }
+}
+
+/// whether `text` can still become a mac address like `02:00:00:00:00:0a` by typing more:
+/// hex digits and colons, at most six groups of at most two digits, not yet whole.
+pub fn mac_partial(text: &str) -> bool {
+    let parts: Vec<&str> = text.split(':').collect();
+    parts.len() <= 6
+        && parts
+            .iter()
+            .all(|p| p.len() <= 2 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+        && !crate::settings::valid_mac(text)
+}
+
 pub fn ipv6_address(text: &str) -> Check {
     text.parse::<Ipv6Addr>()
         .map(|_| ())
@@ -1234,6 +1263,42 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn partial_prefixed_addresses_and_macs_can_still_become_valid() {
+        for text in [
+            "",
+            "1",
+            "172.16.",
+            "172.16.120.1",
+            "172.16.120.1/",
+            "172.16.120.1/2",
+        ] {
+            assert!(super::cidr_partial(text), "{text:?}");
+        }
+        for text in [
+            "172.16.120.1/22",
+            "172.16.120.1/9",
+            "172.16.120.1/x",
+            "172.16.120/22",
+            "172.16.120.1/224",
+            "172.16.120.1/0",
+        ] {
+            assert!(!super::cidr_partial(text), "{text:?}");
+        }
+        for text in ["", "0", "02", "02:", "02:00:00:00:00:0", "02:00:00:00:00:"] {
+            assert!(super::mac_partial(text), "{text:?}");
+        }
+        for text in [
+            "02:00:00:00:00:0a",
+            "g",
+            "002",
+            "02:00:00:00:00:00:00",
+            "02-00",
+        ] {
+            assert!(!super::mac_partial(text), "{text:?}");
+        }
+    }
+
     #[test]
     fn partial_addresses_can_still_become_valid() {
         for text in [
