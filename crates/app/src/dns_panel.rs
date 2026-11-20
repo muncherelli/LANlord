@@ -189,9 +189,7 @@ impl DnsPanel {
         // what the gateway found may be another network than a later one without an address
         let later = self.selected.min(self.choices().len().saturating_sub(1)) > 0;
         let found = match data.and_then(|d| d.internal.as_ref()) {
-            Some(Ok(internal)) if !(own.is_some() && later) => {
-                (internal.subnet(), internal.address)
-            }
+            Some(Ok(internal)) if !later => (internal.subnet(), internal.address),
             _ => (Subnet::new(Ipv4Addr::UNSPECIFIED, 0), Ipv4Addr::UNSPECIFIED),
         };
         let (subnet, gateway) = known.unwrap_or(found);
@@ -789,6 +787,7 @@ mod tests {
         let mut ask = |_: &str| -> Result<String> { unreachable!("no password") };
         let mut panel = DnsPanel::default();
         panel.remote.data = Some(load(&fake, "a@b", &mut ask).unwrap());
+        panel.remote.set_source("a@b");
         panel.draft = panel.saved().unwrap();
         (panel, fake)
     }
@@ -901,9 +900,11 @@ mod tests {
         let (panel, _fake) = loaded("networks: 3\ndns:\n  zone: alpha\n");
         let mut settings = Settings::parse("networks: 3\ndns:\n  zone: alpha\n").unwrap();
         assert!(store(&mut settings, None, &panel.draft).is_err());
-        assert!(!settings.text().contains("zone: retronet"));
+        assert_eq!(settings.text(), "networks: 3\ndns:\n  zone: alpha\n");
         let services = Services::new(std::sync::Arc::new(Fake::new()), crate::wake::Wake::none());
         assert!(!panel.can_save(&services, "a@b"));
+        let (readable, _fake) = loaded(TWO);
+        assert!(readable.can_save(&services, "a@b"));
     }
 
     #[test]
