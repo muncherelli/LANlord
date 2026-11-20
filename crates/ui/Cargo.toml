@@ -34,3 +34,4 @@ web-sys = { version = "0.3", features = ["Document", "HtmlCanvasElement", "Locat
 
 [dev-dependencies]
 lanlord-app = { workspace = true, features = ["fake", "native"] }
+egui_kittest = { version = "0.37.0", features = ["snapshot", "wgpu"] }
