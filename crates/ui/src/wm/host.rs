@@ -43,6 +43,18 @@ pub(crate) fn caption_down(ctx: &Context, host: Id) -> bool {
         .is_some_and(|r| r.is_pointer_button_down_on())
 }
 
+/// whether the user is sizing the window by an edge or a corner right now.
+pub(crate) fn resizing(ctx: &Context, host: Id) -> bool {
+    let state: Option<State> = ctx.data(|d| d.get_temp(host.with("wm-state")));
+    state
+        .and_then(|st| {
+            st.drag
+                .map(|h| h.drag.section)
+                .or(st.pending.map(|p| p.section))
+        })
+        .is_some_and(|section| section != Section::Caption)
+}
+
 /// where a window is put.
 #[derive(Clone, Copy)]
 enum Place {
@@ -331,9 +343,13 @@ impl Host {
             });
             outer = framed.response.rect;
             if self.resizable {
+                // the zones reach past the window, and past the screen when the window does: they
+                // are not cut off by the clip of the contents
+                let mut zones = ui.new_child(UiBuilder::new().max_rect(outer.expand(32.0)));
+                zones.set_clip_rect(Rect::EVERYTHING);
                 for (i, (name, section)) in HANDLES.iter().enumerate() {
                     let rect = zone(ui, outer, *section);
-                    let response = ui.interact(rect, handle_id(self.id, name), Sense::drag());
+                    let response = zones.interact(rect, handle_id(self.id, name), Sense::drag());
                     response.widget_info(|| {
                         WidgetInfo::labeled(Role::Splitter, true, format!("Resize window {name}"))
                     });

@@ -312,33 +312,21 @@ fn spare_room(before: Option<Room>, sized: bool, fit: bool, room: f32, floor: f3
     }
 }
 
-/// the user has sized the window once they press on its edge or corner.
+/// the user has sized the window once they press on its edge or corner and move.
 fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
-    let Some(r) = ctx.memory(|m| m.area_rect(Id::unique(id))) else {
-        return false;
-    };
     // a press that has not moved sizes nothing
-    let Some(p) = ctx.input(|i| {
+    let moved = ctx.input(|i| {
         i.pointer
             .primary_down()
             .then(|| i.pointer.press_origin())
             .flatten()
-            .filter(|p| {
+            .is_some_and(|p| {
                 i.pointer
                     .latest_pos()
-                    .is_some_and(|now| now.distance(*p) >= 1.0)
+                    .is_some_and(|now| now.distance(p) >= 1.0)
             })
-    }) else {
-        return false;
-    };
-    // not the title bar, whose buttons are not a resize
-    p.y > r.top() + TITLE_BAR + FRAME
-        && r.expand(FRAME * 2.0).contains(p)
-        && !r.shrink(FRAME).contains(p)
-        // not a window on top of this one
-        && ctx
-            .layer_id_at(p)
-            .is_none_or(|layer| layer.id == Id::unique(id))
+    });
+    moved && host::resizing(ctx, Id::unique(id))
 }
 
 /// keep what a growable window's contents were, to share its room out the next frame, and draw
