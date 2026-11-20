@@ -178,7 +178,9 @@ pub fn newer(current: &str, latest: &str) -> bool {
     let len = a.len().max(b.len());
     a.resize(len, 0);
     b.resize(len, 0);
-    b > a
+    // 0.1.5-development comes before the 0.1.5 release it leads up to
+    let leading_up = current.trim().ends_with("-development") && !latest.contains('-') && a == b;
+    b > a || leading_up
 }
 
 /// the string value of `"key": "..."` in a json document, with its escapes undone.
@@ -235,7 +237,7 @@ pub fn check(runner: &dyn Runner, enabled: bool) -> Option<Update> {
     }
     match dev_repo() {
         Some(repo) => check_dev(runner, &repo),
-        None => check_release(runner, env!("CARGO_PKG_VERSION")),
+        None => check_release(runner, lanlord_model::version::display()),
     }
     .ok()
     .flatten()
@@ -823,6 +825,12 @@ mod tests {
         assert!(!newer("0.2.0", "v0.1.9"));
         assert!(!newer("1.0.0", "1.0.0-rc1"));
         assert!(!newer("1.0.0", "garbage"));
+        // a development build is told when its own release is out, a release build is not
+        assert!(newer("0.1.5-development", "v0.1.5"));
+        assert!(!newer("0.1.5", "v0.1.5"));
+        assert!(!newer("0.1.5-development", "v0.1.4"));
+        assert!(newer("0.1.5-development", "v0.1.6"));
+        assert!(!newer("0.1.5-development", "v0.1.5-rc1"));
     }
 
     #[test]

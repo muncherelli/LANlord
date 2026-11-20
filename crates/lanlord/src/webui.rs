@@ -548,7 +548,7 @@ async fn placeholder() -> Html<String> {
     Html(format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>LANlord Server v{v}</title></head>\
          <body><h1>LANlord Server v{v}</h1><p>The web UI is not built yet.</p></body></html>",
-        v = env!("CARGO_PKG_VERSION")
+        v = lanlord_model::version::display()
     ))
 }
 
@@ -882,7 +882,10 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{path}");
             assert!(kind.starts_with("text/html"), "{kind}");
             let text = String::from_utf8(body).unwrap();
-            assert!(text.contains(&format!("LANlord Server v{}", env!("CARGO_PKG_VERSION"))));
+            assert!(text.contains(&format!(
+                "LANlord Server v{}",
+                lanlord_model::version::display()
+            )));
             assert!(text.contains("not built yet"));
         }
         // a file is never answered with a page

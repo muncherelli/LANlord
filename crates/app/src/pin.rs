@@ -12,7 +12,7 @@ thread_local! {
 pub fn version() -> &'static str {
     PINNED
         .with(Cell::get)
-        .map_or(env!("CARGO_PKG_VERSION"), |(v, _)| v)
+        .map_or(lanlord_model::version::display(), |(v, _)| v)
 }
 
 /// the changelog text, or the pinned one.

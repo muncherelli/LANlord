@@ -174,7 +174,10 @@ mod tests {
         assert!(shell.quit);
         assert_eq!(
             titles,
-            [format!("LANlord Client v{}", env!("CARGO_PKG_VERSION"))]
+            [format!(
+                "LANlord Client v{}",
+                lanlord_model::version::display()
+            )]
         );
     }
 }

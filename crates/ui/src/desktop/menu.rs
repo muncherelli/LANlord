@@ -289,7 +289,7 @@ impl Desktop {
             Action::About => {
                 let text = format!(
                     "LANlord {}\nManages a retro network gateway: DNS, DHCP, an NT4 domain and more.",
-                    env!("CARGO_PKG_VERSION")
+                    lanlord_model::version::display()
                 );
                 self.confirm = Some((Confirm::About, Form::new("about", "About LANlord", &text)));
             }

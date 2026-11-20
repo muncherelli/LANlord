@@ -70,6 +70,8 @@ Double-click the clock in the taskbar to open Date/Time Properties for the serve
 - `tools/dev.sh app` builds and installs the macOS app.
 - `cargo gui` and `cargo tui` are shorter ways to run the same builds.
 
+A build that is not a release calls itself the next release with `-development` after it (`0.1.5-development` once 0.1.4 is out); only builds made with `LANLORD_CHANNEL=release` show the plain number.
+
 For the web UI and a test server:
 
 - `tools/dev.sh web --serve` builds the browser version and serves it on this machine only (`http://127.0.0.1:8080/`, or `--port N`), with the same web server and headers a gateway uses. The browser build is still a stand-in page: it shows no server data and talks to no server. It needs `trunk` and the wasm target, which `tools/build-web.sh` tells you how to install.

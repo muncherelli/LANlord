@@ -37,3 +37,4 @@ pub mod stored;
 pub mod update;
 pub mod users;
 pub mod validate;
+pub mod version;
