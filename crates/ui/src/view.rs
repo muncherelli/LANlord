@@ -551,6 +551,22 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             ui.label(RichText::new(text.as_str()).color(RED).small());
             None
         }
+        Node::HeldError { text, partial } => {
+            // hidden, not removed, while a field is being typed in: the room stays so the
+            // fields below do not jump when the focus leaves
+            let typing = ui.ctx().memory(|m| m.focused()).is_some_and(|id| {
+                ui.ctx()
+                    .read_response(id)
+                    .is_some_and(|r| ui.clip_rect().intersects(r.rect))
+            }) && ui.ctx().egui_wants_keyboard_input();
+            let colour = if *partial && typing {
+                egui::Color32::TRANSPARENT
+            } else {
+                RED
+            };
+            ui.label(RichText::new(text.as_str()).color(colour).small());
+            None
+        }
         Node::Alert(text) => {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
@@ -1026,5 +1042,89 @@ mod tests {
             bar = ui.min_rect().bottom();
         });
         assert!(bar >= before.bottom() + 6.0 + controls::STATUS_HEIGHT);
+    }
+
+    /// whether the text of `message` is drawn in a visible colour on a frame of `nodes`.
+    fn drawn(
+        ctx: &egui::Context,
+        nodes: &[Node<String>],
+        events: Vec<egui::Event>,
+    ) -> (bool, Option<String>) {
+        fn seen(shape: &Shape, message: &str) -> Option<bool> {
+            match shape {
+                Shape::Text(t) if t.galley.text() == message => {
+                    Some(t.galley.job.sections[0].format.color != egui::Color32::TRANSPARENT)
+                }
+                Shape::Vec(shapes) => shapes.iter().find_map(|s| seen(s, message)),
+                _ => None,
+            }
+        }
+        let mut sent = None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, testkit::SCREEN)),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            sent = show(ui, nodes).or(sent.take());
+        });
+        output.textures_delta.clear();
+        let visible = output
+            .shapes
+            .iter()
+            .find_map(|s| seen(&s.shape, "not an address"))
+            .unwrap_or(false);
+        (visible, sent)
+    }
+
+    #[test]
+    fn an_address_is_not_called_wrong_while_it_is_typed_only_after_the_focus_leaves() {
+        use lanlord_model::settings::ValidationError;
+        let ctx = egui::Context::default();
+        let errors = [ValidationError {
+            path: "range".into(),
+            message: "not an address".into(),
+        }];
+        let page = |text: &str, focus: bool| -> Vec<Node<String>> {
+            let mut nodes = vec![Node::Input {
+                value: text.to_string(),
+                size: Size::Points(120.0),
+                hint: String::new(),
+                focus,
+                edit: Box::new(|t| t),
+                enter: None,
+            }];
+            nodes.extend(lanlord_app::view::address_errors(&errors, "range", text));
+            nodes
+        };
+        let mut text = String::new();
+        for _ in 0..3 {
+            drawn(&ctx, &page(&text, true), vec![]);
+        }
+        for ch in "192.0.2.10".chars() {
+            let (shown, sent) = drawn(
+                &ctx,
+                &page(&text, true),
+                vec![egui::Event::Text(ch.to_string())],
+            );
+            assert!(!shown, "error at {text:?} + {ch:?}");
+            text = sent.expect("the keystroke is an edit");
+            // the text is never rewritten: it is exactly what was typed
+            assert!(text.ends_with(ch));
+        }
+        assert_eq!(text, "192.0.2.10");
+        // leaving a half-typed address with a click elsewhere shows the error
+        let mut text = String::from("192.0.");
+        for _ in 0..3 {
+            drawn(&ctx, &page(&text, true), vec![]);
+        }
+        let away = testkit::click(Pos2::new(900.0, 600.0));
+        let (shown, _) = drawn(&ctx, &page(&text, false), away);
+        let (shown_later, _) = drawn(&ctx, &page(&text, false), vec![]);
+        assert!(shown || shown_later, "error after the focus left");
+        // a text that can never be valid is called wrong at once
+        text.push('x');
+        let (shown, _) = drawn(&ctx, &page(&text, true), vec![]);
+        assert!(shown);
     }
 }

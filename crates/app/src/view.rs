@@ -165,6 +165,10 @@ pub enum Node<M> {
     Labelled { label: String, body: Vec<Node<M>> },
     /// a small red line under the field it is about.
     FieldError(String),
+    /// the same red line for a field whose text may still become valid: while `partial` is set
+    /// and the keyboard is in a field, it is not shown (its room stays), so typing an address
+    /// is never met with an error. it appears once the focus leaves the field.
+    HeldError { text: String, partial: bool },
     /// a warning sign beside a message, as in a message box.
     Alert(String),
     /// a value with an up and a down button; a press sends `step(1)` or `step(-1)`.
@@ -323,6 +327,16 @@ pub fn bad_rows(errors: &[ValidationError], prefix: &str, count: usize) -> Vec<b
         .collect()
 }
 
+/// like `field_errors`, for an address field: the lines stay hidden while the field is being
+/// typed in and `text` could still become an address (see `Node::HeldError`).
+pub fn address_errors<M>(errors: &[ValidationError], path: &str, text: &str) -> Vec<Node<M>> {
+    let partial = lanlord_model::validate::ipv4_partial(text.trim_end());
+    messages(errors, path)
+        .into_iter()
+        .map(|text| Node::HeldError { text, partial })
+        .collect()
+}
+
 /// the problems with the field at `path`, one small red line each.
 pub fn field_errors<M>(errors: &[ValidationError], path: &str) -> Vec<Node<M>> {
     messages(errors, path)
@@ -406,6 +420,7 @@ fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
             Node::Button(b) => (&b.label, b.width.map(f32::to_bits)).hash(h),
             Node::Field { label, value } => (label, value).hash(h),
             Node::Status { text, error } => (text, error).hash(h),
+            Node::HeldError { text, .. } => text.hash(h),
             Node::Tabs {
                 titles,
                 key,

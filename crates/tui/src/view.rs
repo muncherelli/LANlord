@@ -491,6 +491,7 @@ impl<'a> Painter<'a> {
             |text: &str| text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         match node {
             Node::Text(t) | Node::Heading(t) | Node::Warning(t) | Node::FieldError(t) => longest(t),
+            Node::HeldError { text, .. } => longest(text),
             Node::Bullet(t) => longest(t) + BULLET,
             Node::Alert(t) => longest(t) + 5,
             Node::Field { label, value } => {
@@ -1109,6 +1110,17 @@ impl<'a> Painter<'a> {
             }
             Node::FieldError(t) => {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
+            }
+            Node::HeldError { text: t, partial } => {
+                let typing = self.active
+                    && self
+                        .state
+                        .focus
+                        .as_deref()
+                        .is_some_and(|key| key.ends_with("#Field"));
+                if !(*partial && typing) {
+                    text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
+                }
             }
             Node::Labelled { label, body } => {
                 let width = self.label_column.get().min(label_share(area.width));
@@ -2276,6 +2288,37 @@ mod tests {
             .unwrap() as u16;
         let x = lines(&buf)[y as usize].find("not").unwrap() as u16;
         assert_eq!(buf[(x, y)].fg, Palette::default().color(RED));
+    }
+
+    #[test]
+    fn a_held_error_hides_only_while_a_field_has_the_keyboard() {
+        let nodes: Vec<Node<Msg>> = vec![
+            Node::Input {
+                value: "10.".into(),
+                size: Size::Points(80.0),
+                hint: String::new(),
+                focus: false,
+                edit: Box::new(|_| Msg::Ok),
+                enter: None,
+            },
+            Node::HeldError {
+                text: "not an address".into(),
+                partial: true,
+            },
+        ];
+        let shown = |state: &ViewState| {
+            lines(&paint(&nodes, state).0)
+                .join("\n")
+                .contains("not an address")
+        };
+        assert!(shown(&ViewState::default()), "shown once the field is left");
+        let (_, regions) = paint(&nodes, &ViewState::default());
+        let field = regions.iter().find(|r| r.part == Part::Field).unwrap();
+        let typing = ViewState {
+            focus: Some(field.key.clone()),
+            ..ViewState::default()
+        };
+        assert!(!shown(&typing), "hidden while it has the keyboard");
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]

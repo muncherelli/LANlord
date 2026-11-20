@@ -128,6 +128,23 @@ pub fn ipv4_address(text: &str) -> Check {
         .map_err(|_| "must be an ipv4 address like 192.0.2.10")
 }
 
+/// whether `text` can still become an ipv4 address by typing more: only digits and dots, each
+/// finished part a valid octet, the last one an octet so far or empty, at most four parts.
+/// `1`, `10.` and `10.0.0` are partial; `10..` and `300` are not. an empty field is partial.
+pub fn ipv4_partial(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    let octet = |part: &str| {
+        part.bytes().all(|b| b.is_ascii_digit())
+            && part.len() <= 3
+            && (part.len() < 2 || !part.starts_with('0'))
+            && part.parse::<u16>().map_or(part.is_empty(), |n| n <= 255)
+    };
+    let Some((last, done)) = parts.split_last() else {
+        return true;
+    };
+    parts.len() <= 4 && done.iter().all(|p| !p.is_empty() && octet(p)) && octet(last)
+}
+
 pub fn ipv6_address(text: &str) -> Check {
     text.parse::<Ipv6Addr>()
         .map(|_| ())
@@ -1217,6 +1234,34 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn partial_addresses_can_still_become_valid() {
+        for text in [
+            "",
+            "1",
+            "10",
+            "10.",
+            "10.0.0",
+            "192.0.2.",
+            "192.0.2.255",
+            "0.",
+        ] {
+            assert!(super::ipv4_partial(text), "{text:?}");
+        }
+        for text in [
+            "10..",
+            "300",
+            "1.2.3.4.",
+            "a",
+            "01",
+            "1.2.3.4.5",
+            "10.0.0.1x",
+            " 1",
+        ] {
+            assert!(!super::ipv4_partial(text), "{text:?}");
+        }
+    }
+
     use serde_yaml_ng::Value;
 
     use super::{

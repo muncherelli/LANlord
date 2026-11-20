@@ -16,6 +16,7 @@ use lanlord_model::components::{
 };
 use lanlord_model::doctor::{Check, Report, Status};
 use lanlord_model::settings::Settings;
+use lanlord_model::validate::ipv4_partial;
 
 use crate::remote::Remote;
 use crate::services::Services;
@@ -715,10 +716,22 @@ impl Components {
         }
         if let Some(problem) = self.problems().first() {
             page.push(Node::Gap(4.0));
-            page.push(Node::Status {
-                text: problem.clone(),
-                error: true,
-            });
+            // an address still being typed is not called wrong until the focus leaves it
+            let typing = self
+                .typed
+                .values()
+                .any(|t| t.trim().parse::<Ipv4Addr>().is_err() && ipv4_partial(t.trim_end()));
+            if typing && problem.contains("is not an ipv4 address") {
+                page.push(Node::HeldError {
+                    text: problem.clone(),
+                    partial: true,
+                });
+            } else {
+                page.push(Node::Status {
+                    text: problem.clone(),
+                    error: true,
+                });
+            }
         }
         page
     }
@@ -981,6 +994,39 @@ mod tests {
         assert!(page
             .iter()
             .any(|n| matches!(n, Node::Text(t) if t.contains("no LANlord networks yet"))));
+    }
+
+    #[test]
+    fn an_address_typed_in_the_networks_page_is_held_until_it_is_whole() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window.update(Msg::Next, &services, "gw");
+        let nt4 = window
+            .joining()
+            .iter()
+            .position(|c| c.id() == "nt4-domain")
+            .unwrap();
+        let mut typed = String::new();
+        for ch in "192.0.2.77".chars() {
+            typed.push(ch);
+            window.update(Msg::Address((nt4, 1), typed.clone()), &services, "gw");
+            let page = window.attach();
+            let held = page
+                .iter()
+                .any(|n| matches!(n, Node::HeldError { partial: true, .. }));
+            let complete = typed.parse::<Ipv4Addr>().is_ok();
+            // a partial address is held at every step; the finished one has no error left
+            assert!(held || complete, "{typed:?}");
+            assert!(!page.iter().any(|n| matches!(n, Node::Status { .. })) || complete);
+            // Next stays shut until the address is whole and fits
+            assert_eq!(window.problems().is_empty(), complete, "{typed:?}");
+        }
+        // a value that is wrong whatever comes next is not held
+        window.update(Msg::Address((nt4, 1), "192.0.2.x".into()), &services, "gw");
+        assert!(window
+            .attach()
+            .iter()
+            .any(|n| matches!(n, Node::Status { error: true, .. })));
     }
 
     #[test]

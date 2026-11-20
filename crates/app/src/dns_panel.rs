@@ -372,9 +372,17 @@ impl DnsPanel {
         if let Some(d) = &self.draft.dhcp {
             dhcp.push(Node::Gap(2.0));
             dhcp.push(edit("Range start", &d.range_start, Msg::RangeStart));
-            dhcp.extend(view::field_errors(errors, "dns.dhcp.range[0]"));
+            dhcp.extend(view::address_errors(
+                errors,
+                "dns.dhcp.range[0]",
+                &d.range_start,
+            ));
             dhcp.push(edit("Range end", &d.range_end, Msg::RangeEnd));
-            dhcp.extend(view::field_errors(errors, "dns.dhcp.range[1]"));
+            dhcp.extend(view::address_errors(
+                errors,
+                "dns.dhcp.range[1]",
+                &d.range_end,
+            ));
             dhcp.extend(view::field_errors(errors, "dns.dhcp.range"));
             dhcp.push(edit("Lease time", &d.lease, Msg::Lease));
             dhcp.extend(view::field_errors(errors, "dns.dhcp.lease"));
