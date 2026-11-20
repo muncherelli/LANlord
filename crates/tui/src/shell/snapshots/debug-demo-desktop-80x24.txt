@@ -16,7 +16,7 @@
 
 
       ▌
-  NT4 Domain                            ┌─────────────────────────┐
+  NT4 Server                            ┌─────────────────────────┐
                                         │ ✓ Demo desktop          │
                                         │   Window manager debug  │
                                         │   Open all windows      │

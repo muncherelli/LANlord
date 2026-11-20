@@ -62,7 +62,7 @@ pub const MODULES: &[Module] = &[
     ),
     Module::new(
         "nt4-domain",
-        "NT4 Domain",
+        "NT4 Server",
         ["╔═════╗", "║ NT4 ║", "╚═════╝"],
         "A Samba server in Docker for old Windows clients, on the internal network only: an NT4-style domain controller or a plain workgroup, with a basic set of logins.",
         "nt4-domain:\n  mode: domain\n  name: RETRONET\n  admin_password: ...\n  machines: [ws1, ws2]\n  users:\n    - name: dana\n      password: ...",
