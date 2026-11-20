@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- the Networks window lists the computers allowed to ssh to the server on their own under each LANlord network, with Add... (mac address, a name, and always, for a while or until a time) and Remove: the same change as `lanlord networks HOST ssh NAME allow MAC` and `deny MAC`
 - `lanlord install` stores a minimal settings file on the server when it has none (never over an existing one), so `lanlord networks add` and `lanlord apply` work right after it; it ends with a next-steps block (the web UI address, and what to do when root has no password), hides raw package manager and ansible output unless `--verbose` (shown when a step fails), and the web proxy summary no longer prints an empty site list; `config push` and `apply` end with a success line; `examples/settings.yml` is a sample settings file
 - `lanlord install` offers to set up the first administrator when the server has none besides root: it adopts an account that can already use sudo or creates a new one (name, password asked twice, optional ssh key) through the existing admin-creation operation; `--admin USER`, `--create-admin NAME` (with `--admin-password-stdin`, `--admin-ssh-key FILE`) and `--no-admin` do it without prompts, and with no terminal and no flag it is skipped and the next steps point at the web first-run setup
 - a root login over ssh may always run CLI operations (`networks`, `apply`, `config push`, ...); the run is noted in the system log as root

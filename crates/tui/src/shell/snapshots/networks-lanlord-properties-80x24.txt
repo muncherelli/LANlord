@@ -11,14 +11,14 @@
 │ ││ DHCP r│ DHCP range  172.16.120.100   to    172.16.120.200      │       ││ │
 │ ││ Client│ Lease time  7d                                         │       ││ │
 │ ││ [ ] Al│ DNS zone    retronet                                   │       ││ │
-│ │└───────│ MTU         the card's own                             │───────┘│ │
-│ └────────│ Leave the DHCP range empty for a network without DHCP. │────────┘ │
-│          │      [ Remove network... ] [ Save & apply ] [ Cancel ] │Refresh ] │
-│          └────────────────────────────────────────────────────────┘work... ] │
-│ ┌ Network interfaces ──────────────────────────────────────────────────────┐ │
-│ │  eth0   192.0.2.10/24   MTU 1500   Connected                             │ │
-│ │  eth1   172.16.120.1/22   MTU 1450   Connected                           │ │
+│ ││ Comput│ MTU         the card's own                             │       ││ │
+│ ││  no co│ Leave the DHCP range empty for a network without DHCP. │       ││ │
+│ ││       │      [ Remove network... ] [ Save & apply ] [ Cancel ] │       ││ │
+│ ││       └────────────────────────────────────────────────────────┘       ││ │
+│ ││ [ Add... ] [ Remove ]                                                  ││ │
+│ │└────────────────────────────────────────────────────────────────────────┘│ │
 │ └──────────────────────────────────────────────────────────────────────────┘ │
+│               [ Properties... ] [ DNS & DHCP... ] [ Details... ] [ Refresh ] │
 │ up to date                                                                   │
 └──────────────────────────────────────────────────────────────────────────────┘
 [ L LANlord ] [ □ Networks ]                                          12:00 PM

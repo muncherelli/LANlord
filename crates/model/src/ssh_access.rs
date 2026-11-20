@@ -33,6 +33,19 @@ pub struct SshAccess {
     pub allow: Vec<AllowedHost>,
 }
 
+/// one allowed computer in a list: its name and mac, and until when.
+pub fn host_line(host: &AllowedHost) -> String {
+    let who = match &host.name {
+        Some(name) => format!("{name} ({})", host.mac),
+        None => host.mac.clone(),
+    };
+    let until = host.until.map_or_else(
+        || "always".to_string(),
+        |t| format!("until {}", format_time(t)),
+    );
+    format!("{who}, {until}")
+}
+
 impl SshAccess {
     /// the lines of the networks window's read-only box.
     pub fn details(&self) -> Vec<(String, String)> {
@@ -43,15 +56,7 @@ impl SshAccess {
         };
         let mut lines = vec![("Allow ssh to this server".to_string(), state.to_string())];
         for host in &self.allow {
-            let who = match &host.name {
-                Some(name) => format!("{name} ({})", host.mac),
-                None => host.mac.clone(),
-            };
-            let until = host.until.map_or_else(
-                || "always".to_string(),
-                |t| format!("until {}", format_time(t)),
-            );
-            lines.push(("Ssh allowed for".to_string(), format!("{who}, {until}")));
+            lines.push(("Ssh allowed for".to_string(), host_line(host)));
         }
         lines
     }
