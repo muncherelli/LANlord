@@ -7,7 +7,7 @@ use lanlord_model::lan_networks::{self, LanNetwork};
 use lanlord_model::operations::Operation;
 use lanlord_model::rootssh::{RootSsh, RootSshInfo, DROPIN};
 use lanlord_model::server::ServerFacts;
-use lanlord_model::sshauth::SshAuthInfo;
+use lanlord_model::sshauth::{key_id, SshAuthInfo};
 use lanlord_model::validate;
 
 use crate::log::{emit, Kind};
@@ -50,6 +50,8 @@ pub enum Msg {
     AddKey,
     /// remove the picked key from the picked account.
     RemoveKey,
+    /// go on with removing the last key of an account, as the box asked.
+    ConfirmRemoveKey,
     /// the "also remove the administrator accounts" tick.
     ToggleAdmins,
     /// the confirmation field now holds this text.
@@ -147,6 +149,8 @@ pub enum SshDialog {
     PasswordsOff(Vec<String>),
     /// type a public key for this account.
     AddKey(String),
+    /// passwords are off and this is the account's last key (its id): confirm or cancel.
+    RemoveLastKey(String, String),
 }
 
 #[derive(Default)]
@@ -565,14 +569,23 @@ impl MyServer {
     /// the SSH page: whether passwords are taken, the administrators' keys, root's access and
     /// what the firewall does to ssh.
     fn ssh_page(&self, idle: bool) -> Vec<Node<Msg>> {
-        let mut page = vec![
-            self.passwords_group(idle),
-            Node::Gap(6.0),
-            self.keys_group(idle),
-            Node::Gap(6.0),
-            self.root_ssh_group(idle),
-            Node::Gap(6.0),
-        ];
+        // the sign-in reads need an administrator: a read-only window just says so
+        let mut page = if self.read_only {
+            vec![Node::Group {
+                title: "SSH sign-in".into(),
+                body: vec![
+                    Node::Gap(4.0),
+                    Node::Text("Only an administrator can change SSH sign-in.".into()),
+                ],
+            }]
+        } else {
+            vec![
+                self.passwords_group(idle),
+                Node::Gap(6.0),
+                self.keys_group(idle),
+            ]
+        };
+        page.extend([Node::Gap(6.0), self.root_ssh_group(idle), Node::Gap(6.0)]);
         let now = crate::networks_window::unix_now();
         if let Some(notice) = self
             .lan
@@ -617,9 +630,6 @@ impl MyServer {
                 toggle: Msg::TogglePasswords,
             },
         ];
-        if self.read_only {
-            body.push(Node::Text("Only an administrator can change this.".into()));
-        }
         if info.is_some_and(|i| !i.dropins) {
             body.push(Node::Alert(format!(
                 "This server's sshd does not read {}, so password sign-in cannot be set here.",
@@ -851,6 +861,29 @@ impl MyServer {
                 ],
                 escape: Some(Msg::Cancel),
             },
+            SshDialog::RemoveLastKey(user, id) => Dialog {
+                id: "ssh-last-key-box",
+                title: "Remove last ssh key".into(),
+                body: vec![
+                    Node::Heading(format!("{user} would have no ssh key left")),
+                    Node::Text(format!(
+                        "Passwords are off, so {user} could no longer sign in over ssh once {} \
+                         is removed.",
+                        key_label(id)
+                    )),
+                    Node::Text(
+                        "Add another key first, or go on only if you can still reach this \
+                         server another way."
+                            .into(),
+                    ),
+                    Node::Gap(6.0),
+                    Node::Buttons(vec![
+                        Button::new("Cancel", true, Msg::Cancel),
+                        Button::new("Remove anyway", true, Msg::ConfirmRemoveKey),
+                    ]),
+                ],
+                escape: Some(Msg::Cancel),
+            },
             SshDialog::AddKey(user) => Dialog {
                 id: "ssh-key-box",
                 title: "Add ssh key".into(),
@@ -952,18 +985,43 @@ impl MyServer {
         let (Some(account), Some(pick)) = (self.key_account(), self.key_pick) else {
             return;
         };
-        let Some(key) = account.keys.get(pick).cloned() else {
+        let Some(id) = account.keys.get(pick).and_then(|k| key_id(k)) else {
             return;
         };
         let user = account.user.clone();
         if self.read_only || self.auth.busy() {
             return;
         }
+        // the last key of an account while passwords are off: ask first; the server refuses on
+        // its own too
+        let refused = self
+            .auth
+            .data
+            .as_ref()
+            .is_some_and(|i| i.removal_refusal(&user, &id).is_some());
+        if refused {
+            self.ssh_dialog = Some((host.to_string(), SshDialog::RemoveLastKey(user, id)));
+        } else {
+            self.drop_key(services, host, user, id, false);
+        }
+    }
+
+    fn confirm_remove_key(&mut self, services: &Services, host: &str) {
+        if let Some((_, SshDialog::RemoveLastKey(user, id))) = self.ssh_dialog.take() {
+            if !self.read_only && !self.auth.busy() {
+                self.drop_key(services, host, user, id, true);
+            }
+        }
+    }
+
+    /// remove the key `id` of `user` and read the state back.
+    fn drop_key(&mut self, services: &Services, host: &str, user: String, id: String, ok: bool) {
         let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
-            gateway.remove_admin_key(&target, &user, &key, ask)?;
+            gateway.remove_admin_key(&target, &user, &id, ok, ask)?;
             gateway.ssh_auth(&target, ask)
         });
+        self.key_pick = None;
         self.auth.track(
             host,
             job,
@@ -1066,6 +1124,7 @@ impl MyServer {
             Msg::KeyText(text) => self.key_text = text,
             Msg::AddKey => self.add_key(services, host),
             Msg::RemoveKey => self.remove_key(services, host),
+            Msg::ConfirmRemoveKey => self.confirm_remove_key(services, host),
             Msg::PickRootSsh(i) => {
                 if !self.read_only {
                     self.ssh_pick = RootSsh::ALL.get(i).copied();
@@ -1740,11 +1799,91 @@ mod tests {
         wait_auth(&mut window, &services);
         window.update(Msg::PickKey(0), &services, "me@gw");
         window.update(Msg::RemoveKey, &services, "me@gw");
+        // passwords went off above and this is pat's last key: it asks first
+        assert!(matches!(
+            window.ssh_dialog(),
+            Some(SshDialog::RemoveLastKey(..))
+        ));
+        window.update(Msg::ConfirmRemoveKey, &services, "me@gw");
         wait_auth(&mut window, &services);
         assert!(window.key_account().unwrap().keys.is_empty());
         assert!(fake
             .calls()
             .contains(&"remove-admin-key me@gw pat".to_string()));
+    }
+
+    #[test]
+    fn the_last_key_is_removed_only_after_a_question_while_passwords_are_off() {
+        let fake = Arc::new(Fake::new());
+        let (mut window, services) = settled_auth(&fake);
+        // dana has one key; passwords are on: it goes without a question
+        {
+            let mut info = fake.ssh_auth.lock().unwrap();
+            // a key with options in front, as authorized_keys lines have them
+            info.accounts[0].keys = vec![
+                r#"from="192.0.2.7",command="true" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyOne dana@laptop"#
+                    .into(),
+            ];
+        }
+        window.update(Msg::TogglePasswords, &services, "me@gw");
+        window.update(Msg::ConfirmPasswordsOff, &services, "me@gw");
+        wait_auth(&mut window, &services);
+        assert_eq!(window.auth.data.as_ref().unwrap().passwords, Some(false));
+        window.update(Msg::PickKey(0), &services, "me@gw");
+        window.update(Msg::RemoveKey, &services, "me@gw");
+        // the box asks, and nothing is sent yet
+        assert_eq!(
+            window.ssh_dialog(),
+            Some(&SshDialog::RemoveLastKey(
+                "dana".into(),
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyOne".into()
+            ))
+        );
+        assert!(window.dialog(&services).is_some());
+        assert!(fake
+            .calls()
+            .iter()
+            .all(|c| !c.starts_with("remove-admin-key")));
+        // cancelling leaves the key
+        window.update(Msg::Cancel, &services, "me@gw");
+        assert!(window.ssh_dialog().is_none());
+        assert_eq!(window.key_account().unwrap().keys.len(), 1);
+        // the server refuses on its own when the request is not confirmed
+        use crate::gateway::Gateway as _;
+        let refused = fake.remove_admin_key(
+            "me@gw",
+            "dana",
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyOne",
+            false,
+            &mut |_| Err(anyhow::anyhow!("no password")),
+        );
+        assert!(refused.is_err());
+        assert_eq!(window.key_account().unwrap().keys.len(), 1);
+        // going on removes it, options and all
+        window.update(Msg::PickKey(0), &services, "me@gw");
+        window.update(Msg::RemoveKey, &services, "me@gw");
+        window.update(Msg::ConfirmRemoveKey, &services, "me@gw");
+        wait_auth(&mut window, &services);
+        assert!(window.key_account().unwrap().keys.is_empty());
+    }
+
+    #[test]
+    fn a_read_only_window_says_so_instead_of_reading_ssh_sign_in() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        window.set_read_only(true);
+        settle(&mut window, &services);
+        let mut seen = Vec::new();
+        texts(&window.ssh_page(true), &mut seen);
+        assert!(
+            seen.iter()
+                .any(|t| t == "Only an administrator can change SSH sign-in."),
+            "{seen:?}"
+        );
+        assert!(seen
+            .iter()
+            .all(|t| t != "Reading..." && t != "no administrators"));
     }
 
     #[test]

@@ -253,11 +253,20 @@ pub trait Gateway: Send + Sync {
         done(self.call(host, operation, ask)?, "add_admin_key")
     }
 
-    /// remove a public key from an administrator's authorized keys.
-    fn remove_admin_key(&self, host: &str, user: &str, key: &str, ask: AskPassword) -> Result<()> {
+    /// remove a public key, given by its id (`sshauth::key_id`), from an administrator's
+    /// authorized keys. the last key goes only when `confirmed` while passwords are off.
+    fn remove_admin_key(
+        &self,
+        host: &str,
+        user: &str,
+        key: &str,
+        confirmed: bool,
+        ask: AskPassword,
+    ) -> Result<()> {
         let operation = Operation::RemoveAdminKey {
             user: user.to_string(),
             key: key.to_string(),
+            confirmed,
         };
         done(self.call(host, operation, ask)?, "remove_admin_key")
     }
@@ -973,6 +982,7 @@ mod fake {
                     ],
                     root_login: false,
                     root_keys: 0,
+                    keys_unknown: false,
                 }),
                 probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
@@ -1124,13 +1134,24 @@ mod fake {
                     }
                     Reply::Done
                 }
-                Operation::RemoveAdminKey { user, key } => {
+                Operation::RemoveAdminKey {
+                    user,
+                    key,
+                    confirmed,
+                } => {
                     self.enter(format!("remove-admin-key {host} {user}"), ask)?;
                     let mut info = self.ssh_auth.lock().unwrap();
+                    if !confirmed {
+                        if let Some(why) = info.removal_refusal(&user, &key) {
+                            return Err(anyhow!(why));
+                        }
+                    }
                     let Some(account) = info.accounts.iter_mut().find(|a| a.user == user) else {
                         return Err(anyhow!("{user} is not an administrator"));
                     };
-                    account.keys.retain(|k| *k != key);
+                    account
+                        .keys
+                        .retain(|k| lanlord_model::sshauth::key_id(k).as_deref() != Some(&key));
                     Reply::Done
                 }
                 Operation::Leases => Reply::Leases(self.leases(host, ask)?),

@@ -1847,6 +1847,8 @@ mod tests {
                 r#"{"op":{"op":"set_root_ssh","access":"allowed"}}"#,
                 r#"{"op":{"op":"set_password_login","passwords":false}}"#,
                 r#"{"op":{"op":"add_admin_key","user":"pat","key":"ssh-ed25519 AAAA k"}}"#,
+                r#"{"op":{"op":"remove_admin_key","user":"pat","key":"ssh-ed25519 AAAA"}}"#,
+                r#"{"op":{"op":"ssh_auth_state"}}"#,
                 r#"{"op":{"op":"create_admin","name":"pat","password":"pw","ssh_key":null,"passwordless_sudo":false}}"#,
             ] {
                 let (status, _) = post_body(&rig, &cookie, other).await;

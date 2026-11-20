@@ -460,8 +460,12 @@ fn dispatch(
             sshauth::add_key(session, user, key, ask)?;
             Reply::Done
         }
-        Operation::RemoveAdminKey { user, key } => {
-            sshauth::remove_key(session, user, key, ask)?;
+        Operation::RemoveAdminKey {
+            user,
+            key,
+            confirmed,
+        } => {
+            sshauth::remove_key(session, user, key, *confirmed, ask)?;
             Reply::Done
         }
         Operation::Leases => Reply::Leases(leases::read_with(session, ask)?),

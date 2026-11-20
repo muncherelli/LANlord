@@ -101,8 +101,15 @@ pub enum Operation {
     },
     /// add a public key to the authorized keys of an administrator account.
     AddAdminKey { user: String, key: String },
-    /// remove a public key (the whole line) from the authorized keys of an administrator.
-    RemoveAdminKey { user: String, key: String },
+    /// remove a public key from the authorized keys of an administrator. `key` is the key id
+    /// (type and base64 field, see `sshauth::key_id`), whatever options the line has. removing
+    /// the last key while passwords are off is refused unless `confirmed`.
+    RemoveAdminKey {
+        user: String,
+        key: String,
+        #[serde(default)]
+        confirmed: bool,
+    },
     /// the dhcp leases the gateway has handed out.
     Leases,
     /// the names of the logon scripts in the netlogon share.
@@ -502,7 +509,8 @@ mod tests {
             },
             Operation::RemoveAdminKey {
                 user: "dana".into(),
-                key: "ssh-ed25519 AAAA example".into(),
+                key: "ssh-ed25519 AAAA".into(),
+                confirmed: true,
             },
             Operation::Leases,
             Operation::LogonScripts,

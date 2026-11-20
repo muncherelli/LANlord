@@ -1,13 +1,14 @@
-//! a person's own ssh authorized keys on the gateway: list them, add one, remove one. the account
-//! is always the caller's own (the operations layer passes it, never the request). root only
-//! starts the work: the script that touches ~/.ssh runs as the person (`runuser`), so a link they
+//! the ssh authorized keys of an account on the gateway: list them, add one, remove one. the
+//! operations layer decides whose: the caller's own for `my keys`, or an administrator's (or the
+//! caller's) for the SSH tab, never an account the request names unchecked. root only starts the
+//! work: the script that touches ~/.ssh runs as the person (`runuser`), so a link they
 //! plant there reaches nothing they could not already change. the key travels base64 encoded
 //! inside the script and is never an argument or part of a shell word.
 
 use anyhow::{bail, Result};
 use base64::Engine;
 
-use lanlord_model::sshauth::KEY_MARK;
+use lanlord_model::sshauth::{self, KEY_MARK};
 
 use crate::account::{check_key, login_user};
 use crate::bootstrap::{capture_as_root, valid_user, AskPassword};
@@ -26,13 +27,7 @@ fn check_user(user: &str) -> Result<()> {
 /// the type and the base64 field of a key line, ignoring options, comment and spacing: what makes
 /// two lines the same key.
 pub(crate) fn key_id(line: &str) -> Option<String> {
-    let mut words = line.split_whitespace();
-    let kind = words.by_ref().find(|w| {
-        ["ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-"]
-            .iter()
-            .any(|p| w.starts_with(p))
-    })?;
-    Some(format!("{kind} {}", words.next()?))
+    sshauth::key_id(line)
 }
 
 /// the shell function (for the script that runs as the person) that prints a line's key id, the

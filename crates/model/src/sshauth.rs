@@ -12,8 +12,8 @@ pub const DROPIN: &str = "/etc/ssh/sshd_config.d/11-lanlord-auth.conf";
 /// the first line of the drop-in, so a person reading it knows where it came from.
 pub const DROPIN_HEADER: &str = "# managed by lanlord: ssh password sign-in";
 
-/// the line that marks a key lanlord added to an authorized keys file, kept just above it. keys
-/// without it are somebody else's and are never touched.
+/// the line that marks a key lanlord added to an authorized keys file, kept just above it.
+/// removing such a key removes its mark too; keys without it can be removed as well.
 pub const KEY_MARK: &str = "# added by lanlord";
 
 /// the contents of the drop-in. with passwords off the keyboard-interactive method, which pam may
@@ -48,6 +48,18 @@ pub fn from_dropin(text: &str) -> Option<bool> {
     found
 }
 
+/// the type and the base64 field of a key line, ignoring options, comment and spacing: what makes
+/// two lines the same key.
+pub fn key_id(line: &str) -> Option<String> {
+    let mut words = line.split_whitespace();
+    let kind = words.by_ref().find(|w| {
+        ["ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-"]
+            .iter()
+            .any(|p| w.starts_with(p))
+    })?;
+    Some(format!("{kind} {}", words.next()?))
+}
+
 /// the authorized keys of one administrator account, one public key line each.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountKeys {
@@ -70,6 +82,10 @@ pub struct SshAuthInfo {
     pub root_login: bool,
     /// how many keys root has.
     pub root_keys: usize,
+    /// sshd reads keys from somewhere other than the default files, so the lists here say
+    /// nothing about who can sign in with a key.
+    #[serde(default)]
+    pub keys_unknown: bool,
 }
 
 impl SshAuthInfo {
@@ -79,10 +95,10 @@ impl SshAuthInfo {
         let mut names: Vec<String> = self
             .accounts
             .iter()
-            .filter(|a| a.keys.is_empty())
+            .filter(|a| self.keys_unknown || a.keys.is_empty())
             .map(|a| a.user.clone())
             .collect();
-        if self.root_login && self.root_keys == 0 {
+        if self.root_login && (self.keys_unknown || self.root_keys == 0) {
             names.push("root".into());
         }
         names
@@ -92,10 +108,38 @@ impl SshAuthInfo {
     pub fn refusal(&self) -> Option<String> {
         let names = self.without_key();
         (!names.is_empty()).then(|| {
+            let why = if self.keys_unknown {
+                "sshd reads keys from files lanlord does not check"
+            } else {
+                "no ssh key"
+            };
             format!(
-                "turning ssh passwords off would lock out {} (no ssh key); add a key for each \
+                "turning ssh passwords off would lock out {} ({why}); add a key for each \
                  first, or confirm that you can still reach the server another way",
                 names.join(", ")
+            )
+        })
+    }
+
+    /// whether passwords are off now (or chosen off, while sshd could not be asked).
+    fn passwords_off(&self) -> bool {
+        self.passwords.or(self.chosen) == Some(false)
+    }
+
+    /// why the key `id` (see [`key_id`]) of `user` must not be removed yet: passwords are off
+    /// and it is the last key of the account, or the keys cannot be checked.
+    pub fn removal_refusal(&self, user: &str, id: &str) -> Option<String> {
+        if !self.passwords_off() {
+            return None;
+        }
+        let keys = self.keys_of(user)?;
+        let same = |k: &String| key_id(k).as_deref() == Some(id);
+        let last = keys.iter().any(same) && keys.iter().all(same);
+        (self.keys_unknown || last).then(|| {
+            format!(
+                "passwords are off and this is the last ssh key of {user}; without it {user} \
+                 could no longer sign in over ssh. add another key first, or confirm that you \
+                 can still reach the server another way"
             )
         })
     }
@@ -151,6 +195,34 @@ mod tests {
         assert!(why.contains("pat") && !why.contains("dana"), "{why}");
         assert_eq!(some.keys_of("pat"), Some(&[][..]));
         assert_eq!(some.keys_of("nobody"), None);
+    }
+
+    #[test]
+    fn the_last_key_stays_while_passwords_are_off() {
+        let mut one = info(&[("dana", 1), ("pat", 2)], (false, 0));
+        let id = key_id(&one.accounts[0].keys[0]).unwrap();
+        // passwords on: nothing to protect
+        one.passwords = Some(true);
+        assert!(one.removal_refusal("dana", &id).is_none());
+        one.passwords = Some(false);
+        assert!(one.removal_refusal("dana", &id).unwrap().contains("dana"));
+        // pat has two keys: one may go
+        let pat = key_id(&one.accounts[1].keys[0]).unwrap();
+        assert!(one.removal_refusal("pat", &pat).is_none());
+        // keys sshd reads elsewhere cannot be counted
+        one.keys_unknown = true;
+        assert!(one.removal_refusal("pat", &pat).is_some());
+        assert!(one.refusal().unwrap().contains("does not check"));
+        assert_eq!(one.without_key(), ["dana", "pat"]);
+    }
+
+    #[test]
+    fn a_key_id_ignores_options_and_the_comment() {
+        let plain = "ssh-ed25519 AAAAC3 pat@laptop";
+        let prefixed = r#"from="192.0.2.7",command="true" ssh-ed25519 AAAAC3 other"#;
+        assert_eq!(key_id(plain), key_id(prefixed));
+        assert_eq!(key_id(plain).as_deref(), Some("ssh-ed25519 AAAAC3"));
+        assert_eq!(key_id("not a key"), None);
     }
 
     #[test]
