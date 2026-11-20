@@ -1184,6 +1184,26 @@ fn the_new_network_dialog_has_a_full_title_bar_and_every_field_inside_it() {
     assert_modal_fits(&ctx, "network-form");
 }
 
+/// frames on a screen of `size` until the host has answered and the windows have stopped moving.
+fn settled_on(desktop: &mut Desktop, ctx: &egui::Context, size: egui::Vec2) {
+    until(desktop, ctx, idle("me@gw"));
+    let mut still = 0;
+    let mut last = desktop.measured.clone();
+    for _ in 0..200 {
+        frames_on(desktop, ctx, size, 1);
+        still = if desktop.measured == last {
+            still + 1
+        } else {
+            0
+        };
+        last = desktop.measured.clone();
+        if still >= 4 {
+            return;
+        }
+    }
+    panic!("the windows never settled");
+}
+
 /// drag a window from the point `grab` picks in its rect by `by`, in steps, and give back its
 /// rect after every frame.
 fn drag_from(
@@ -1240,7 +1260,7 @@ fn dragging_the_left_or_top_edge_past_the_least_size_keeps_the_far_edges_still()
         let (mut desktop, ctx, _) = desktop();
         with_host(&mut desktop, &ctx);
         desktop.open(Target::Networks);
-        frames_on(&mut desktop, &ctx, size, 30);
+        settled_on(&mut desktop, &ctx, size);
         let start = desktop
             .measured
             .iter()
@@ -1289,7 +1309,7 @@ fn pressing_a_window_edge_without_moving_changes_nothing_on_screen() {
     let (mut desktop, ctx, _) = desktop();
     with_host(&mut desktop, &ctx);
     desktop.open(Target::Settings);
-    frames_on(&mut desktop, &ctx, size, 40);
+    settled_on(&mut desktop, &ctx, size);
     let rect = |d: &Desktop| {
         d.measured
             .iter()
@@ -1324,7 +1344,7 @@ fn a_slow_drag_of_the_left_edge_never_paints_a_stray_scroll_bar() {
     let (mut desktop, ctx, _) = desktop();
     with_host(&mut desktop, &ctx);
     desktop.open(Target::Settings);
-    frames_on(&mut desktop, &ctx, size, 40);
+    settled_on(&mut desktop, &ctx, size);
     let rect = |d: &Desktop| {
         d.measured
             .iter()
@@ -1366,7 +1386,7 @@ fn a_window_is_painted_where_it_is_measured_while_its_left_edge_is_dragged() {
     let (mut desktop, ctx, _) = desktop();
     with_host(&mut desktop, &ctx);
     desktop.open(Target::Networks);
-    frames_on(&mut desktop, &ctx, size, 30);
+    settled_on(&mut desktop, &ctx, size);
     let rect = |d: &Desktop| {
         d.measured
             .iter()
@@ -1407,7 +1427,7 @@ fn a_window_dragged_out_past_the_screen_edge_keeps_its_right_edge() {
     let (mut desktop, ctx, _) = desktop();
     with_host(&mut desktop, &ctx);
     desktop.open(Target::Networks);
-    frames_on(&mut desktop, &ctx, size, 30);
+    settled_on(&mut desktop, &ctx, size);
     let start = desktop
         .measured
         .iter()
