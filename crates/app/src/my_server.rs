@@ -3,6 +3,7 @@
 
 use lanlord_model::compat::{self, mark};
 use lanlord_model::doctor::{Report, Status};
+use lanlord_model::lan_networks::{self, LanNetwork};
 use lanlord_model::rootssh::{RootSsh, RootSshInfo, DROPIN};
 use lanlord_model::server::ServerFacts;
 
@@ -138,6 +139,8 @@ pub struct MyServer {
     ssh: Remote<RootSshInfo>,
     /// the level picked in the window and not applied yet.
     ssh_pick: Option<RootSsh>,
+    /// the lanlord networks and what each allows over ssh, for the notice on the Advanced page.
+    lan: Remote<Vec<LanNetwork>>,
 }
 
 /// the height of the list of checks, and of the box holding the fix of the picked one.
@@ -210,6 +213,21 @@ impl MyServer {
         self.report_note = services.compat().note();
         self.facts.poll();
         self.ssh.poll();
+        self.lan.poll();
+        if self.lan.wants_load(host, false) {
+            let target = host.to_string();
+            let job = services.spawn(host, move |gateway, ask| {
+                // no settings, or no key to read them, is no networks
+                Ok(gateway
+                    .load_settings(&target, ask)
+                    .ok()
+                    .and_then(|settings| lan_networks::read(&settings).ok())
+                    .map(|networks| networks.list)
+                    .unwrap_or_default())
+            });
+            self.lan
+                .track(host, job, "reading the networks...", "up to date", true);
+        }
         if self.ssh.wants_load(host, false) {
             let target = host.to_string();
             let job = services.spawn(host, move |gateway, _| gateway.root_ssh(&target));
@@ -464,14 +482,22 @@ impl MyServer {
                 "LANlord is not installed on this server.".into(),
             ));
         }
-        vec![
-            self.root_ssh_group(idle),
-            Node::Gap(6.0),
-            Node::Danger(vec![Node::Group {
-                title: "Danger zone".into(),
-                body,
-            }]),
-        ]
+        let mut page = vec![self.root_ssh_group(idle), Node::Gap(6.0)];
+        let now = crate::networks_window::unix_now();
+        if let Some(notice) = self
+            .lan
+            .data
+            .as_deref()
+            .and_then(|list| ssh_networks_notice(list, now))
+        {
+            page.push(notice);
+            page.push(Node::Gap(6.0));
+        }
+        page.push(Node::Danger(vec![Node::Group {
+            title: "Danger zone".into(),
+            body,
+        }]));
+        page
     }
 
     /// whether root may sign in to the server over ssh: the setting, its three levels, and what
@@ -681,6 +707,65 @@ impl MyServer {
     }
 }
 
+/// what the firewall does to ssh from the LANlord networks, as the settings have it, and where
+/// to change it. none when there is no network with ssh off: nothing is blocked then. a computer
+/// whose grant has ended at `now` is not counted.
+fn ssh_networks_notice(list: &[LanNetwork], now: i64) -> Option<Node<Msg>> {
+    let off: Vec<&str> = list
+        .iter()
+        .filter(|n| !n.ssh.enabled)
+        .map(|n| n.name.as_str())
+        .collect();
+    if off.is_empty() {
+        return None;
+    }
+    let on: Vec<&str> = list
+        .iter()
+        .filter(|n| n.ssh.enabled)
+        .map(|n| n.name.as_str())
+        .collect();
+    let computers: Vec<String> = list
+        .iter()
+        .filter(|n| !n.ssh.enabled)
+        .filter_map(|n| {
+            let count = n.ssh.live(now).count();
+            (count > 0).then(|| {
+                format!(
+                    "{} ({count} computer{})",
+                    n.name,
+                    if count == 1 { "" } else { "s" }
+                )
+            })
+        })
+        .collect();
+    let mut lines = vec![format!(
+        "Ssh to this server is off from: {}.",
+        off.join(", ")
+    )];
+    if !on.is_empty() {
+        lines.push(format!(
+            "Allowed from the whole network: {}.",
+            on.join(", ")
+        ));
+    }
+    if !computers.is_empty() {
+        lines.push(format!(
+            "Allowed for single computers on: {}.",
+            computers.join(", ")
+        ));
+    }
+    lines.push(
+        "To change it, use \"Allow ssh to this server\" on a network in the Networks window."
+            .into(),
+    );
+    let mut body = vec![Node::Gap(4.0)];
+    body.extend(lines.into_iter().map(Node::Text));
+    Some(Node::Group {
+        title: "Ssh from LANlord networks".into(),
+        body,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -777,7 +862,11 @@ mod tests {
             w.purge().is_some_and(|p| p.preview().is_some())
         });
         assert!(!services.busy("me@gw"));
-        assert_eq!(fake.calls().len(), 2, "the facts and the preview");
+        assert_eq!(
+            fake.calls().len(),
+            3,
+            "the facts, the networks and the preview"
+        );
         window
     }
 
@@ -1139,5 +1228,86 @@ mod tests {
         assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
         window.update(Msg::ApplyRootSsh, &services, "me@gw");
         assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
+    }
+
+    fn networks(text: &str) -> Vec<LanNetwork> {
+        lan_networks::read(&lanlord_model::settings::Settings::parse(text).unwrap())
+            .unwrap()
+            .list
+    }
+
+    const NOW: i64 = 1_900_000_000;
+
+    #[test]
+    fn the_ssh_notice_counts_only_computers_whose_grant_has_not_ended() {
+        let list = networks(
+            "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24, ssh_allow: [{mac: \"02:00:00:00:00:01\"}, {mac: \"02:00:00:00:00:02\", until: \"2040-01-01T00:00:00Z\"}, {mac: \"02:00:00:00:00:03\", until: \"2020-01-01T00:00:00Z\"}]}\n  - {name: old, interface: eth2, address: 198.51.100.1/24, ssh_allow: [{mac: \"02:00:00:00:00:04\", until: \"2020-01-01T00:00:00Z\"}]}\n",
+        );
+        let lines = notice_lines(ssh_networks_notice(&list, NOW).unwrap());
+        assert_eq!(
+            lines[1],
+            "Allowed for single computers on: lab (2 computers)."
+        );
+        // after the later grant ends too, one computer is left of lab and none is named for old
+        let later = notice_lines(ssh_networks_notice(&list, 2_300_000_000).unwrap());
+        assert_eq!(
+            later[1],
+            "Allowed for single computers on: lab (1 computer)."
+        );
+    }
+
+    fn notice_lines(node: Node<Msg>) -> Vec<String> {
+        let Node::Group { body, .. } = node else {
+            panic!("a group");
+        };
+        body.into_iter()
+            .filter_map(|n| match n {
+                Node::Text(t) => Some(t),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_ssh_notice_names_the_networks_it_is_off_for_and_what_is_allowed() {
+        let list = networks(
+            "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24, ssh_allow: [{mac: \"02:00:00:00:00:01\"}]}\n  - {name: dmz, interface: eth2, address: 198.51.100.1/24}\n  - {name: office, interface: eth3, address: 203.0.113.1/24, ssh: true}\n",
+        );
+        let lines = notice_lines(ssh_networks_notice(&list, NOW).unwrap());
+        assert_eq!(lines[0], "Ssh to this server is off from: lab, dmz.");
+        assert!(lines[1].contains("office"), "{lines:?}");
+        assert!(lines[2].contains("lab (1 computer)"), "{lines:?}");
+        assert!(lines[3].contains("Networks window"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_ssh_notice_is_not_shown_when_nothing_is_blocked() {
+        assert!(ssh_networks_notice(&[], NOW).is_none());
+        let on = networks(
+            "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24, ssh: true}\n",
+        );
+        assert!(ssh_networks_notice(&on, NOW).is_none());
+    }
+
+    #[test]
+    fn the_advanced_page_shows_the_notice_once_the_networks_are_read() {
+        let fake = Arc::new(Fake::new());
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        let has_notice = |window: &MyServer| {
+            window.advanced(true).iter().any(
+                |n| matches!(n, Node::Group { title, .. } if title == "Ssh from LANlord networks"),
+            )
+        };
+        assert!(!has_notice(&window));
+        *fake.stored.lock().unwrap() =
+            "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24}\n".to_string();
+        window.refresh(&services, "me@gw");
+        let until = Instant::now() + Duration::from_secs(5);
+        while !has_notice(&window) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+            window.refresh(&services, "me@gw");
+        }
+        assert!(has_notice(&window));
     }
 }

@@ -182,6 +182,47 @@ enum NetworksCommand {
         #[command(subcommand)]
         action: InternetCommand,
     },
+    /// who may use ssh to the server from a network: nobody by default, a whole network, or
+    /// single computers, for good or for a while
+    Ssh {
+        name: String,
+        #[command(subcommand)]
+        action: SshCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SshCommand {
+    /// let every computer on the network use ssh to the server
+    On,
+    /// keep ssh to the server off for the network (except the computers allowed by mac)
+    Off {
+        /// do it even when this connection comes from that network and would be cut off
+        #[arg(long)]
+        allow_lockout: bool,
+    },
+    /// let a computer (by mac) use ssh to the server; without --for or --until, for good
+    Allow {
+        mac: String,
+        /// for how long, like 30m, 1h, 1d or 1d12h
+        #[arg(long = "for", value_name = "DURATION", conflicts_with = "until")]
+        duration: Option<String>,
+        /// until a time in your own time zone, like '2030-01-31 09:00'
+        #[arg(long, value_name = "YYYY-MM-DD HH:MM")]
+        until: Option<String>,
+        /// a label for the computer
+        #[arg(long, value_name = "LABEL")]
+        name: Option<String>,
+    },
+    /// take a computer's ssh access away
+    Deny {
+        mac: String,
+        /// do it even when this connection is that computer's and would be cut off
+        #[arg(long)]
+        allow_lockout: bool,
+    },
+    /// show whether the network may use ssh to the server and the computers allowed
+    List,
 }
 
 #[derive(Subcommand)]
@@ -786,6 +827,7 @@ fn networks(host: &str, action: NetworksCommand) -> Result<()> {
     match action {
         NetworksCommand::Status { json } => network_status(host, json),
         NetworksCommand::Internet { name, action } => internet(host, &name, action),
+        NetworksCommand::Ssh { name, action } => ssh_access(host, &name, action),
         edit => change_networks(host, edit),
     }
 }
@@ -869,9 +911,9 @@ fn allow_change(
     }
 }
 
-fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Result<()> {
-    let text = change.describe();
-    match execute(host, &Operation::ChangeInternet { change }, &mut ask)? {
+/// send a change of the internet or ssh grants and say it was applied.
+fn send_grant(host: &str, text: String, operation: Operation) -> Result<()> {
+    match execute(host, &operation, &mut ask)? {
         Reply::Done => {
             println!("{text}; applied the docker and dns modules");
             Ok(())
@@ -880,22 +922,126 @@ fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Resul
     }
 }
 
+fn change_internet(host: &str, change: lanlord_model::internet::Change) -> Result<()> {
+    send_grant(
+        host,
+        change.describe(),
+        Operation::ChangeInternet { change },
+    )
+}
+
+/// print the lines `details` makes of the network called `name`.
+fn print_details(
+    host: &str,
+    name: &str,
+    details: fn(&lanlord_model::lan_networks::LanNetwork) -> Vec<(String, String)>,
+) -> Result<()> {
+    let document = lanlord_core::remote::document(host, &mut ask)?;
+    let networks = lanlord_core::lan::read_networks(&document.plain)?;
+    let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
+        bail!("there is no network called {name}");
+    };
+    for (label, value) in details(network) {
+        println!("{label}: {value}");
+    }
+    Ok(())
+}
+
 /// `lanlord networks HOST internet NAME ...`.
 fn internet(host: &str, name: &str, action: InternetCommand) -> Result<()> {
     if matches!(action, InternetCommand::List) {
-        let document = lanlord_core::remote::document(host, &mut ask)?;
-        let networks = lanlord_core::lan::read_networks(&document.plain)?;
-        let Some(network) = lanlord_model::lan_networks::find(&networks.list, name) else {
-            bail!("there is no network called {name}");
-        };
-        for (label, value) in network.internet.details() {
-            println!("{label}: {value}");
-        }
-        return Ok(());
+        return print_details(host, name, |n| n.internet.details());
     }
     change_internet(
         host,
         allow_change(name, action, lanlord_core::internet::now())?,
+    )
+}
+
+/// the ssh change `ssh NAME on|off|allow|deny ...` stands for, with the end worked out from `now`.
+fn ssh_change(
+    network: &str,
+    action: SshCommand,
+    now: i64,
+) -> Result<lanlord_model::ssh_access::Change> {
+    use lanlord_model::ssh_access::Change;
+    // the arguments of allow and deny and their reading are the internet ones'
+    let like = match action {
+        SshCommand::On | SshCommand::Off { .. } => {
+            return Ok(Change::Network {
+                network: network.to_string(),
+                on: matches!(action, SshCommand::On),
+            })
+        }
+        SshCommand::List => InternetCommand::List,
+        SshCommand::Deny { mac, .. } => InternetCommand::Deny { mac },
+        SshCommand::Allow {
+            mac,
+            duration,
+            until,
+            name,
+        } => InternetCommand::Allow {
+            mac,
+            duration,
+            until,
+            name,
+        },
+    };
+    allow_change(network, like, now)
+}
+
+/// `lanlord networks HOST ssh NAME ...`.
+fn ssh_access(host: &str, name: &str, action: SshCommand) -> Result<()> {
+    if matches!(action, SshCommand::List) {
+        return print_details(host, name, |n| n.ssh.details());
+    }
+    let forced = matches!(
+        action,
+        SshCommand::Off {
+            allow_lockout: true
+        } | SshCommand::Deny {
+            allow_lockout: true,
+            ..
+        }
+    );
+    let change = ssh_change(name, action, lanlord_core::internet::now())?;
+    if !forced {
+        // not knowing where this connection comes from is refused like a known lockout
+        match lanlord_core::lockout::of_change(host, &change, &mut ask) {
+            Ok(held) => lockout_refusal(host, held)?,
+            Err(error) => {
+                eprintln!("warning: could not tell where you connect from ({error:#})");
+                bail!(
+                    "this change may cut this connection off; repeat the command with \
+                     --allow-lockout to go on"
+                )
+            }
+        }
+    }
+    send_grant(
+        host,
+        lanlord_model::ssh_access::describe(&change),
+        Operation::ChangeSshAccess { change },
+    )
+}
+
+/// refuse a change that would cut this connection off, and say how to keep it or to go on anyway.
+fn lockout_refusal(host: &str, held: Option<lanlord_model::lockout::Lockout>) -> Result<()> {
+    let Some(held) = held else { return Ok(()) };
+    if held.is_unknown() {
+        eprintln!("warning: {}", held.sentence());
+        bail!("repeat the command with --allow-lockout to go on")
+    }
+    let keep: Vec<String> = held
+        .commands(host)
+        .into_iter()
+        .map(|c| format!("  {c}"))
+        .collect();
+    bail!(
+        "{}\nto keep this connection, run one of these first:\n{}\nor repeat the command with \
+         --allow-lockout to go on",
+        held.sentence(),
+        keep.join("\n")
     )
 }
 
@@ -982,7 +1128,9 @@ fn change_networks(host: &str, action: NetworksCommand) -> Result<()> {
             },
         )?,
         NetworksCommand::Remove { name } => Edit::Remove(name),
-        NetworksCommand::Internet { .. } => unreachable!("run by `networks`"),
+        NetworksCommand::Internet { .. } | NetworksCommand::Ssh { .. } => {
+            unreachable!("run by `networks`")
+        }
         NetworksCommand::Lease { name, action } => match action {
             LeaseCommand::Add { host, mac, address } => Edit::LeaseAdd {
                 network: name,
@@ -3042,6 +3190,122 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["lanlord", "networks", "gw", "add", "x"]).is_err());
+    }
+
+    #[test]
+    fn the_ssh_commands_parse_and_become_changes() {
+        use lanlord_model::ssh_access::Change;
+        let command = |args: &[&str]| {
+            let mut full = vec!["ssh", "lab"];
+            full.extend_from_slice(args);
+            match networks_action(&full) {
+                NetworksCommand::Ssh { action, .. } => action,
+                _ => panic!("ssh"),
+            }
+        };
+        let now = 1_900_000_000;
+        let on = ssh_change("lab", command(&["on"]), now).unwrap();
+        assert_eq!(
+            on,
+            Change::Network {
+                network: "lab".into(),
+                on: true
+            }
+        );
+        assert!(matches!(
+            ssh_change("lab", command(&["off"]), now).unwrap(),
+            Change::Network { on: false, .. }
+        ));
+        let mac = "02:00:00:00:00:01";
+        match ssh_change(
+            "lab",
+            command(&["allow", mac, "--for", "1h", "--name", "dana-pc"]),
+            now,
+        )
+        .unwrap()
+        {
+            Change::Allow {
+                mac: m,
+                name,
+                expiry,
+                ..
+            } => {
+                assert_eq!(m, mac);
+                assert_eq!(name.as_deref(), Some("dana-pc"));
+                assert_eq!(expiry, lanlord_model::internet::Expiry::At(now + 3600));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            ssh_change("lab", command(&["deny", mac]), now).unwrap(),
+            Change::Deny { .. }
+        ));
+        assert!(ssh_change("lab", SshCommand::List, now).is_err());
+        assert!(ssh_change("lab", command(&["allow", mac, "--for", "soon"]), now).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "networks", "gw", "ssh", "lab", "allow"]).is_err());
+    }
+
+    #[test]
+    fn closing_ssh_from_the_network_you_are_on_is_refused_unless_confirmed() {
+        use lanlord_model::lockout::Lockout;
+        let action = |args: &[&str]| {
+            let mut full = vec!["ssh", "lab"];
+            full.extend_from_slice(args);
+            match networks_action(&full) {
+                NetworksCommand::Ssh { action, .. } => action,
+                _ => panic!("ssh"),
+            }
+        };
+        // the flag is read by off and deny, and by nothing that gives access
+        assert!(matches!(
+            action(&["off", "--allow-lockout"]),
+            SshCommand::Off {
+                allow_lockout: true
+            }
+        ));
+        assert!(matches!(
+            action(&["deny", "02:00:00:00:00:01", "--allow-lockout"]),
+            SshCommand::Deny {
+                allow_lockout: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            action(&["off"]),
+            SshCommand::Off {
+                allow_lockout: false
+            }
+        ));
+        assert!(Cli::try_parse_from([
+            "lanlord",
+            "networks",
+            "gw",
+            "ssh",
+            "lab",
+            "on",
+            "--allow-lockout"
+        ])
+        .is_err());
+        // nothing to refuse when the connection is not cut
+        assert!(lockout_refusal("gw", None).is_ok());
+        let held = Lockout {
+            network: Some("lab".into()),
+            mac: Some("02:00:00:00:00:01".into()),
+            routed: false,
+        };
+        let why = lockout_refusal("gw", Some(held)).unwrap_err().to_string();
+        assert!(why.contains("cut off"), "{why}");
+        assert!(
+            why.contains("lanlord networks gw ssh lab allow 02:00:00:00:00:01"),
+            "{why}"
+        );
+        assert!(why.contains("lanlord networks gw ssh lab on"), "{why}");
+        assert!(why.contains("--allow-lockout"), "{why}");
+        // a connection that cannot be placed is refused the same way, without commands
+        let why = lockout_refusal("gw", Some(Lockout::unknown(None)))
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("--allow-lockout"), "{why}");
     }
 
     #[test]

@@ -13,6 +13,7 @@ use serde_yaml_ng::{Mapping, Value};
 use crate::format::Context;
 use crate::internet::Internet;
 use crate::settings::{valid_label, Dhcp, DnsSettings, Record, Settings, Subnet, ValidationError};
+use crate::ssh_access::SshAccess;
 
 /// what the first network is called when it comes from the older single-network settings.
 pub const LEGACY_NAME: &str = "retronet";
@@ -38,6 +39,9 @@ pub struct LanNetwork {
     /// who may go out to the internet; nobody by default.
     #[serde(default)]
     pub internet: Internet,
+    /// who may reach the server's sshd from the network; nobody by default.
+    #[serde(default)]
+    pub ssh: SshAccess,
 }
 
 impl LanNetwork {
@@ -51,6 +55,7 @@ impl LanNetwork {
             records: Vec::new(),
             dhcp: None,
             internet: Internet::default(),
+            ssh: SshAccess::default(),
         }
     }
 
@@ -138,6 +143,7 @@ fn legacy(settings: &Settings) -> Result<Option<LanNetwork>> {
         records: dns.records,
         dhcp: dns.dhcp,
         internet: Internet::default(),
+        ssh: SshAccess::default(),
     }))
 }
 
@@ -179,6 +185,7 @@ fn parse_network(item: &Mapping, index: usize) -> Result<LanNetwork> {
         records: parsed.records,
         dhcp: parsed.dhcp,
         internet: Internet::from_entry(item, &path)?,
+        ssh: SshAccess::from_entry(item, &path)?,
         name,
     })
 }
@@ -243,6 +250,7 @@ fn network_value(network: &LanNetwork) -> Value {
         map.insert(key("mtu"), Value::Number(mtu.into()));
     }
     network.internet.put_in(&mut map);
+    network.ssh.put_in(&mut map);
     let mut holder = Settings::empty();
     DnsSettings {
         zone: network.zone.clone(),
@@ -298,6 +306,7 @@ pub fn validate(
         errors.extend(mtu_error(network, &path));
         errors.extend(seen.zone_error(network, &path));
         errors.extend(crate::internet::errors(network, &path));
+        errors.extend(crate::ssh_access::errors(network, &path));
         if network.address.is_empty() && !complete {
             continue;
         }
