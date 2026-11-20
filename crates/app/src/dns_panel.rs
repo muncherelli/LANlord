@@ -115,6 +115,10 @@ pub struct DnsPanel {
 /// no network (the older single-network settings) it goes into the `dns:` section.
 fn store(settings: &mut Settings, network: Option<&str>, draft: &DnsSettings) -> Result<()> {
     let Some(name) = network else {
+        // with a `networks:` list the `dns:` section is ignored, so writing it would do nothing
+        if settings.section("networks").is_some() {
+            anyhow::bail!("there is no network to save the dns settings to");
+        }
         draft.apply_to(settings);
         return Ok(());
     };
@@ -182,11 +186,15 @@ impl DnsPanel {
             _ => None,
         });
         let known = own.and_then(|n| Some((n.subnet()?, n.ip()?)));
-        let (subnet, gateway) =
-            known.unwrap_or_else(|| match data.and_then(|d| d.internal.as_ref()) {
-                Some(Ok(internal)) => (internal.subnet(), internal.address),
-                _ => (Subnet::new(Ipv4Addr::UNSPECIFIED, 0), Ipv4Addr::UNSPECIFIED),
-            });
+        // what the gateway found may be another network than a later one without an address
+        let later = self.selected.min(self.choices().len().saturating_sub(1)) > 0;
+        let found = match data.and_then(|d| d.internal.as_ref()) {
+            Some(Ok(internal)) if !(own.is_some() && later) => {
+                (internal.subnet(), internal.address)
+            }
+            _ => (Subnet::new(Ipv4Addr::UNSPECIFIED, 0), Ipv4Addr::UNSPECIFIED),
+        };
+        let (subnet, gateway) = known.unwrap_or(found);
         self.draft.validate(&subnet, gateway)
     }
 
@@ -224,6 +232,11 @@ impl DnsPanel {
             && !self.remote.busy()
             && self.errors().is_empty()
             && self.remote.belongs_to(host)
+            && self
+                .remote
+                .data
+                .as_ref()
+                .is_some_and(|d| d.networks.is_ok())
     }
 
     /// the panel for `host`; loads the settings when it shows another host's.
@@ -881,6 +894,34 @@ mod tests {
             ("gamma", 1)
         );
         assert_eq!(after[1].address, "198.51.100.1/24");
+    }
+
+    #[test]
+    fn nothing_is_saved_while_the_networks_cannot_be_read() {
+        let (panel, _fake) = loaded("networks: 3\ndns:\n  zone: alpha\n");
+        let mut settings = Settings::parse("networks: 3\ndns:\n  zone: alpha\n").unwrap();
+        assert!(store(&mut settings, None, &panel.draft).is_err());
+        assert!(!settings.text().contains("zone: retronet"));
+        let services = Services::new(std::sync::Arc::new(Fake::new()), crate::wake::Wake::none());
+        assert!(!panel.can_save(&services, "a@b"));
+    }
+
+    #[test]
+    fn a_later_network_without_an_address_ignores_the_gateways_own_network() {
+        let (mut panel, _fake) = loaded(
+            "networks:\n  - {name: alpha, interface: eth1, address: 192.0.2.1/24}\n  - {name: beta}\n",
+        );
+        panel.remote.data.as_mut().unwrap().internal = Some(Ok(Internal {
+            interface: "eth1".into(),
+            address: "192.0.2.1".parse().unwrap(),
+            prefix: 24,
+        }));
+        panel.selected = 1;
+        panel.draft.records = vec![Record {
+            name: "x".into(),
+            address: "198.51.100.9".into(),
+        }];
+        assert!(panel.errors().is_empty());
     }
 
     #[test]
