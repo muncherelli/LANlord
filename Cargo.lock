@@ -3081,7 +3081,6 @@ dependencies = [
 name = "lanlord-web"
 version = "0.1.4"
 dependencies = [
- "lanlord-model",
  "lanlord-ui",
  "wasm-bindgen",
  "wasm-bindgen-futures",
