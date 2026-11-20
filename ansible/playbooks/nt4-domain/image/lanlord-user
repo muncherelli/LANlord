@@ -37,6 +37,10 @@ smbconf=${LANLORD_SMB_CONF:-/etc/samba/smb.conf}
 # the groups lanlord makes itself; they cannot be deleted from windows
 fixed_groups=" admins domusers domguests machines softadmins "
 mkdir -p "$private"
+# one writer at a time: hooks, apply and start all edit the same files. the wait is bounded so a
+# hook never hangs smbd (which may hold a passdb transaction) behind a long apply
+exec 9> "$private/.lock"
+flock -w 60 9 || { echo "lanlord-user is busy" >&2; exit 1; }
 
 valid() {
   case "$1" in
@@ -68,8 +72,19 @@ list_add() {
 
 list_del() {
   [[ -f $1 ]] || return 0
-  grep -vxF -- "$2" "$1" > "$1.new" || true
-  mv "$1.new" "$1"
+  local tmp
+  tmp=$(mktemp "$private/.tmp.XXXXXX")
+  grep -vxF -- "$2" "$1" > "$tmp" || true
+  mv "$tmp" "$1"
+}
+
+# the lines of a NAME:VALUE file, without the one whose NAME is $2 (a name is never a pattern)
+key_del() {
+  [[ -f $1 ]] || return 0
+  local tmp
+  tmp=$(mktemp "$private/.tmp.XXXXXX")
+  awk -F: -v n="$2" '$1 != n' "$1" > "$tmp" || true
+  mv "$tmp" "$1"
 }
 
 # the file that remembers who is in a group
@@ -99,17 +114,14 @@ forget_user() {
   for file in "$private/admins" "$private/softadmins" "$private"/members/*; do
     list_del "$file" "$1"
   done
-  if [[ -f $private/primary ]]; then
-    grep -v "^$1:" "$private/primary" > "$private/primary.new" || true
-    mv "$private/primary.new" "$private/primary"
-  fi
+  key_del "$private/primary" "$1"
 }
 
 # nt and windows 9x run users\NAME.bat at logon (smb.conf: logon script = users\%U.bat). windows 9x
 # does not set %USERNAME% in a logon script, so the wrapper sets it and then runs lanlord.bat
 ensure_logon() {
   grep -q '^[[:space:]]*domain logons = yes' "$smbconf" 2>/dev/null || return 0
-  local name=$1 server script current
+  local name=$1 wrapper_only=${2:-} server script current
   [[ $name == *'$' ]] && return 0
   server=$(testparm -s --parameter-name='netbios name' 2>/dev/null || true)
   [[ -n $server ]] || server=$(hostname | cut -c1-15 | tr a-z A-Z)
@@ -118,9 +130,12 @@ ensure_logon() {
   printf '@echo off\r\nset USERNAME=%s\r\ncall \\\\%s\\netlogon\\lanlord.bat\r\n' "$name" "$server" > "$script"
   chgrp admins "$script" 2>/dev/null || true
   chmod 0664 "$script"
+  # the hooks run inside smbd's passdb transaction, so they only write the file; the next sync
+  # points the account at it
+  [[ -z $wrapper_only ]] || return 0
   # a script that was set from windows stays; an empty one, the plain lanlord.bat and another
   # user's wrapper (left over from a rename) are replaced
-  current=$(pdbedit -L -v -u "$name" 2>/dev/null | sed -n 's/^Logon script: *//p' | tr -d '\r' || true)
+  current=$(pdbedit -L -v -u "$name" 2>/dev/null | sed -n 's/^Logon Script: *//p' | tr -d '\r' || true)
   case "$current" in
     '' | lanlord.bat | 'users\'*.bat)
       [[ $current == "users\\$name.bat" ]] || pdbedit -u "$name" -S "users\\$name.bat" >/dev/null 2>&1 || true
@@ -129,12 +144,18 @@ ensure_logon() {
   esac
 }
 
-# software admins are the domain admins plus the names in the softadmins file; the group is
-# rebuilt from both lists so removing a user from either takes effect
+# software admins are the names in the softadmins file, which windows edits through the hooks. domain
+# admins write to the share anyway (smb.conf), so the file is seeded from them once, when an older
+# version made the group out of both lists
 sync_software() {
-  local want have
+  local want have member
   touch "$private/admins" "$private/softadmins"
-  want=$(cat "$private/admins" "$private/softadmins" | sort -u)
+  if [[ ! -e $private/.softadmins-seeded ]]; then
+    cat "$private/admins" >> "$private/softadmins"
+    sort -u "$private/softadmins" -o "$private/softadmins"
+    touch "$private/.softadmins-seeded"
+  fi
+  want=$(cat "$private/softadmins")
   have=$(getent group softadmins | cut -d: -f4 | tr ',' '\n')
   for member in $have; do
     grep -qx "$member" <<<"$want" || gpasswd -d "$member" softadmins >/dev/null 2>&1 || true
@@ -159,14 +180,15 @@ make_home() {
   install -d -o "$1" -g domusers -m 0700 "/var/lib/samba/homes/$1"
 }
 
-# groupadd refuses upper case letters on some versions; the name is one windows chose
+# groups made from windows live in their own id range: below it are lanlord's groups (9000-9998),
+# the service account (9999) and people (10000 and up)
 add_group() {
   local group=$1 gid=${2:-}
   getent group "$group" >/dev/null && return 0
   if [[ -n $gid ]]; then
-    groupadd -g "$gid" "$group" 2>/dev/null || groupadd --badname -g "$gid" "$group"
+    groupadd -g "$gid" "$group"
   else
-    groupadd "$group" 2>/dev/null || groupadd --badname "$group"
+    groupadd -K GID_MIN=20000 -K GID_MAX=29999 "$group"
   fi
 }
 
@@ -179,7 +201,7 @@ hook() {
       safe "$a"
       id "$a" >/dev/null 2>&1 || useradd --badname -M -g domusers -s /usr/sbin/nologin "$a"
       make_home "$a"
-      ensure_logon "$a"
+      ensure_logon "$a" wrapper_only
       ;;
     machine)
       safe "$a"
@@ -196,7 +218,8 @@ hook() {
       add_group "$a"
       gid=$(getent group "$a" | cut -d: -f3)
       touch "$private/groups"
-      grep -q "^$a:" "$private/groups" || echo "$a:$gid" >> "$private/groups"
+      key_del "$private/groups" "$a"
+      echo "$a:$gid" >> "$private/groups"
       ;;
     delgroup)
       safe "$a"
@@ -205,10 +228,7 @@ hook() {
         *) ;;
       esac
       groupdel "$a"
-      if [[ -f $private/groups ]]; then
-        grep -v "^$a:" "$private/groups" > "$private/groups.new" || true
-        mv "$private/groups.new" "$private/groups"
-      fi
+      key_del "$private/groups" "$a"
       rm -f "$private/members/$a"
       ;;
     addmember)
@@ -225,8 +245,7 @@ hook() {
       safe "$a"; safe "$b"
       usermod -g "$a" "$b"
       touch "$private/primary"
-      grep -v "^$b:" "$private/primary" > "$private/primary.new" || true
-      mv "$private/primary.new" "$private/primary"
+      key_del "$private/primary" "$b"
       # domusers is the default, so only another group is remembered
       [[ $a == domusers ]] || echo "$b:$a" >> "$private/primary"
       ;;
@@ -234,7 +253,7 @@ hook() {
       safe "$a"; safe "$b"
       usermod -l "$b" "$a"
       [[ -d /var/lib/samba/homes/$a && ! -e /var/lib/samba/homes/$b ]] && mv "/var/lib/samba/homes/$a" "/var/lib/samba/homes/$b"
-      local file
+      local file tmp
       for file in "$private/admins" "$private/softadmins" "$private"/members/*; do
         if [[ -f $file ]] && grep -qxF -- "$a" "$file"; then
           list_del "$file" "$a"
@@ -242,10 +261,12 @@ hook() {
         fi
       done
       if [[ -f $private/primary ]]; then
-        sed -i "s/^$a:/$b:/" "$private/primary"
+        tmp=$(mktemp "$private/.tmp.XXXXXX")
+        awk -F: -v a="$a" -v b="$b" 'BEGIN { OFS = ":" } $1 == a { $1 = b } 1' "$private/primary" > "$tmp"
+        mv "$tmp" "$private/primary"
       fi
-      rm -f "$netlogon/users/$a.bat"
-      ensure_logon "$b"
+      # the old wrapper stays; the next sync points the account at the new one
+      ensure_logon "$b" wrapper_only
       ;;
     *)
       echo "unknown hook: $action" >&2
