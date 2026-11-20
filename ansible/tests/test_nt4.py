@@ -283,6 +283,15 @@ class ImageTest(unittest.TestCase):
         for flag in ("--disable-cups", "--without-ldap", "--without-ad-dc"):
             self.assertIn(flag, self.dockerfile)
 
+    def test_account_name_mask_patch_is_applied_and_checked(self):
+        name = "samba-4.22-mask-account-script-names.patch"
+        with open(os.path.join(IMAGE, "patches", name)) as f:
+            patch = f.read()
+        self.assertEqual(patch.count("+\t\t\t\t\ttrue, false, true);") + patch.count("+\t\t\t\ttrue, false, true);"), 2)
+        self.assertIn("talloc_string_sub2", patch)
+        self.assertIn("patch -p1 < /patches/" + name, self.dockerfile)
+        self.assertIn("grep -c 'talloc_string_sub2'", self.dockerfile)
+
 
 if __name__ == "__main__":
     unittest.main()
