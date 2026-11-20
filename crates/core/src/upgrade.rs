@@ -550,7 +550,7 @@ pub fn move_command(host: &str) -> String {
 
 /// the hint added when the migration finds the secrets sealed to another key.
 fn sealed_hint(message: &str, host: &str) -> String {
-    if message.contains("sealed to another key") {
+    if message.contains(crate::crypto::NOT_OUR_KEY) {
         format!(
             "{message}; run `{}` and then upgrade again",
             move_command(host)
@@ -1021,10 +1021,7 @@ esac"##
             "lanlord move-secrets <your-admin>@gw.example.net"
         );
         assert_eq!(move_command("gw"), "lanlord move-secrets <your-admin>@gw");
-        let said = sealed_hint(
-            "the stored secrets are sealed to another key; move them to the gateway first",
-            "root@192.0.2.7",
-        );
+        let said = sealed_hint(crate::crypto::NOT_OUR_KEY, "root@192.0.2.7");
         assert!(
             said.contains("`lanlord move-secrets <your-admin>@192.0.2.7`"),
             "{said}"
