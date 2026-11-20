@@ -443,6 +443,13 @@ pub fn run(
         allow_unhealthy,
         ask_password,
         events,
+        // the firewall of this version is put in place now, not at the next apply
+        &mut |ask| {
+            let docker = Operation::Apply {
+                modules: vec!["docker".to_string()],
+            };
+            crate::operations::execute(host, &docker, ask).map(|_| ())
+        },
         &mut |stamp, ask| {
             // the new service holds the key, so it migrates the files
             let operation = Operation::MigrateStored {
@@ -459,6 +466,35 @@ pub fn run(
 /// how the stored files are migrated: given the stamp that names the backups, it answers with
 /// what was done.
 type Migrate<'a> = &'a mut dyn FnMut(&str, AskPassword) -> Result<Vec<String>>;
+
+/// how the docker module is applied again, so that the firewall rules of this version are in place.
+type Refresh<'a> = &'a mut dyn FnMut(AskPassword) -> Result<()>;
+
+/// the check for a firewall that lanlord wrote: only such a gateway is applied again.
+fn firewall_script() -> String {
+    "# upgrade firewall\ntest -f /etc/lanlord/firewall.nft\n".to_string()
+}
+
+/// a gateway with lanlord's firewall gets the docker module applied after an upgrade, so what this
+/// version blocks (ssh from the lanlord networks, unless allowed) is blocked as soon as it runs.
+/// the files are already migrated, so a failure here is told, not rolled back.
+fn refresh_firewall(
+    session: &Session,
+    ask: AskPassword,
+    refresh: Refresh,
+    on_line: &mut dyn FnMut(&str),
+) {
+    if !matches!(root_status(session, firewall_script(), &mut *ask), Ok(0)) {
+        return;
+    }
+    on_line("applying the firewall of this version (ssh from the lanlord networks is off unless allowed)");
+    if let Err(error) = refresh(ask) {
+        on_line(&format!(
+            "could not apply the docker module ({error:#}); run `lanlord apply` for it, since \
+             ssh from the lanlord networks is not blocked until then"
+        ));
+    }
+}
 
 /// what the server was like before the upgrade.
 struct Before {
@@ -590,6 +626,7 @@ fn roll_back(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_with(
     session: &Session,
     options: &Options,
@@ -597,6 +634,7 @@ pub(crate) fn run_with(
     allow_unhealthy: bool,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
+    refresh: Refresh,
     migrate: Migrate,
 ) -> Result<()> {
     let ask = ask_password;
@@ -705,6 +743,7 @@ pub(crate) fn run_with(
         step(events, Step::Migrate, |line| {
             let migrated = migrate_stored(session, &options.host, &mut *ask, migrate, line);
             let Err(error) = migrated else {
+                refresh_firewall(session, &mut *ask, &mut *refresh, line);
                 return Ok(());
             };
             line("putting the old copies of the stored files back");
@@ -819,6 +858,7 @@ case "$last" in
           *"swap had not begun"*) [ -f "$D/moved" ] || { echo rollback-skipped >> "$D/log"; exit 3; } ;;
         esac
         echo rollback >> "$D/log"; touch "$D/rolled"; [ -f "$D/still-broken" ] && exit 1; exit 0 ;;
+      "# upgrade firewall"*) [ -f "$D/firewall" ] ;;
       "# stored stamp"*) echo 20260101T120000Z ;;
       "# stored restore"*) echo restore >> "$D/log" ;;
       "# upgrade check"*)
@@ -892,6 +932,19 @@ esac"##
                 allow_unhealthy,
                 &mut no_password,
                 &mut |event| seen.push(event),
+                &mut |_| {
+                    use std::io::Write;
+                    let mut log = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(self.dir.join("log"))
+                        .unwrap();
+                    writeln!(log, "apply docker").unwrap();
+                    if self.dir.join("apply-docker-fails").exists() {
+                        anyhow::bail!("ansible failed");
+                    }
+                    Ok(())
+                },
                 &mut |stamp, _| {
                     use std::io::Write;
                     let mut log = std::fs::OpenOptions::new()
@@ -1027,6 +1080,40 @@ esac"##
             "{said}"
         );
         assert_eq!(sealed_hint("something else", "gw"), "something else");
+    }
+
+    #[test]
+    fn a_gateway_with_a_firewall_gets_the_docker_module_applied_after_the_migration() {
+        let server = Server::installed("firewall");
+        server.flag("firewall");
+        let (result, events) = server.upgrade();
+        result.unwrap();
+        let log = server.log();
+        let migrated = log.iter().position(|l| l.starts_with("migrate ")).unwrap();
+        assert_eq!(
+            log.get(migrated + 1).map(String::as_str),
+            Some("apply docker")
+        );
+        assert_eq!(outcomes(&events).last(), Some(&(Step::Migrate, "done")));
+    }
+
+    #[test]
+    fn a_gateway_without_a_firewall_is_not_applied_again() {
+        let server = Server::installed("no-firewall");
+        let (result, _) = server.upgrade();
+        result.unwrap();
+        assert!(!server.log().contains(&"apply docker".to_string()));
+    }
+
+    #[test]
+    fn a_firewall_that_cannot_be_applied_is_told_and_does_not_undo_the_upgrade() {
+        let server = Server::installed("firewall-fails");
+        server.flag("firewall");
+        server.flag("apply-docker-fails");
+        let (result, events) = server.upgrade();
+        result.unwrap();
+        assert_eq!(outcomes(&events).last(), Some(&(Step::Migrate, "done")));
+        assert!(!server.log().contains(&"rollback".to_string()));
     }
 
     #[test]

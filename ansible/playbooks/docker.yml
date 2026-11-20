@@ -317,15 +317,23 @@
         loop_var: lan
         label: "{{ lan.name }}"
 
-    # sshd is kept off the lanlord networks by the firewall, so its ports are asked of sshd itself.
-    # nothing is printed without sshd (no rule then); sshd that cannot answer is taken to be on 22
+    # sshd is kept off the lanlord networks by the firewall, so its ports are asked of sshd itself:
+    # the port lines, and the port of each listenaddress line. nothing is printed without sshd (no
+    # rule then); sshd that is there but cannot answer fails the step, since a guessed 22 could leave
+    # the real port open
     - name: find the ports sshd listens on
       ansible.builtin.shell: |
         sshd=$(command -v sshd 2>/dev/null || true)
         if [ -z "$sshd" ]; then for c in /usr/sbin/sshd /usr/local/sbin/sshd; do
           if [ -x "$c" ]; then sshd=$c; break; fi; done; fi
         [ -n "$sshd" ] || exit 0
-        ports=$("$sshd" -T 2>/dev/null | awk 'tolower($1)=="port" { print $2 }' | sort -un)
+        out=$("$sshd" -T) || { echo "sshd -T failed" >&2; exit 1; }
+        ports=$(printf '%s\n' "$out" | awk '
+          tolower($1) == "port" { print $2 }
+          tolower($1) == "listenaddress" {
+            a = $2
+            if (a ~ /^\[.*\]:[0-9]+$/ || a ~ /^[^:]+:[0-9]+$/) { sub(/.*:/, "", a); print a }
+          }' | sort -un)
         echo "${ports:-22}"
       register: sshd_ports
       changed_when: false
@@ -383,7 +391,8 @@
       when: internet_machines or ssh_machines
 
     # a flow that is open when a grant ends, is denied, or a network goes off would carry on, so the
-    # flows of the computers that may not go out are ended (quietly skipped without conntrack)
+    # flows of the computers that may not go out are ended (quietly skipped without conntrack). only
+    # forwarded flows: one to an address of the gateway itself, like an ssh session, is left alone
     - name: end the flows of computers that may not go out
       ansible.builtin.command:
         argv: >-
@@ -393,10 +402,28 @@
         cut_flows: |
           command -v conntrack >/dev/null 2>&1 || exit 0
           iface=$1; shift
-          ip -4 neigh show dev "$iface" 2>/dev/null | while read -r addr tag mac _; do
-            [ "$tag" = lladdr ] || continue
-            case " $* " in *" $mac "*) continue ;; esac
-            conntrack -D -s "$addr" >/dev/null 2>&1 || true
+          mine=$(ip -o addr show 2>/dev/null | awk '{ sub("/.*", "", $4); print $4 }')
+          for fam in 4 6; do
+            ip -$fam neigh show dev "$iface" 2>/dev/null | while read -r addr tag mac _; do
+              [ "$tag" = lladdr ] || continue
+              case " $* " in *" $mac "*) continue ;; esac
+              conntrack -f ipv$fam -L -s "$addr" 2>/dev/null | while read -r line; do
+                dst=${line#* dst=}; dst=${dst%% *}
+                case "
+          $mine
+          " in *"
+          $dst
+          "*) continue ;; esac
+                proto=${line%% *}
+                case $proto in
+                  tcp|udp)
+                    sp=${line#*sport=}; sp=${sp%% *}
+                    dp=${line#*dport=}; dp=${dp%% *}
+                    conntrack -f ipv$fam -D -p "$proto" -s "$addr" -d "$dst" --sport "$sp" --dport "$dp" >/dev/null 2>&1 || true ;;
+                  *) conntrack -f ipv$fam -D -p "$proto" -s "$addr" -d "$dst" >/dev/null 2>&1 || true ;;
+                esac
+              done
+            done
           done
           exit 0
       loop: "{{ lanlord_networks | rejectattr('internet') | list }}"

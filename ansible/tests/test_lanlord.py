@@ -354,3 +354,95 @@ class SshFirewallTemplateTest(unittest.TestCase):
         step = text.split("find the ports sshd listens on")[1].split("- name:")[0]
         self.assertIn('-T', step)
         self.assertIn('"port"', step)
+
+
+class DockerShellStepsTest(unittest.TestCase):
+    """the shell of two docker.yml steps, run against stand-ins for sshd, ip and conntrack."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def tasks(self):
+        import yaml
+        path = os.path.join(os.path.dirname(__file__), "..", "playbooks", "docker.yml")
+        with open(path) as f:
+            return yaml.safe_load(f)[0]['tasks']
+
+    def stub(self, name, body):
+        path = os.path.join(self.dir, name)
+        with open(path, 'w') as f:
+            f.write('#!/bin/sh\n' + body)
+        os.chmod(path, 0o755)
+
+    def run_sh(self, script, *args):
+        import subprocess
+        env = {'PATH': self.dir + ':/usr/bin:/bin', 'LC_ALL': 'C'}
+        return subprocess.run(['sh', '-c', script, 'sh', *args], env=env,
+                              capture_output=True, text=True)
+
+    def ports_script(self):
+        step = [t for t in self.tasks() if t.get('name') == 'find the ports sshd listens on'][0]
+        return step['ansible.builtin.shell']
+
+    def test_ports_come_from_port_and_listenaddress_lines(self):
+        self.stub('sshd', 'printf "port 22\\nlistenaddress 0.0.0.0:2200\\n'
+                          'listenaddress [::]:2201\\nlistenaddress 192.0.2.9\\nport 22\\n"\n')
+        done = self.run_sh(self.ports_script())
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.split(), ['22', '2200', '2201'])
+
+    def test_sshd_that_cannot_answer_fails_the_step(self):
+        self.stub('sshd', 'echo broken >&2; exit 1\n')
+        done = self.run_sh(self.ports_script())
+        self.assertNotEqual(done.returncode, 0)
+        self.assertNotIn('22', done.stdout.split())
+
+    def test_no_ports_listed_means_22(self):
+        self.stub('sshd', 'echo "passwordauthentication yes"\n')
+        done = self.run_sh(self.ports_script())
+        self.assertEqual(done.stdout.split(), ['22'])
+
+    def cut_script(self):
+        step = [t for t in self.tasks()
+                if t.get('name') == 'end the flows of computers that may not go out'][0]
+        return step['vars']['cut_flows']
+
+    def test_only_forwarded_flows_are_ended_never_those_to_the_gateway(self):
+        log = os.path.join(self.dir, 'deleted')
+        self.stub('ip', '''case "$*" in
+  "-o addr show") echo "2: eth1 inet 192.0.2.1/24 brd x"; echo "2: eth1 inet6 2001:db8::1/64 scope global" ;;
+  "-4 neigh show dev eth1") echo "192.0.2.50 lladdr aa:bb:cc:dd:ee:01 REACHABLE"; echo "192.0.2.51 lladdr aa:bb:cc:dd:ee:02 REACHABLE" ;;
+  "-6 neigh show dev eth1") echo "2001:db8::51 lladdr aa:bb:cc:dd:ee:02 REACHABLE" ;;
+esac
+''')
+        self.stub('conntrack', '''case "$*" in
+  *"-L -s 192.0.2.51"*)
+    echo "tcp 6 431999 ESTABLISHED src=192.0.2.51 dst=192.0.2.1 sport=40000 dport=22 src=192.0.2.1 dst=192.0.2.51 sport=22 dport=40000 [ASSURED]"
+    echo "tcp 6 431999 ESTABLISHED src=192.0.2.51 dst=198.51.100.7 sport=40001 dport=443 src=198.51.100.7 dst=192.0.2.51 sport=443 dport=40001 [ASSURED]"
+    echo "icmp 1 29 src=192.0.2.51 dst=198.51.100.7 type=8 code=0 id=1 src=198.51.100.7 dst=192.0.2.51 type=0 code=0 id=1" ;;
+  *"-L -s 2001:db8::51"*)
+    echo "tcp 6 431999 ESTABLISHED src=2001:db8::51 dst=2001:db8::1 sport=40002 dport=22 src=2001:db8::1 dst=2001:db8::51 sport=22 dport=40002 [ASSURED]"
+    echo "udp 17 29 src=2001:db8::51 dst=2001:db8:ffff::9 sport=5000 dport=53 src=2001:db8:ffff::9 dst=2001:db8::51 sport=53 dport=5000" ;;
+  *"-D "*) echo "$*" >> "''' + log + '''" ;;
+esac
+''')
+        done = self.run_sh(self.cut_script(), 'eth1', 'aa:bb:cc:dd:ee:01')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        with open(log) as handle:
+            deleted = handle.read().splitlines()
+        self.assertEqual(sorted(deleted), sorted([
+            '-f ipv4 -D -p tcp -s 192.0.2.51 -d 198.51.100.7 --sport 40001 --dport 443',
+            '-f ipv4 -D -p icmp -s 192.0.2.51 -d 198.51.100.7',
+            '-f ipv6 -D -p udp -s 2001:db8::51 -d 2001:db8:ffff::9 --sport 5000 --dport 53',
+        ]))
+        # nothing of the allowed computer, nothing to the gateway's own addresses
+        self.assertFalse([d for d in deleted if '192.0.2.50' in d or '-d 192.0.2.1 ' in d
+                          or '-d 2001:db8::1 ' in d])
+
+    def test_without_conntrack_the_step_does_nothing(self):
+        self.stub('ip', 'echo "192.0.2.51 lladdr aa:bb:cc:dd:ee:02 REACHABLE"\n')
+        done = self.run_sh(self.cut_script(), 'eth1')
+        self.assertEqual(done.returncode, 0)

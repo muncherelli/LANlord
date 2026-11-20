@@ -47,7 +47,7 @@ fn the_icons_come_first_and_the_menu_lists_them() {
 #[test]
 fn general_reads_what_the_server_is() {
     let (desktop, _ctx, fake) = server();
-    assert_eq!(fake.calls(), ["facts me@gw"]);
+    assert_eq!(fake.calls(), ["load me@gw", "facts me@gw"]);
     let facts = desktop.my_server.facts().data.clone().unwrap();
     assert_eq!(facts.hostname, "demo");
     assert!(facts.is_root && facts.lanlord_installed);
@@ -69,7 +69,11 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
     // only the preview has run so far
     assert_eq!(
         fake.calls(),
-        ["facts me@gw", "purge-preview me@gw admins=false"]
+        [
+            "load me@gw",
+            "facts me@gw",
+            "purge-preview me@gw admins=false"
+        ]
     );
     desktop.my_server.update(
         my_server::Msg::Typed("me@gw".into()),

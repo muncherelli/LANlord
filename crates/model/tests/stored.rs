@@ -6,6 +6,7 @@ use lanlord_model::stored::{load, refuse_newer, seal, Kind};
 
 const V1: &str = include_str!("fixtures/stored/plain-v1-legacy.yml");
 const V3: &str = include_str!("fixtures/stored/plain-v3-networks.yml");
+const V4: &str = include_str!("fixtures/stored/plain-v4-internet.yml");
 const NEWER: &str = include_str!("fixtures/stored/plain-v3-newer.yml");
 
 fn admins() -> Context {
@@ -99,4 +100,26 @@ fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else()
     .unwrap();
     assert!(with.contains("internet: true"), "{with}");
     assert!(lanlord_model::format::check(4, None, 3).is_err());
+}
+
+#[test]
+fn step_four_stamps_networks_that_may_allow_ssh_and_changes_nothing_else() {
+    let settings = load(Kind::Plain, V4, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(5));
+    let text = settings.text();
+    // the keys of format 4 are kept as they were, and no ssh key appears
+    assert!(
+        text.contains("internet: true") && text.contains("dana-pc"),
+        "{text}"
+    );
+    assert!(!text.contains("ssh"), "{text}");
+    // a file with ssh keys is format 5; a lanlord that knows format 4 refuses it
+    let with = seal(
+        Kind::Plain,
+        &format!("{FORMAT_KEY}: 5\nnetworks:\n  - {{name: lab, interface: eth2, address: 192.0.2.1/24, ssh: true}}\n"),
+    )
+    .unwrap();
+    assert!(with.contains("ssh: true"), "{with}");
+    assert!(lanlord_model::format::check(5, None, 4).is_err());
+    assert!(lanlord_model::format::check(4, None, 4).is_ok());
 }

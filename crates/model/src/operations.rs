@@ -69,7 +69,7 @@ pub enum Operation {
     /// the docker and dns modules.
     ChangeInternet { change: InternetChange },
     /// switch ssh to the server on or off for a network, or allow or deny one computer, and apply
-    /// the docker module (the firewall).
+    /// the docker and dns modules (the firewall is in the docker module).
     ChangeSshAccess { change: SshChange },
     /// change the lanlord networks (add, change or remove one, or a static lease) and apply the
     /// docker and dns modules.
