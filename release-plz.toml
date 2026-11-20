@@ -6,6 +6,9 @@ git_only = true
 git_release_enable = false
 git_tag_enable = false
 changelog_update = false
+# only merging a release pr (branch prefix release-plz-) tags and releases; a plain commit,
+# like the bump to the next development version, never does
+release_always = false
 # CHANGELOG.md is written by hand; the release workflow promotes [Unreleased]
 pr_body = """
 ## release
