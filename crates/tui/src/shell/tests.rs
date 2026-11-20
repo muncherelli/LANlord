@@ -349,7 +349,7 @@ fn the_menu_highlight_falls_back_to_the_first_row_when_its_item_is_gone() {
 
 #[test]
 fn the_client_and_server_titles_match_the_gui() {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = lanlord_model::version::display();
     // like the gui, the server joins the title once someone has signed in to it
     let client = demo();
     assert_eq!(client.title(), format!("LANlord Client v{version}"));
@@ -462,7 +462,7 @@ fn a_demo_sign_in_reaches_the_desktop() {
         shell.title(),
         format!(
             "LANlord Client v{} - demo@gateway",
-            env!("CARGO_PKG_VERSION")
+            lanlord_model::version::display()
         )
     );
 }

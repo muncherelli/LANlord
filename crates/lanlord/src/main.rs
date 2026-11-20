@@ -17,7 +17,7 @@ use lanlord_core::paths;
 use lanlord_core::users::Change;
 
 #[derive(Parser)]
-#[command(name = "lanlord", version, about = "all your LAN are belong to you")]
+#[command(name = "lanlord", version = lanlord_model::version::display(), about = "all your LAN are belong to you")]
 struct Cli {
     /// print debug lines about what lanlord is doing
     #[arg(short, long, global = true)]

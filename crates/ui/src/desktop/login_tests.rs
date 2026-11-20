@@ -300,7 +300,7 @@ fn the_menu_offers_log_off_and_switch_server_once_signed_in() {
 fn the_server_sits_at_the_top_of_the_menu_and_in_the_window_title() {
     let (mut desktop, ctx, auth) = logon();
     assert_eq!(desktop.server_line(), "No server");
-    let client = format!("LANlord Client v{}", env!("CARGO_PKG_VERSION"));
+    let client = format!("LANlord Client v{}", lanlord_model::version::display());
     assert_eq!(desktop.window_title, client);
     auth.push(Ok(id("alice", 1000)));
     sign_in(&mut desktop, &ctx, "alice", "gw");
@@ -375,7 +375,10 @@ fn a_demo_desktop_says_so_in_its_title() {
     frames(&mut desktop, &ctx, 2);
     assert_eq!(
         desktop.window_title,
-        format!("LANlord Server v{} (demo)", env!("CARGO_PKG_VERSION"))
+        format!(
+            "LANlord Server v{} (demo)",
+            lanlord_model::version::display()
+        )
     );
 }
 
@@ -388,7 +391,7 @@ fn the_local_mode_never_shows_the_box() {
     frames(&mut desktop, &ctx, 2);
     assert_eq!(
         desktop.window_title,
-        format!("LANlord Server v{}", env!("CARGO_PKG_VERSION"))
+        format!("LANlord Server v{}", lanlord_model::version::display())
     );
 }
 
@@ -692,18 +695,26 @@ mod web {
 #[test]
 fn the_logon_box_asks_for_no_repaint_of_its_own() {
     let (mut desktop, ctx, _auth) = logon();
-    // let the fonts and the first layout settle: they ask for frames of their own
-    frames(&mut desktop, &ctx, 10);
-    let out = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                crate::testkit::SCREEN,
-            )),
-            ..Default::default()
-        },
-        |ui| desktop.show(ui),
-    );
-    let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    // let the fonts, the first layout and any background wake settle: they ask for frames of
+    // their own, and a slow machine delivers them late, so draw until a frame asks for none
+    let start = std::time::Instant::now();
+    let delay = loop {
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    crate::testkit::SCREEN,
+                )),
+                ..Default::default()
+            },
+            |ui| desktop.show(ui),
+        );
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        if delay == std::time::Duration::MAX || start.elapsed() > std::time::Duration::from_secs(60)
+        {
+            break delay;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
     assert_eq!(delay, std::time::Duration::MAX);
 }

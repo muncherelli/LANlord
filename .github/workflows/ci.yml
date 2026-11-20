@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev
           libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-          libgl1-mesa-dev libpam0g-dev
+          libgl1-mesa-dev libpam0g-dev mesa-vulkan-drivers
       # the playbook render tests skip themselves without ansible, so install it where it is easy
       - name: install ansible for the playbook tests
         if: runner.os != 'Windows'
@@ -44,6 +44,9 @@ jobs:
       - run: cargo clippy -p lanlord-tui --all-targets --features devtools --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo test -p lanlord-ui -p lanlord-tui --features lanlord-ui/devtools,lanlord-tui/devtools --locked
+      # the release channel of the shown version; the plain runs above cover the development one
+      - if: matrix.os == 'ubuntu-latest'
+        run: LANLORD_CHANNEL=release cargo test -p lanlord-model -p lanlord-core --locked
       # a bash script: it needs the unix tools, so not on a windows runner
       - if: runner.os != 'Windows'
         run: tools/test-ghcr-own-versions.sh

@@ -8,7 +8,7 @@ use lanlord_model::leases::Lease;
 use lanlord_model::network::Internal;
 
 use super::harness::{
-    desktop, enabled, frame_on, frames, frames_on, idle, press, until, with_host,
+    desktop, enabled, frame_on, frames, frames_on, idle, press, press_until, until, with_host,
 };
 use super::{window_size, Desktop, Target, MODULES};
 use crate::nt4_window::Tab;
@@ -201,8 +201,10 @@ fn logins_without_a_domain_section_explain_themselves_and_reload_works() {
             .is_some_and(|n| n.0 && n.1.contains("no nt4-domain section"))
     });
     *fake.stored.lock().unwrap() = NT4.into();
-    assert!(press(&mut desktop, &ctx, "Reload logins"));
-    until(&mut desktop, &ctx, |d| d.nt4.users.belongs_to("me@gw"));
+    // a click the busy host drops would leave the failed load unretried, so press until it lands
+    press_until(&mut desktop, &ctx, "Reload logins", |d| {
+        d.nt4.users.belongs_to("me@gw")
+    });
     assert_eq!(desktop.nt4.users.names(), ["dana"]);
 }
 
