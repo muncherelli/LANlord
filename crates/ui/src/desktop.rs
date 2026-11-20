@@ -71,6 +71,10 @@ const TRAY_ICON: f32 = 22.0;
 struct Window {
     target: Target,
     minimized: bool,
+    /// where it opens, once: the cascade slot it took.
+    slot: Pos2,
+    /// it has not been drawn yet, so it takes `slot` instead of where egui last saw it.
+    fresh: bool,
 }
 
 pub struct Desktop {
@@ -78,6 +82,10 @@ pub struct Desktop {
     selected: Option<usize>,
     windows: Vec<Window>,
     active: Option<Target>,
+    /// the windows, least recently activated first: the last is on top.
+    z: Vec<Target>,
+    /// how many steps of the cascade the next new window takes.
+    next_cascade: u32,
     start_open: bool,
     hosts: HostList,
     console: Console,
@@ -173,6 +181,8 @@ impl Desktop {
             selected: None,
             windows: Vec::new(),
             active: None,
+            z: Vec::new(),
+            next_cascade: 0,
             start_open: false,
             hosts: HostList::new(hosts_path),
             console: Console::new(crate::wake(ctx)),
@@ -349,6 +359,8 @@ impl Desktop {
         self.end_demo();
         self.windows.clear();
         self.active = None;
+        self.z.clear();
+        self.next_cascade = 0;
         self.selected = None;
         self.start_open = false;
         self.confirm = None;
@@ -379,6 +391,12 @@ impl Desktop {
         match self.windows.iter_mut().find(|w| w.target == target) {
             Some(window) => window.minimized = false,
             None => {
+                let slot = if target.is_dialog() {
+                    Pos2::ZERO
+                } else {
+                    let area = desktop_area(&self.ctx);
+                    take_slot(&mut self.next_cascade, area)
+                };
                 if target == Target::DateTime {
                     // a fresh reading of the server every time the window opens
                     self.clock.reset();
@@ -396,11 +414,32 @@ impl Desktop {
                 self.windows.push(Window {
                     target,
                     minimized: false,
+                    slot,
+                    fresh: true,
                 });
             }
         }
-        self.active = Some(target);
+        self.activate(target);
         self.start_open = false;
+    }
+
+    /// make `target` the active window and put it on top, in egui's order too.
+    fn activate(&mut self, target: Target) {
+        self.active = Some(target);
+        self.z.retain(|t| *t != target);
+        self.z.push(target);
+        self.ctx.move_to_top(windows::layer(target.id()));
+    }
+
+    /// after windows closed or minimized: forget the closed ones, and when the active window is
+    /// gone or hidden hand activation to the top window below it, or to none.
+    fn settle(&mut self) {
+        let windows = &self.windows;
+        self.z.retain(|t| windows.iter().any(|w| w.target == *t));
+        let shown = |t: &Target| windows.iter().any(|w| w.target == *t && !w.minimized);
+        if self.active.is_some_and(|a| !shown(&a)) {
+            self.active = self.z.iter().rev().find(|t| shown(t)).copied();
+        }
     }
 
     /// put My Server on its Compatibility tab.
@@ -604,6 +643,9 @@ impl Desktop {
         self.refresh_grants();
         self.account.poll();
         self.networks.poll();
+        if self.networks.take_saved() {
+            self.components.invalidate();
+        }
         self.permissions.poll();
         self.settings.poll();
         self.nt4.poll();
@@ -1047,6 +1089,7 @@ impl Desktop {
         }
         if clicked_blank {
             self.selected = None;
+            self.active = None;
             self.start_open = false;
         }
         if let Some(target) = opened {
@@ -1102,6 +1145,7 @@ impl Desktop {
                 if let Some(window) = self.windows.iter_mut().find(|w| w.target == target) {
                     window.minimized = true;
                 }
+                self.settle();
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1359,24 +1403,32 @@ fn window_size(ctx: &egui::Context, target: Target) -> Vec2 {
     }
 }
 
-/// where the `n`th window opens: stepped down and right of the last one, and never so far
-/// that it hangs off the desktop or covers the icons.
-fn cascade(n: usize, area: Rect, size: Vec2) -> Pos2 {
-    // each window sits one title bar lower and, as far, to the right of the one before
-    let step = (n % 8) as f32;
-    let x = (area.left() + ICON_COLUMN + step * windows::CHROME).min(area.right() - size.x);
-    let y = (area.top() + ICON_MARGIN + step * windows::CHROME).min(area.bottom() - size.y);
-    Pos2::new(x.max(area.left()), y.max(area.top()))
+/// how far each new window sits right of and below the one before: a title bar and a frame.
+const CASCADE_STEP: f32 = 22.0;
+
+/// the top left of the next new window, stepping `counter`. the windows start right of the icon
+/// column, the first one `CASCADE_STEP` lower and further right than that corner and each one
+/// after it a step more. the count starts again once a window would sit past a quarter of the
+/// desktop's width or height from the corner.
+fn take_slot(counter: &mut u32, area: Rect) -> Pos2 {
+    let offset = |n: u32| (n + 1) as f32 * CASCADE_STEP;
+    if offset(*counter) > area.width() / 4.0 || offset(*counter) > area.height() / 4.0 {
+        *counter = 0;
+    }
+    let corner = area.min + Vec2::new(ICON_COLUMN, 0.0);
+    let at = corner + Vec2::splat(offset(*counter));
+    *counter += 1;
+    at
 }
 
 // the windows
 impl Desktop {
     fn show_windows(&mut self, ctx: &egui::Context) {
         let mut windows = std::mem::take(&mut self.windows);
-        let before = std::mem::take(&mut self.measured);
+        self.measured.clear();
         let mut close = Vec::new();
         let area = desktop_area(ctx);
-        for (n, window) in windows.iter_mut().enumerate() {
+        for window in windows.iter_mut() {
             if window.minimized {
                 continue;
             }
@@ -1384,18 +1436,13 @@ impl Desktop {
             // only the width is chosen; the height is whatever the contents need
             let size = window_size(ctx, target);
             let width = size.x.min(area.width() - ICON_COLUMN - ICON_MARGIN);
-            // only the console and the fixed dialogs have a height of their own; the rest are as
-            // tall as their contents
-            let height = (target == Target::Console || target.fixed()).then_some(size.y);
+            // only the console has a height of its own; the rest, a fixed dialog like My Server
+            // too, are as tall as their contents, which for tabs is the largest page
+            let height = (target == Target::Console).then_some(size.y);
             let start = if target.is_dialog() {
                 area.center()
             } else {
-                // where it sits depends on how tall it is: what it was last frame, or the least
-                // a window can be
-                let tall = height
-                    .or_else(|| before.iter().find(|m| m.0 == target).map(|m| m.1.height()))
-                    .unwrap_or(windows::chrome().y + controls::FILL_MIN);
-                cascade(n, area, Vec2::new(width, tall))
+                window.slot
             };
             let place = windows::Placement {
                 start,
@@ -1406,6 +1453,8 @@ impl Desktop {
                 height,
                 // an empty list would open as a strip: the hosts list opens at its usual height
                 floor: target.floor(),
+                icon: target.id(),
+                fresh: std::mem::take(&mut window.fresh),
             };
             let shown = windows::show(
                 ctx,
@@ -1422,8 +1471,8 @@ impl Desktop {
                     close.push(target);
                 } else if shown.actions.minimize {
                     window.minimized = true;
-                } else if shown.clicked {
-                    self.active = Some(target);
+                } else if shown.clicked && self.active != Some(target) {
+                    self.activate(target);
                 }
             }
         }
@@ -1432,6 +1481,7 @@ impl Desktop {
         close.append(&mut self.close_requests);
         windows.retain(|w| !close.contains(&w.target));
         self.windows = windows;
+        self.settle();
         if let Some(target) = self.open_next.take() {
             self.open(target);
             if std::mem::take(&mut self.compat_next) {
@@ -1743,28 +1793,151 @@ mod tests {
     }
 
     #[test]
-    fn windows_cascade_inside_the_desktop_and_clear_of_the_icons() {
-        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 600.0));
-        let size = Vec2::new(600.0, 500.0);
-        let mut last = Pos2::ZERO;
-        for n in 0..20 {
-            let pos = cascade(n, area, size);
-            assert!(
-                area.contains_rect(Rect::from_min_size(pos, size)),
-                "{n}: {pos:?}"
-            );
-            if n > 0 && n % 8 != 0 {
-                assert!(pos.y >= last.y, "steps down");
-            }
-            last = pos;
+    fn new_windows_step_22_pixels_and_start_again_at_a_quarter_of_the_desktop() {
+        // the test screen above its 30 pixel taskbar: a step passes a quarter (152.5) after 132
+        let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 610.0));
+        let at = |n: f32| Pos2::new(ICON_COLUMN + 22.0 * n, 22.0 * n);
+        let mut counter = 0;
+        let slots: Vec<Pos2> = (0..9).map(|_| take_slot(&mut counter, area)).collect();
+        for (n, pos) in slots.iter().take(6).enumerate() {
+            assert_eq!(*pos, at(n as f32 + 1.0), "{n}");
         }
-        assert!(
-            cascade(0, area, size).x >= 100.0,
-            "the first window leaves the icons visible"
+        assert_eq!(slots[6], at(1.0), "the seventh wraps");
+        assert_eq!(slots[7], at(2.0));
+        // a wide desktop wraps on its height, measured from its own corner
+        let wide = Rect::from_min_size(Pos2::new(5.0, 7.0), Vec2::new(4000.0, 20.0));
+        let mut counter = 0;
+        let first = take_slot(&mut counter, wide);
+        assert_eq!(first, Pos2::new(5.0 + ICON_COLUMN + 22.0, 7.0 + 22.0));
+        assert_eq!(take_slot(&mut counter, wide), first, "22 is past 20 / 4");
+    }
+
+    #[test]
+    fn a_fresh_window_opens_right_of_the_icon_column() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        desktop.open(Target::MyServer);
+        frames(&mut desktop, &ctx, 3);
+        let at = corner(&ctx, Target::MyServer);
+        assert!(at.x >= ICON_COLUMN + 22.0, "{at:?}");
+        assert!(at.y >= 22.0, "{at:?}");
+    }
+
+    /// where egui has the window of `target`.
+    fn corner(ctx: &egui::Context, target: Target) -> Pos2 {
+        let id = windows::layer(target.id()).id;
+        ctx.memory(|m| m.area_rect(id)).expect("drawn").min
+    }
+
+    #[test]
+    fn five_fresh_windows_open_22_pixels_apart_and_keep_their_place() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        let five = [
+            Target::Console,
+            Target::Hosts,
+            Target::Settings,
+            Target::MyServer,
+            Target::Networks,
+        ];
+        for target in five {
+            desktop.open(target);
+            frames(&mut desktop, &ctx, 3);
+        }
+        let first = corner(&ctx, five[0]);
+        for (n, target) in five.into_iter().enumerate() {
+            let at = corner(&ctx, target);
+            assert_eq!(at, first + Vec2::splat(22.0 * n as f32), "{target:?}");
+        }
+        // opening one again does not move it, and a closed one that opens again takes the next slot
+        desktop.open(Target::Console);
+        frames(&mut desktop, &ctx, 3);
+        assert_eq!(corner(&ctx, Target::Console), first);
+        desktop.close_requests.push(Target::Hosts);
+        frames(&mut desktop, &ctx, 2);
+        desktop.open(Target::Hosts);
+        frames(&mut desktop, &ctx, 3);
+        assert_eq!(corner(&ctx, Target::Hosts), first + Vec2::splat(22.0 * 5.0));
+    }
+
+    /// the centre of the taskbar button of the `n`th window.
+    fn button(n: usize) -> Pos2 {
+        Pos2::new(
+            MENU_BUTTON + 4.0 + 8.0 + 2.0 + 20.0 + 75.0 + 154.0 * n as f32,
+            SCREEN.y - TASKBAR / 2.0,
+        )
+    }
+
+    #[test]
+    fn a_taskbar_button_raises_and_activates_its_window() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        for target in [Target::Console, Target::Hosts, Target::Settings] {
+            desktop.open(target);
+            frames(&mut desktop, &ctx, 2);
+        }
+        assert_eq!(desktop.active, Some(Target::Settings));
+        click_at(&mut desktop, &ctx, button(0));
+        assert_eq!(desktop.active, Some(Target::Console));
+        assert_eq!(desktop.z.last(), Some(&Target::Console));
+        let top = ctx.memory(|m| m.areas().top_layer_id(egui::Order::Middle));
+        assert_eq!(top, Some(windows::layer(Target::Console.id())));
+        // the window it was below is not the active one any more
+        assert_eq!(
+            desktop.z,
+            [Target::Hosts, Target::Settings, Target::Console]
         );
-        // a small desktop pins the window to its corner instead of pushing it out of sight
-        let tiny = Rect::from_min_size(Pos2::ZERO, Vec2::new(500.0, 300.0));
-        assert_eq!(cascade(3, tiny, Vec2::new(500.0, 300.0)), Pos2::ZERO);
+    }
+
+    #[test]
+    fn closing_or_minimizing_the_active_window_activates_the_one_below() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        for target in [Target::Console, Target::Hosts, Target::Settings] {
+            desktop.open(target);
+            frames(&mut desktop, &ctx, 2);
+        }
+        desktop.close_requests.push(Target::Settings);
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(desktop.active, Some(Target::Hosts));
+        assert_eq!(desktop.z, [Target::Console, Target::Hosts]);
+        // the Hosts button is the second one
+        click_at(&mut desktop, &ctx, button(1));
+        assert!(desktop.windows[1].minimized);
+        assert_eq!(desktop.active, Some(Target::Console));
+        desktop.windows[0].minimized = true;
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(desktop.active, None, "nothing is left to activate");
+        desktop.close_requests.push(Target::Console);
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(desktop.active, None);
+    }
+
+    #[test]
+    fn closing_a_window_that_is_not_active_keeps_the_active_one() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        desktop.open(Target::Console);
+        desktop.open(Target::Hosts);
+        frames(&mut desktop, &ctx, 2);
+        desktop.close_requests.push(Target::Console);
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(desktop.active, Some(Target::Hosts));
+    }
+
+    #[test]
+    fn a_click_on_the_empty_desktop_leaves_no_window_active() {
+        let (mut desktop, ctx, _) = desktop();
+        frames(&mut desktop, &ctx, 1);
+        desktop.open(Target::Console);
+        frames(&mut desktop, &ctx, 2);
+        assert_eq!(desktop.active, Some(Target::Console));
+        click_at(&mut desktop, &ctx, Pos2::new(900.0, 600.0));
+        assert_eq!(desktop.active, None);
+        // clicking its caption brings it back
+        let at = corner(&ctx, Target::Console) + Vec2::new(60.0, 10.0);
+        click_at(&mut desktop, &ctx, at);
+        assert_eq!(desktop.active, Some(Target::Console));
     }
 
     #[test]
@@ -1783,7 +1956,22 @@ mod tests {
             for target in targets {
                 desktop.windows.clear();
                 desktop.open(target);
-                frames_on(&mut desktop, &ctx, size, 9);
+                // a tabbed window measures its pages and a status bar slides in: wait for it to rest
+                let mut still = 0;
+                let mut last = desktop.measured.clone();
+                for _ in 0..300 {
+                    frames_on(&mut desktop, &ctx, size, 1);
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    still = if desktop.measured == last {
+                        still + 1
+                    } else {
+                        0
+                    };
+                    last = desktop.measured.clone();
+                    if still >= 5 {
+                        break;
+                    }
+                }
                 let area = desktop_area(&ctx);
                 let &(_, rect, content) = desktop
                     .measured
@@ -1792,7 +1980,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("{} was not drawn", target.title()));
                 let name = target.title();
                 // a 20 pixel title bar and a 3 pixel border all round, around the contents
-                let wanted = if target == Target::Console || target.fixed() {
+                let wanted = if target == Target::Console {
                     window_size(&ctx, target).y.min(area.height())
                 } else {
                     content + windows::CHROME

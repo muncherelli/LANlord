@@ -998,33 +998,36 @@ pub fn networks_from_settings(settings: &Settings) -> Vec<Network> {
 }
 
 fn listed_network(entry: &Value) -> Option<Network> {
-    let id = entry.get("id").and_then(Value::as_str)?.to_string();
-    let external = entry.get("kind").and_then(Value::as_str) == Some("external");
-    let subnet = entry
-        .get("subnet")
-        .and_then(Value::as_str)
+    // the Networks window writes `name`, `interface` and `address` (the gateway's address with
+    // its prefix); a hand-written entry may carry `id`, `subnet` and `gateway` instead
+    let text = |key: &str| entry.get(key).and_then(Value::as_str);
+    let id = text("id").or_else(|| text("name"))?.to_string();
+    let external = text("kind") == Some("external");
+    let own = text("address").and_then(cidr);
+    let subnet = text("subnet")
         .and_then(cidr)
+        .or(own)
         .map(|(network, prefix)| Subnet::new(network, prefix));
-    let gateway = entry
-        .get("gateway")
-        .and_then(Value::as_str)
-        .and_then(|g| g.parse().ok());
+    let gateway = text("gateway")
+        .and_then(|g| g.parse().ok())
+        .or_else(|| own.map(|(address, _)| address));
     if !external && (subnet.is_none() || gateway.is_none()) {
         return None;
     }
     let dhcp = entry.get("dhcp");
     Some(Network {
-        name: entry
-            .get("name")
-            .and_then(Value::as_str)
-            .map_or_else(|| id.clone(), String::from),
+        name: text("name").map_or_else(|| id.clone(), String::from),
         id,
         external,
         subnet,
         gateway,
         dhcp: dhcp.and_then(range),
         reservations: dhcp
-            .map(|d| reservations(d, "reservations", "ip"))
+            .map(|d| {
+                let mut found = reservations(d, "reservations", "ip");
+                found.extend(reservations(d, "hosts", "address"));
+                found
+            })
             .unwrap_or_default(),
     })
 }
@@ -1271,6 +1274,29 @@ mod tests {
         let mut mac = with(&[("dns", vec![at("lab", None)])]);
         mac.enabled.get_mut("dns").unwrap().mechanism = Mechanism::Macvlan;
         assert!(messages(&mac).iter().any(|m| m.contains("cannot run as")));
+    }
+
+    #[test]
+    fn networks_written_by_the_networks_window_are_listed() {
+        let settings = Settings::parse(
+            "networks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    dhcp:\n      range: [172.16.120.100, 172.16.120.200]\n      hosts:\n        - {name: ws1, mac: '02:00:00:00:00:01', address: 172.16.120.20}\n",
+        )
+        .unwrap();
+        let networks = networks_from_settings(&settings);
+        let ids: Vec<&str> = networks.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, [EXTERNAL_NETWORK, "retronet"]);
+        let lan = &networks[1];
+        assert_eq!(lan.name, "retronet");
+        assert_eq!(lan.subnet.unwrap().to_string(), "172.16.120.0/22");
+        assert_eq!(lan.gateway, Some(Ipv4Addr::new(172, 16, 120, 1)));
+        assert_eq!(
+            lan.dhcp,
+            Some((
+                Ipv4Addr::new(172, 16, 120, 100),
+                Ipv4Addr::new(172, 16, 120, 200)
+            ))
+        );
+        assert_eq!(lan.reservations, [Ipv4Addr::new(172, 16, 120, 20)]);
     }
 
     #[test]

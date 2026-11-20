@@ -9,7 +9,7 @@
 │ │└──────│ Name                                                     │       │ │
 │ └───────│ Interface   eth1 ▼                                       │───────┘ │
 │         │ Address     172.16.120.1/22                              │efresh ] │
-│         │ DHCP range  172.16.120.100    to      172.16.120.200     │ork... ] │
+│         │ DHCP range  172.16.120.100   to    172.16.120.200        │ork... ] │
 │ ┌ Networ│ Lease time  7d                                           │───────┐ │
 │ │  eth0 │ DNS zone    the name                                     │       │ │
 │ │  eth1 │ MTU         1450                                         │       │ │

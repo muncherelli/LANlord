@@ -7,6 +7,7 @@ use eframe::egui;
 use super::harness::{desktop, enabled, frames, press, until, with_host};
 use super::{my_server, Desktop, Target};
 use lanlord_app::gateway::Fake;
+use lanlord_app::networks_window::{Field, Msg as Net};
 
 fn server() -> (Desktop, egui::Context, Arc<Fake>) {
     let (mut desktop, ctx, fake) = desktop();
@@ -356,4 +357,60 @@ fn a_welcome_with_no_request_does_not_wipe_the_components_request_in_the_same_fr
     frames(&mut desktop, &ctx, 3);
     assert!(desktop.windows.iter().any(|w| w.target == Target::MyServer));
     assert_eq!(desktop.my_server.tab(), my_server::COMPATIBILITY);
+}
+
+/// open the Networks window on a server with the demo networks and wait for its status.
+fn networks_open(settings: &str) -> (Desktop, egui::Context, Arc<Fake>) {
+    let (mut desktop, ctx, fake) = desktop();
+    *fake.stored.lock().unwrap() = settings.into();
+    desktop.open(Target::Networks);
+    with_host(&mut desktop, &ctx);
+    until(&mut desktop, &ctx, |d| {
+        d.networks.rows().belongs_to("me@gw") && d.networks.status().data.is_some()
+    });
+    frames(&mut desktop, &ctx, 4);
+    (desktop, ctx, fake)
+}
+
+#[test]
+fn no_cell_of_the_activity_table_is_clipped() {
+    let (_desktop, ctx, _fake) = networks_open(NETWORKS);
+    for text in ["Sent", "Received", "913,442,071"] {
+        let (text_rect, column) = crate::theme::probe::find_cell(&ctx, text)
+            .unwrap_or_else(|| panic!("{text} was not drawn"));
+        assert!(
+            text_rect.left() >= column.left() && text_rect.right() <= column.right(),
+            "{text}: {text_rect:?} is not inside its column {column:?}"
+        );
+    }
+}
+
+#[test]
+fn adding_a_network_does_not_change_the_size_of_the_window() {
+    let (mut desktop, ctx, _fake) = networks_open("docker: {}\n");
+    let rect = |d: &Desktop| {
+        d.measured
+            .iter()
+            .find(|m| m.0 == Target::Networks)
+            .map(|m| m.1)
+            .expect("the Networks window is measured")
+    };
+    frames(&mut desktop, &ctx, 6);
+    let before = rect(&desktop);
+    let tabs = desktop.networks.rows().data.as_ref().unwrap().rows.len();
+    for msg in [Net::New, Net::Edit(Field::Name, "labnet".into()), Net::Save] {
+        desktop
+            .networks
+            .update(msg, &desktop.services, "me@gw", 0.0);
+    }
+    until(&mut desktop, &ctx, |d| {
+        !d.services.busy("me@gw")
+            && d.networks
+                .rows()
+                .data
+                .as_ref()
+                .is_some_and(|n| n.rows.len() > tabs)
+    });
+    frames(&mut desktop, &ctx, 8);
+    assert_eq!(rect(&desktop), before);
 }
