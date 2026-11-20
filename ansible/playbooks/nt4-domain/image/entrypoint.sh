@@ -61,7 +61,7 @@ pdbedit -L 2>/dev/null | cut -d: -f1 | while read -r name; do
   esac
 done
 
-# each user's home folder, and domain admin membership remembered from earlier runs
+# each user's home folder
 # (if blocks, because a failed test as the last command would end the script under set -e)
 pdbedit -L 2>/dev/null | cut -d: -f1 | while read -r name; do
   if [[ -n $name && $name != root && $name != *'$' ]] && id "$name" >/dev/null 2>&1; then
@@ -72,16 +72,19 @@ done
 if [[ ! -f /var/lib/samba/private/admins && -f /var/lib/samba/private/domadmins ]]; then
   cp /var/lib/samba/private/domadmins /var/lib/samba/private/admins
 fi
-if [[ -f /var/lib/samba/private/admins ]]; then
-  while read -r admin; do
-    if [[ -n $admin ]] && id "$admin" >/dev/null 2>&1; then
-      usermod -aG admins "$admin"
-    fi
-  done < /var/lib/samba/private/admins
-fi
+# groups, memberships and primary groups come back from the state files that the hooks and
+# lanlord-user keep, so what was changed in user manager for domains is what the domain keeps
+lanlord-user restore
 lanlord-user sync
 
+# winbindd hands out ids for local and builtin groups made from windows; the domain still works
+# without it, so only nmbd and smbd decide whether the container lives
+if grep -q '^[[:space:]]*domain logons = yes' /etc/samba/smb.conf; then
+  winbindd --foreground --no-process-group --debug-stdout &
+fi
 nmbd --foreground --no-process-group --debug-stdout &
+nmbd_pid=$!
 smbd --foreground --no-process-group --debug-stdout &
+smbd_pid=$!
 # if either one stops, stop the container so docker restarts it
-wait -n
+wait -n "$nmbd_pid" "$smbd_pid"

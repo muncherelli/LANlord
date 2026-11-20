@@ -19,8 +19,10 @@
 #   users:
 #     - name: dana
 #       password: change-me
-#       admin: true          # a domain admin (member of Domain Admins)
-#       software_admin: true # may write to the software share without being a domain admin
+#       admin: true          # a domain admin (member of Domain Admins) when the account is created
+#       software_admin: true # may write to the software share without being a domain admin (when created)
+#     # settings decide new accounts, a password you set and state: absent. group membership of an
+#     # account that exists is whatever User Manager for Domains made of it; apply never reverts it
 #     - name: olduser
 #       state: absent
 - name: lanlord nt4 domain
@@ -97,6 +99,40 @@
         state: directory
         mode: "0751"
       when: nt4 is defined
+
+    # the domain's identity (its name, its sid) lives in secrets.tdb and passdb.tdb; changing the
+    # mode, the name or the netbios name starts a different domain, so keep a copy of the state first
+    - name: read the previous samba configuration
+      ansible.builtin.slurp:
+        src: "{{ state_dir }}/config/smb.conf"
+      register: old_conf
+      failed_when: false
+      when: nt4 is defined
+
+    - name: see whether the domain identity changes
+      ansible.builtin.set_fact:
+        nt4_identity_changed: >-
+          {{ old_conf.content is defined and (
+               (old_text | regex_findall('(?m)^\s*workgroup = (\S+)') | first | default('')) != nt4_name
+               or (old_text | regex_findall('(?m)^\s*netbios name = (\S+)') | first | default('')) != nt4_netbios_name
+               or ('domain logons = yes' in old_text) != (nt4_mode == 'domain')) }}
+      vars:
+        old_text: "{{ (old_conf.content | b64decode) if old_conf.content is defined else '' }}"
+      when: nt4 is defined
+
+    - name: snapshot samba's state before the domain identity changes
+      ansible.builtin.shell: |
+        set -eu
+        umask 077
+        [ -d lib ] || exit 0
+        docker stop {{ container }} >/dev/null 2>&1 || true
+        mkdir -p snapshots
+        tar -czf "snapshots/lib-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" lib
+        ls -1t snapshots/lib-*.tar.gz | tail -n +6 | xargs -r rm -f
+      args:
+        chdir: "{{ state_dir }}"
+      changed_when: true
+      when: nt4 is defined and nt4_identity_changed | bool
 
     - name: write the samba configuration
       ansible.builtin.template:
@@ -231,7 +267,8 @@
       changed_when: "'deleted' in user_removed.stdout"
       when: nt4 is defined
 
-    # nt4 and windows 9x run this at every logon; it needs dos line endings. your own scripts are
+    # every user's logon script (netlogon\users\<user>.bat, made by lanlord-user) sets %USERNAME%, which
+    # windows 9x does not, and runs this one; it needs dos line endings. your own scripts are
     # netlogon\logon.bat (everyone) and netlogon\<user>.bat (one user), which domain admins can edit
     - name: write the logon script
       ansible.builtin.copy:
@@ -244,8 +281,15 @@
         logon_lines:
           - '@echo off'
           - '{{ ("net use S: " ~ unc ~ "\software /persistent:no") if nt4.software | default(false) else "" }}'
+          - "{{ 'if not \"%OS%\"==\"Windows_NT\" net use H: /home' if nt4.roaming_profiles | default(false) else '' }}"
           - 'if exist {{ unc }}\netlogon\logon.bat call {{ unc }}\netlogon\logon.bat'
           - 'if exist {{ unc }}\netlogon\%USERNAME%.bat call {{ unc }}\netlogon\%USERNAME%.bat'
+      when: nt4 is defined and nt4_mode == 'domain'
+
+    # the logon wrappers of all users, and the software admins group
+    - name: sync the logon scripts and groups
+      ansible.builtin.command: "docker exec {{ container }} lanlord-user sync"
+      changed_when: false
       when: nt4 is defined and nt4_mode == 'domain'
 
     - name: list the accounts
