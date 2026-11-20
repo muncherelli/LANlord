@@ -1208,16 +1208,95 @@ fn upgrade(
     yes: bool,
     even_if_down: bool,
 ) -> Result<()> {
-    if !yes {
-        let typed = confirmed(
-            "this restarts the lanlord services, and restarting lanlord-operations interrupts any operation that is running (nothing is removed). type the host name to go on: ",
-            None,
-        )?;
-        if typed != host {
-            bail!("the host name does not match; nothing was changed");
+    // an unreadable login only means the root rule is not applied; the move itself still checks
+    let root = lanlord_core::ssh::Session::new(host)
+        .and_then(|session| lanlord_core::account::login_user(&session))
+        .map(|user| user.is_root)
+        .unwrap_or(false);
+    let key = paths::identity_path().filter(|path| path.exists());
+    upgrade_steps(
+        host,
+        yes,
+        root,
+        key.as_deref(),
+        &mut || match execute(host, &Operation::LoadDocument, &mut ask)? {
+            Reply::Document(document) => Ok(document.needs_move),
+            _ => bail!("the server answered something other than the settings"),
+        },
+        &mut |operation| execute(host, operation, &mut ask),
+        &mut |question| Ok(confirmed(question, None)?.eq_ignore_ascii_case("yes")),
+        &mut || {
+            if !yes {
+                let typed = confirmed(
+                    "this restarts the lanlord services, and restarting lanlord-operations interrupts any operation that is running (nothing is removed). type the host name to go on: ",
+                    None,
+                )?;
+                if typed != host {
+                    bail!("the host name does not match; nothing was changed");
+                }
+            }
+            lanlord_core::upgrade::run(host, &web, even_if_down, &mut ask, &mut print_upgrade)
+        },
+    )
+}
+
+/// the upgrade, with the check on the stored secrets first: when they are sealed to a key the
+/// gateway does not hold, the upgrade would fail at its last step after changing everything, so
+/// it is settled (or refused) before `go` (the first change) is called. `needs_move` reads the
+/// gateway without writing; `key` is the old client key on this machine, if there is one.
+/// with --yes the move is done without asking: the upgrade cannot finish without it, the move
+/// only seals the secrets to the gateway's own key, and the old key is erased only after the
+/// gateway has confirmed that it reads them.
+fn upgrade_steps(
+    host: &str,
+    yes: bool,
+    root: bool,
+    key: Option<&std::path::Path>,
+    needs_move: &mut dyn FnMut() -> Result<bool>,
+    run: &mut dyn FnMut(
+        &lanlord_core::operations::Operation,
+    ) -> Result<lanlord_core::operations::Reply>,
+    agree: &mut dyn FnMut(&str) -> Result<bool>,
+    go: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
+    let command = lanlord_core::upgrade::move_command(host);
+    // a gateway that cannot answer the check is not a reason to stop: the upgrade's own first
+    // step says what is wrong with it, and its last step names the command if it is this
+    let moving = match needs_move() {
+        Ok(moving) => moving,
+        Err(error) => {
+            eprintln!("could not check the stored secrets ({error:#}); going on");
+            false
         }
+    };
+    if moving {
+        let Some(path) = key else {
+            bail!(
+                "the stored secrets on {host} are sealed to a key the gateway does not hold, and \
+                 this machine has no old key; nothing was changed. the machine that saved the \
+                 settings there before has it: run `{command}` from an administrator's own \
+                 account on that machine, then upgrade again"
+            );
+        };
+        if root {
+            bail!(
+                "the stored secrets on {host} are sealed to a key the gateway does not hold; \
+                 moving them cannot be done as root; nothing was changed. run `{command}`, \
+                 then upgrade again"
+            );
+        }
+        println!("the stored secrets on {host} are sealed to the old key on this machine");
+        if !yes
+            && !agree(&format!(
+                "move them to the gateway's key first (the old key at {} is erased afterwards)? type yes: ",
+                path.display()
+            ))?
+        {
+            bail!("nothing was changed; run `{command}` and then upgrade again");
+        }
+        move_key(path, run)?;
     }
-    lanlord_core::upgrade::run(host, &web, even_if_down, &mut ask, &mut print_upgrade)
+    go()
 }
 
 /// the host name typed at a prompt, or the one given with --confirm.
@@ -2293,6 +2372,105 @@ mod tests {
         assert_eq!(sent, [true, false]);
         assert!(!file.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// one run of `upgrade_steps` with a fake gateway; the log says what was called.
+    fn preflight(
+        needs: bool,
+        key: bool,
+        root: bool,
+        yes: bool,
+        answer: bool,
+    ) -> (Result<()>, Vec<String>, bool) {
+        let dir = std::env::temp_dir().join(format!(
+            "lanlord-preflight-{}-{needs}{key}{root}{yes}{answer}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("identity");
+        std::fs::write(&file, "AGE-SECRET-KEY-1TEST").unwrap();
+        let log = std::cell::RefCell::new(Vec::new());
+        let moved = std::cell::Cell::new(false);
+        let result = super::upgrade_steps(
+            "root@192.0.2.9",
+            yes,
+            root,
+            key.then_some(file.as_path()),
+            &mut || {
+                log.borrow_mut().push("check".to_string());
+                Ok(needs && !moved.get())
+            },
+            &mut |operation| {
+                use lanlord_core::operations::{Operation, Reply};
+                Ok(match operation {
+                    Operation::MoveSecrets { .. } => {
+                        log.borrow_mut().push("move".to_string());
+                        moved.set(true);
+                        Reply::Done
+                    }
+                    _ => Reply::Document(Default::default()),
+                })
+            },
+            &mut |_| {
+                log.borrow_mut().push("ask".to_string());
+                Ok(answer)
+            },
+            &mut || {
+                log.borrow_mut().push("upgrade".to_string());
+                Ok(())
+            },
+        );
+        let erased = !file.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        (result, log.into_inner(), erased)
+    }
+
+    #[test]
+    fn the_upgrade_goes_straight_on_when_nothing_needs_moving() {
+        let (result, log, erased) = preflight(false, true, false, false, false);
+        result.unwrap();
+        assert_eq!(log, ["check", "upgrade"]);
+        assert!(!erased);
+    }
+
+    #[test]
+    fn a_move_is_done_first_when_the_key_is_here_and_the_user_agrees() {
+        let (result, log, erased) = preflight(true, true, false, false, true);
+        result.unwrap();
+        assert_eq!(log, ["check", "ask", "move", "upgrade"]);
+        assert!(erased);
+    }
+
+    #[test]
+    fn yes_moves_without_asking_and_a_no_stops_before_any_change() {
+        let (result, log, _) = preflight(true, true, false, true, false);
+        result.unwrap();
+        assert_eq!(log, ["check", "move", "upgrade"]);
+        let (result, log, erased) = preflight(true, true, false, false, false);
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("nothing was changed"), "{message}");
+        assert!(message.contains("lanlord move-secrets <your-admin>@192.0.2.9"));
+        assert_eq!(log, ["check", "ask"]);
+        assert!(!erased);
+    }
+
+    #[test]
+    fn without_the_old_key_here_the_upgrade_stops_before_any_change() {
+        let (result, log, _) = preflight(true, false, false, true, true);
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("nothing was changed"), "{message}");
+        assert!(message.contains("`lanlord move-secrets <your-admin>@192.0.2.9`"));
+        assert_eq!(log, ["check"]);
+    }
+
+    #[test]
+    fn a_root_target_needing_a_move_stops_with_the_command_before_any_change() {
+        let (result, log, erased) = preflight(true, true, true, true, true);
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(message.contains("as root"), "{message}");
+        assert!(message.contains("`lanlord move-secrets <your-admin>@192.0.2.9`"));
+        assert_eq!(log, ["check"]);
+        assert!(!erased);
     }
 
     #[cfg(unix)]

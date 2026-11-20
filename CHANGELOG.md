@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `lanlord upgrade` checks first whether the stored secrets are sealed to an old client key, and settles it (or stops with the exact `lanlord move-secrets` command) before changing anything, instead of failing at the last step
 - the web UI draws at the screen's full frame rate again, so dragging windows is smooth (it was capped at 30 frames a second in 0.1.4)
 
 ## [0.1.4] - 2026-11-19
