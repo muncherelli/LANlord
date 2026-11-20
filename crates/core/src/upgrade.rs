@@ -515,12 +515,13 @@ struct MigrateFailed {
 /// ask the gateway for a stamp and have the stored files migrated under it.
 fn migrate_stored(
     session: &Session,
+    host: &str,
     ask: AskPassword,
     migrate: Migrate,
     on_line: &mut dyn FnMut(&str),
 ) -> std::result::Result<(), MigrateFailed> {
     let failed = |error: anyhow::Error, stamp: Option<String>| MigrateFailed {
-        message: format!("{error:#}"),
+        message: sealed_hint(&format!("{error:#}"), host),
         stamp,
     };
     let admin = login_user(session).map_err(|e| failed(e, None))?;
@@ -538,6 +539,25 @@ fn migrate_stored(
         on_line(&line);
     }
     Ok(())
+}
+
+/// the command that moves the old client key to the gateway at `host` (given as `user@name` or
+/// a bare name): it has to run from an administrator's own account, never root's.
+pub fn move_command(host: &str) -> String {
+    let name = host.rsplit_once('@').map_or(host, |(_, name)| name);
+    format!("lanlord move-secrets <your-admin>@{name}")
+}
+
+/// the hint added when the migration finds the secrets sealed to another key.
+fn sealed_hint(message: &str, host: &str) -> String {
+    if message.contains(crate::crypto::NOT_OUR_KEY) {
+        format!(
+            "{message}; run `{}` and then upgrade again",
+            move_command(host)
+        )
+    } else {
+        message.to_string()
+    }
 }
 
 const NOT_REVERTED: &str = "the units and settings that the upgrade applied were not reverted";
@@ -683,7 +703,7 @@ pub(crate) fn run_with(
     // as they are; the new binary reads the old formats all the same)
     if applied.is_ok() {
         step(events, Step::Migrate, |line| {
-            let migrated = migrate_stored(session, &mut *ask, migrate, line);
+            let migrated = migrate_stored(session, &options.host, &mut *ask, migrate, line);
             let Err(error) = migrated else {
                 return Ok(());
             };
@@ -991,6 +1011,22 @@ esac"##
             outcomes(&events),
             [(Step::Check, "started"), (Step::Check, "failed")]
         );
+    }
+
+    #[test]
+    fn a_sealed_secrets_failure_names_the_command_to_run() {
+        use crate::upgrade::{move_command, sealed_hint};
+        assert_eq!(
+            move_command("root@gw.example.net"),
+            "lanlord move-secrets <your-admin>@gw.example.net"
+        );
+        assert_eq!(move_command("gw"), "lanlord move-secrets <your-admin>@gw");
+        let said = sealed_hint(crate::crypto::NOT_OUR_KEY, "root@192.0.2.7");
+        assert!(
+            said.contains("`lanlord move-secrets <your-admin>@192.0.2.7`"),
+            "{said}"
+        );
+        assert_eq!(sealed_hint("something else", "gw"), "something else");
     }
 
     #[test]
