@@ -36,6 +36,7 @@ pub mod server;
 pub mod settings;
 pub mod signin;
 pub mod ssh_access;
+pub mod sshauth;
 pub mod stored;
 pub mod update;
 pub mod users;

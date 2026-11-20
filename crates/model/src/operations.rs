@@ -27,6 +27,7 @@ use crate::secret::Secret;
 use crate::server::ServerFacts;
 use crate::settings::Document;
 use crate::ssh_access::Change as SshChange;
+use crate::sshauth::SshAuthInfo;
 use crate::users::Change as UserChangeInMemory;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +90,26 @@ pub enum Operation {
     RootSshState,
     /// set how root may sign in over ssh.
     SetRootSsh { access: RootSsh },
+    /// whether sshd takes passwords, and the administrator accounts' ssh keys.
+    SshAuthState,
+    /// turn ssh password sign-in on or off. turning it off is refused while an administrator
+    /// would be left with no key, unless `confirmed`.
+    SetPasswordLogin {
+        passwords: bool,
+        #[serde(default)]
+        confirmed: bool,
+    },
+    /// add a public key to the authorized keys of an administrator account.
+    AddAdminKey { user: String, key: String },
+    /// remove a public key from the authorized keys of an administrator. `key` is the key id
+    /// (type and base64 field, see `sshauth::key_id`), whatever options the line has. removing
+    /// the last key while passwords are off is refused unless `confirmed`.
+    RemoveAdminKey {
+        user: String,
+        key: String,
+        #[serde(default)]
+        confirmed: bool,
+    },
     /// the dhcp leases the gateway has handed out.
     Leases,
     /// the names of the logon scripts in the netlogon share.
@@ -169,7 +190,11 @@ impl Operation {
             Operation::SetupFirstAdmin { .. } => Need::manage(Area::Users),
             Operation::RootSshState => Need::view(Area::Users),
             // changes what the whole server's sshd allows: administrators only
-            Operation::SetRootSsh { .. } => Need::Admin,
+            Operation::SetRootSsh { .. }
+            | Operation::SshAuthState
+            | Operation::SetPasswordLogin { .. }
+            | Operation::AddAdminKey { .. }
+            | Operation::RemoveAdminKey { .. } => Need::Admin,
             Operation::Leases => Need::view(Area::Network),
             Operation::LogonScripts
             | Operation::ReadLogon { .. }
@@ -351,6 +376,7 @@ pub enum Reply {
     /// what the server can and cannot do, from `lanlord doctor`.
     Doctor(Report),
     RootSsh(RootSshInfo),
+    SshAuth(SshAuthInfo),
     /// first-run setup is done; `note` says what did not go as asked (root's ssh access could not
     /// be set, say) and is `None` when everything did.
     SetupDone {
@@ -472,6 +498,20 @@ mod tests {
             Operation::SetRootSsh {
                 access: RootSsh::Off,
             },
+            Operation::SshAuthState,
+            Operation::SetPasswordLogin {
+                passwords: false,
+                confirmed: true,
+            },
+            Operation::AddAdminKey {
+                user: "dana".into(),
+                key: "ssh-ed25519 AAAA example".into(),
+            },
+            Operation::RemoveAdminKey {
+                user: "dana".into(),
+                key: "ssh-ed25519 AAAA".into(),
+                confirmed: true,
+            },
             Operation::Leases,
             Operation::LogonScripts,
             Operation::ReadLogon {
@@ -523,7 +563,7 @@ mod tests {
                 key: "ssh-ed25519 AAAA example".into(),
             },
             Operation::RemoveMyKey {
-                key: "ssh-ed25519 AAAA example".into(),
+                key: "ssh-ed25519 AAAA".into(),
             },
             Operation::UpdateProfile {
                 profile: Profile {
@@ -607,6 +647,10 @@ mod tests {
             Operation::AddMyKey { .. } => 40,
             Operation::RemoveMyKey { .. } => 41,
             Operation::ChangeSshAccess { .. } => 42,
+            Operation::SshAuthState => 43,
+            Operation::SetPasswordLogin { .. } => 44,
+            Operation::AddAdminKey { .. } => 45,
+            Operation::RemoveAdminKey { .. } => 46,
         }
     }
 
@@ -618,7 +662,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 43;
+    const VARIANTS: usize = 47;
 
     #[test]
     fn every_operation_says_what_it_needs() {
@@ -688,14 +732,20 @@ mod tests {
     #[test]
     fn a_person_edits_only_their_own_ssh_keys() {
         let key: String = "ssh-ed25519 AAAA example".into();
+        // a key is removed by its id, whatever options its line has
+        let line = r#"from="192.0.2.7",command="true" ssh-ed25519 AAAA example"#;
+        let id = crate::sshauth::key_id(line).unwrap();
         for operation in [
             Operation::MyKeys,
             Operation::AddMyKey { key: key.clone() },
-            Operation::RemoveMyKey { key: key.clone() },
+            Operation::RemoveMyKey { key: id },
         ] {
             assert_eq!(operation.requires(), Need::SelfOnly, "{operation:?}");
             assert_eq!(operation.validate(), Ok(()));
         }
+        assert!(Operation::RemoveMyKey { key: line.into() }
+            .validate()
+            .is_err());
         let bad = Operation::AddMyKey { key: "nope".into() };
         assert_eq!(bad.validate().unwrap_err().field, "key");
         // the wire format of an older client, without a key, still reads

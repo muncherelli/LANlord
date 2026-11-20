@@ -1017,6 +1017,16 @@ pub fn ssh_key(text: &str) -> Check {
     )
 }
 
+/// a key id as `sshauth::key_id` writes it: the type and the base64 field, nothing else.
+pub fn ssh_key_id(text: &str) -> Check {
+    let id = crate::sshauth::key_id(text);
+    flag(
+        id.as_deref() == Some(text),
+        "must be the key's type and base64 field, such as ssh-ed25519 AAAA...",
+    )?;
+    ssh_key(text)
+}
+
 fn check_change(change: &UserChange) -> Result<(), Invalid> {
     match change {
         UserChange::SetPassword { name, password } => {
@@ -1146,6 +1156,14 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         Operation::ChangeSshAccess { change } => change
             .check(0)
             .map_err(|(field, reason)| Invalid::new(field, reason)),
+        Operation::AddAdminKey { user, key } => {
+            named("user", login_name, user)?;
+            named("key", ssh_key, key)
+        }
+        Operation::RemoveAdminKey { user, key, .. } => {
+            named("user", login_name, user)?;
+            named("key", ssh_key_id, key)
+        }
         Operation::ChangeNetworks { edit } => check_network_edit(edit),
         Operation::ResetMachine { name } => named("name", machine_name, name),
         Operation::CreateAdmin {
@@ -1177,7 +1195,8 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             key.as_deref()
                 .map_or(Ok(()), |key| named("ssh_key", ssh_key, key))
         }
-        Operation::AddMyKey { key } | Operation::RemoveMyKey { key } => named("key", ssh_key, key),
+        Operation::AddMyKey { key } => named("key", ssh_key, key),
+        Operation::RemoveMyKey { key } => named("key", ssh_key_id, key),
         Operation::ReadLogon { name } => flag(
             crate::logon::valid_script_name(name),
             "is not a script name",
@@ -2135,5 +2154,21 @@ web-proxy:
         for operation in fine {
             assert_eq!(operation.validate(), Ok(()), "{operation:?}");
         }
+    }
+
+    #[test]
+    fn a_key_is_removed_by_its_id_whatever_options_its_line_has() {
+        let remove = |key: &str| Operation::RemoveAdminKey {
+            user: "dana".into(),
+            key: key.into(),
+            confirmed: false,
+        };
+        let line = r#"from="192.0.2.7",command="true" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 dana@desk"#;
+        let id = crate::sshauth::key_id(line).unwrap();
+        assert_eq!(remove(&id).validate(), Ok(()));
+        // the listed line itself is not an id
+        assert!(remove(line).validate().is_err());
+        assert!(remove("ssh-ed25519 AAAA*").validate().is_err());
+        assert!(remove("").validate().is_err());
     }
 }

@@ -2,7 +2,7 @@
 //! administrator chooses a level, checked with `sshd -t` and rolled back when sshd would not take
 //! it. sshd is left alone until then.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use lanlord_model::rootssh::{RootSsh, RootSshInfo};
 
 use crate::account::login_user;
@@ -33,20 +33,24 @@ impl Paths<'static> {
 }
 
 /// the sh script that reads the state: whether sshd reads the drop-in folder and what the drop-in
-/// holds. nothing in it needs root.
-fn read_script(base: &str) -> String {
+/// `file` (a name in `sshd_config.d`) holds. nothing in it needs root.
+pub(crate) fn read_dropin_script(base: &str, file: &str) -> String {
     format!(
         r#"if grep -Eqi '^[[:space:]]*Include[[:space:]].*sshd_config\.d' '{base}/sshd_config' 2>/dev/null; then
   echo "dropins=yes"
 else
   echo "dropins=no"
 fi
-if [ -r '{base}/sshd_config.d/10-lanlord-root.conf' ]; then
+if [ -r '{base}/sshd_config.d/{file}' ]; then
   echo "file:"
-  cat '{base}/sshd_config.d/10-lanlord-root.conf'
+  cat '{base}/sshd_config.d/{file}'
 fi
 "#
     )
+}
+
+fn read_script(base: &str) -> String {
+    read_dropin_script(base, "10-lanlord-root.conf")
 }
 
 /// read what the server's sshd setting is, as `read_script` printed it.
@@ -87,37 +91,61 @@ pub fn passwords_refused(session: &Session, ask: AskPassword) -> Result<bool> {
     Ok(out.trim() == "no")
 }
 
-/// the sh script (run as root) that sets `level`: write the drop-in, ask sshd to check its
-/// configuration and say what it would use for root, reload it, and put things back the way they
-/// were when any step says no. the exit status says which step: 3 sshd cannot take a drop-in,
-/// 4 `sshd -t` refused it, 5 sshd would not use it, 6 the reload failed.
-pub(crate) fn apply_script(level: RootSsh, paths: &Paths) -> String {
+/// one sshd drop-in lanlord writes, and what sshd must say about it afterwards.
+pub(crate) struct Dropin<'a> {
+    /// the file's name in `sshd_config.d`.
+    pub file: &'a str,
+    /// what the person is told it is about, for the messages ("root's ssh access").
+    pub what: &'a str,
+    /// the file's contents, ending in a newline.
+    pub content: &'a str,
+    /// the keyword `sshd -T` is asked about (`PermitRootLogin`) and the value it must give.
+    pub keyword: &'a str,
+    pub expect: &'a str,
+    /// shell run on the value sshd gave, to read an old name as the new one.
+    pub normalize: &'a str,
+    /// what is said when it worked.
+    pub say: &'a str,
+}
+
+/// the sh script (run as root) that writes the drop-in: ask sshd to check its configuration and
+/// say what it would use, reload it, and put things back the way they were when any step says no.
+/// the exit status says which step: 3 sshd cannot take a drop-in, 4 `sshd -t` refused it, 5 sshd
+/// would not use it, 6 the reload failed.
+pub(crate) fn dropin_script(spec: &Dropin, paths: &Paths) -> String {
     let Paths {
         base,
         find_sshd,
         reload,
     } = paths;
-    let content = level.dropin();
-    let directive = level.directive();
-    let say = level.explain();
+    let Dropin {
+        file,
+        what,
+        content,
+        keyword,
+        expect,
+        normalize,
+        say,
+    } = spec;
+    let lower = keyword.to_lowercase();
     format!(
         r#"set -eu
 base='{base}'
 dir="$base/sshd_config.d"
-file="$dir/10-lanlord-root.conf"
+file="$dir/{file}"
 {find_sshd}
 if [ -z "${{sshd:-}}" ] || [ ! -x "$sshd" ]; then
   echo "sshd was not found on this server; nothing was changed" >&2; exit 3
 fi
 if ! grep -Eqi '^[[:space:]]*Include[[:space:]].*sshd_config\.d' "$base/sshd_config" 2>/dev/null; then
-  echo "this server's sshd does not read $dir (there is no Include line in $base/sshd_config), so root's ssh access cannot be set here; nothing was changed" >&2
+  echo "this server's sshd does not read $dir (there is no Include line in $base/sshd_config), so {what} cannot be set here; nothing was changed" >&2
   exit 3
 fi
 mkdir -p "$dir"
-new=$(mktemp "$dir/.lanlord-root.XXXXXX")
+new=$(mktemp "$dir/.lanlord-dropin.XXXXXX")
 old=
 if [ -e "$file" ]; then
-  old=$(mktemp "$dir/.lanlord-root-old.XXXXXX")
+  old=$(mktemp "$dir/.lanlord-dropin-old.XXXXXX")
   cp -p "$file" "$old"
 fi
 back() {{
@@ -136,12 +164,11 @@ if ! out=$("$sshd" -t 2>&1); then
   echo "sshd refused the change, so it was rolled back: $out" >&2
   exit 4
 fi
-seen=$("$sshd" -T 2>/dev/null | awk 'tolower($1)=="permitrootlogin" {{ print $2; exit }}' || true)
-# older openssh prints the keys-only level under its former name
-if [ "$seen" = without-password ]; then seen=prohibit-password; fi
-if [ "$seen" != '{directive}' ]; then
+seen=$("$sshd" -T 2>/dev/null | awk 'tolower($1)=="{lower}" {{ print $2; exit }}' || true)
+{normalize}
+if [ "$seen" != '{expect}' ]; then
   back
-  echo "sshd would not use the change (it reads PermitRootLogin as '${{seen:-unknown}}', probably set earlier in $base/sshd_config), so it was rolled back" >&2
+  echo "sshd would not use the change (it reads {keyword} as '${{seen:-unknown}}', probably set earlier in $base/sshd_config), so it was rolled back" >&2
   exit 5
 fi
 if ! reload >/dev/null 2>&1; then
@@ -152,6 +179,24 @@ fi
 if [ -n "$old" ]; then rm -f "$old"; fi
 echo '{say}'
 "#
+    )
+}
+
+/// the script that sets root's ssh access to `level`.
+pub(crate) fn apply_script(level: RootSsh, paths: &Paths) -> String {
+    let content = level.dropin();
+    dropin_script(
+        &Dropin {
+            file: "10-lanlord-root.conf",
+            what: "root's ssh access",
+            content: &content,
+            keyword: "PermitRootLogin",
+            expect: level.directive(),
+            // older openssh prints the keys-only level under its former name
+            normalize: "if [ \"$seen\" = without-password ]; then seen=prohibit-password; fi",
+            say: level.explain(),
+        },
+        paths,
     )
 }
 
@@ -175,16 +220,18 @@ pub fn apply(session: &Session, level: RootSsh, ask: AskPassword) -> Result<()> 
             );
             Ok(())
         }
-        Err(e) => {
-            // the script's own message is the useful part of the error
-            let text = format!("{e:#}");
-            match text.split_once(": ") {
-                Some((head, message)) if head.starts_with("command exited with status") => {
-                    bail!("{}", message.trim())
-                }
-                _ => Err(e),
-            }
+        Err(e) => Err(script_message(e)),
+    }
+}
+
+/// the script's own message is the useful part of the error of a failed script.
+pub(crate) fn script_message(e: anyhow::Error) -> anyhow::Error {
+    let text = format!("{e:#}");
+    match text.split_once(": ") {
+        Some((head, message)) if head.starts_with("command exited with status") => {
+            anyhow::anyhow!("{}", message.trim())
         }
+        _ => e,
     }
 }
 

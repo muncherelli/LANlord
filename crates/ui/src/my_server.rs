@@ -2,7 +2,7 @@
 //! draws them with egui.
 
 use eframe::egui::{self, Ui};
-pub use lanlord_app::my_server::{Msg, MyServer, ADVANCED, COMPATIBILITY, GENERAL};
+pub use lanlord_app::my_server::{Msg, MyServer, ADVANCED, COMPATIBILITY, GENERAL, SSH};
 use lanlord_app::services::Services;
 
 use crate::view;
@@ -19,16 +19,13 @@ pub fn show(window: &mut MyServer, ui: &mut Ui, services: &Services, host: Optio
     }
 }
 
-/// draw the confirmation box, over everything while a purge is being asked for or run.
+/// draw the box over everything while a purge or an ssh question is being asked or run.
 pub fn dialog(window: &mut MyServer, ctx: &egui::Context, services: &Services) {
     window.refresh_purge();
     let Some(dialog) = window.dialog(services) else {
         return;
     };
-    let host = window
-        .purge()
-        .map(|p| p.host().to_string())
-        .unwrap_or_default();
+    let host = window.dialog_host();
     if let Some(msg) = view::dialog(ctx, &dialog) {
         window.update(msg, services, &host);
     }
