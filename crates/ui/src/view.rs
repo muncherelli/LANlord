@@ -554,11 +554,13 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         Node::HeldError { text, partial } => {
             // hidden, not removed, while a field is being typed in: the room stays so the
             // fields below do not jump when the focus leaves
-            let typing = ui.ctx().memory(|m| m.focused()).is_some_and(|id| {
-                ui.ctx()
-                    .read_response(id)
-                    .is_some_and(|r| ui.clip_rect().intersects(r.rect))
-            }) && ui.ctx().egui_wants_keyboard_input();
+            let focused = ui.ctx().memory(|m| m.focused());
+            let typing = ui.ctx().egui_wants_keyboard_input()
+                && focused.is_some_and(|id| {
+                    ui.ctx()
+                        .read_response(id)
+                        .is_some_and(|r| ui.clip_rect().intersects(r.rect))
+                });
             let colour = if *partial && typing {
                 egui::Color32::TRANSPARENT
             } else {
@@ -1094,7 +1096,9 @@ mod tests {
                 edit: Box::new(|t| t),
                 enter: None,
             }];
-            nodes.extend(lanlord_app::view::address_errors(&errors, "range", text));
+            // like a real panel, the error exists only once there is something to complain of
+            let errors = if text.len() >= 3 { &errors[..] } else { &[] };
+            nodes.extend(lanlord_app::view::address_errors(errors, "range", text));
             nodes
         };
         let mut text = String::new();
@@ -1104,10 +1108,14 @@ mod tests {
         for ch in "192.0.2.10".chars() {
             let (shown, sent) = drawn(
                 &ctx,
-                &page(&text, true),
+                &page(&text, false),
                 vec![egui::Event::Text(ch.to_string())],
             );
             assert!(!shown, "error at {text:?} + {ch:?}");
+            assert!(
+                ctx.memory(|m| m.focused()).is_some(),
+                "the field keeps the keyboard at {text:?} + {ch:?}"
+            );
             text = sent.expect("the keystroke is an edit");
             // the text is never rewritten: it is exactly what was typed
             assert!(text.ends_with(ch));
@@ -1126,5 +1134,41 @@ mod tests {
         text.push('x');
         let (shown, _) = drawn(&ctx, &page(&text, true), vec![]);
         assert!(shown);
+    }
+
+    #[test]
+    fn a_field_keeps_the_keyboard_when_its_page_is_measured_again() {
+        let ctx = egui::Context::default();
+        let page = |text: &str, focus: bool, err: bool| -> Vec<Node<String>> {
+            let mut body = vec![Node::Input {
+                value: text.to_string(),
+                size: Size::Points(120.0),
+                hint: String::new(),
+                focus,
+                edit: Box::new(|t| t),
+                enter: None,
+            }];
+            if err {
+                body.push(Node::FieldError("bad".into()));
+            }
+            let key = lanlord_app::view::fingerprint(&body);
+            vec![Node::SameSize {
+                key,
+                body,
+                others: vec![],
+            }]
+        };
+        for _ in 0..2 {
+            drawn(&ctx, &page("1", false, false), vec![]);
+        }
+        for event in testkit::click(Pos2::new(40.0, 14.0)) {
+            drawn(&ctx, &page("1", false, false), vec![event]);
+        }
+        assert!(ctx.memory(|m| m.focused()).is_some(), "clicked");
+        drawn(&ctx, &page("1", false, false), vec![]);
+        assert!(ctx.memory(|m| m.focused()).is_some(), "before");
+        drawn(&ctx, &page("1", false, true), vec![]);
+        // the page is measured again (its key changed) and the field is still the one typed in
+        assert!(ctx.memory(|m| m.focused()).is_some(), "after error appears");
     }
 }

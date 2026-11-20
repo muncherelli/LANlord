@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- address fields (the NT4 Domain address on the Components networks page, the DHCP range in DNS) no longer call an address wrong while you are still typing it: `1` or `10.0.` stay quiet while the field has the keyboard, and the error shows once you leave the field with a bad value; Next and Save stay off until it is right
+- address fields (the NT4 Domain address on the Components networks page, the DHCP range in DNS) no longer call an address wrong while you are still typing it: `1` or `10.0.` stay quiet while the field has the keyboard, and the error shows once you leave the field with a bad value; the field also keeps the keyboard when the error line appears; Next and Save stay off until it is right
 - NT 4.0 machines can join the domain with an administrator's name and password, creating their own computer account (the Samba in the nt4 image is patched to keep the session key of NT4's logon)
 - `lanlord upgrade` checks first whether the stored secrets are sealed to an old client key, and settles it (or stops with the exact `lanlord move-secrets` command) before changing anything, instead of failing at the last step
 - resizing a window by its edge or corner no longer flickers: the frame is drawn where its contents are and follows the pointer in the same frame, and dragging the left or top edge past the window's least size holds the opposite edge still instead of sliding the window

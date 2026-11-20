@@ -383,7 +383,13 @@ impl DnsPanel {
                 "dns.dhcp.range[1]",
                 &d.range_end,
             ));
-            dhcp.extend(view::field_errors(errors, "dns.dhcp.range"));
+            // only the start-after-end line: the address lines above are the fields' own
+            let order: Vec<ValidationError> = errors
+                .iter()
+                .filter(|e| e.path == "dns.dhcp.range")
+                .cloned()
+                .collect();
+            dhcp.extend(view::field_errors(&order, "dns.dhcp.range"));
             dhcp.push(edit("Lease time", &d.lease, Msg::Lease));
             dhcp.extend(view::field_errors(errors, "dns.dhcp.lease"));
         }
@@ -808,6 +814,46 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// the nodes with the contents of groups and labelled rows lifted out.
+    fn flat(nodes: Vec<Node<Msg>>) -> Vec<Node<Msg>> {
+        nodes
+            .into_iter()
+            .flat_map(|n| match n {
+                Node::Group { body, .. } | Node::Labelled { body, .. } => flat(body),
+                other => vec![other],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_range_start_typed_digit_by_digit_is_held_until_it_is_whole() {
+        let (mut panel, _) = loaded(TWO);
+        let services = Services::new(std::sync::Arc::new(Fake::new()), crate::wake::Wake::none());
+        let mut typed = String::new();
+        for ch in "192.0.2.150".chars() {
+            typed.push(ch);
+            panel.update(Msg::RangeStart(typed.clone()), &services, "a@b");
+            let page = flat(panel.settings_page(&panel.errors()));
+            // no error line that is shown whatever the focus is, and every held one is partial
+            assert!(
+                !page.iter().any(|n| matches!(n, Node::FieldError(_))),
+                "{typed:?}"
+            );
+            let valid = typed.parse::<Ipv4Addr>().is_ok();
+            assert!(
+                page.iter()
+                    .all(|n| !matches!(n, Node::HeldError { partial: false, .. }) || valid),
+                "{typed:?}"
+            );
+        }
+        // text that can never become an address is not held
+        panel.update(Msg::RangeStart("192.0.x".into()), &services, "a@b");
+        let page = flat(panel.settings_page(&panel.errors()));
+        assert!(page
+            .iter()
+            .any(|n| matches!(n, Node::HeldError { partial: false, .. })));
     }
 
     #[test]

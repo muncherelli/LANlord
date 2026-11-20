@@ -127,7 +127,10 @@ pub fn same_size<R>(
     let ppp = ctx.pixels_per_point();
     let kept: Option<(u64, f32, f32, usize, f32)> = ctx.data(|d| d.get_temp(id));
     let tallest = match kept {
-        Some((k, w, p, n, tallest)) if (k, w, p, n) == (key, width, ppp, count) => tallest,
+        Some((k, w, p, n, tallest)) if (k, w, p, n) == (key, width, ppp, count) => {
+            keep_ids(ui, count);
+            tallest
+        }
         _ => {
             let tallest = measure_pages(ui, count, width, &mut page)
                 .iter()
@@ -372,6 +375,13 @@ pub(crate) fn measure_passes(ctx: &egui::Context) -> u32 {
         .unwrap_or(0)
 }
 
+/// measuring takes one id from `ui` for each page, so the widgets drawn after it get other ids
+/// than on a frame that did not measure, and the field being typed in loses the keyboard. a
+/// frame that does not measure takes the same ids without drawing.
+fn keep_ids(ui: &mut Ui, count: usize) {
+    ui.skip_ahead_auto_ids(count);
+}
+
 /// lay every page out once, unseen, to learn how big each is. the room a window lends is set
 /// aside meanwhile, so measuring takes none of it.
 fn measure_pages<R>(
@@ -470,6 +480,7 @@ pub fn tabs<R>(
                     && k.ppp == ppp
                     && k.heights.len() == labels.len() =>
             {
+                keep_ids(ui, labels.len());
                 k
             }
             _ => {
