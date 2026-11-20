@@ -42,6 +42,7 @@ on:
       - ansible/playbooks/dns/image/**
       - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
+      - tools/test-nt4-join.sh
       - .github/images.json
   pull_request:
     paths:
@@ -49,6 +50,7 @@ on:
       - ansible/playbooks/dns/image/**
       - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
+      - tools/test-nt4-join.sh
       - .github/images.json
   workflow_dispatch:
     inputs:
@@ -219,7 +221,7 @@ jobs:
       # a nt4-style join (bare ntlmv1 smb1 logon, machine account password over samr) must work
       - name: nt4 join regression test
         if: matrix.name == 'nt4-server-components' && matrix.arch == 'amd64'
-        run: docker run --rm -v "$PWD/${{ matrix.dir }}/test-join.sh:/test-join.sh:ro" nt4-build:test sh /test-join.sh
+        run: docker run --rm -v "$PWD/tools/test-nt4-join.sh:/test-join.sh:ro" nt4-build:test sh /test-join.sh
       # only proves that the image builds on this architecture
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:

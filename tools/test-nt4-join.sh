@@ -73,5 +73,6 @@ rpc 'createdomuser ws1$'
 out=$(rpc "setuserinfo2 ws1\$ 24 $pw" 2>&1) || { echo "FAIL: $out"; exit 1; }
 case "$out" in
   *NT_STATUS*) echo "FAIL: $out"; exit 1 ;;
+  *) ;;
 esac
 echo "ok: machine account created and its password set over a bare ntlmv1 session"
