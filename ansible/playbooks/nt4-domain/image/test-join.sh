@@ -21,6 +21,8 @@ cat > "$work/smb.conf" <<EOF
    server min protocol = NT1
    ntlm auth = ntlmv1-permitted
    lanman auth = no
+   # nt4 does not ask for extended security, so the server must be able to do without it
+   use spnego = no
    security = user
    encrypt passwords = yes
    map to guest = never
