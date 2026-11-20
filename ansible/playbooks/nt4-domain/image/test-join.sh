@@ -5,7 +5,9 @@
 # a computer account and set its password. without the patch the password set fails with
 # NT_STATUS_NO_USER_SESSION_KEY.
 set -eu
-root=/out/usr
+# samba finds its helper daemons (samba-dcerpcd and the rpcd_* servers) at the compiled-in paths
+cp -a /out/usr/. /usr/
+root=/usr
 export PATH="$root/bin:$root/sbin:$PATH" LD_LIBRARY_PATH="$root/lib/samba:$root/lib"
 work=$(mktemp -d)
 pw='Passw0rd-example'
