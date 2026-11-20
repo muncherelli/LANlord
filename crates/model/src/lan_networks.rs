@@ -446,7 +446,7 @@ fn dns_errors(
         records: network.records.clone(),
         dhcp: network.dhcp.clone(),
     };
-    dns.validate(subnet, ip)
+    dns.validate(&[(*subnet, ip)])
         .into_iter()
         .filter(|error| error.path != "dns.zone")
         .map(|error| fail(error.path.replacen("dns", path, 1), error.message))

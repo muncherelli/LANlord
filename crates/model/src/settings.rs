@@ -1016,14 +1016,23 @@ mod tests {
         );
         let nets = [(subnet(), GATEWAY), second];
         let mut dns = good();
-        dns.records = ["172.16.120.9", "198.51.100.9", "203.0.113.9", "198.51.100.1"]
+        dns.records = [
+            "172.16.120.9",
+            "198.51.100.9",
+            "203.0.113.9",
+            "198.51.100.1",
+        ]
+        .iter()
+        .map(|a| Record {
+            name: "x".into(),
+            address: a.to_string(),
+        })
+        .collect();
+        let found: Vec<String> = dns
+            .validate(&nets)
             .iter()
-            .map(|a| Record {
-                name: "x".into(),
-                address: a.to_string(),
-            })
+            .map(ToString::to_string)
             .collect();
-        let found: Vec<String> = dns.validate(&nets).iter().map(ToString::to_string).collect();
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found[0].contains("203.0.113.9 is outside every network"));
         assert!(found[1].contains("gateway"));
@@ -1039,7 +1048,9 @@ mod tests {
             }],
             ..DnsSettings::default()
         };
-        assert!(dns.validate(&[(tiny, Ipv4Addr::new(10, 0, 0, 0))]).is_empty());
+        assert!(dns
+            .validate(&[(tiny, Ipv4Addr::new(10, 0, 0, 0))])
+            .is_empty());
     }
 
     #[test]
