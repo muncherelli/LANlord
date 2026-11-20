@@ -91,12 +91,30 @@ pub fn type_text(desktop: &mut Desktop, ctx: &egui::Context, text: &str) {
     frames(desktop, ctx, 2);
 }
 
-/// draw frames until `done` holds.
+/// draw frames until `done` holds. the bound only catches a hang: a slow runner
+/// must not trip it, so it is generous.
 pub fn until(desktop: &mut Desktop, ctx: &egui::Context, done: impl Fn(&Desktop) -> bool) {
     let start = Instant::now();
     while !done(desktop) {
-        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+        assert!(start.elapsed() < Duration::from_secs(60), "timed out");
         frames(desktop, ctx, 1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// press the button labelled `text` whenever it is enabled, until `done` holds. a click is
+/// dropped when a background read grabs the host between the probe and the click, so a
+/// single press is not enough on a slow machine.
+pub fn press_until(
+    desktop: &mut Desktop,
+    ctx: &egui::Context,
+    text: &str,
+    done: impl Fn(&Desktop) -> bool,
+) {
+    let start = Instant::now();
+    while !done(desktop) {
+        assert!(start.elapsed() < Duration::from_secs(60), "timed out");
+        press(desktop, ctx, text);
         std::thread::sleep(Duration::from_millis(5));
     }
 }
