@@ -1,3 +1,5 @@
-// the window manager's pure parts. the window-host PR wires them in; until then nothing calls them
+// the window manager: pure geometry, and the host that applies it to egui. `geometry` still has
+// parts nothing calls
 #[allow(dead_code)]
 mod geometry;
+pub(crate) mod host;

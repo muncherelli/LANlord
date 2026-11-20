@@ -6,6 +6,7 @@ use crate::controls;
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use crate::view;
+use crate::wm::host::{self, Host};
 
 /// what the title-bar buttons asked for this frame.
 #[derive(Default)]
@@ -268,13 +269,13 @@ fn contents_least(before: Option<Room>) -> f32 {
 
 /// the size a document window opens at, and how far it may shrink.
 fn open_size(
-    window: egui::Window<'_>,
+    window: Host,
     place: Placement,
     least: Vec2,
     before: Option<Room>,
     fit: bool,
     floor: f32,
-) -> egui::Window<'_> {
+) -> Host {
     let max_height = place.area.height();
     match (place.growable, place.height) {
         (true, Some(h)) => window
@@ -340,151 +341,6 @@ fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
             .is_none_or(|layer| layer.id == Id::unique(id))
 }
 
-/// which of a window's edges a press at `p` takes hold of, by the zones egui grabs: a few pixels
-/// either side of an edge, and a larger square around a corner.
-fn grab_zones(ctx: &egui::Context, rect: Rect, p: Pos2) -> (bool, bool, bool, bool) {
-    let interaction = ctx.global_style().interaction.clone();
-    let (side, corner) = (
-        interaction.resize_grab_radius_side,
-        interaction.resize_grab_radius_corner,
-    );
-    let near = |a: f32, b: f32, r: f32| (a - b).abs() <= r;
-    let mut zones = [
-        near(p.x, rect.left(), side),
-        near(p.x, rect.right(), side),
-        near(p.y, rect.top(), side),
-        near(p.y, rect.bottom(), side),
-    ];
-    // a corner takes both its edges
-    for (x, y, h, v) in [
-        (rect.left(), rect.top(), 0, 2),
-        (rect.right(), rect.top(), 1, 2),
-        (rect.left(), rect.bottom(), 0, 3),
-        (rect.right(), rect.bottom(), 1, 3),
-    ] {
-        if near(p.x, x, corner) && near(p.y, y, corner) {
-            zones[h] = true;
-            zones[v] = true;
-        }
-    }
-    (zones[0], zones[1], zones[2], zones[3])
-}
-
-/// a drag on a window's edge or corner. a drag on the left or top edge moves the window's origin
-/// as well as its size, and egui puts the window at the pointer whatever its least size is, so a
-/// window already at its least slid sideways and its far edge moved. this holds the far edge.
-#[derive(Clone, Copy)]
-struct EdgeDrag {
-    /// where the window was when the drag began
-    start: Rect,
-    left: bool,
-    top: bool,
-    /// the width and height the window has turned out to be when it was no smaller than it goes,
-    /// nothing while it is as small as the pointer asks
-    least: Vec2,
-}
-
-impl EdgeDrag {
-    /// where the window goes this frame: the pointer's place, held so that the far edges stay
-    /// where they were once the window cannot get any smaller.
-    fn held(self, pos: Pos2) -> Pos2 {
-        let least = self.least;
-        Pos2::new(
-            if self.left {
-                pos.x.min(self.start.right() - least.x)
-            } else {
-                pos.x
-            },
-            if self.top {
-                pos.y.min(self.start.bottom() - least.y)
-            } else {
-                pos.y
-            },
-        )
-    }
-
-    /// put the window where the drag holds it this frame: its place now, as egui has moved it on
-    /// from the pointer. where that is, if the window is on screen.
-    fn place<'a>(
-        self,
-        ctx: &egui::Context,
-        id: &str,
-        window: egui::Window<'a>,
-    ) -> (egui::Window<'a>, Option<Pos2>) {
-        match egui::AreaState::load(ctx, layer(id).id) {
-            Some(state) => {
-                let pos = state.left_top_pos();
-                (window.current_pos(self.held(pos)), Some(pos))
-            }
-            None => (window, None),
-        }
-    }
-
-    /// learn from the window drawn: when it is bigger than the pointer asked for it is as small as
-    /// it goes, so it is held by its far edge at that size, which is more than its least when a
-    /// control will not narrow. it is drawn again if that moved it. a window egui has kept on the
-    /// desktop is not asking for anything.
-    fn after(mut self, ctx: &egui::Context, key: Id, pos: Pos2, drawn: Rect, area: Rect) {
-        let asked = self.start.max - pos;
-        let held_in = |at: f32, edge: f32| at > edge + 0.5;
-        let least = Vec2::new(
-            if self.left && held_in(pos.x, area.left()) && drawn.width() > asked.x + 0.5 {
-                drawn.width()
-            } else {
-                0.0
-            },
-            if self.top && held_in(pos.y, area.top()) && drawn.height() > asked.y + 0.5 {
-                drawn.height()
-            } else {
-                0.0
-            },
-        );
-        if least == self.least {
-            return;
-        }
-        self.least = least;
-        ctx.data_mut(|d| d.insert_temp(key, self));
-        let moved = (drawn.max - self.start.max).abs();
-        if (self.left && moved.x > 0.5) || (self.top && moved.y > 0.5) {
-            ctx.request_discard("window held by its far edge");
-        }
-    }
-
-    /// the drag, noted when it begins and followed until the button is let go.
-    fn follow(ctx: &egui::Context, id: &str, key: Id) -> Option<Self> {
-        if !ctx.input(|i| i.pointer.primary_down()) {
-            ctx.data_mut(|d| d.remove::<Self>(key));
-            return None;
-        }
-        if let Some(drag) = ctx.data(|d| d.get_temp::<Self>(key)) {
-            return Some(drag);
-        }
-        // only a press that begins on the edge: egui grabs a few pixels either side of it
-        let start = ctx.memory(|m| m.area_rect(Id::unique(id)))?;
-        let p = ctx.input(|i| {
-            i.pointer
-                .primary_pressed()
-                .then(|| i.pointer.press_origin())
-        })??;
-        let (left, right, top, bottom) = grab_zones(ctx, start, p);
-        let on_it = (left || right || top || bottom)
-            && ctx
-                .layer_id_at(p)
-                .is_none_or(|layer| layer.id == Id::unique(id));
-        if !on_it {
-            return None;
-        }
-        let drag = EdgeDrag {
-            start,
-            left,
-            top,
-            least: Vec2::ZERO,
-        };
-        ctx.data_mut(|d| d.insert_temp(key, drag));
-        Some(drag)
-    }
-}
-
 /// keep what a growable window's contents were, to share its room out the next frame, and draw
 /// again until they settle.
 fn remember_room(
@@ -545,7 +401,7 @@ fn pad_to_floor(fit: bool, floor: f32, content_height: f32, reserve: f32) -> f32
 
 /// where a document window goes: kept on the desktop, at `start` from the first frame or whenever
 /// it is put there afresh.
-fn place_document<'a>(window: egui::Window<'a>, place: Placement) -> egui::Window<'a> {
+fn place_document(window: Host, place: Placement) -> Host {
     let window = window.constrain_to(place.area);
     if place.fresh {
         window.current_pos(place.start)
@@ -556,7 +412,7 @@ fn place_document<'a>(window: egui::Window<'a>, place: Placement) -> egui::Windo
 
 /// where a dialog goes. `start` is where the middle of the window goes. a dialog of tabs is held
 /// by its top left from its second frame at one size, so it stays where it is whatever its page.
-fn place_dialog<'a>(window: egui::Window<'a>, place: Placement, seen: Dialog) -> egui::Window<'a> {
+fn place_dialog(window: Host, place: Placement, seen: Dialog) -> Host {
     match (seen.stage, seen.rect) {
         (Pivot::Switch, Some(r)) => window.pivot(Align2::LEFT_TOP).current_pos(r.min),
         (Pivot::TopLeft, _) => window.pivot(Align2::LEFT_TOP),
@@ -590,18 +446,6 @@ fn taken_by(inner: &Ui, fixed: bool, width: f32) -> Rect {
         taken.set_width(width);
     }
     taken
-}
-
-/// how many times egui may draw a window in one frame. when a resize begins egui draws it again,
-/// and a window held by its far edge is drawn once more after that: allow for both while a window
-/// is held, and only then.
-fn allow_passes(ctx: &egui::Context, held: bool) {
-    if held || !ctx.input(|i| i.pointer.primary_down()) {
-        let passes = if held { 3 } else { 2 };
-        ctx.options_mut(|o| {
-            o.max_passes = std::num::NonZeroUsize::new(passes).unwrap_or(o.max_passes)
-        });
-    }
 }
 
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
@@ -643,16 +487,7 @@ pub fn show(
     least.y = least.y.min(max_height);
     // only a window with a list, a log or a text can be resized: the rest are forms, as big as
     // their controls
-    let mut window = egui::Window::new(title)
-        .id(layer(id).id)
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(growable)
-        .frame(
-            egui::Frame::new()
-                .fill(GRAY)
-                .inner_margin(Margin::same(FRAME as i8)),
-        );
+    let mut window = Host::new(layer(id).id, title).resizable(growable);
     let dialog_key = Id::unique(("window-dialog", id));
     let seen = dialog_seen(ctx, id, dialog_key);
     window = if dialog {
@@ -665,20 +500,8 @@ pub fn show(
         }
     };
     let held_height = sized || (fixed && place.height.is_some());
-    // a drag on the left or top edge keeps the far edges where they are
-    let edge_key = Id::unique(("window-edge", id));
-    let edge = EdgeDrag::follow(ctx, id, edge_key).filter(|_| growable);
-    // egui draws a window again when a resize begins, and the window held by its far edge is drawn
-    // once more after that: allow for both while a window is held, and only then
-    allow_passes(ctx, edge.is_some());
-    let mut wanted = None;
-    if let Some(drag) = edge {
-        (window, wanted) = drag.place(ctx, id, window);
-    }
     let mut bar_rect = Rect::NOTHING;
-    let mut origin = Pos2::ZERO;
     let shown = window.show(ctx, |ui| {
-        origin = ui.cursor().min;
         // the title bar spans the window inside its 3 pixel border; the contents sit in
         // an 8 pixel margin on every side
         if dialog {
@@ -755,6 +578,7 @@ pub fn show(
             Pos2::new(ui.min_rect().right(), bar_top.y + TITLE_BAR),
         );
         bar_rect = bar;
+        host::caption(ui, bar, layer(id).id);
         actions = title_bar(ui, bar, place.icon, title, active, dialog, fixed);
         // the status bar, if the contents end in one, sits below the scrolling part: on the
         // bottom edge of the window, and always in view
@@ -764,18 +588,14 @@ pub fn show(
         }
         content_height += strip;
     })?;
-    // where the window was drawn. egui has moved its place on by now, to where a drag puts it
-    // for the next frame, so its response is a frame ahead of the contents drawn in it
-    let drawn = Rect::from_min_size(origin - Vec2::splat(FRAME), shown.response.rect.size());
-    if let Some((drag, pos)) = edge.zip(wanted) {
-        drag.after(ctx, edge_key, pos, drawn, place.area);
-    }
+    // where the window was drawn, from the same rect as the contents drawn in it
+    let drawn = shown.rect;
     remember_dialog(ctx, dialog_key, dialog.then_some(seen), drawn);
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, drawn, true);
     Some(Shown {
         actions,
-        clicked: shown.response.is_pointer_button_down_on(),
+        clicked: shown.pressed,
         rect: drawn,
         bar: bar_rect,
         content: content_height,
