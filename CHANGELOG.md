@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - title bars reach the right edge of their window again (Date/Time Properties had a gap)
 - the Networks window no longer clips the Received column of its Activity table, and it keeps one size when a network is added or removed (its tabs are as tall as a LANlord network's)
 - the web UI draws at the screen's full frame rate again, so dragging windows is smooth (it was capped at 30 frames a second in 0.1.4)
+- the DNS panel works per network: a Network drop-down picks the network whose zone, DHCP range, static leases and records are shown and saved (the other networks stay as they are), addresses are checked against that network's subnet, and the networks are listed instead of the retronet being called unknown on a gateway with two networks; settings with only the older `dns:` section still show and save as the one network, and the gateway is only asked for its network when a network has no address of its own
 - the Add/Remove Components wizard lists the networks added in the Networks window (also on the web demo desktop), re-reads them when it opens, when a network is saved and when it goes to its Networks page, and shows only the message, with no empty boxes, when the server has none
 - a dialog that cannot be closed with Escape (the purge box, the update box) no longer has a close button that does nothing
 - dialogs opened from a window have a close button and a title bar that spans the box, and the DHCP range boxes of the network form fit it

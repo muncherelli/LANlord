@@ -39,6 +39,9 @@ fn unexpected(operation: &str, reply: Reply) -> anyhow::Error {
     anyhow!("unexpected answer to {operation}: {reply:?}")
 }
 
+/// the settings of the made-up demo server: two networks, each with its own zone and dhcp.
+pub const DEMO_SETTINGS: &str = "networks:\n  - {name: retronet, interface: eth1, address: 192.0.2.1/24, zone: retronet, records: [{name: ntsrv1, address: 192.0.2.10}], dhcp: {range: [192.0.2.100, 192.0.2.200], lease: 7d}}\n  - {name: lab, interface: eth2, address: 198.51.100.1/24, zone: lab, dhcp: {range: [198.51.100.100, 198.51.100.200], lease: 12h}}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 192.0.2.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
+
 pub trait Gateway: Send + Sync {
     /// run `operation` on `host`, asking for the sudo password through `ask` when the server needs
     /// it.
@@ -495,7 +498,7 @@ mod native {
     use lanlord_model::settings::Document;
     use lanlord_model::{leases, server};
 
-    use super::Gateway;
+    use super::{Gateway, DEMO_SETTINGS};
     use crate::ask::AskPassword;
     use crate::demo_clock;
 
@@ -598,12 +601,10 @@ mod native {
     /// the demo server is an unprivileged lxc container on proxmox without the features docker needs.
     const DEMO_DOCTOR: &str = "hostname=gateway\ndistro=debian\ndistro_version=13\ninit=systemd\nkernel=6.8.12-4-pve\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\nkeyctl=no\nlink_bridge=ok\nlink_macvlan=ok\nlink_ipvlan=ok\ntun=missing\nip_forward=1\nnft=ok\ndocker_installed=no\n";
 
-    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
-
     /// what the made-up server's settings were last saved as.
     static DEMO_SAVED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-    const DEMO_LEASES: &str = "1795000000 02:00:00:00:00:01 172.16.120.101 ws1 *\n1795000000 02:00:00:00:00:02 172.16.120.102 ws2 *\n1795000000 02:00:00:00:00:03 172.16.120.103 nt4pc *\n";
+    const DEMO_LEASES: &str = "1795000000 02:00:00:00:00:01 192.0.2.101 ws1 *\n1795000000 02:00:00:00:00:02 192.0.2.102 ws2 *\n1795000000 02:00:00:00:00:03 192.0.2.103 nt4pc *\n";
 
     fn demo_purge() -> Vec<String> {
         [
@@ -796,6 +797,14 @@ mod fake {
     }
 
     impl Fake {
+        /// the made-up demo server: this machine, with the demo settings (two networks).
+        pub fn demo() -> Self {
+            let fake = Self::new();
+            *fake.local.lock().unwrap() = true;
+            *fake.stored.lock().unwrap() = super::DEMO_SETTINGS.into();
+            fake
+        }
+
         pub fn new() -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),

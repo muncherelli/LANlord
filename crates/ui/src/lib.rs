@@ -37,6 +37,7 @@ mod view;
 mod view_wizard;
 mod widgets;
 mod windows;
+mod wm;
 
 use eframe::egui;
 
@@ -167,9 +168,7 @@ fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
 fn web_gateway() -> std::sync::Arc<dyn lanlord_app::gateway::Gateway> {
     #[cfg(feature = "demo")]
     {
-        let gateway = lanlord_app::gateway::Fake::new();
-        *gateway.local.lock().unwrap() = true;
-        std::sync::Arc::new(gateway)
+        std::sync::Arc::new(lanlord_app::gateway::Fake::demo())
     }
     #[cfg(not(feature = "demo"))]
     std::sync::Arc::new(lanlord_app::gateway::http::Http::default())

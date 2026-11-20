@@ -119,8 +119,7 @@ impl Shell {
             return;
         }
         self.reset_session();
-        let gateway = Fake::new();
-        *gateway.local.lock().unwrap() = true;
+        let gateway = Fake::demo();
         let services = Services::new(Arc::new(gateway), Wake::none());
         self.devtools.stash = Some(Stash {
             services: std::mem::replace(&mut self.services, services),

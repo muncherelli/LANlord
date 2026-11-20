@@ -5,6 +5,7 @@ use std::net::Ipv4Addr;
 
 use crate::ask::AskPassword;
 use anyhow::Result;
+use lanlord_model::lan_networks::{self, LanNetwork, Networks};
 use lanlord_model::leases::Lease;
 use lanlord_model::network::Internal;
 use lanlord_model::settings::{
@@ -21,16 +22,26 @@ const MODULE: &str = "dns";
 
 pub struct DnsData {
     pub settings: DnsSettings,
-    /// the retronet the gateway is on, or why that is not known.
-    pub internal: Result<Internal, String>,
+    /// the networks in the settings, or why they could not be read.
+    pub networks: Result<Networks, String>,
+    /// the network the gateway is on, found by looking, or why that is not known; only asked
+    /// when some network has no address of its own to check against.
+    pub internal: Option<Result<Internal, String>>,
     pub leases: Result<Vec<Lease>, String>,
 }
 
 fn load(gateway: &dyn Gateway, host: &str, ask: AskPassword) -> Result<DnsData> {
-    let settings = DnsSettings::from_settings(&gateway.load_settings(host, ask)?)?;
+    let stored = gateway.load_settings(host, ask)?;
+    let settings = DnsSettings::from_settings(&stored)?;
+    let networks = lan_networks::read(&stored).map_err(|e| e.to_string());
+    let known = networks
+        .as_ref()
+        .is_ok_and(|n| !n.list.is_empty() && n.list.iter().all(|n| n.subnet().is_some()));
+    let internal = (!known).then(|| gateway.probe(host).map_err(|e| e.to_string()));
     Ok(DnsData {
         settings,
-        internal: gateway.probe(host).map_err(|e| e.to_string()),
+        networks,
+        internal,
         leases: gateway.leases(host, ask).map_err(|e| e.to_string()),
     })
 }
@@ -63,6 +74,7 @@ enum Ask {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
     Tab(usize),
+    Network(usize),
     Zone(String),
     ToggleDhcp,
     RangeStart(String),
@@ -95,30 +107,92 @@ pub struct DnsPanel {
     form: Option<(Ask, Form)>,
     /// the open tab: settings, static leases, extra records or current leases.
     pub tab: usize,
+    /// the network being edited, as a place in the list of networks.
+    pub selected: usize,
+}
+
+/// write `draft` into the network called `network`, leaving the other networks as they are; with
+/// no network (the older single-network settings) it goes into the `dns:` section.
+fn store(settings: &mut Settings, network: Option<&str>, draft: &DnsSettings) -> Result<()> {
+    let Some(name) = network else {
+        // with a `networks:` list the `dns:` section is ignored, so writing it would do nothing
+        if settings.section("networks").is_some() {
+            anyhow::bail!("there is no network to save the dns settings to");
+        }
+        draft.apply_to(settings);
+        return Ok(());
+    };
+    let mut list = lan_networks::read(settings)?.list;
+    let Some(found) = list.iter_mut().find(|n| n.name == name) else {
+        anyhow::bail!("the network {name} is not in the settings any more");
+    };
+    found.zone = draft.zone.clone();
+    found.records = draft.records.clone();
+    found.dhcp = draft.dhcp.clone();
+    lan_networks::write(settings, &list);
+    Ok(())
+}
+
+/// the dns part of a network, as the panel edits it.
+fn dns_of(network: &LanNetwork) -> DnsSettings {
+    DnsSettings {
+        zone: network.zone.clone(),
+        records: network.records.clone(),
+        dhcp: network.dhcp.clone(),
+    }
 }
 
 impl DnsPanel {
     pub fn poll(&mut self) {
         if self.remote.poll() {
-            if let Some(data) = &self.remote.data {
-                self.draft = data.settings.clone();
+            if let Some(settings) = self.saved() {
+                self.draft = settings;
             }
             (self.lease_row, self.record_row, self.current_row) = (None, None, None);
         }
     }
 
-    pub fn dirty(&self) -> bool {
-        self.remote
-            .data
-            .as_ref()
-            .is_some_and(|d| d.settings != self.draft)
+    /// the networks to pick from: the `networks:` list. the older single network (`dns:`) is
+    /// not picked, it is simply the one there is.
+    fn choices(&self) -> &[LanNetwork] {
+        match self.remote.data.as_ref().map(|d| &d.networks) {
+            Some(Ok(found)) if !found.legacy => &found.list,
+            _ => &[],
+        }
     }
 
+    /// the network being edited, when there is a list to pick from.
+    fn picked(&self) -> Option<&LanNetwork> {
+        let choices = self.choices();
+        choices.get(self.selected.min(choices.len().saturating_sub(1)))
+    }
+
+    /// what is stored for the network being edited.
+    fn saved(&self) -> Option<DnsSettings> {
+        let data = self.remote.data.as_ref()?;
+        Some(self.picked().map_or_else(|| data.settings.clone(), dns_of))
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.saved().is_some_and(|saved| saved != self.draft)
+    }
+
+    /// the subnet and the gateway's own address addresses are checked against: the network
+    /// being edited, else the network found by looking, else nothing is checked.
     fn errors(&self) -> Vec<ValidationError> {
-        let (subnet, gateway) = match self.remote.data.as_ref().map(|d| &d.internal) {
-            Some(Ok(internal)) => (internal.subnet(), internal.address),
+        let data = self.remote.data.as_ref();
+        let own = self.picked().or_else(|| match data.map(|d| &d.networks) {
+            Some(Ok(found)) => found.list.first(),
+            _ => None,
+        });
+        let known = own.and_then(|n| Some((n.subnet()?, n.ip()?)));
+        // what the gateway found may be another network than a later one without an address
+        let later = self.selected.min(self.choices().len().saturating_sub(1)) > 0;
+        let found = match data.and_then(|d| d.internal.as_ref()) {
+            Some(Ok(internal)) if !later => (internal.subnet(), internal.address),
             _ => (Subnet::new(Ipv4Addr::UNSPECIFIED, 0), Ipv4Addr::UNSPECIFIED),
         };
+        let (subnet, gateway) = known.unwrap_or(found);
         self.draft.validate(&subnet, gateway)
     }
 
@@ -131,16 +205,14 @@ impl DnsPanel {
 
     fn save(&mut self, services: &Services, host: &str, apply: bool) {
         let (target, draft) = (host.to_string(), self.draft.clone());
+        let network = self.picked().map(|n| n.name.clone());
         let modules = if apply {
             vec![MODULE.to_string()]
         } else {
             vec![]
         };
         let job = services.spawn(host, move |gateway, ask| {
-            let edit = |settings: &mut Settings| {
-                draft.apply_to(settings);
-                Ok(())
-            };
+            let edit = |settings: &mut Settings| store(settings, network.as_deref(), &draft);
             update_settings(gateway, &target, &[], edit, &modules, ask)?;
             load(gateway, &target, ask)
         });
@@ -158,6 +230,11 @@ impl DnsPanel {
             && !self.remote.busy()
             && self.errors().is_empty()
             && self.remote.belongs_to(host)
+            && self
+                .remote
+                .data
+                .as_ref()
+                .is_some_and(|d| d.networks.is_ok())
     }
 
     /// the panel for `host`; loads the settings when it shows another host's.
@@ -184,7 +261,8 @@ impl DnsPanel {
             .unwrap_or(0);
         let (_, page) = pages.remove(at);
         let ok = self.can_save(services, host);
-        let mut nodes = vec![
+        let mut nodes: Vec<Node<Msg>> = self.selector().into_iter().collect();
+        nodes.extend([
             Node::Tabs {
                 key: view::pages_fingerprint(self.tab, &page, &pages),
                 titles: view::titles(&[
@@ -204,7 +282,7 @@ impl DnsPanel {
                 Button::new("Save DNS & apply", ok, Msg::SaveAndApply),
                 Button::new("Save DNS", ok, Msg::Save),
             ]),
-        ];
+        ]);
         if !errors.is_empty() {
             nodes.push(Node::Text(format!(
                 "{} problem(s) to fix before saving.",
@@ -216,14 +294,62 @@ impl DnsPanel {
         nodes
     }
 
-    fn settings_page(&self, errors: &[ValidationError]) -> Vec<Node<Msg>> {
-        let network = match self.remote.data.as_ref().map(|d| &d.internal) {
-            Some(Ok(internal)) => Node::Text(format!("Retronet: {}", internal.subnet())),
-            Some(Err(why)) => Node::Warning(format!(
-                "Retronet: unknown ({why}); addresses are not checked against it"
-            )),
-            None => Node::Text("Retronet: not loaded yet".into()),
+    /// the networks the settings list, as the networks window names them.
+    fn networks_line(&self) -> Node<Msg> {
+        let Some(data) = &self.remote.data else {
+            return Node::Text("Networks: not loaded yet".into());
         };
+        let found = match &data.networks {
+            Ok(found) => found,
+            Err(why) => {
+                return Node::Warning(format!(
+                    "Networks: could not be read ({why}); addresses are not checked"
+                ))
+            }
+        };
+        let listed: Vec<String> = found
+            .list
+            .iter()
+            .filter_map(|n| Some(format!("{} {}", n.name, n.subnet()?)))
+            .collect();
+        if !listed.is_empty() {
+            return Node::Text(format!("Networks: {}", listed.join(", ")));
+        }
+        match &data.internal {
+            Some(Ok(internal)) => Node::Text(format!("Network: {}", internal.subnet())),
+            Some(Err(why)) => Node::Warning(format!(
+                "Network: unknown ({why}); addresses are not checked against it"
+            )),
+            None => Node::Text("Network: none yet".into()),
+        }
+    }
+
+    /// the drop-down that picks the network being edited; only when there is a list.
+    fn selector(&self) -> Option<Node<Msg>> {
+        let current = self.picked()?;
+        let mut body = vec![Node::Choice {
+            id: "dns-network",
+            current: current.name.clone(),
+            width: 160.0,
+            options: self
+                .choices()
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (i, n.name.clone()))
+                .collect(),
+            pick: Msg::Network,
+        }];
+        if self.dirty() {
+            body.push(Node::Text("Save or reload to switch networks.".into()));
+        }
+        Some(Node::Labelled {
+            label: "Network".into(),
+            body,
+        })
+    }
+
+    fn settings_page(&self, errors: &[ValidationError]) -> Vec<Node<Msg>> {
+        let network = self.networks_line();
         let edit = |label: &str, value: &str, msg: fn(String) -> Msg| Node::Labelled {
             label: label.into(),
             body: vec![Node::Input {
@@ -386,6 +512,13 @@ impl DnsPanel {
         }
         match msg {
             Msg::Tab(tab) => self.tab = tab,
+            Msg::Network(at) => {
+                self.selected = at;
+                if let Some(saved) = self.saved() {
+                    self.draft = saved;
+                }
+                (self.lease_row, self.record_row, self.current_row) = (None, None, None);
+            }
             Msg::Zone(text) => self.draft.zone = text,
             Msg::ToggleDhcp => match self.draft.dhcp.take() {
                 Some(dhcp) => self.stash = dhcp,
@@ -430,6 +563,7 @@ impl DnsPanel {
             Msg::AddLease | Msg::MakeStatic => free && self.draft.dhcp.is_some(),
             Msg::EditLease | Msg::AddRecord | Msg::EditRecord => free,
             Msg::Reload => !services.busy(host) && !self.remote.busy(),
+            Msg::Network(_) => free && !self.dirty(),
             Msg::Save | Msg::SaveAndApply => self.can_save(services, host),
             _ => true,
         }
@@ -639,6 +773,167 @@ mod tests {
         panel.draft.dhcp = None;
         panel.update(Msg::AddLease, &services, "a@b");
         assert!(panel.form_mut().is_none(), "no lease box with dhcp off");
+    }
+
+    use crate::gateway::Fake;
+
+    const TWO: &str = "networks:\n  - {name: alpha, interface: eth1, address: 192.0.2.1/24, zone: alpha, records: [{name: ntsrv1, address: 192.0.2.10}], dhcp: {range: [192.0.2.100, 192.0.2.200], lease: 7d}}\n  - {name: beta, interface: eth2, address: 198.51.100.1/24, zone: beta}\n";
+    const LEGACY: &str = "docker:\n  internal_address: 192.0.2.1/24\ndns:\n  zone: alpha\n  records:\n    - {name: ntsrv1, address: 192.0.2.10}\n";
+
+    /// a panel that has loaded what a made-up gateway stores.
+    fn loaded(stored: &str) -> (DnsPanel, Fake) {
+        let fake = Fake::new();
+        *fake.stored.lock().unwrap() = stored.into();
+        let mut ask = |_: &str| -> Result<String> { unreachable!("no password") };
+        let mut panel = DnsPanel::default();
+        panel.remote.data = Some(load(&fake, "a@b", &mut ask).unwrap());
+        panel.remote.set_source("a@b");
+        panel.draft = panel.saved().unwrap();
+        (panel, fake)
+    }
+
+    fn texts(nodes: Vec<Node<Msg>>) -> Vec<String> {
+        nodes
+            .into_iter()
+            .filter_map(|n| match n {
+                Node::Text(t) | Node::Warning(t) => Some(t),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_networks_are_listed_and_not_called_unknown() {
+        let (panel, fake) = loaded(TWO);
+        assert_eq!(
+            texts(vec![panel.networks_line()]),
+            ["Networks: alpha 192.0.2.0/24, beta 198.51.100.0/24"]
+        );
+        assert!(panel.selector().is_some());
+        assert!(!fake.calls().iter().any(|c| c.starts_with("probe")));
+    }
+
+    #[test]
+    fn a_network_without_an_address_asks_the_gateway_too() {
+        let (panel, fake) = loaded(
+            "networks:\n  - {name: alpha, interface: eth1, address: 192.0.2.1/24}\n  - {name: beta}\n",
+        );
+        assert!(fake.calls().iter().any(|c| c.starts_with("probe")));
+        assert!(panel.remote.data.as_ref().unwrap().internal.is_some());
+    }
+
+    #[test]
+    fn a_network_is_edited_with_its_own_subnet() {
+        let (mut panel, _fake) = loaded(TWO);
+        assert_eq!(panel.draft.zone, "alpha");
+        assert!(panel.errors().is_empty());
+        panel.draft.records[0].address = "198.51.100.10".into();
+        let found = panel.errors();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].message, "198.51.100.10 is outside 192.0.2.0/24");
+        panel.selected = 1;
+        panel.draft = panel.saved().unwrap();
+        assert_eq!(panel.draft.zone, "beta");
+        panel.draft.records.push(Record {
+            name: "x".into(),
+            address: "198.51.100.10".into(),
+        });
+        assert!(panel.errors().is_empty());
+        panel.draft.records[0].address = "192.0.2.10".into();
+        assert_eq!(panel.errors().len(), 1);
+    }
+
+    #[test]
+    fn the_older_settings_are_one_network_saved_as_dns() {
+        let (panel, _fake) = loaded(LEGACY);
+        assert!(panel.selector().is_none());
+        assert_eq!(panel.draft.zone, "alpha");
+        assert!(panel.errors().is_empty());
+        let mut settings = Settings::parse(LEGACY).unwrap();
+        let mut edited = panel.draft.clone();
+        edited.zone = "gamma".into();
+        store(&mut settings, None, &edited).unwrap();
+        let text = settings.text();
+        assert!(
+            text.contains("zone: gamma") && !text.contains("networks:"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn saving_one_network_leaves_the_others_as_they_are() {
+        let (mut panel, fake) = loaded(TWO);
+        panel.selected = 1;
+        panel.draft = panel.saved().unwrap();
+        panel.draft.zone = "gamma".into();
+        panel.draft.records.push(Record {
+            name: "ntsrv2".into(),
+            address: "198.51.100.20".into(),
+        });
+        let name = panel.picked().map(|n| n.name.clone());
+        let mut ask = |_: &str| -> Result<String> { unreachable!("no password") };
+        update_settings(
+            &fake,
+            "a@b",
+            &[],
+            |s| store(s, name.as_deref(), &panel.draft),
+            &[],
+            &mut ask,
+        )
+        .unwrap();
+        let after = lan_networks::read(&Settings::parse(&fake.stored.lock().unwrap()).unwrap())
+            .unwrap()
+            .list;
+        let before = lan_networks::read(&Settings::parse(TWO).unwrap())
+            .unwrap()
+            .list;
+        assert_eq!(after[0], before[0]);
+        assert_eq!(
+            (after[1].zone.as_str(), after[1].records.len()),
+            ("gamma", 1)
+        );
+        assert_eq!(after[1].address, "198.51.100.1/24");
+    }
+
+    #[test]
+    fn nothing_is_saved_while_the_networks_cannot_be_read() {
+        let (panel, _fake) = loaded("networks: 3\ndns:\n  zone: alpha\n");
+        let mut settings = Settings::parse("networks: 3\ndns:\n  zone: alpha\n").unwrap();
+        assert!(store(&mut settings, None, &panel.draft).is_err());
+        assert_eq!(settings.text(), "networks: 3\ndns:\n  zone: alpha\n");
+        let services = Services::new(std::sync::Arc::new(Fake::new()), crate::wake::Wake::none());
+        assert!(!panel.can_save(&services, "a@b"));
+        let (readable, _fake) = loaded(TWO);
+        assert!(readable.can_save(&services, "a@b"));
+    }
+
+    #[test]
+    fn a_later_network_without_an_address_ignores_the_gateways_own_network() {
+        let (mut panel, _fake) = loaded(
+            "networks:\n  - {name: alpha, interface: eth1, address: 192.0.2.1/24}\n  - {name: beta}\n",
+        );
+        panel.remote.data.as_mut().unwrap().internal = Some(Ok(Internal {
+            interface: "eth1".into(),
+            address: "192.0.2.1".parse().unwrap(),
+            prefix: 24,
+        }));
+        panel.selected = 1;
+        panel.draft.records = vec![Record {
+            name: "x".into(),
+            address: "198.51.100.9".into(),
+        }];
+        assert!(panel.errors().is_empty());
+    }
+
+    #[test]
+    fn unreadable_networks_are_a_warning_not_a_failed_load() {
+        let (panel, _fake) = loaded("networks: 3\n");
+        let lines = texts(vec![panel.networks_line()]);
+        assert_eq!(
+            lines,
+            ["Networks: could not be read (networks must be a list); addresses are not checked"]
+        );
+        assert_eq!(panel.draft, DnsSettings::default());
     }
 
     #[test]
