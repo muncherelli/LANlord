@@ -99,6 +99,9 @@ struct State {
     desired: Option<Vec2>,
     /// the size of the contents last frame
     last_content: Vec2,
+    /// the height the user last gave the window: the contents fill the room they are given, so
+    /// their own height says nothing about how tall the window has to be
+    user_height: Option<f32>,
     /// the least width the contents narrow to, measured when a drag begins
     min_width: Option<f32>,
     pending: Option<Pending>,
@@ -209,7 +212,8 @@ impl Host {
         // the wm's input, before anything is laid out
         let (down, pointer, origin) = ctx.input(|i| {
             (
-                i.pointer.primary_down(),
+                // the frame the button comes up still carries the drag, as egui's own does
+                i.pointer.primary_down() || i.pointer.primary_released(),
                 i.pointer.latest_pos().or(i.pointer.interact_pos()),
                 i.pointer.press_origin(),
             )
@@ -401,9 +405,15 @@ impl Host {
                 if let Some(w) = st.min_width {
                     size.x = size.x.max(w);
                 }
+                st.user_height = Some(size.y);
                 desired = size;
             }
-            None => desired = desired.max(st.last_content),
+            None => {
+                desired = desired.max(st.last_content);
+                if let Some(h) = st.user_height {
+                    desired.y = h.max(min.y).min(max.y);
+                }
+            }
         }
         if !sized {
             desired = desired.max(min).min(max);
@@ -435,7 +445,12 @@ impl Host {
         let mut size = st.last_content;
         for d in 0..2 {
             if self.resizable {
-                desired[d] = desired[d].max(st.last_content[d]);
+                if d == 1 && st.user_height.is_some() {
+                    // the window is as tall as it was made, or as its least
+                    desired[d] = desired[d].max(min.y);
+                } else {
+                    desired[d] = desired[d].max(st.last_content[d]);
+                }
                 size[d] = desired[d];
             }
         }
