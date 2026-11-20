@@ -200,7 +200,10 @@ hook() {
       ;;
     delgroup)
       safe "$a"
-      case "$fixed_groups" in *" $a "*) echo "$a is part of lanlord and cannot be deleted" >&2; exit 1 ;; esac
+      case "$fixed_groups" in
+        *" $a "*) echo "$a is part of lanlord and cannot be deleted" >&2; exit 1 ;;
+        *) ;;
+      esac
       groupdel "$a"
       if [[ -f $private/groups ]]; then
         grep -v "^$a:" "$private/groups" > "$private/groups.new" || true
