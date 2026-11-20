@@ -907,6 +907,72 @@ impl MyServer {
         );
     }
 
+    fn toggle_passwords(&mut self, services: &Services, host: &str) {
+        let Some(info) = self.auth.data.as_ref() else {
+            return;
+        };
+        if self.read_only || !info.dropins || self.auth.busy() {
+            return;
+        }
+        let want = !info.passwords.or(info.chosen).unwrap_or(true);
+        match info.refusal().filter(|_| !want) {
+            // would lock somebody out: ask first; the server refuses on its own too
+            Some(_) => {
+                self.ssh_dialog = Some((
+                    host.to_string(),
+                    SshDialog::PasswordsOff(info.without_key()),
+                ));
+            }
+            None => self.set_passwords(services, host, want, false),
+        }
+    }
+
+    fn add_key(&mut self, services: &Services, host: &str) {
+        let Some((_, SshDialog::AddKey(user))) = self.ssh_dialog.clone() else {
+            return;
+        };
+        if self.read_only || self.auth.busy() || !self.key_text_ok(&user) {
+            return;
+        }
+        let (target, key) = (host.to_string(), self.key_text.trim().to_string());
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.add_admin_key(&target, &user, &key, ask)?;
+            gateway.ssh_auth(&target, ask)
+        });
+        if self
+            .auth
+            .track(host, job, "adding the key...", "the key was added", false)
+        {
+            self.ssh_dialog = None;
+            self.key_text.clear();
+        }
+    }
+
+    fn remove_key(&mut self, services: &Services, host: &str) {
+        let (Some(account), Some(pick)) = (self.key_account(), self.key_pick) else {
+            return;
+        };
+        let Some(key) = account.keys.get(pick).cloned() else {
+            return;
+        };
+        let user = account.user.clone();
+        if self.read_only || self.auth.busy() {
+            return;
+        }
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.remove_admin_key(&target, &user, &key, ask)?;
+            gateway.ssh_auth(&target, ask)
+        });
+        self.auth.track(
+            host,
+            job,
+            "removing the key...",
+            "the key was removed",
+            false,
+        );
+    }
+
     /// act on a message. the rules the window shows are enforced here too, whatever the front
     /// end sends: no purge without the typed host name, no cancelling a purge that runs.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
@@ -924,25 +990,7 @@ impl MyServer {
                     self.ask_to_purge(services, host);
                 }
             }
-            Msg::TogglePasswords => {
-                let Some(info) = self.auth.data.as_ref() else {
-                    return;
-                };
-                if self.read_only || !info.dropins || self.auth.busy() {
-                    return;
-                }
-                let want = !info.passwords.or(info.chosen).unwrap_or(true);
-                match info.refusal().filter(|_| !want) {
-                    // would lock somebody out: ask first; the server refuses on its own too
-                    Some(_) => {
-                        self.ssh_dialog = Some((
-                            host.to_string(),
-                            SshDialog::PasswordsOff(info.without_key()),
-                        ));
-                    }
-                    None => self.set_passwords(services, host, want, false),
-                }
-            }
+            Msg::TogglePasswords => self.toggle_passwords(services, host),
             Msg::ConfirmPasswordsOff => {
                 if let Some((_, SshDialog::PasswordsOff(_))) = self.ssh_dialog.take() {
                     if !self.read_only && !self.auth.busy() {
@@ -967,50 +1015,8 @@ impl MyServer {
                 }
             }
             Msg::KeyText(text) => self.key_text = text,
-            Msg::AddKey => {
-                let Some((_, SshDialog::AddKey(user))) = self.ssh_dialog.clone() else {
-                    return;
-                };
-                if self.read_only || self.auth.busy() || !self.key_text_ok(&user) {
-                    return;
-                }
-                let (target, key) = (host.to_string(), self.key_text.trim().to_string());
-                let job = services.spawn(host, move |gateway, ask| {
-                    gateway.add_admin_key(&target, &user, &key, ask)?;
-                    gateway.ssh_auth(&target, ask)
-                });
-                if self
-                    .auth
-                    .track(host, job, "adding the key...", "the key was added", false)
-                {
-                    self.ssh_dialog = None;
-                    self.key_text.clear();
-                }
-            }
-            Msg::RemoveKey => {
-                let (Some(account), Some(pick)) = (self.key_account(), self.key_pick) else {
-                    return;
-                };
-                let Some(key) = account.keys.get(pick).cloned() else {
-                    return;
-                };
-                let user = account.user.clone();
-                if self.read_only || self.auth.busy() {
-                    return;
-                }
-                let target = host.to_string();
-                let job = services.spawn(host, move |gateway, ask| {
-                    gateway.remove_admin_key(&target, &user, &key, ask)?;
-                    gateway.ssh_auth(&target, ask)
-                });
-                self.auth.track(
-                    host,
-                    job,
-                    "removing the key...",
-                    "the key was removed",
-                    false,
-                );
-            }
+            Msg::AddKey => self.add_key(services, host),
+            Msg::RemoveKey => self.remove_key(services, host),
             Msg::PickRootSsh(i) => {
                 if !self.read_only {
                     self.ssh_pick = RootSsh::ALL.get(i).copied();
@@ -1542,7 +1548,8 @@ mod tests {
         let start = Instant::now();
         loop {
             window.refresh(services, "me@gw");
-            if window.ssh.data.is_some() && !window.ssh.busy() && !window.facts.busy() {
+            let idle = !window.ssh.busy() && !window.facts.busy() && !window.auth.busy();
+            if window.ssh.data.is_some() && idle {
                 return;
             }
             assert!(start.elapsed() < Duration::from_secs(5), "timed out");
