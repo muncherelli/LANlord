@@ -23,6 +23,7 @@ use lanlord_model::secret::Secret;
 use lanlord_model::server::ServerFacts;
 use lanlord_model::settings::{Document, Settings};
 use lanlord_model::ssh_access::Change as SshChange;
+use lanlord_model::sshauth::SshAuthInfo;
 use lanlord_model::users::Change;
 
 use crate::ask::{never, AskPassword};
@@ -217,6 +218,57 @@ pub trait Gateway: Send + Sync {
             self.call(host, Operation::SetRootSsh { access }, ask)?,
             "set_root_ssh",
         )
+    }
+
+    /// whether sshd takes passwords, and the administrators' ssh keys.
+    fn ssh_auth(&self, host: &str, ask: AskPassword) -> Result<SshAuthInfo> {
+        match self.call(host, Operation::SshAuthState, ask)? {
+            Reply::SshAuth(info) => Ok(info),
+            other => Err(unexpected("ssh_auth", other)),
+        }
+    }
+
+    /// turn ssh password sign-in on or off; turning it off is refused while an administrator has
+    /// no key, unless `confirmed`.
+    fn set_password_login(
+        &self,
+        host: &str,
+        passwords: bool,
+        confirmed: bool,
+        ask: AskPassword,
+    ) -> Result<()> {
+        let operation = Operation::SetPasswordLogin {
+            passwords,
+            confirmed,
+        };
+        done(self.call(host, operation, ask)?, "set_password_login")
+    }
+
+    /// add a public key to an administrator's authorized keys.
+    fn add_admin_key(&self, host: &str, user: &str, key: &str, ask: AskPassword) -> Result<()> {
+        let operation = Operation::AddAdminKey {
+            user: user.to_string(),
+            key: key.to_string(),
+        };
+        done(self.call(host, operation, ask)?, "add_admin_key")
+    }
+
+    /// remove a public key, given by its id (`sshauth::key_id`), from an administrator's
+    /// authorized keys. the last key goes only when `confirmed` while passwords are off.
+    fn remove_admin_key(
+        &self,
+        host: &str,
+        user: &str,
+        key: &str,
+        confirmed: bool,
+        ask: AskPassword,
+    ) -> Result<()> {
+        let operation = Operation::RemoveAdminKey {
+            user: user.to_string(),
+            key: key.to_string(),
+            confirmed,
+        };
+        done(self.call(host, operation, ask)?, "remove_admin_key")
     }
 
     /// the dhcp leases the gateway has handed out.
@@ -768,6 +820,7 @@ mod fake {
     };
     use lanlord_model::access::{ADMINISTRATORS, USERS};
     use lanlord_model::identity::{LinkInfo, LinkReport, LinkState};
+    use lanlord_model::sshauth::{AccountKeys, SshAuthInfo};
 
     /// a gateway that records what it was asked and answers from memory.
     pub struct Fake {
@@ -827,6 +880,8 @@ mod fake {
         pub probe: Mutex<String>,
         /// how root's ssh access stands, changed by `set_root_ssh`.
         pub root_ssh: Mutex<RootSshInfo>,
+        /// ssh passwords and the administrators' keys, changed by the ssh auth operations.
+        pub ssh_auth: Mutex<SshAuthInfo>,
     }
 
     impl Default for Fake {
@@ -907,6 +962,27 @@ mod fake {
                 root_ssh: Mutex::new(RootSshInfo {
                     chosen: None,
                     dropins: true,
+                }),
+                ssh_auth: Mutex::new(SshAuthInfo {
+                    chosen: None,
+                    passwords: Some(true),
+                    dropins: true,
+                    accounts: vec![
+                        AccountKeys {
+                            user: "dana".into(),
+                            keys: vec![
+                                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyOne dana@laptop"
+                                    .into(),
+                            ],
+                        },
+                        AccountKeys {
+                            user: "pat".into(),
+                            keys: Vec::new(),
+                        },
+                    ],
+                    root_login: false,
+                    root_keys: 0,
+                    keys_unknown: false,
                 }),
                 probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
@@ -1025,6 +1101,59 @@ mod fake {
                     self.set_root_ssh(host, access, ask)?;
                     Reply::Done
                 }
+                Operation::SshAuthState => {
+                    self.enter(format!("ssh-auth {host}"), ask)?;
+                    Reply::SshAuth(self.ssh_auth.lock().unwrap().clone())
+                }
+                Operation::SetPasswordLogin {
+                    passwords,
+                    confirmed,
+                } => {
+                    self.enter(
+                        format!("password-login {host} {passwords} {confirmed}"),
+                        ask,
+                    )?;
+                    let mut info = self.ssh_auth.lock().unwrap();
+                    if !passwords && !confirmed {
+                        if let Some(why) = info.refusal() {
+                            return Err(anyhow!(why));
+                        }
+                    }
+                    info.chosen = Some(passwords);
+                    info.passwords = Some(passwords);
+                    Reply::Done
+                }
+                Operation::AddAdminKey { user, key } => {
+                    self.enter(format!("add-admin-key {host} {user}"), ask)?;
+                    let mut info = self.ssh_auth.lock().unwrap();
+                    let Some(account) = info.accounts.iter_mut().find(|a| a.user == user) else {
+                        return Err(anyhow!("{user} is not an administrator"));
+                    };
+                    if !account.keys.contains(&key) {
+                        account.keys.push(key);
+                    }
+                    Reply::Done
+                }
+                Operation::RemoveAdminKey {
+                    user,
+                    key,
+                    confirmed,
+                } => {
+                    self.enter(format!("remove-admin-key {host} {user}"), ask)?;
+                    let mut info = self.ssh_auth.lock().unwrap();
+                    if !confirmed {
+                        if let Some(why) = info.removal_refusal(&user, &key) {
+                            return Err(anyhow!(why));
+                        }
+                    }
+                    let Some(account) = info.accounts.iter_mut().find(|a| a.user == user) else {
+                        return Err(anyhow!("{user} is not an administrator"));
+                    };
+                    account
+                        .keys
+                        .retain(|k| lanlord_model::sshauth::key_id(k).as_deref() != Some(&key));
+                    Reply::Done
+                }
                 Operation::Leases => Reply::Leases(self.leases(host, ask)?),
                 Operation::LogonScripts => Reply::Names(self.logon_scripts(host, ask)?),
                 Operation::ReadLogon { name } => Reply::Text(self.read_logon(host, &name, ask)?),
@@ -1092,7 +1221,10 @@ mod fake {
                 }
                 Operation::RemoveMyKey { key } => {
                     self.enter(format!("remove-key {host}"), ask)?;
-                    self.keys.lock().unwrap().retain(|k| *k != key);
+                    self.keys
+                        .lock()
+                        .unwrap()
+                        .retain(|k| lanlord_model::sshauth::key_id(k).as_deref() != Some(&key));
                     Reply::Done
                 }
                 Operation::UpdateProfile { profile } => {
