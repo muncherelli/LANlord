@@ -68,6 +68,13 @@ pub trait Gateway: Send + Sync {
     /// forget that the session ended, once the person has signed in again.
     fn session_restored(&self) {}
 
+    /// where the connection to `host` comes from, as the gateway sees it, so that a change that
+    /// closes ssh is not made from a place it would cut off. none when that cannot be told, as in
+    /// the browser, whose connection is not an ssh one.
+    fn client_spot(&self, _host: &str) -> Result<Option<lanlord_model::lockout::Spot>> {
+        Ok(None)
+    }
+
     /// set the gateway up for lanlord.
     fn bootstrap(&self, host: &str, ask: AskPassword) -> Result<()> {
         done(self.call(host, Operation::Bootstrap, ask)?, "bootstrap")
@@ -524,6 +531,14 @@ mod native {
             }
             execute(host, &operation, ask)
         }
+
+        fn client_spot(&self, host: &str) -> Result<Option<lanlord_model::lockout::Spot>> {
+            // the made-up server has no connection to place
+            if std::env::var("LANLORD_FAKE_SERVER").as_deref() == Ok("1") {
+                return Ok(None);
+            }
+            lanlord_core::lockout::spot(&lanlord_core::ssh::Session::new(host)?)
+        }
     }
 
     /// lanlord running on the gateway itself (server mode): one server, the local one. nothing
@@ -788,6 +803,8 @@ mod fake {
         pub network_error: Mutex<Option<String>>,
         /// when set, a network change is stored and then fails to apply with this reason.
         pub apply_error: Mutex<Option<String>>,
+        /// where `client_spot` says the connection comes from; nowhere when not set.
+        pub spot: Mutex<Option<lanlord_model::lockout::Spot>>,
         /// the signed-in person's profile, changed by `update_profile`.
         pub profile: Mutex<lanlord_model::access::Profile>,
         /// the signed-in person's authorized ssh keys.
@@ -822,6 +839,13 @@ mod fake {
             let fake = Self::new();
             *fake.local.lock().unwrap() = true;
             *fake.stored.lock().unwrap() = super::DEMO_SETTINGS.into();
+            // the person at the demo desktop is the nt4pc of the retronet network, which may use
+            // ssh on its own: taking that away would cut them off
+            *fake.spot.lock().unwrap() = Some(lanlord_model::lockout::Spot {
+                address: "192.0.2.50".into(),
+                interface: "eth1".into(),
+                mac: Some("02:00:00:00:00:03".into()),
+            });
             fake
         }
 
@@ -845,6 +869,7 @@ mod fake {
                 purge_lines: Mutex::new(vec!["remove /opt/lanlord".into()]),
                 network_error: Mutex::new(None),
                 apply_error: Mutex::new(None),
+                spot: Mutex::new(None),
                 profile: Mutex::new(lanlord_model::access::Profile::default()),
                 keys: Mutex::new(Vec::new()),
                 access: Mutex::new(Access {
@@ -913,6 +938,10 @@ mod fake {
     }
 
     impl Gateway for Fake {
+        fn client_spot(&self, _host: &str) -> Result<Option<lanlord_model::lockout::Spot>> {
+            Ok(self.spot.lock().unwrap().clone())
+        }
+
         fn call(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<Reply> {
             Ok(match operation {
                 Operation::Doctor => Reply::Doctor(self.doctor(host, ask)?),

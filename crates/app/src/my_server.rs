@@ -483,7 +483,13 @@ impl MyServer {
             ));
         }
         let mut page = vec![self.root_ssh_group(idle), Node::Gap(6.0)];
-        if let Some(notice) = self.lan.data.as_deref().and_then(ssh_networks_notice) {
+        let now = crate::networks_window::unix_now();
+        if let Some(notice) = self
+            .lan
+            .data
+            .as_deref()
+            .and_then(|list| ssh_networks_notice(list, now))
+        {
             page.push(notice);
             page.push(Node::Gap(6.0));
         }
@@ -702,8 +708,9 @@ impl MyServer {
 }
 
 /// what the firewall does to ssh from the LANlord networks, as the settings have it, and where
-/// to change it. none when there is no network with ssh off: nothing is blocked then.
-fn ssh_networks_notice(list: &[LanNetwork]) -> Option<Node<Msg>> {
+/// to change it. none when there is no network with ssh off: nothing is blocked then. a computer
+/// whose grant has ended at `now` is not counted.
+fn ssh_networks_notice(list: &[LanNetwork], now: i64) -> Option<Node<Msg>> {
     let off: Vec<&str> = list
         .iter()
         .filter(|n| !n.ssh.enabled)
@@ -719,14 +726,16 @@ fn ssh_networks_notice(list: &[LanNetwork]) -> Option<Node<Msg>> {
         .collect();
     let computers: Vec<String> = list
         .iter()
-        .filter(|n| !n.ssh.enabled && !n.ssh.allow.is_empty())
-        .map(|n| {
-            let count = n.ssh.allow.len();
-            format!(
-                "{} ({count} computer{})",
-                n.name,
-                if count == 1 { "" } else { "s" }
-            )
+        .filter(|n| !n.ssh.enabled)
+        .filter_map(|n| {
+            let count = n.ssh.live(now).count();
+            (count > 0).then(|| {
+                format!(
+                    "{} ({count} computer{})",
+                    n.name,
+                    if count == 1 { "" } else { "s" }
+                )
+            })
         })
         .collect();
     let mut lines = vec![format!(
@@ -1227,6 +1236,26 @@ mod tests {
             .list
     }
 
+    const NOW: i64 = 1_900_000_000;
+
+    #[test]
+    fn the_ssh_notice_counts_only_computers_whose_grant_has_not_ended() {
+        let list = networks(
+            "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24, ssh_allow: [{mac: \"02:00:00:00:00:01\"}, {mac: \"02:00:00:00:00:02\", until: \"2040-01-01T00:00:00Z\"}, {mac: \"02:00:00:00:00:03\", until: \"2020-01-01T00:00:00Z\"}]}\n  - {name: old, interface: eth2, address: 198.51.100.1/24, ssh_allow: [{mac: \"02:00:00:00:00:04\", until: \"2020-01-01T00:00:00Z\"}]}\n",
+        );
+        let lines = notice_lines(ssh_networks_notice(&list, NOW).unwrap());
+        assert_eq!(
+            lines[1],
+            "Allowed for single computers on: lab (2 computers)."
+        );
+        // after the later grant ends too, one computer is left of lab and none is named for old
+        let later = notice_lines(ssh_networks_notice(&list, 2_300_000_000).unwrap());
+        assert_eq!(
+            later[1],
+            "Allowed for single computers on: lab (1 computer)."
+        );
+    }
+
     fn notice_lines(node: Node<Msg>) -> Vec<String> {
         let Node::Group { body, .. } = node else {
             panic!("a group");
@@ -1244,7 +1273,7 @@ mod tests {
         let list = networks(
             "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24, ssh_allow: [{mac: \"02:00:00:00:00:01\"}]}\n  - {name: dmz, interface: eth2, address: 198.51.100.1/24}\n  - {name: office, interface: eth3, address: 203.0.113.1/24, ssh: true}\n",
         );
-        let lines = notice_lines(ssh_networks_notice(&list).unwrap());
+        let lines = notice_lines(ssh_networks_notice(&list, NOW).unwrap());
         assert_eq!(lines[0], "Ssh to this server is off from: lab, dmz.");
         assert!(lines[1].contains("office"), "{lines:?}");
         assert!(lines[2].contains("lab (1 computer)"), "{lines:?}");
@@ -1253,11 +1282,11 @@ mod tests {
 
     #[test]
     fn the_ssh_notice_is_not_shown_when_nothing_is_blocked() {
-        assert!(ssh_networks_notice(&[]).is_none());
+        assert!(ssh_networks_notice(&[], NOW).is_none());
         let on = networks(
             "networks:\n  - {name: lab, interface: eth1, address: 192.0.2.1/24, ssh: true}\n",
         );
-        assert!(ssh_networks_notice(&on).is_none());
+        assert!(ssh_networks_notice(&on, NOW).is_none());
     }
 
     #[test]

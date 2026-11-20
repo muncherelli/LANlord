@@ -34,6 +34,13 @@ pub struct SshAccess {
 }
 
 impl SshAccess {
+    /// the grants that have not ended at `now` (seconds since 1970).
+    pub fn live(&self, now: i64) -> impl Iterator<Item = &AllowedHost> {
+        self.allow
+            .iter()
+            .filter(move |h| h.until.is_none_or(|until| until > now))
+    }
+
     /// the lines of the networks window's read-only box.
     pub fn details(&self) -> Vec<(String, String)> {
         grant_details(

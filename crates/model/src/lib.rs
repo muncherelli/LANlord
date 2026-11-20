@@ -15,6 +15,7 @@ pub mod internet;
 pub mod lan_edit;
 pub mod lan_networks;
 pub mod leases;
+pub mod lockout;
 pub mod log;
 pub mod login_text;
 pub mod logon;

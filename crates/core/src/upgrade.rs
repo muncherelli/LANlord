@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use lanlord_model::lockout::Lockout;
 use lanlord_model::operations::{Operation, Reply};
 
 use crate::bootstrap::{
@@ -443,12 +444,16 @@ pub fn run(
         allow_unhealthy,
         ask_password,
         events,
-        // the firewall of this version is put in place now, not at the next apply
-        &mut |ask| {
-            let docker = Operation::Apply {
-                modules: vec!["docker".to_string()],
-            };
-            crate::operations::execute(host, &docker, ask).map(|_| ())
+        // the firewall of this version is put in place now, not at the next apply, unless that
+        // would cut this connection off
+        Firewall {
+            lockout: &mut |ask| crate::lockout::of_settings(host, ask),
+            apply: &mut |ask| {
+                let docker = Operation::Apply {
+                    modules: vec!["docker".to_string()],
+                };
+                crate::operations::execute(host, &docker, ask).map(|_| ())
+            },
         },
         &mut |stamp, ask| {
             // the new service holds the key, so it migrates the files
@@ -467,8 +472,13 @@ pub fn run(
 /// what was done.
 type Migrate<'a> = &'a mut dyn FnMut(&str, AskPassword) -> Result<Vec<String>>;
 
-/// how the docker module is applied again, so that the firewall rules of this version are in place.
-type Refresh<'a> = &'a mut dyn FnMut(AskPassword) -> Result<()>;
+/// what the upgrade does about the firewall of the new version.
+pub(crate) struct Firewall<'a> {
+    /// would the firewall of the settings as they are keep this connection out of ssh?
+    pub lockout: &'a mut dyn FnMut(AskPassword) -> Result<Option<Lockout>>,
+    /// apply the docker module again, so that the firewall rules of this version are in place.
+    pub apply: &'a mut dyn FnMut(AskPassword) -> Result<()>,
+}
 
 /// the check for a firewall that lanlord wrote: only such a gateway is applied again.
 fn firewall_script() -> String {
@@ -477,21 +487,54 @@ fn firewall_script() -> String {
 
 /// a gateway with lanlord's firewall gets the docker module applied after an upgrade, so what this
 /// version blocks (ssh from the lanlord networks, unless allowed) is blocked as soon as it runs.
-/// the files are already migrated, so a failure here is told, not rolled back.
+/// the files are already migrated, so a failure here is told, not rolled back. when the person
+/// upgrading connects from a network that would have ssh off, the firewall is not applied: that
+/// would end the connection, so the commands that keep it are printed instead.
 fn refresh_firewall(
     session: &Session,
+    host: &str,
     ask: AskPassword,
-    refresh: Refresh,
+    firewall: Firewall,
     on_line: &mut dyn FnMut(&str),
 ) {
-    if !matches!(root_status(session, firewall_script(), &mut *ask), Ok(0)) {
-        return;
+    let later = "run `lanlord apply` for it, since ssh from the lanlord networks is not blocked \
+                 until then";
+    match root_status(session, firewall_script(), &mut *ask) {
+        Ok(0) => {}
+        Ok(_) => return,
+        Err(error) => {
+            on_line(&format!(
+                "could not tell whether this server has the lanlord firewall ({error:#}); {later}"
+            ));
+            return;
+        }
+    }
+    match (firewall.lockout)(&mut *ask) {
+        Ok(None) => {}
+        Ok(Some(held)) => {
+            on_line(&format!(
+                "the firewall of this version was not applied: {}",
+                held.sentence()
+            ));
+            on_line("to keep your connection and then apply it, run one of these:");
+            for command in held.commands(host) {
+                on_line(&format!("  {command}"));
+            }
+            on_line("(they apply the firewall; until then ssh from the lanlord networks is open)");
+            return;
+        }
+        Err(error) => {
+            on_line(&format!(
+                "could not tell where you connect from ({error:#}), so the firewall of this \
+                 version was not applied; {later}"
+            ));
+            return;
+        }
     }
     on_line("applying the firewall of this version (ssh from the lanlord networks is off unless allowed)");
-    if let Err(error) = refresh(ask) {
+    if let Err(error) = (firewall.apply)(ask) {
         on_line(&format!(
-            "could not apply the docker module ({error:#}); run `lanlord apply` for it, since \
-             ssh from the lanlord networks is not blocked until then"
+            "could not apply the docker module ({error:#}); {later}"
         ));
     }
 }
@@ -634,7 +677,7 @@ pub(crate) fn run_with(
     allow_unhealthy: bool,
     ask_password: AskPassword,
     events: &mut dyn FnMut(Event),
-    refresh: Refresh,
+    firewall: Firewall,
     migrate: Migrate,
 ) -> Result<()> {
     let ask = ask_password;
@@ -743,7 +786,7 @@ pub(crate) fn run_with(
         step(events, Step::Migrate, |line| {
             let migrated = migrate_stored(session, &options.host, &mut *ask, migrate, line);
             let Err(error) = migrated else {
-                refresh_firewall(session, &mut *ask, &mut *refresh, line);
+                refresh_firewall(session, &options.host, &mut *ask, firewall, line);
                 return Ok(());
             };
             line("putting the old copies of the stored files back");
@@ -778,10 +821,11 @@ mod tests {
     use crate::testgw::no_password;
     use crate::upgrade::{
         check_script, extras_script, has_web_server, parse_units, restart_script, rollback_script,
-        run_with, snapshot_script, units_script, Event, Plan, Snapshot, Step, Unit, BINARY,
-        NO_WEB_SERVER_REVERSED, SERVICES,
+        run_with, snapshot_script, units_script, Event, Firewall, Plan, Snapshot, Step, Unit,
+        BINARY, NO_WEB_SERVER_REVERSED, SERVICES,
     };
     use crate::webinstall::{install_script, WebSource};
+    use lanlord_model::lockout::Lockout;
 
     const WEBUI: &str = SERVICES[0].unit;
     const OPERATIONS: &str = SERVICES[1].unit;
@@ -858,7 +902,9 @@ case "$last" in
           *"swap had not begun"*) [ -f "$D/moved" ] || { echo rollback-skipped >> "$D/log"; exit 3; } ;;
         esac
         echo rollback >> "$D/log"; touch "$D/rolled"; [ -f "$D/still-broken" ] && exit 1; exit 0 ;;
-      "# upgrade firewall"*) [ -f "$D/firewall" ] ;;
+      "# upgrade firewall"*)
+        if [ -f "$D/firewall-check-fails" ]; then echo "sudo: a password is required" >&2; exit 255; fi
+        [ -f "$D/firewall" ] ;;
       "# stored stamp"*) echo 20260101T120000Z ;;
       "# stored restore"*) echo restore >> "$D/log" ;;
       "# upgrade check"*)
@@ -932,18 +978,29 @@ esac"##
                 allow_unhealthy,
                 &mut no_password,
                 &mut |event| seen.push(event),
-                &mut |_| {
-                    use std::io::Write;
-                    let mut log = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(self.dir.join("log"))
-                        .unwrap();
-                    writeln!(log, "apply docker").unwrap();
-                    if self.dir.join("apply-docker-fails").exists() {
-                        anyhow::bail!("ansible failed");
-                    }
-                    Ok(())
+                Firewall {
+                    lockout: &mut |_| {
+                        if self.dir.join("lockout-unknown").exists() {
+                            anyhow::bail!("no route to the client");
+                        }
+                        Ok(self.dir.join("lockout").exists().then(|| Lockout {
+                            network: "lab".into(),
+                            mac: Some("02:00:00:00:00:01".into()),
+                        }))
+                    },
+                    apply: &mut |_| {
+                        use std::io::Write;
+                        let mut log = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(self.dir.join("log"))
+                            .unwrap();
+                        writeln!(log, "apply docker").unwrap();
+                        if self.dir.join("apply-docker-fails").exists() {
+                            anyhow::bail!("ansible failed");
+                        }
+                        Ok(())
+                    },
                 },
                 &mut |stamp, _| {
                     use std::io::Write;
@@ -1095,6 +1152,77 @@ esac"##
             Some("apply docker")
         );
         assert_eq!(outcomes(&events).last(), Some(&(Step::Migrate, "done")));
+    }
+
+    /// the lines of an upgrade.
+    fn said(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Line(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_firewall_that_would_cut_the_connection_off_is_not_applied_and_the_commands_are_told() {
+        let server = Server::installed("firewall-lockout");
+        server.flag("firewall");
+        server.flag("lockout");
+        let (result, events) = server.upgrade();
+        result.unwrap();
+        assert!(!server.log().contains(&"apply docker".to_string()));
+        let lines = said(&events);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("was not applied") && l.contains("lab")),
+            "{lines:?}"
+        );
+        let allow = lines
+            .iter()
+            .find(|l| l.contains("ssh lab allow"))
+            .unwrap_or_else(|| panic!("{lines:?}"));
+        assert!(allow.contains("02:00:00:00:00:01"), "{allow}");
+        assert!(
+            lines.iter().any(|l| l.trim_end().ends_with("ssh lab on")),
+            "{lines:?}"
+        );
+        // the upgrade itself is done
+        assert_eq!(outcomes(&events).last(), Some(&(Step::Migrate, "done")));
+    }
+
+    #[test]
+    fn a_connection_that_cannot_be_placed_leaves_the_firewall_and_says_to_apply() {
+        let server = Server::installed("firewall-unplaced");
+        server.flag("firewall");
+        server.flag("lockout-unknown");
+        let (result, events) = server.upgrade();
+        result.unwrap();
+        assert!(!server.log().contains(&"apply docker".to_string()));
+        let lines = said(&events);
+        assert!(
+            lines.iter().any(|l| l.contains("lanlord apply")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_firewall_check_is_told_with_the_apply_hint_and_nothing_is_applied() {
+        let server = Server::installed("firewall-check-fails");
+        server.flag("firewall-check-fails");
+        let (result, events) = server.upgrade();
+        result.unwrap();
+        assert!(!server.log().contains(&"apply docker".to_string()));
+        let lines = said(&events);
+        assert!(
+            lines.iter().any(
+                |l| l.contains("whether this server has the lanlord firewall")
+                    && l.contains("lanlord apply")
+            ),
+            "{lines:?}"
+        );
     }
 
     #[test]

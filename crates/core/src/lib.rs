@@ -23,6 +23,7 @@ pub mod leases;
 #[cfg(unix)]
 pub mod local;
 pub mod localfile;
+pub mod lockout;
 pub mod log;
 pub mod logon;
 mod save_guard;
