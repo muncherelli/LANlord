@@ -1498,11 +1498,13 @@ mod fake {
     #[test]
     fn an_ssh_change_goes_through_the_backend_as_one_operation() {
         let fake = Fake::default();
+        *fake.stored.lock().unwrap() =
+            "networks:\n  - name: lab\n    interface: eth1\n    address: 192.0.2.1/24\n".into();
         let gateway: &dyn Gateway = &fake;
         let mut ask = |_: &str| Ok(String::new());
-        let change = lanlord_model::ssh_access::Change::Deny {
+        let change = lanlord_model::ssh_access::Change::Network {
             network: "lab".into(),
-            mac: "02:00:00:00:00:01".into(),
+            on: true,
         };
         gateway.change_ssh_access("a@b", &change, &mut ask).unwrap();
         let operation = Operation::ChangeSshAccess { change };
