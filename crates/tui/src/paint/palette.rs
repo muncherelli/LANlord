@@ -9,10 +9,10 @@ pub type Rgb = (u8, u8, u8);
 
 /// the colour of `role` in the nt4 "windows standard" scheme the terminal draws with.
 const fn role(role: Role) -> Rgb {
-    match WINDOWS_STANDARD.get(role) {
-        Some(rgb) => rgb.tuple(),
-        None => (0, 0, 0),
-    }
+    WINDOWS_STANDARD
+        .get(role)
+        .expect("windows standard sets every role")
+        .tuple()
 }
 
 /// the desktop.
@@ -212,6 +212,13 @@ mod tests {
             depth(Some("truecolor"), Some("xterm-256color"), true, true),
             Depth::Basic16
         );
+    }
+
+    #[test]
+    fn the_constants_read_the_windows_standard_scheme() {
+        assert_eq!(role(Role::Desktop), (0, 128, 128));
+        assert_eq!(role(Role::Light), (223, 223, 223));
+        assert_eq!(role(Role::ActiveCaption), NAVY);
     }
 
     #[test]

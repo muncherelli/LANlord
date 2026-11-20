@@ -137,6 +137,14 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_converts_to_a_tuple() {
+        assert_eq!(c(1, 2, 3), Some(Rgb::new(1, 2, 3)));
+        assert_eq!(Rgb::new(1, 2, 3).tuple(), (1, 2, 3));
+        assert_eq!(Role::COUNT, WINDOWS_STANDARD.roles.len());
+        assert_eq!(WINDOWS_STANDARD.name, "Windows Standard");
+    }
+
+    #[test]
     fn windows_standard_matches_the_nt4_values() {
         let get = |role| WINDOWS_STANDARD.get(role).map(Rgb::tuple);
         assert_eq!(get(Role::Desktop), Some((0, 128, 128)));
