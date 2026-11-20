@@ -8,7 +8,8 @@
 # X.Y.Z only, and running it twice changes nothing.
 set -eu
 
-die() { echo "set-version: $*" >&2; exit 1; }
+# usage errors exit 2; a mismatch found by --check exits 1
+die() { echo "set-version: $*" >&2; exit "${2:-2}"; }
 
 mode=apply
 case "${1:-}" in
@@ -30,14 +31,16 @@ cd "$(dirname "$0")/.."
 # prints a manifest with the version set
 rewrite() {
   awk -v v="$version" '
+    # crlf manifests keep their line endings
+    { cr = sub(/\r$/, ""); eol = cr ? "\r" : "" }
     /^\[/ { section = $0 }
     section == "[workspace.package]" && /^version[ \t]*=/ {
-      print "version = \"" v "\""; next
+      print "version = \"" v "\"" eol; next
     }
     /^lanlord[A-Za-z0-9_-]*[ \t]*=[ \t]*\{/ && match($0, /[{ ,]version[ \t]*=[ \t]*"[^"]*"/) {
-      print substr($0, 1, RSTART) "version = \"" v "\"" substr($0, RSTART + RLENGTH); next
+      print substr($0, 1, RSTART) "version = \"" v "\"" substr($0, RSTART + RLENGTH) eol; next
     }
-    { print }
+    { print $0 eol }
   ' "$1"
 }
 
@@ -60,7 +63,7 @@ done
 
 case "$mode" in
   check)
-    [ -z "$bad" ] || die "not at version $version:$bad"
+    [ -z "$bad" ] || die "not at version $version:$bad" 1
     echo "set-version: all files are at $version"
     ;;
   apply)

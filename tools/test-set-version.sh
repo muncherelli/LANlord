@@ -51,9 +51,22 @@ sed 's/version = "0.1.5", default/version = "0.1.4", default/' "$tmp/Cargo.toml"
 cat "$tmp/x" > "$tmp/Cargo.toml"
 if "$s" --check 0.1.5 >/dev/null 2>&1; then bad "drift not caught"; else ok "drifted requirement caught"; fi
 
+"$s" --check 0.1.5 >/dev/null 2>&1 && rc=0 || rc=$?
+if [ "$rc" -eq 1 ]; then ok "a mismatch exits 1"; else bad "a mismatch exited $rc"; fi
+
 for v in 1.2 1.2.3.4 v1.2.3 1.2.3-rc1 1.2.3+b 01.2.3 1.02.3 1..3 .1.2 1.2. "" abc; do
-  if "$s" "$v" >/dev/null 2>&1; then bad "accepted '$v'"; else ok "refused '$v'"; fi
+  "$s" "$v" >/dev/null 2>&1 && rc=0 || rc=$?
+  if [ "$rc" -eq 2 ]; then ok "refused '$v' with exit 2"; else bad "'$v' exited $rc"; fi
 done
+
+# crlf manifests: set and check work, and the line endings stay
+for f in "$tmp/Cargo.toml" "$tmp/crates/a/Cargo.toml" "$tmp/crates/b/Cargo.toml"; do
+  sed 's/$/\r/' "$f" > "$tmp/x"
+  cat "$tmp/x" > "$f"
+done
+"$s" 0.1.6
+if "$s" --check 0.1.6 >/dev/null 2>&1; then ok "crlf set then check"; else bad "crlf set then check"; fi
+if grep -q 'version = "0.1.6"'"$(printf '\r')"'$' "$tmp/Cargo.toml" && ! grep -q '0.1.5' "$tmp/Cargo.toml"; then ok "crlf endings kept"; else bad "crlf endings lost"; fi
 
 # the real tree: every file agrees with the workspace version
 real=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p;}' "$here/../Cargo.toml")
