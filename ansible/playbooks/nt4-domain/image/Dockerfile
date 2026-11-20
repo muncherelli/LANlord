@@ -1,6 +1,7 @@
 # samba for retro windows clients, built from the upstream source tarball (checked against the
-# samba release key in this folder) as a classic, non-ad server: smbd, nmbd, tdbsam, smbpasswd,
-# pdbedit and net, with smb1 (nt1) still available. only upstream software is in the image;
+# samba release key in this folder) as a classic, non-ad server: smbd, nmbd, winbindd (ids for
+# local and builtin groups), tdbsam, smbpasswd, pdbedit, net, rpcclient and wbinfo, with smb1
+# (nt1) still available. only upstream software is in the image;
 # lanlord's entrypoint.sh, lanlord-user and smb.conf are mounted when the container runs.
 #   docker build --build-arg IMAGE_VERSION=0.1.0 -t lanlord-nt4-server-components:0.1.0 .
 # IMAGE_VERSION is the lanlord release (the tag); the samba version is the ARG below and a label
@@ -59,7 +60,7 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
       --with-lockdir=/var/lib/samba --with-statedir=/var/lib/samba --with-cachedir=/var/cache/samba \
       --with-piddir=/run/samba --with-logfilebase=/var/log/samba \
       --without-ad-dc --without-ads --without-ldap --without-pam --without-systemd \
-      --without-json --without-winbind --without-regedit --without-libunwind \
+      --without-json --without-regedit --without-libunwind \
       --disable-python --disable-cups --disable-avahi --disable-rpath-install \
       --bundled-libraries='ALL,!cmocka' --enable-fhs --with-shared-modules='!vfs_snapper' \
  && make -j"$(nproc)" \
@@ -87,8 +88,8 @@ COPY --from=build /out/usr/ /usr/
 # samba's own libraries live in /usr/lib/samba; musl finds them through this path file
 RUN echo /usr/lib/samba:/lib:/usr/local/lib:/usr/lib > /etc/ld-musl-$(uname -m).path \
  && cd /usr/bin && rm -f cifsdd dbwrap_tool gentest ldb* locktest masktest mdsearch mvxattr ndrdump oLschema2ldif \
-      profiles regdiff regpatch regshell regtree rpcclient samba-log-parser sharesec smbcacls smbcquotas \
-      smbget smbspool smbtar smbtree wbinfo wspsearch ntlm_auth \
+      profiles regdiff regpatch regshell regtree samba-log-parser sharesec smbcacls smbcquotas \
+      smbget smbspool smbtar smbtree wspsearch ntlm_auth \
  && { [ -e /usr/sbin/nologin ] || ln -s /sbin/nologin /usr/sbin/nologin; } \
  && mkdir -p /run/samba /var/log/samba /var/lib/samba /var/cache/samba /etc/samba
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
