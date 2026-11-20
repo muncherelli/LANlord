@@ -576,6 +576,45 @@ fn place_dialog<'a>(window: egui::Window<'a>, place: Placement, seen: Dialog) ->
     }
 }
 
+/// what a dialog was last frame. a window that is not on screen yet, or whose place was forgotten,
+/// opens in the middle again.
+fn dialog_seen(ctx: &egui::Context, id: &str, key: Id) -> Dialog {
+    if ctx.memory(|m| m.area_rect(Id::unique(id))).is_none() {
+        return Dialog::default();
+    }
+    ctx.data(|d| d.get_temp(key)).unwrap_or_default()
+}
+
+/// keep where a dialog was drawn, and take the tab key press that drew it, for the next frame.
+fn remember_dialog(ctx: &egui::Context, key: Id, seen: Option<Dialog>, drawn: Rect) {
+    let tabbed = controls::take_tabbed(ctx);
+    if let Some(seen) = seen {
+        ctx.data_mut(|d| d.insert_temp(key, seen.after(drawn, tabbed)));
+    }
+}
+
+/// the room the contents took. a fixed window keeps its width: the scroll bar takes room from the
+/// contents, and a control that will not narrow must not widen the window.
+fn taken_by(inner: &Ui, fixed: bool, width: f32) -> Rect {
+    let mut taken = inner.min_rect();
+    if fixed {
+        taken.set_width(width);
+    }
+    taken
+}
+
+/// how many times egui may draw a window in one frame. when a resize begins egui draws it again,
+/// and a window held by its far edge is drawn once more after that: allow for both while a window
+/// is held, and only then.
+fn allow_passes(ctx: &egui::Context, held: bool) {
+    if held || !ctx.input(|i| i.pointer.primary_down()) {
+        let passes = if held { 3 } else { 2 };
+        ctx.options_mut(|o| {
+            o.max_passes = std::num::NonZeroUsize::new(passes).unwrap_or(o.max_passes)
+        });
+    }
+}
+
 /// show a window. every window opens as tall as what is in it, with an 8 pixel margin all round,
 /// and when that is more than the desktop it stops at the desktop and scrolls. a `dialog` has a
 /// close button only, cannot be resized and opens centred on `place.start`; any other window has
@@ -626,11 +665,7 @@ pub fn show(
                 .inner_margin(Margin::same(FRAME as i8)),
         );
     let dialog_key = Id::unique(("window-dialog", id));
-    let mut seen: Dialog = ctx.data(|d| d.get_temp(dialog_key)).unwrap_or_default();
-    if ctx.memory(|m| m.area_rect(Id::unique(id))).is_none() {
-        // not on screen yet, or its place was forgotten: it opens in the middle again
-        seen = Dialog::default();
-    }
+    let seen = dialog_seen(ctx, id, dialog_key);
     window = if dialog {
         place_dialog(window, place, seen)
     } else {
@@ -640,17 +675,13 @@ pub fn show(
             None => open_size(window, place, least, before, fit, floor),
         }
     };
+    let held_height = sized || (fixed && place.height.is_some());
     // a drag on the left or top edge keeps the far edges where they are
     let edge_key = Id::unique(("window-edge", id));
     let edge = EdgeDrag::follow(ctx, id, edge_key).filter(|_| growable);
     // egui draws a window again when a resize begins, and the window held by its far edge is drawn
     // once more after that: allow for both while a window is held, and only then
-    if edge.is_some() || !ctx.input(|i| i.pointer.primary_down()) {
-        let passes = if edge.is_some() { 3 } else { 2 };
-        ctx.options_mut(|o| {
-            o.max_passes = std::num::NonZeroUsize::new(passes).unwrap_or(o.max_passes)
-        });
-    }
+    allow_passes(ctx, edge.is_some());
     let mut wanted = None;
     if let Some(drag) = edge {
         (window, wanted) = drag.place(ctx, id, window);
@@ -675,10 +706,11 @@ pub fn show(
         // could never grow
         // a growable window gives its contents the room it has, so they follow its size
         let held = ui.available_height();
-        let room = if sized || (fixed && place.height.is_some()) {
-            held.clamp(40.0, (max_height - CHROME).max(40.0))
+        let most = (max_height - CHROME).max(40.0);
+        let room = if held_height {
+            held.clamp(40.0, most)
         } else {
-            (max_height - CHROME).max(40.0)
+            most
         };
         // the room above what the contents need on their own, for the growable part to take
         let extra = spare_room(before, sized, fit, room, floor);
@@ -704,7 +736,7 @@ pub fn show(
                     .id_salt(("window-scroll", id, sizing))
                     .max_height(scroll_room)
                     .min_scrolled_height((least.y - CHROME - reserve).max(0.0))
-                    .auto_shrink([false, !sized && !(fixed && place.height.is_some())])
+                    .auto_shrink([false, !held_height])
                     .show(&mut inner, |ui| {
                         let framed = egui::Frame::new()
                             .inner_margin(Margin::same(MARGIN as i8))
@@ -728,11 +760,7 @@ pub fn show(
         }
         // a fixed window keeps its width: the scroll bar takes room from the contents, and a
         // control that will not narrow must not widen the window
-        let mut taken = inner.min_rect();
-        if fixed {
-            taken.set_width(room_width);
-        }
-        ui.allocate_rect(taken, Sense::hover());
+        ui.allocate_rect(taken_by(&inner, fixed, room_width), Sense::hover());
         let bar = Rect::from_min_max(
             bar_top,
             Pos2::new(ui.min_rect().right(), bar_top.y + TITLE_BAR),
@@ -753,10 +781,7 @@ pub fn show(
     if let Some((drag, pos)) = edge.zip(wanted) {
         drag.after(ctx, edge_key, pos, drawn, place.area);
     }
-    let tabbed = controls::take_tabbed(ctx);
-    if dialog {
-        ctx.data_mut(|d| d.insert_temp(dialog_key, seen.after(drawn, tabbed)));
-    }
+    remember_dialog(ctx, dialog_key, dialog.then_some(seen), drawn);
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, drawn, true);
     Some(Shown {
