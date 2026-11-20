@@ -59,7 +59,14 @@ pub const INCUS_KEYCTL_FIX: &str = "incus and lxd allow keyctl by default: on th
 pub const PROXMOX_TUN_FIX: &str = "on the proxmox host run `pct set <CTID> --dev0 /dev/net/tun` (proxmox ve 8.1 or newer; replace <CTID> with this container's number), or on proxmox ve 7 or newer add these two lines to /etc/pve/lxc/<CTID>.conf:\nlxc.cgroup2.devices.allow: c 10:200 rwm\nlxc.mount.entry: /dev/net/tun dev/net/tun none bind,create=file\nand then restart the container with `pct reboot <CTID>`";
 
 /// the modules that run in docker (or install it) and so need what docker needs.
-pub const DOCKER_MODULES: &[&str] = &["docker", "nt4-domain", "web-proxy", "dns", "time-server"];
+pub const DOCKER_MODULES: &[&str] = &[
+    "docker",
+    "nt4-domain",
+    "web-proxy",
+    "dns",
+    "dhcp",
+    "time-server",
+];
 
 impl Environment {
     /// a short description, such as "unprivileged lxc container on proxmox".

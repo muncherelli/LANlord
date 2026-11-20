@@ -252,27 +252,23 @@ fn component(module: &'static Module) -> Component {
             ],
             ..plain
         },
+        // the DNS server and the DHCP server are two entries that share one dnsmasq per network
         "dns" => Component {
             requires_docker: true,
-            ports: &[(Udp, 53), (Tcp, 53), (Udp, 67)],
-            roles: &[Role::Dns, Role::Dhcp],
+            ports: &[(Udp, 53), (Tcp, 53)],
+            roles: &[Role::Dns],
             attach_min: 1,
             attach_max: None,
             mechanisms: &[Mechanism::HostBind, Mechanism::Ipvlan],
-            subcomponents: &[
-                SubComponent {
-                    id: "dns",
-                    name: "DNS server",
-                    description: "Local names for every network it joins.",
-                    default: true,
-                },
-                SubComponent {
-                    id: "dhcp",
-                    name: "DHCP server",
-                    description: "Hands out addresses on the networks it joins.",
-                    default: true,
-                },
-            ],
+            ..plain
+        },
+        "dhcp" => Component {
+            requires_docker: true,
+            ports: &[(Udp, 67)],
+            roles: &[Role::Dhcp],
+            attach_min: 1,
+            attach_max: None,
+            mechanisms: &[Mechanism::HostBind, Mechanism::Ipvlan],
             ..plain
         },
         "time-server" => Component {
@@ -350,6 +346,7 @@ impl Selection {
     pub fn from_sections(settings: &Settings) -> Self {
         let networks = networks_from_settings(settings);
         let mut enabled = legacy(settings, &networks);
+        split_dhcp(&mut enabled);
         for choice in enabled.values_mut() {
             normalise(choice, &networks);
         }
@@ -385,6 +382,9 @@ impl Selection {
             }
             Some(_) => anyhow::bail!("components must be a mapping of component names"),
         }
+        if !matches!(settings.section(SECTION), Some(Value::Mapping(m)) if m.contains_key(DHCP)) {
+            split_dhcp(&mut enabled);
+        }
         for choice in enabled.values_mut() {
             normalise(choice, &networks);
         }
@@ -419,7 +419,9 @@ impl Selection {
         // `enabled: false`, or the old way of reading would switch it back on
         for component in catalogue() {
             let id = component.id();
-            if !self.is_enabled(id) && settings.section(id).is_some() && !entries.contains_key(id) {
+            // `dhcp` too: with no entry it would be read as the old settings and switched back on
+            let written = settings.section(id).is_some() || (id == DHCP && self.is_enabled("dns"));
+            if !self.is_enabled(id) && written && !entries.contains_key(id) {
                 entries.insert(
                     Value::String(id.into()),
                     Value::Mapping(Mapping::from_iter([(
@@ -798,6 +800,32 @@ fn normalise(choice: &mut Choice, networks: &[Network]) {
     }
 }
 
+/// the id of the DHCP server entry, which used to be a subcomponent of `dns`.
+const DHCP: &str = "dhcp";
+
+/// settings from before the DHCP server became an entry of its own have none: it is on next to
+/// the DNS server, joined to the same networks, unless the old `dns` subcomponents left it out
+/// (or left the DNS server out, which then goes).
+fn split_dhcp(enabled: &mut BTreeMap<String, Choice>) {
+    let Some(dns) = enabled.get_mut("dns") else {
+        return;
+    };
+    let parts = std::mem::take(&mut dns.subcomponents);
+    let has = |id: &str| parts.is_empty() || parts.iter().any(|p| p == id);
+    let (dns_on, dhcp_on) = (has("dns"), has(DHCP));
+    if dhcp_on {
+        let choice = Choice {
+            attach: dns.attach.clone(),
+            mechanism: dns.mechanism,
+            subcomponents: Vec::new(),
+        };
+        enabled.insert(DHCP.into(), choice);
+    }
+    if !dns_on {
+        enabled.remove("dns");
+    }
+}
+
 /// the old way: every module with a top-level section is on, joined to the one internal network;
 /// `nt4-domain.address` and `web-proxy.listen` become attachments.
 fn legacy(settings: &Settings, networks: &[Network]) -> BTreeMap<String, Choice> {
@@ -1140,8 +1168,11 @@ mod tests {
         assert!(!find("docker").unwrap().attaches());
         assert!(find("nt4-domain").unwrap().netbios);
         assert!(find("web-proxy").unwrap().external);
-        assert_eq!(find("dns").unwrap().ports(), "udp 53, tcp 53, udp 67");
+        assert_eq!(find("dns").unwrap().ports(), "udp 53, tcp 53");
+        assert_eq!(find("dhcp").unwrap().ports(), "udp 67");
         assert_eq!(find("dns").unwrap().needs(), "Docker, 1+ network");
+        assert_eq!(find("dhcp").unwrap().needs(), "Docker, 1+ network");
+        assert!(find("dns").unwrap().subcomponents.is_empty());
         assert_eq!(find("gateway").unwrap().needs(), "gateway only");
         let time = find("time-server").unwrap();
         assert_eq!(time.name(), "Time Server (NTP)");
@@ -1314,12 +1345,21 @@ mod tests {
         assert_eq!(internal.reservations, [Ipv4Addr::new(192, 0, 2, 20)]);
         let selection = Selection::from_settings(&settings).unwrap();
         let ids: Vec<&str> = selection.enabled.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["dns", "docker", "gateway", "nt4-domain", "web-proxy"]);
         assert_eq!(
-            selection.enabled["dns"].attach,
-            vec![at(LEGACY_NETWORK, None)]
+            ids,
+            [
+                "dhcp",
+                "dns",
+                "docker",
+                "gateway",
+                "nt4-domain",
+                "web-proxy"
+            ]
         );
-        assert_eq!(selection.enabled["dns"].subcomponents, ["dns", "dhcp"]);
+        for id in ["dns", "dhcp"] {
+            assert_eq!(selection.enabled[id].attach, vec![at(LEGACY_NETWORK, None)]);
+            assert!(selection.enabled[id].subcomponents.is_empty());
+        }
         assert_eq!(
             selection.enabled["nt4-domain"].attach,
             vec![at(LEGACY_NETWORK, Some([192, 0, 2, 5]))]
@@ -1554,5 +1594,51 @@ mod tests {
             &Settings::parse("components: {dns: {attach: 3}}\n").unwrap()
         )
         .is_err());
+    }
+
+    fn read(text: &str) -> Selection {
+        Selection::from_settings(&Settings::parse(text).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn settings_from_before_the_split_come_up_with_both_ticked() {
+        let both = read("components:\n  dns: {attach: [{network: lab}]}\n");
+        assert_eq!(both.enabled["dns"].attach, both.enabled["dhcp"].attach);
+        let listed = read("components:\n  dns: {subcomponents: [dns, dhcp]}\n");
+        assert!(listed.is_enabled("dns") && listed.is_enabled("dhcp"));
+        assert!(listed.enabled["dns"].subcomponents.is_empty());
+        // an old choice that left one out keeps leaving it out
+        let only_dns = read("components:\n  dns: {subcomponents: [dns]}\n");
+        assert!(only_dns.is_enabled("dns") && !only_dns.is_enabled("dhcp"));
+        let only_dhcp = read("components:\n  dns: {subcomponents: [dhcp]}\n");
+        assert!(!only_dhcp.is_enabled("dns") && only_dhcp.is_enabled("dhcp"));
+        let off = read("components:\n  dns: {enabled: false}\n");
+        assert!(!off.is_enabled("dns") && !off.is_enabled("dhcp"));
+    }
+
+    #[test]
+    fn a_dhcp_entry_is_taken_as_written() {
+        let text = "components:\n  dns: {}\n  dhcp: {enabled: false}\n";
+        let s = read(text);
+        assert!(s.is_enabled("dns") && !s.is_enabled("dhcp"));
+        let s = read("components:\n  dhcp: {attach: [{network: lab}]}\n");
+        assert!(!s.is_enabled("dns") && s.is_enabled("dhcp"));
+    }
+
+    #[test]
+    fn unticking_dhcp_is_written_so_it_stays_off() {
+        let mut settings = Settings::parse("components:\n  dns: {}\n").unwrap();
+        let mut s = read("components:\n  dns: {}\n");
+        s.enabled.remove("dhcp");
+        s.apply_to(&mut settings);
+        let back = Selection::from_settings(&settings).unwrap();
+        assert!(back.is_enabled("dns") && !back.is_enabled("dhcp"));
+        // dhcp without dns is the third state
+        let mut s = back;
+        s.enabled.remove("dns");
+        s.enabled.insert("dhcp".into(), Choice::default());
+        s.apply_to(&mut settings);
+        let back = Selection::from_settings(&settings).unwrap();
+        assert!(!back.is_enabled("dns") && back.is_enabled("dhcp"));
     }
 }

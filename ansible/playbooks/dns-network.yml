@@ -43,4 +43,4 @@
     msg: >-
       {{ net.name }}: dnsmasq answers for .{{ net.zone }} on {{ net.ip }} ({{ net.interface }}),
       {{ dns_names | length + net.records | length }} names,
-      {{ ('dhcp ' ~ net.dhcp.range[0] ~ ' to ' ~ net.dhcp.range[1]) if net.dhcp else 'no dhcp' }}
+      {{ ('dhcp ' ~ net.dhcp.range[0] ~ ' to ' ~ net.dhcp.range[1]) if (net.dhcp and dns_serves_dhcp) else 'no dhcp' }}

@@ -178,7 +178,7 @@ fn web_gateway() -> std::sync::Arc<dyn lanlord_app::gateway::Gateway> {
 /// purge prompt is My Server's `@2`), and nothing else but these ids.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn safe_open_spec(spec: &str) -> String {
-    const SAFE: [&str; 14] = [
+    const SAFE: [&str; 15] = [
         "menu",
         "taskmgr",
         "datetime",
@@ -193,6 +193,7 @@ fn safe_open_spec(spec: &str) -> String {
         "web-proxy",
         "remote-commands",
         "dns",
+        "dhcp",
     ];
     spec.split(',')
         .map(str::trim)

@@ -24,7 +24,7 @@
   connection: local
   gather_facts: true
   become: true
-  tags: [dns]
+  tags: [dns, dhcp]
   vars:
     image_dir: /opt/lanlord/playbooks/dns/image
     # the image is pinned to the lanlord release that runs this playbook (lanlord passes the image version as an extra var)
@@ -97,7 +97,7 @@
 
     - name: remove the dnsmasq of networks that are gone
       ansible.builtin.include_tasks: dns-cleanup.yml
-      when: networks is defined
+      when: networks is defined or not (dns_serves_dns or dns_serves_dhcp)
 
     - name: report
       ansible.builtin.debug:

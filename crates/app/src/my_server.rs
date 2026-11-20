@@ -1014,7 +1014,7 @@ mod tests {
         };
         let (nesting, bad) = row("container nesting");
         assert_eq!((nesting[0].as_str(), bad), (mark(Status::Fail), true));
-        assert!(nesting[2].contains("NT4") && nesting[2].contains("Network services"));
+        assert!(nesting[2].contains("NT4") && nesting[2].contains("DNS server"));
         assert_eq!(row("container keyctl").0[0], mark(Status::Ok));
         let (tun, bad) = row("tun/tap device");
         assert_eq!((tun[0].as_str(), bad), (mark(Status::Warn), false));

@@ -1029,7 +1029,7 @@ impl Shell {
                 let module = &MODULES[i];
                 match module.id {
                     "nt4-domain" => self.nt4_window(module, pass, &state),
-                    "dns" => {
+                    "dns" | "dhcp" => {
                         let mut nodes = module_window::header(module);
                         nodes.extend(self.dns.view(&self.services, host.as_deref()));
                         let (answer, msg) = drive(&nodes, &mut pass, &state, palette);

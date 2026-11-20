@@ -88,8 +88,16 @@ pub const MODULES: &[Module] = &[
         "dns",
         "DNS",
         ["┌─────┐", "│ DNS │", "└─────┘"],
-        "dnsmasq in Docker: local-only DNS for the retronet and optional gatewayless DHCP for Windows 98, 2000, NT4 and old Linux clients.",
-        "dns:\n  zone: retronet\n  records:\n    - {name: ntsrv1, address: 172.16.120.10}\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d",
+        "dnsmasq in Docker: local-only DNS for the retronet. It shares one dnsmasq per network with the DHCP server.",
+        "dns:\n  zone: retronet\n  records:\n    - {name: ntsrv1, address: 172.16.120.10}",
+        Status::Available,
+    ),
+    Module::new(
+        "dhcp",
+        "DHCP",
+        ["┌─────┐", "│DHCP │", "└─────┘"],
+        "dnsmasq in Docker: optional gatewayless DHCP for Windows 98, 2000, NT4 and old Linux clients. It shares one dnsmasq per network with the DNS server; its settings are the dhcp mapping of each network.",
+        "dhcp: {}\n\n# its settings are the dhcp mapping of each network:\nnetworks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      lease: 7d",
         Status::Available,
     ),
     Module::new(

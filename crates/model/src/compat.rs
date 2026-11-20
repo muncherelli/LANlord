@@ -1,8 +1,8 @@
 //! which components need which of the doctor's checks, so every front end shows the same list.
 //!
-//! components are named here as the user knows them (`nt4`, `network-services`) and each is run by
-//! one module today. [`COMPONENTS`] is the only place that ties a name to its module: renaming the
-//! `dns` module to `network-services` later is a one-line change there.
+//! components are named here as the user knows them (`nt4`, `dhcp-server`) and each is run by
+//! one module today. [`COMPONENTS`] is the only place that ties a name to its module: renaming a
+//! module later is a one-line change there.
 
 use crate::doctor::{Check, Report, Status};
 
@@ -25,9 +25,14 @@ pub const COMPONENTS: &[Named] = &[
         module: "nt4-domain",
     },
     Named {
-        name: "network-services",
-        title: "Network services (DHCP and DNS)",
+        name: "dns-server",
+        title: "DNS server",
         module: "dns",
+    },
+    Named {
+        name: "dhcp-server",
+        title: "DHCP server",
+        module: "dhcp",
     },
     Named {
         name: "time-server",
@@ -206,9 +211,11 @@ mod tests {
     #[test]
     fn components_are_keyed_by_name_and_map_to_their_module() {
         assert_eq!(component("nt4").unwrap().module, "nt4-domain");
-        assert_eq!(component("network-services").unwrap().module, "dns");
+        assert_eq!(component("dns-server").unwrap().module, "dns");
+        assert_eq!(component("dhcp-server").unwrap().module, "dhcp");
         assert!(component("nothing").is_none());
-        assert_eq!(checks_for("nt4"), checks_for("network-services"));
+        assert_eq!(checks_for("nt4"), checks_for("dns-server"));
+        assert_eq!(checks_for("dns-server"), checks_for("dhcp-server"));
         assert!(checks_for("nt4").contains(&"lxc-keyctl"));
         assert!(checks_for("nothing").is_empty());
     }
@@ -220,6 +227,7 @@ mod tests {
             assert!(checks.starts_with(DOCKER_CHECKS), "{module}");
         }
         assert_eq!(checks_for_module("dns"), DOCKER_CHECKS);
+        assert_eq!(checks_for_module("dhcp"), DOCKER_CHECKS);
         // the time server also needs udp 123
         assert_eq!(checks_for("time-server"), TIME_CHECKS);
         assert!(needed_for("ntp-port").contains(&"Time Server (NTP)"));
@@ -234,7 +242,7 @@ mod tests {
     fn each_check_says_what_needs_it() {
         let uses = needed_for("lxc-nesting");
         assert!(uses.iter().any(|t| t.starts_with("NT4")));
-        assert!(uses.iter().any(|t| t.starts_with("Network services")));
+        assert!(uses.iter().any(|t| t.starts_with("DNS server")));
         let tun = needed_for("tun");
         assert!(tun.iter().any(|t| t.contains("VDE and 86Box")));
         assert!(tun.iter().any(|t| t.contains("wireguard-go")));

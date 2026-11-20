@@ -1701,7 +1701,7 @@ impl Desktop {
         let host = self.host();
         match module.id {
             "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
-            "dns" => self.dns.show(ui, &self.services, host.as_deref()),
+            "dns" | "dhcp" => self.dns.show(ui, &self.services, host.as_deref()),
             "remote-commands" => {
                 let machines = self.nt4.settings.machines();
                 self.commands
