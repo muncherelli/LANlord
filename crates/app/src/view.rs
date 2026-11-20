@@ -331,37 +331,6 @@ pub fn field_errors<M>(errors: &[ValidationError], path: &str) -> Vec<Node<M>> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn error(path: &str) -> ValidationError {
-        ValidationError {
-            path: path.into(),
-            message: format!("bad {path}"),
-        }
-    }
-
-    #[test]
-    fn messages_match_a_path_and_what_is_below_it() {
-        let errors = [
-            error("dns.records[1].name"),
-            error("dns.records[10].name"),
-            error("dns.zone"),
-            error("dns.dhcp.range[0]"),
-        ];
-        assert_eq!(messages(&errors, "dns.zone"), ["bad dns.zone"]);
-        assert_eq!(messages(&errors, "dns.records[1]").len(), 1);
-        assert_eq!(messages(&errors, "dns.dhcp.range").len(), 1);
-        assert!(messages(&errors, "dns.zon").is_empty());
-        assert_eq!(
-            bad_rows(&errors, "dns.records", 3),
-            [false, true, false],
-            "[1] must not match [10]"
-        );
-    }
-}
-
 /// a number that changes when what `nodes` show changes in a way that can change their size: the
 /// text, the rows and the parts, not what is typed, ticked or picked. a window that sizes itself
 /// to its pages measures them again when it changes.
@@ -487,5 +456,36 @@ fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
                 .iter()
                 .for_each(|r| (r.icon, &r.label, &r.detail).hash(h)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error(path: &str) -> ValidationError {
+        ValidationError {
+            path: path.into(),
+            message: format!("bad {path}"),
+        }
+    }
+
+    #[test]
+    fn messages_match_a_path_and_what_is_below_it() {
+        let errors = [
+            error("dns.records[1].name"),
+            error("dns.records[10].name"),
+            error("dns.zone"),
+            error("dns.dhcp.range[0]"),
+        ];
+        assert_eq!(messages(&errors, "dns.zone"), ["bad dns.zone"]);
+        assert_eq!(messages(&errors, "dns.records[1]").len(), 1);
+        assert_eq!(messages(&errors, "dns.dhcp.range").len(), 1);
+        assert!(messages(&errors, "dns.zon").is_empty());
+        assert_eq!(
+            bad_rows(&errors, "dns.records", 3),
+            [false, true, false],
+            "[1] must not match [10]"
+        );
     }
 }
