@@ -136,6 +136,10 @@ pub fn load_default() -> Result<Option<Identity>> {
 pub const CLIENT_HAS_NO_KEY: &str =
     "secrets are kept and used on the gateway; this machine holds no key";
 
+/// what [`NotOurKey`] says; the upgrade looks for it in an error that came back as text.
+pub const NOT_OUR_KEY: &str =
+    "the stored secrets are sealed to another key; move them to the gateway first";
+
 /// the settings were not sealed to this gateway's key (an older client's key sealed them):
 /// they need moving to the gateway first.
 #[derive(Debug)]
@@ -143,7 +147,7 @@ pub struct NotOurKey;
 
 impl std::fmt::Display for NotOurKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the stored secrets are sealed to another key; move them to the gateway first")
+        f.write_str(NOT_OUR_KEY)
     }
 }
 
