@@ -45,6 +45,7 @@ mod tests {
             "0.1.+4",
         ] {
             assert!(rule::development(odd).is_err(), "{odd}");
+            assert!(rule::shown(odd, true).is_err(), "{odd}");
         }
     }
 
