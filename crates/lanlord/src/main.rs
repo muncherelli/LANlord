@@ -1214,11 +1214,14 @@ fn upgrade(
         .map(|user| user.is_root)
         .unwrap_or(false);
     let key = paths::identity_path().filter(|path| path.exists());
-    upgrade_steps(
+    let target = UpgradeTarget {
         host,
         yes,
         root,
-        key.as_deref(),
+        key: key.as_deref(),
+    };
+    upgrade_steps(
+        &target,
         &mut || match execute(host, &Operation::LoadDocument, &mut ask)? {
             Reply::Document(document) => Ok(document.needs_move),
             _ => bail!("the server answered something other than the settings"),
@@ -1240,6 +1243,16 @@ fn upgrade(
     )
 }
 
+/// what the check on the stored secrets needs to know about the upgrade.
+struct UpgradeTarget<'a> {
+    host: &'a str,
+    yes: bool,
+    /// whether the login on the gateway is root's.
+    root: bool,
+    /// the old client key on this machine, if there is one.
+    key: Option<&'a std::path::Path>,
+}
+
 /// the upgrade, with the check on the stored secrets first: when they are sealed to a key the
 /// gateway does not hold, the upgrade would fail at its last step after changing everything, so
 /// it is settled (or refused) before `go` (the first change) is called. `needs_move` reads the
@@ -1248,10 +1261,7 @@ fn upgrade(
 /// only seals the secrets to the gateway's own key, and the old key is erased only after the
 /// gateway has confirmed that it reads them.
 fn upgrade_steps(
-    host: &str,
-    yes: bool,
-    root: bool,
-    key: Option<&std::path::Path>,
+    target: &UpgradeTarget,
     needs_move: &mut dyn FnMut() -> Result<bool>,
     run: &mut dyn FnMut(
         &lanlord_core::operations::Operation,
@@ -1259,6 +1269,12 @@ fn upgrade_steps(
     agree: &mut dyn FnMut(&str) -> Result<bool>,
     go: &mut dyn FnMut() -> Result<()>,
 ) -> Result<()> {
+    let UpgradeTarget {
+        host,
+        yes,
+        root,
+        key,
+    } = *target;
     let command = lanlord_core::upgrade::move_command(host);
     // a gateway that cannot answer the check is not a reason to stop: the upgrade's own first
     // step says what is wrong with it, and its last step names the command if it is this
@@ -2391,11 +2407,14 @@ mod tests {
         std::fs::write(&file, "AGE-SECRET-KEY-1TEST").unwrap();
         let log = std::cell::RefCell::new(Vec::new());
         let moved = std::cell::Cell::new(false);
-        let result = super::upgrade_steps(
-            "root@192.0.2.9",
+        let target = super::UpgradeTarget {
+            host: "root@192.0.2.9",
             yes,
             root,
-            key.then_some(file.as_path()),
+            key: key.then_some(file.as_path()),
+        };
+        let result = super::upgrade_steps(
+            &target,
             &mut || {
                 log.borrow_mut().push("check".to_string());
                 Ok(needs && !moved.get())

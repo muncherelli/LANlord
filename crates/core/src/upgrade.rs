@@ -1015,6 +1015,7 @@ esac"##
 
     #[test]
     fn a_sealed_secrets_failure_names_the_command_to_run() {
+        use crate::upgrade::{move_command, sealed_hint};
         assert_eq!(
             move_command("root@gw.example.net"),
             "lanlord move-secrets <your-admin>@gw.example.net"
