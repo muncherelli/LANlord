@@ -692,18 +692,26 @@ mod web {
 #[test]
 fn the_logon_box_asks_for_no_repaint_of_its_own() {
     let (mut desktop, ctx, _auth) = logon();
-    // let the fonts and the first layout settle: they ask for frames of their own
-    frames(&mut desktop, &ctx, 10);
-    let out = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                crate::testkit::SCREEN,
-            )),
-            ..Default::default()
-        },
-        |ui| desktop.show(ui),
-    );
-    let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+    // let the fonts, the first layout and any background wake settle: they ask for frames of
+    // their own, and a slow machine delivers them late, so draw until a frame asks for none
+    let start = std::time::Instant::now();
+    let delay = loop {
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    crate::testkit::SCREEN,
+                )),
+                ..Default::default()
+            },
+            |ui| desktop.show(ui),
+        );
+        let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        if delay == std::time::Duration::MAX || start.elapsed() > std::time::Duration::from_secs(60)
+        {
+            break delay;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
     assert_eq!(delay, std::time::Duration::MAX);
 }

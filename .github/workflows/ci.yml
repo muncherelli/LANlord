@@ -31,7 +31,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev
           libxrandr-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
-          libgl1-mesa-dev libpam0g-dev
+          libgl1-mesa-dev libpam0g-dev mesa-vulkan-drivers
       # the playbook render tests skip themselves without ansible, so install it where it is easy
       - name: install ansible for the playbook tests
         if: runner.os != 'Windows'
@@ -60,6 +60,7 @@ jobs:
           "$HOME/lint-venv/bin/pip" install --quiet shellcheck-py==0.11.0.1 actionlint-py==1.7.12.25
           echo "$HOME/lint-venv/bin" >> "$GITHUB_PATH"
       - run: tools/lint-shell.sh
+      - run: tools/test-set-version.sh
 
   headless:
     name: build without gui
