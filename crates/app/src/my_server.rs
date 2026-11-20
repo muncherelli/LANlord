@@ -1,11 +1,14 @@
-//! the My Server window: what the signed-in server is (General) and the one dangerous thing you
-//! can do to it (Advanced): take lanlord back off.
+//! the My Server window: what the signed-in server is (General), the one dangerous thing you can
+//! do to it (Advanced): take lanlord back off, and how people sign in to it over ssh (SSH).
 
 use lanlord_model::compat::{self, mark};
 use lanlord_model::doctor::{Report, Status};
 use lanlord_model::lan_networks::{self, LanNetwork};
+use lanlord_model::operations::Operation;
 use lanlord_model::rootssh::{RootSsh, RootSshInfo, DROPIN};
 use lanlord_model::server::ServerFacts;
+use lanlord_model::sshauth::SshAuthInfo;
+use lanlord_model::validate;
 
 use crate::log::{emit, Kind};
 
@@ -15,7 +18,8 @@ use crate::view::{self, Button, Dialog, Node, Size};
 
 pub const GENERAL: usize = 0;
 pub const ADVANCED: usize = 1;
-pub const COMPATIBILITY: usize = 2;
+pub const SSH: usize = 2;
+pub const COMPATIBILITY: usize = 3;
 
 /// what a click or a keystroke in the window means.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +34,22 @@ pub enum Msg {
     PickRootSsh(usize),
     /// set root's ssh access to the picked level.
     ApplyRootSsh,
+    /// the ssh password sign-in tick was clicked: turn it the other way.
+    TogglePasswords,
+    /// go ahead and turn passwords off although some account has no key.
+    ConfirmPasswordsOff,
+    /// pick the administrator account whose keys are listed, at this index.
+    PickKeyUser(usize),
+    /// pick a key of the listed account.
+    PickKey(usize),
+    /// open the box that takes a new public key.
+    AskAddKey,
+    /// the new key field now holds this text.
+    KeyText(String),
+    /// add the typed key to the picked account.
+    AddKey,
+    /// remove the picked key from the picked account.
+    RemoveKey,
     /// the "also remove the administrator accounts" tick.
     ToggleAdmins,
     /// the confirmation field now holds this text.
@@ -120,6 +140,15 @@ impl PurgeBox {
     }
 }
 
+/// a box of the SSH tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SshDialog {
+    /// turning passwords off would lock these accounts out: confirm or cancel.
+    PasswordsOff(Vec<String>),
+    /// type a public key for this account.
+    AddKey(String),
+}
+
 #[derive(Default)]
 pub struct MyServer {
     tab: usize,
@@ -141,6 +170,16 @@ pub struct MyServer {
     ssh_pick: Option<RootSsh>,
     /// the lanlord networks and what each allows over ssh, for the notice on the Advanced page.
     lan: Remote<Vec<LanNetwork>>,
+    /// ssh password sign-in and the administrators' keys, as the server says now.
+    auth: Remote<SshAuthInfo>,
+    /// the administrator whose keys are listed, an index into the accounts.
+    key_user: usize,
+    /// the key picked in that list.
+    key_pick: Option<usize>,
+    /// the text of the key being added.
+    key_text: String,
+    /// the box open on the SSH tab, and the host it was opened for.
+    ssh_dialog: Option<(String, SshDialog)>,
 }
 
 /// the height of the list of checks, and of the box holding the fix of the picked one.
@@ -175,6 +214,31 @@ impl MyServer {
     /// the level picked and not yet applied.
     pub fn root_ssh_pick(&self) -> Option<RootSsh> {
         self.ssh_pick
+    }
+
+    /// ssh sign-in as the server says it, once read.
+    pub fn ssh_auth(&self) -> &Remote<SshAuthInfo> {
+        &self.auth
+    }
+
+    /// the box open on the SSH tab.
+    pub fn ssh_dialog(&self) -> Option<&SshDialog> {
+        self.ssh_dialog.as_ref().map(|(_, d)| d)
+    }
+
+    /// the host the open box (purge or ssh) is about.
+    pub fn dialog_host(&self) -> String {
+        match (&self.purge, &self.ssh_dialog) {
+            (Some(purge), _) => purge.host.clone(),
+            (None, Some((host, _))) => host.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// the account whose keys are listed, if the server has any administrator.
+    fn key_account(&self) -> Option<&lanlord_model::sshauth::AccountKeys> {
+        let accounts = &self.auth.data.as_ref()?.accounts;
+        accounts.get(self.key_user).or_else(|| accounts.first())
     }
 
     /// switch off what changes the server, for an account that is not an administrator.
@@ -214,6 +278,9 @@ impl MyServer {
         self.facts.poll();
         self.ssh.poll();
         self.lan.poll();
+        if self.auth.poll() {
+            self.key_pick = None;
+        }
         if self.lan.wants_load(host, false) {
             let target = host.to_string();
             let job = services.spawn(host, move |gateway, ask| {
@@ -245,6 +312,12 @@ impl MyServer {
             self.facts
                 .track(host, job, "reading the server...", "up to date", true);
         }
+        if !self.read_only && self.auth.wants_load(host, false) {
+            let target = host.to_string();
+            let job = services.spawn(host, move |gateway, ask| gateway.ssh_auth(&target, ask));
+            self.auth
+                .track(host, job, "reading ssh sign-in...", "up to date", true);
+        }
     }
 
     /// pick up the purge box's jobs; a finished purge closes it and is reported once.
@@ -270,6 +343,7 @@ impl MyServer {
         let mut pages = vec![
             (GENERAL, self.general()),
             (COMPATIBILITY, self.compatibility(idle)),
+            (SSH, self.ssh_page(idle)),
             (ADVANCED, self.advanced(idle)),
         ];
         let at = pages
@@ -280,7 +354,7 @@ impl MyServer {
         vec![
             Node::Tabs {
                 key: view::pages_fingerprint(self.tab, &page, &pages),
-                titles: view::titles(&["General", "Advanced", "Compatibility"]),
+                titles: view::titles(&["General", "Advanced", "SSH", "Compatibility"]),
                 current: self.tab,
                 pick: Msg::Tab,
                 body: page,
@@ -482,7 +556,23 @@ impl MyServer {
                 "LANlord is not installed on this server.".into(),
             ));
         }
-        let mut page = vec![self.root_ssh_group(idle), Node::Gap(6.0)];
+        vec![Node::Danger(vec![Node::Group {
+            title: "Danger zone".into(),
+            body,
+        }])]
+    }
+
+    /// the SSH page: whether passwords are taken, the administrators' keys, root's access and
+    /// what the firewall does to ssh.
+    fn ssh_page(&self, idle: bool) -> Vec<Node<Msg>> {
+        let mut page = vec![
+            self.passwords_group(idle),
+            Node::Gap(6.0),
+            self.keys_group(idle),
+            Node::Gap(6.0),
+            self.root_ssh_group(idle),
+            Node::Gap(6.0),
+        ];
         let now = crate::networks_window::unix_now();
         if let Some(notice) = self
             .lan
@@ -491,13 +581,116 @@ impl MyServer {
             .and_then(|list| ssh_networks_notice(list, now))
         {
             page.push(notice);
-            page.push(Node::Gap(6.0));
         }
-        page.push(Node::Danger(vec![Node::Group {
-            title: "Danger zone".into(),
-            body,
-        }]));
         page
+    }
+
+    /// whether ssh takes passwords: one tick, and the accounts that have no key to fall back on.
+    fn passwords_group(&self, idle: bool) -> Node<Msg> {
+        let info = self.auth.data.as_ref();
+        let on = info.and_then(|i| i.passwords.or(i.chosen)).unwrap_or(true);
+        let usable =
+            !self.read_only && idle && !self.auth.busy() && info.is_some_and(|i| i.dropins);
+        let mut body = vec![
+            Node::Gap(4.0),
+            Node::Text(
+                "Whether people may sign in to this server over ssh with a password. Keys \
+                 are safer; turn passwords off once every administrator has a key. Until \
+                 you choose, LANlord leaves the ssh daemon as it is."
+                    .into(),
+            ),
+            Node::Gap(4.0),
+            Node::field(
+                "Now",
+                info.map_or("Reading...", |i| match (i.chosen, i.passwords) {
+                    (Some(true), _) => "Passwords on (set by LANlord)",
+                    (Some(false), _) => "Passwords off (set by LANlord)",
+                    (None, Some(true)) => "Passwords on (not managed by LANlord)",
+                    (None, Some(false)) => "Passwords off (not managed by LANlord)",
+                    (None, None) => "Not managed by LANlord",
+                }),
+            ),
+            Node::Check {
+                label: "Allow signing in to ssh with a password".into(),
+                checked: on,
+                enabled: usable,
+                toggle: Msg::TogglePasswords,
+            },
+        ];
+        if self.read_only {
+            body.push(Node::Text("Only an administrator can change this.".into()));
+        }
+        if info.is_some_and(|i| !i.dropins) {
+            body.push(Node::Alert(format!(
+                "This server's sshd does not read {}, so password sign-in cannot be set here.",
+                DROPIN_DIR
+            )));
+        }
+        if let Some((error, text)) = self.auth.note.clone() {
+            body.push(Node::Gap(4.0));
+            body.push(Node::Status { text, error });
+        }
+        Node::Group {
+            title: "Password sign-in".into(),
+            body,
+        }
+    }
+
+    /// the public keys of the administrator accounts, with Add and Remove.
+    fn keys_group(&self, idle: bool) -> Node<Msg> {
+        let account = self.key_account();
+        let can = !self.read_only && idle && !self.auth.busy() && account.is_some();
+        let names: Vec<(usize, String)> = self
+            .auth
+            .data
+            .as_ref()
+            .map(|i| {
+                i.accounts
+                    .iter()
+                    .map(|a| a.user.clone())
+                    .enumerate()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let shown = account.map_or("no administrators".to_string(), |a| a.user.clone());
+        let keys: Vec<String> = account
+            .map(|a| a.keys.iter().map(|k| key_label(k)).collect())
+            .unwrap_or_default();
+        let body = vec![
+            Node::Gap(4.0),
+            Node::Text(
+                "The ssh public keys that let an administrator sign in without a password. \
+                 Keys LANlord adds are marked in the file; the others are listed too."
+                    .into(),
+            ),
+            Node::Gap(4.0),
+            Node::Labelled {
+                label: "Account:".into(),
+                body: vec![Node::Choice {
+                    id: "key-user",
+                    current: shown,
+                    width: 220.0,
+                    options: names,
+                    pick: Msg::PickKeyUser,
+                }],
+            },
+            Node::List {
+                id: "admin-keys",
+                items: keys,
+                selected: self.key_pick,
+                min_height: 70.0,
+                empty: "No ssh key for this account.".into(),
+                select: Msg::PickKey,
+            },
+            Node::Toolbar(vec![
+                Button::new("Add key...", can, Msg::AskAddKey),
+                Button::new("Remove key", can && self.key_pick.is_some(), Msg::RemoveKey),
+            ]),
+        ];
+        Node::Group {
+            title: "Administrator ssh keys".into(),
+            body,
+        }
     }
 
     /// whether root may sign in to the server over ssh: the setting, its three levels, and what
@@ -568,8 +761,11 @@ impl MyServer {
         }
     }
 
-    /// the confirmation box, while a purge is being asked for or run.
+    /// the box over the window: a purge being asked for or run, or one of the SSH tab's.
     pub fn dialog(&self, services: &Services) -> Option<Dialog<Msg>> {
+        if self.purge.is_none() {
+            return self.ssh_box();
+        }
         let purge = self.purge.as_ref()?;
         let is_root = self.facts.data.as_ref().is_some_and(|f| f.is_root);
         let working = purge.running.busy();
@@ -629,6 +825,88 @@ impl MyServer {
         })
     }
 
+    /// the SSH tab's boxes: the lock-out warning and the new key.
+    fn ssh_box(&self) -> Option<Dialog<Msg>> {
+        let (_, dialog) = self.ssh_dialog.as_ref()?;
+        Some(match dialog {
+            SshDialog::PasswordsOff(without) => Dialog {
+                id: "ssh-passwords-box",
+                title: "Turn off ssh passwords".into(),
+                body: vec![
+                    Node::Heading("Some accounts have no ssh key".into()),
+                    Node::Text(format!(
+                        "With passwords off, {} could no longer sign in over ssh.",
+                        without.join(", ")
+                    )),
+                    Node::Text(
+                        "Add a key for each first, or go on only if you can still reach this \
+                         server another way."
+                            .into(),
+                    ),
+                    Node::Gap(6.0),
+                    Node::Buttons(vec![
+                        Button::new("Cancel", true, Msg::Cancel),
+                        Button::new("Turn off anyway", true, Msg::ConfirmPasswordsOff),
+                    ]),
+                ],
+                escape: Some(Msg::Cancel),
+            },
+            SshDialog::AddKey(user) => Dialog {
+                id: "ssh-key-box",
+                title: "Add ssh key".into(),
+                body: vec![
+                    Node::Heading(format!("Add a key for {user}")),
+                    Node::Text(
+                        "Paste one public key, such as the line of an id_ed25519.pub file:".into(),
+                    ),
+                    Node::Input {
+                        value: self.key_text.clone(),
+                        size: Size::Points(360.0),
+                        hint: "ssh-ed25519 AAAA... name".into(),
+                        focus: true,
+                        edit: Box::new(Msg::KeyText),
+                        enter: None,
+                    },
+                    Node::Gap(6.0),
+                    Node::Buttons(vec![
+                        Button::new("Cancel", true, Msg::Cancel),
+                        Button::new("Add", self.key_text_ok(user), Msg::AddKey),
+                    ]),
+                ],
+                escape: Some(Msg::Cancel),
+            },
+        })
+    }
+
+    /// is the typed key one the server would take?
+    fn key_text_ok(&self, user: &str) -> bool {
+        validate::operation(&Operation::AddAdminKey {
+            user: user.to_string(),
+            key: self.key_text.trim().to_string(),
+        })
+        .is_ok()
+    }
+
+    /// set the password switch and read the state back.
+    fn set_passwords(&mut self, services: &Services, host: &str, passwords: bool, confirmed: bool) {
+        let target = host.to_string();
+        let job = services.spawn(host, move |gateway, ask| {
+            gateway.set_password_login(&target, passwords, confirmed, ask)?;
+            gateway.ssh_auth(&target, ask)
+        });
+        self.auth.track(
+            host,
+            job,
+            "setting ssh password sign-in...",
+            if passwords {
+                "ssh passwords are on"
+            } else {
+                "ssh passwords are off"
+            },
+            false,
+        );
+    }
+
     /// act on a message. the rules the window shows are enforced here too, whatever the front
     /// end sends: no purge without the typed host name, no cancelling a purge that runs.
     pub fn update(&mut self, msg: Msg, services: &Services, host: &str) {
@@ -645,6 +923,93 @@ impl MyServer {
                 if self.can_purge(!services.busy(host)) {
                     self.ask_to_purge(services, host);
                 }
+            }
+            Msg::TogglePasswords => {
+                let Some(info) = self.auth.data.as_ref() else {
+                    return;
+                };
+                if self.read_only || !info.dropins || self.auth.busy() {
+                    return;
+                }
+                let want = !info.passwords.or(info.chosen).unwrap_or(true);
+                match info.refusal().filter(|_| !want) {
+                    // would lock somebody out: ask first; the server refuses on its own too
+                    Some(_) => {
+                        self.ssh_dialog = Some((
+                            host.to_string(),
+                            SshDialog::PasswordsOff(info.without_key()),
+                        ));
+                    }
+                    None => self.set_passwords(services, host, want, false),
+                }
+            }
+            Msg::ConfirmPasswordsOff => {
+                if let Some((_, SshDialog::PasswordsOff(_))) = self.ssh_dialog.take() {
+                    if !self.read_only && !self.auth.busy() {
+                        self.set_passwords(services, host, false, true);
+                    }
+                }
+            }
+            Msg::PickKeyUser(i) => {
+                self.key_user = i;
+                self.key_pick = None;
+            }
+            Msg::PickKey(i) => {
+                if self.key_account().is_some_and(|a| i < a.keys.len()) {
+                    self.key_pick = Some(i);
+                }
+            }
+            Msg::AskAddKey => {
+                if let (false, Some(account)) = (self.read_only, self.key_account()) {
+                    let user = account.user.clone();
+                    self.key_text.clear();
+                    self.ssh_dialog = Some((host.to_string(), SshDialog::AddKey(user)));
+                }
+            }
+            Msg::KeyText(text) => self.key_text = text,
+            Msg::AddKey => {
+                let Some((_, SshDialog::AddKey(user))) = self.ssh_dialog.clone() else {
+                    return;
+                };
+                if self.read_only || self.auth.busy() || !self.key_text_ok(&user) {
+                    return;
+                }
+                let (target, key) = (host.to_string(), self.key_text.trim().to_string());
+                let job = services.spawn(host, move |gateway, ask| {
+                    gateway.add_admin_key(&target, &user, &key, ask)?;
+                    gateway.ssh_auth(&target, ask)
+                });
+                if self
+                    .auth
+                    .track(host, job, "adding the key...", "the key was added", false)
+                {
+                    self.ssh_dialog = None;
+                    self.key_text.clear();
+                }
+            }
+            Msg::RemoveKey => {
+                let (Some(account), Some(pick)) = (self.key_account(), self.key_pick) else {
+                    return;
+                };
+                let Some(key) = account.keys.get(pick).cloned() else {
+                    return;
+                };
+                let user = account.user.clone();
+                if self.read_only || self.auth.busy() {
+                    return;
+                }
+                let target = host.to_string();
+                let job = services.spawn(host, move |gateway, ask| {
+                    gateway.remove_admin_key(&target, &user, &key, ask)?;
+                    gateway.ssh_auth(&target, ask)
+                });
+                self.auth.track(
+                    host,
+                    job,
+                    "removing the key...",
+                    "the key was removed",
+                    false,
+                );
             }
             Msg::PickRootSsh(i) => {
                 if !self.read_only {
@@ -675,6 +1040,7 @@ impl MyServer {
                 }
             }
             Msg::Cancel => {
+                self.ssh_dialog = None;
                 if !self.purge.as_ref().is_some_and(|p| p.running.busy()) {
                     self.purge = None;
                 }
@@ -705,6 +1071,35 @@ impl MyServer {
             }
         }
     }
+}
+
+/// the folder sshd reads its drop-ins from, for the messages.
+const DROPIN_DIR: &str = "/etc/ssh/sshd_config.d";
+
+/// a key line for the list: its type, the end of the key (enough to tell keys apart) and its
+/// comment.
+fn key_label(line: &str) -> String {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let at = words.iter().position(|w| {
+        ["ssh-", "ecdsa-", "sk-ssh-", "sk-ecdsa-"]
+            .iter()
+            .any(|p| w.starts_with(p))
+    });
+    let Some(at) = at else {
+        return line.to_string();
+    };
+    let kind = words[at];
+    let data = words.get(at + 1).copied().unwrap_or("");
+    let tail: String = data
+        .chars()
+        .rev()
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let comment = words.get(at + 2..).map(|c| c.join(" ")).unwrap_or_default();
+    format!("{kind} ...{tail} {comment}").trim_end().to_string()
 }
 
 /// what the firewall does to ssh from the LANlord networks, as the settings have it, and where
@@ -864,8 +1259,8 @@ mod tests {
         assert!(!services.busy("me@gw"));
         assert_eq!(
             fake.calls().len(),
-            3,
-            "the facts, the networks and the preview"
+            4,
+            "the facts, the networks, ssh sign-in and the preview"
         );
         window
     }
@@ -1162,27 +1557,27 @@ mod tests {
         let mut window = MyServer::default();
         settle(&mut window, &services);
         let mut seen = Vec::new();
-        texts(&window.advanced(true), &mut seen);
+        texts(&window.ssh_page(true), &mut seen);
         assert!(
             seen.iter().any(|t| t == "Not managed by LANlord"),
             "{seen:?}"
         );
         // an administrator can use the choice
         assert_eq!(
-            root_choice_enabled(&window.advanced(true), false),
+            root_choice_enabled(&window.ssh_page(true), false),
             Some(true)
         );
         // nothing picked yet: nothing to apply
-        assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
+        assert_eq!(apply_enabled(&window.ssh_page(true)), Some(false));
         window.update(Msg::PickRootSsh(2), &services, "me@gw");
         assert_eq!(window.root_ssh_pick(), Some(RootSsh::Off));
         let mut seen = Vec::new();
-        texts(&window.advanced(true), &mut seen);
+        texts(&window.ssh_page(true), &mut seen);
         assert!(
             seen.iter().any(|t| t.contains("LANlord clients")),
             "the warning about clients that connect as root: {seen:?}"
         );
-        assert_eq!(apply_enabled(&window.advanced(true)), Some(true));
+        assert_eq!(apply_enabled(&window.ssh_page(true)), Some(true));
         window.update(Msg::ApplyRootSsh, &services, "me@gw");
         let start = Instant::now();
         while window.ssh.busy() {
@@ -1205,8 +1600,8 @@ mod tests {
         window.update(Msg::PickRootSsh(0), &services, "me@gw");
         window.update(Msg::ApplyRootSsh, &services, "me@gw");
         assert_eq!(window.root_ssh_pick(), None);
-        assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
-        assert_eq!(root_choice_enabled(&window.advanced(true), false), None);
+        assert_eq!(apply_enabled(&window.ssh_page(true)), Some(false));
+        assert_eq!(root_choice_enabled(&window.ssh_page(true), false), None);
         assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
     }
 
@@ -1219,15 +1614,148 @@ mod tests {
         settle(&mut window, &services);
         window.update(Msg::PickRootSsh(1), &services, "me@gw");
         let mut seen = Vec::new();
-        texts(&window.advanced(true), &mut seen);
+        texts(&window.ssh_page(true), &mut seen);
         assert!(
             seen.iter()
                 .any(|t| t.contains("does not read /etc/ssh/sshd_config.d")),
             "{seen:?}"
         );
-        assert_eq!(apply_enabled(&window.advanced(true)), Some(false));
+        assert_eq!(apply_enabled(&window.ssh_page(true)), Some(false));
         window.update(Msg::ApplyRootSsh, &services, "me@gw");
         assert!(fake.calls().iter().all(|c| !c.starts_with("set-root-ssh")));
+    }
+
+    /// a window that has read ssh sign-in.
+    fn settled_auth(fake: &Arc<Fake>) -> (MyServer, Services) {
+        let services = Services::new(fake.clone(), Wake::none());
+        let mut window = MyServer::default();
+        settle(&mut window, &services);
+        let start = Instant::now();
+        while window.auth.data.is_none() || window.auth.busy() {
+            window.refresh(&services, "me@gw");
+            assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        (window, services)
+    }
+
+    fn wait_auth(window: &mut MyServer, services: &Services) {
+        let start = Instant::now();
+        while window.auth.busy() {
+            window.refresh(services, "me@gw");
+            assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn turning_passwords_off_asks_first_while_an_administrator_has_no_key() {
+        let fake = Arc::new(Fake::new());
+        let (mut window, services) = settled_auth(&fake);
+        // the demo's pat has no key
+        window.update(Msg::TogglePasswords, &services, "me@gw");
+        assert_eq!(
+            window.ssh_dialog(),
+            Some(&SshDialog::PasswordsOff(vec!["pat".into()]))
+        );
+        assert_eq!(window.dialog_host(), "me@gw");
+        assert!(window.dialog(&services).is_some());
+        assert!(fake
+            .calls()
+            .iter()
+            .all(|c| !c.starts_with("password-login")));
+        // cancelling sends nothing
+        window.update(Msg::Cancel, &services, "me@gw");
+        assert!(window.ssh_dialog().is_none());
+        // going on sends it confirmed
+        window.update(Msg::TogglePasswords, &services, "me@gw");
+        window.update(Msg::ConfirmPasswordsOff, &services, "me@gw");
+        wait_auth(&mut window, &services);
+        assert!(fake
+            .calls()
+            .contains(&"password-login me@gw false true".to_string()));
+        assert_eq!(window.auth.data.as_ref().unwrap().passwords, Some(false));
+        // and on again needs no question
+        window.update(Msg::TogglePasswords, &services, "me@gw");
+        assert!(window.ssh_dialog().is_none());
+        wait_auth(&mut window, &services);
+        assert_eq!(window.auth.data.as_ref().unwrap().passwords, Some(true));
+    }
+
+    #[test]
+    fn with_every_administrator_keyed_passwords_go_off_without_a_question() {
+        let fake = Arc::new(Fake::new());
+        fake.ssh_auth.lock().unwrap().accounts[1]
+            .keys
+            .push("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPatKey pat@desk".into());
+        let (mut window, services) = settled_auth(&fake);
+        window.update(Msg::TogglePasswords, &services, "me@gw");
+        assert!(window.ssh_dialog().is_none());
+        wait_auth(&mut window, &services);
+        assert!(fake
+            .calls()
+            .contains(&"password-login me@gw false false".to_string()));
+        assert_eq!(window.auth.data.as_ref().unwrap().chosen, Some(false));
+    }
+
+    #[test]
+    fn keys_are_listed_per_account_added_and_removed() {
+        let fake = Arc::new(Fake::new());
+        let (mut window, services) = settled_auth(&fake);
+        assert_eq!(window.key_account().unwrap().user, "dana");
+        window.update(Msg::PickKeyUser(1), &services, "me@gw");
+        assert_eq!(window.key_account().unwrap().user, "pat");
+        // a line that is not a key cannot be added
+        window.update(Msg::AskAddKey, &services, "me@gw");
+        assert_eq!(window.ssh_dialog(), Some(&SshDialog::AddKey("pat".into())));
+        window.update(Msg::KeyText("not a key".into()), &services, "me@gw");
+        window.update(Msg::AddKey, &services, "me@gw");
+        assert!(fake.calls().iter().all(|c| !c.starts_with("add-admin-key")));
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPatKey pat@desk";
+        window.update(Msg::KeyText(format!("  {key}  ")), &services, "me@gw");
+        window.update(Msg::AddKey, &services, "me@gw");
+        wait_auth(&mut window, &services);
+        assert!(window.ssh_dialog().is_none());
+        assert_eq!(window.key_account().unwrap().keys, [key]);
+        // pat has a key now: the question is gone
+        window.update(Msg::TogglePasswords, &services, "me@gw");
+        assert!(window.ssh_dialog().is_none());
+        wait_auth(&mut window, &services);
+        window.update(Msg::PickKey(0), &services, "me@gw");
+        window.update(Msg::RemoveKey, &services, "me@gw");
+        wait_auth(&mut window, &services);
+        assert!(window.key_account().unwrap().keys.is_empty());
+        assert!(fake
+            .calls()
+            .contains(&"remove-admin-key me@gw pat".to_string()));
+    }
+
+    #[test]
+    fn a_read_only_window_changes_no_ssh_sign_in() {
+        let fake = Arc::new(Fake::new());
+        let (mut window, services) = settled_auth(&fake);
+        window.set_read_only(true);
+        for msg in [Msg::TogglePasswords, Msg::AskAddKey, Msg::RemoveKey] {
+            window.update(msg, &services, "me@gw");
+        }
+        assert!(window.ssh_dialog().is_none());
+        assert!(fake
+            .calls()
+            .iter()
+            .all(|c| { !c.starts_with("password-login") && !c.contains("admin-key") }));
+    }
+
+    #[test]
+    fn the_key_list_shows_a_short_label_for_each_key() {
+        assert_eq!(
+            key_label("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyOne dana@laptop"),
+            "ssh-ed25519 ...AIDemoKeyOne dana@laptop"
+        );
+        assert_eq!(
+            key_label("no-pty ssh-rsa AAAAB3Nza"),
+            "ssh-rsa ...AAAAB3Nza"
+        );
+        assert_eq!(key_label("odd line"), "odd line");
     }
 
     fn networks(text: &str) -> Vec<LanNetwork> {
@@ -1290,12 +1818,12 @@ mod tests {
     }
 
     #[test]
-    fn the_advanced_page_shows_the_notice_once_the_networks_are_read() {
+    fn the_ssh_page_shows_the_notice_once_the_networks_are_read() {
         let fake = Arc::new(Fake::new());
         let services = Services::new(fake.clone(), Wake::none());
         let mut window = MyServer::default();
         let has_notice = |window: &MyServer| {
-            window.advanced(true).iter().any(
+            window.ssh_page(true).iter().any(
                 |n| matches!(n, Node::Group { title, .. } if title == "Ssh from LANlord networks"),
             )
         };

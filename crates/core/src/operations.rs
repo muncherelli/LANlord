@@ -15,7 +15,7 @@ use crate::{
 };
 use crate::{
     account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
-    rootssh, setup,
+    rootssh, setup, sshauth,
 };
 
 /// the message when the gateway has no key to decrypt the secrets with.
@@ -446,6 +446,22 @@ fn dispatch(
         Operation::RootSshState => Reply::RootSsh(rootssh::state(session)?),
         Operation::SetRootSsh { access } => {
             rootssh::apply(session, *access, ask)?;
+            Reply::Done
+        }
+        Operation::SshAuthState => Reply::SshAuth(sshauth::state(session, ask)?),
+        Operation::SetPasswordLogin {
+            passwords,
+            confirmed,
+        } => {
+            sshauth::set_passwords(session, *passwords, *confirmed, ask)?;
+            Reply::Done
+        }
+        Operation::AddAdminKey { user, key } => {
+            sshauth::add_key(session, user, key, ask)?;
+            Reply::Done
+        }
+        Operation::RemoveAdminKey { user, key } => {
+            sshauth::remove_key(session, user, key, ask)?;
             Reply::Done
         }
         Operation::Leases => Reply::Leases(leases::read_with(session, ask)?),

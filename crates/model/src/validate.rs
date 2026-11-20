@@ -1144,6 +1144,10 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         Operation::ChangeSshAccess { change } => change
             .check(0)
             .map_err(|(field, reason)| Invalid::new(field, reason)),
+        Operation::AddAdminKey { user, key } | Operation::RemoveAdminKey { user, key } => {
+            named("user", login_name, user)?;
+            named("key", ssh_key, key)
+        }
         Operation::ChangeNetworks { edit } => check_network_edit(edit),
         Operation::ResetMachine { name } => named("name", machine_name, name),
         Operation::CreateAdmin {
