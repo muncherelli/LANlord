@@ -432,13 +432,21 @@ impl NetworksWindow {
         let (said_doing, said_done) = (doing.to_string(), done.to_string());
         let job = services.spawn(host, move |gateway, ask| {
             if !confirmed && lockout::takes_access(&change) {
-                // a connection that cannot be placed must not stop a change that was asked for
-                if let Ok(Some(spot)) = gateway.client_spot(&target) {
-                    let networks = read(gateway, &target, ask)?;
-                    let held = lockout::after(&spot, &networks.lan, &change, unix_now())
-                        .ok()
-                        .flatten();
-                    if let (Some(lockout), Ok(mut slot)) = (held, cut_off.lock()) {
+                // no ssh connection at all (the browser) is nothing to cut; one that cannot be
+                // placed is asked about, like one that would be cut
+                let held = match gateway.client_spot(&target) {
+                    Ok(None) => None,
+                    Ok(Some(spot)) => {
+                        let networks = read(gateway, &target, ask)?;
+                        lockout::after(&spot, &networks.lan, &change, unix_now())
+                            .ok()
+                            .flatten()
+                            .map(|held| (held, networks))
+                    }
+                    Err(_) => Some((Lockout::unknown(None), read(gateway, &target, ask)?)),
+                };
+                if let Some((lockout, networks)) = held {
+                    if let Ok(mut slot) = cut_off.lock() {
                         *slot = Some(Held {
                             host: target.clone(),
                             lockout,
@@ -928,24 +936,26 @@ impl NetworksWindow {
         if let Some(first) = sentence.get_mut(..1) {
             first.make_ascii_uppercase();
         }
+        let mut body = vec![Node::Alert(match &held.lockout.network {
+            Some(network) => format!("Cut off this connection ({network})?"),
+            None => "Can't tell where you are connected from".into(),
+        })];
+        body.push(Node::Gap(4.0));
+        body.push(Node::Text(format!("{sentence}.")));
+        body.push(Node::Gap(4.0));
+        body.push(Node::Text(if held.lockout.is_unknown() {
+            "Go on only if you can still reach the server another way.".into()
+        } else {
+            "To keep it, allow this computer (or the whole network) first; the command line \
+             does the same with:"
+                .into()
+        }));
         let keep = held
             .lockout
             .commands(&held.host)
             .into_iter()
             .map(Node::Text)
             .collect::<Vec<_>>();
-        let mut body =
-            vec![
-            Node::Alert(format!("Cut off this connection ({})?", held.lockout.network)),
-            Node::Gap(4.0),
-            Node::Text(format!("{sentence}.")),
-            Node::Gap(4.0),
-            Node::Text(
-                "To keep it, allow this computer (or the whole network) first; the command line \
-                 does the same with:"
-                    .into(),
-            ),
-        ];
         body.extend(keep);
         body.push(Node::Gap(6.0));
         body.push(Node::Buttons(vec![
@@ -1853,6 +1863,7 @@ mod tests {
             address: "192.0.2.50".into(),
             interface: interface.into(),
             mac: mac.map(str::to_string),
+            routed: false,
         });
     }
 
@@ -1890,6 +1901,40 @@ mod tests {
         assert!(asked(&fake));
         assert!(!fake.stored.lock().unwrap().contains("ssh: true"));
         assert!(window.dialog().is_none());
+    }
+
+    #[test]
+    fn a_connection_that_cannot_be_placed_asks_first_in_other_words() {
+        let places: [fn(&crate::gateway::Fake); 2] = [
+            // the gateway found an address but no interface (an fe80 client, say)
+            |fake| connected_from(fake, "", Some("02:00:00:00:00:0a")),
+            // or could not be asked at all
+            |fake| *fake.spot_fails.lock().unwrap() = true,
+        ];
+        for place in places {
+            let (fake, services) = services_with(&format!("{LAB}    ssh: true\n"));
+            place(&fake);
+            let mut window = loaded(&services);
+            window.update(Msg::Tab(1), &services, "gw", 0.0);
+            window.update(Msg::SetSsh(false), &services, "gw", 0.0);
+            settle(&mut window, &services);
+            assert!(!asked(&fake));
+            let dialog = window.dialog().unwrap();
+            assert_eq!(dialog.id, "ssh-lockout");
+            let says = |text: &str| {
+                dialog
+                    .body
+                    .iter()
+                    .any(|n| matches!(n, Node::Alert(t) | Node::Text(t) if t.contains(text)))
+            };
+            assert!(says("Can't tell where you are connected from"));
+            assert!(says("an't tell which network"));
+            // no command is offered: none would be the right one
+            assert!(!says("lanlord networks"));
+            window.update(Msg::ConfirmLockout, &services, "gw", 0.0);
+            settle(&mut window, &services);
+            assert!(asked(&fake));
+        }
     }
 
     #[test]

@@ -805,6 +805,8 @@ mod fake {
         pub apply_error: Mutex<Option<String>>,
         /// where `client_spot` says the connection comes from; nowhere when not set.
         pub spot: Mutex<Option<lanlord_model::lockout::Spot>>,
+        /// when set, `client_spot` fails, as when the gateway cannot be asked where we connect from.
+        pub spot_fails: Mutex<bool>,
         /// the signed-in person's profile, changed by `update_profile`.
         pub profile: Mutex<lanlord_model::access::Profile>,
         /// the signed-in person's authorized ssh keys.
@@ -845,6 +847,7 @@ mod fake {
                 address: "192.0.2.50".into(),
                 interface: "eth1".into(),
                 mac: Some("02:00:00:00:00:03".into()),
+                routed: false,
             });
             fake
         }
@@ -870,6 +873,7 @@ mod fake {
                 network_error: Mutex::new(None),
                 apply_error: Mutex::new(None),
                 spot: Mutex::new(None),
+                spot_fails: Mutex::new(false),
                 profile: Mutex::new(lanlord_model::access::Profile::default()),
                 keys: Mutex::new(Vec::new()),
                 access: Mutex::new(Access {
@@ -939,6 +943,9 @@ mod fake {
 
     impl Gateway for Fake {
         fn client_spot(&self, _host: &str) -> Result<Option<lanlord_model::lockout::Spot>> {
+            if *self.spot_fails.lock().unwrap() {
+                anyhow::bail!("no route to the client");
+            }
             Ok(self.spot.lock().unwrap().clone())
         }
 

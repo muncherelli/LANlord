@@ -1006,10 +1006,16 @@ fn ssh_access(host: &str, name: &str, action: SshCommand) -> Result<()> {
     );
     let change = ssh_change(name, action, lanlord_core::internet::now())?;
     if !forced {
-        // not knowing where this connection comes from must not stop a change that was asked for
+        // not knowing where this connection comes from is refused like a known lockout
         match lanlord_core::lockout::of_change(host, &change, &mut ask) {
             Ok(held) => lockout_refusal(host, held)?,
-            Err(error) => eprintln!("could not tell where you connect from ({error:#}); going on"),
+            Err(error) => {
+                eprintln!("warning: could not tell where you connect from ({error:#})");
+                bail!(
+                    "this change may cut this connection off; repeat the command with \
+                     --allow-lockout to go on"
+                )
+            }
         }
     }
     send_grant(
@@ -1022,6 +1028,10 @@ fn ssh_access(host: &str, name: &str, action: SshCommand) -> Result<()> {
 /// refuse a change that would cut this connection off, and say how to keep it or to go on anyway.
 fn lockout_refusal(host: &str, held: Option<lanlord_model::lockout::Lockout>) -> Result<()> {
     let Some(held) = held else { return Ok(()) };
+    if held.is_unknown() {
+        eprintln!("warning: {}", held.sentence());
+        bail!("repeat the command with --allow-lockout to go on")
+    }
     let keep: Vec<String> = held
         .commands(host)
         .into_iter()
@@ -3279,8 +3289,9 @@ mod tests {
         // nothing to refuse when the connection is not cut
         assert!(lockout_refusal("gw", None).is_ok());
         let held = Lockout {
-            network: "lab".into(),
+            network: Some("lab".into()),
             mac: Some("02:00:00:00:00:01".into()),
+            routed: false,
         };
         let why = lockout_refusal("gw", Some(held)).unwrap_err().to_string();
         assert!(why.contains("cut off"), "{why}");
@@ -3289,6 +3300,11 @@ mod tests {
             "{why}"
         );
         assert!(why.contains("lanlord networks gw ssh lab on"), "{why}");
+        assert!(why.contains("--allow-lockout"), "{why}");
+        // a connection that cannot be placed is refused the same way, without commands
+        let why = lockout_refusal("gw", Some(Lockout::unknown(None)))
+            .unwrap_err()
+            .to_string();
         assert!(why.contains("--allow-lockout"), "{why}");
     }
 

@@ -511,6 +511,13 @@ fn refresh_firewall(
     }
     match (firewall.lockout)(&mut *ask) {
         Ok(None) => {}
+        Ok(Some(held)) if held.is_unknown() => {
+            on_line(&format!(
+                "{}, so the firewall of this version was not applied; {later}",
+                held.sentence()
+            ));
+            return;
+        }
         Ok(Some(held)) => {
             on_line(&format!(
                 "the firewall of this version was not applied: {}",
@@ -983,9 +990,13 @@ esac"##
                         if self.dir.join("lockout-unknown").exists() {
                             anyhow::bail!("no route to the client");
                         }
+                        if self.dir.join("lockout-blind").exists() {
+                            return Ok(Some(Lockout::unknown(None)));
+                        }
                         Ok(self.dir.join("lockout").exists().then(|| Lockout {
-                            network: "lab".into(),
+                            network: Some("lab".into()),
                             mac: Some("02:00:00:00:00:01".into()),
+                            routed: false,
                         }))
                     },
                     apply: &mut |_| {
@@ -1204,6 +1215,23 @@ esac"##
         let lines = said(&events);
         assert!(
             lines.iter().any(|l| l.contains("lanlord apply")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_connection_that_may_be_cut_off_but_not_placed_skips_the_firewall_and_says_to_apply() {
+        let server = Server::installed("firewall-blind");
+        server.flag("firewall");
+        server.flag("lockout-blind");
+        let (result, events) = server.upgrade();
+        result.unwrap();
+        assert!(!server.log().contains(&"apply docker".to_string()));
+        let lines = said(&events);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("can't tell which network") && l.contains("lanlord apply")),
             "{lines:?}"
         );
     }

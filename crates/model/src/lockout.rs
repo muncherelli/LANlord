@@ -11,19 +11,22 @@ use crate::lan_networks::LanNetwork;
 use crate::ssh_access::{apply_change, Change};
 
 /// where the connection that makes a change comes from, as the gateway sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Spot {
-    /// the client's address, from `$SSH_CONNECTION`.
+    /// the client's address, from `$SSH_CONNECTION`, without any `%zone`.
     pub address: String,
-    /// the interface the gateway reaches it by.
+    /// the interface the gateway reaches it by; empty when the gateway could not tell.
     pub interface: String,
     /// the mac its packets arrive from (the router's, for a client behind one), lowercase.
     pub mac: Option<String>,
+    /// whether the client is behind a router, so that `mac` is the router's.
+    pub routed: bool,
 }
 
 impl Spot {
-    /// read the `address=`, `interface=` and `mac=` lines the gateway's probe prints; none when
-    /// the connection is not over a network (no address, or no interface).
+    /// read the `address=`, `interface=`, `mac=` and `routed=` lines the gateway's probe prints;
+    /// none when the connection is not over a network (no address). an address with no
+    /// interface is a place that cannot be placed: see `lockout`.
     pub fn parse(text: &str) -> Option<Self> {
         let value = |key: &str| {
             text.lines()
@@ -33,8 +36,9 @@ impl Spot {
         };
         Some(Self {
             address: value("address")?.to_string(),
-            interface: value("interface")?.to_string(),
+            interface: value("interface").unwrap_or_default().to_string(),
             mac: value("mac").map(str::to_lowercase),
+            routed: value("routed") == Some("1"),
         })
     }
 }
@@ -42,35 +46,67 @@ impl Spot {
 /// a change that would end the connection it is made over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lockout {
-    /// the network the connection comes from.
-    pub network: String,
+    /// the network the connection comes from; none when it cannot be told which it is.
+    pub network: Option<String>,
     /// the mac to allow, when the gateway could tell it.
     pub mac: Option<String>,
+    /// whether that mac is the router in front of the client.
+    pub routed: bool,
 }
 
 impl Lockout {
+    /// a connection that cannot be placed, while some network has ssh off.
+    pub fn unknown(mac: Option<String>) -> Self {
+        Self {
+            network: None,
+            mac,
+            routed: false,
+        }
+    }
+
+    /// whether it cannot be told which network the connection comes from.
+    pub fn is_unknown(&self) -> bool {
+        self.network.is_none()
+    }
+
     /// what is wrong, in words.
     pub fn sentence(&self) -> String {
-        let who = self
-            .mac
-            .as_ref()
-            .map_or(String::new(), |m| format!(" (computer {m})"));
+        let Some(network) = &self.network else {
+            return "can't tell which network you are connected from, so this change may cut \
+                    this connection off"
+                .into();
+        };
+        let who = match (&self.mac, self.routed) {
+            (Some(m), true) => format!(" (through the router {m})"),
+            (Some(m), false) => format!(" (computer {m})"),
+            (None, _) => String::new(),
+        };
         format!(
-            "you are connected from the network {}{who}, and ssh to this server would be off \
-             for it, so this connection would be cut off",
-            self.network
+            "you are connected from the network {network}{who}, and ssh to this server would \
+             be off for it, so this connection would be cut off"
         )
     }
 
-    /// the commands that keep the connection, the narrowest first.
+    /// the commands that keep the connection, the narrowest first; none when the network is not
+    /// known. behind a router the mac is the router's, which lets in everything behind it, so
+    /// the whole network comes first and the mac is marked.
     pub fn commands(&self, host: &str) -> Vec<String> {
-        let network = &self.network;
-        let mut commands = Vec::new();
-        if let Some(mac) = &self.mac {
-            commands.push(format!("lanlord networks {host} ssh {network} allow {mac}"));
+        let Some(network) = &self.network else {
+            return Vec::new();
+        };
+        let on = format!("lanlord networks {host} ssh {network} on");
+        let Some(mac) = &self.mac else {
+            return vec![on];
+        };
+        let allow = format!("lanlord networks {host} ssh {network} allow {mac}");
+        if self.routed {
+            vec![
+                on,
+                format!("{allow}  # the router in front of you: lets in everything behind it"),
+            ]
+        } else {
+            vec![allow, on]
         }
-        commands.push(format!("lanlord networks {host} ssh {network} on"));
-        commands
     }
 }
 
@@ -82,24 +118,37 @@ pub fn takes_access(change: &Change) -> bool {
     )
 }
 
-/// would `spot` be let in by the firewall of `list`? `now` is when the grants are looked at; one
-/// that has ended lets nobody in. `Some` when it would be kept out, none when it is let in or is
-/// not on a lanlord network at all (the host network is never blocked).
-pub fn lockout(spot: &Spot, list: &[LanNetwork], now: i64) -> Option<Lockout> {
-    let network = list
-        .iter()
-        .find(|n| !n.interface.is_empty() && n.interface == spot.interface)?;
-    let allowed = network.ssh.enabled
+/// does the firewall of `network` let `spot` in? `now` is when the grants are looked at; one that
+/// has ended lets nobody in.
+fn let_in(network: &LanNetwork, spot: &Spot, now: i64) -> bool {
+    network.ssh.enabled
         || spot.mac.as_ref().is_some_and(|mac| {
             network
                 .ssh
                 .live(now)
                 .any(|host| host.mac.eq_ignore_ascii_case(mac))
+        })
+}
+
+/// would `spot` be let in by the firewall of `list`? `Some` when it would be kept out, or (an
+/// unknown `Lockout`) when it cannot be told: the gateway found no interface for the client, or
+/// the client's interface matches no network while a network has none stored (settings of an
+/// older format), and some network would block it. none when it is let in or is not on a lanlord
+/// network at all (the host network is never blocked).
+pub fn lockout(spot: &Spot, list: &[LanNetwork], now: i64) -> Option<Lockout> {
+    let found = list
+        .iter()
+        .find(|n| !spot.interface.is_empty() && n.interface == spot.interface);
+    if let Some(network) = found {
+        return (!let_in(network, spot, now)).then(|| Lockout {
+            network: Some(network.name.clone()),
+            mac: spot.mac.clone(),
+            routed: spot.routed,
         });
-    (!allowed).then(|| Lockout {
-        network: network.name.clone(),
-        mac: spot.mac.clone(),
-    })
+    }
+    let unsure = spot.interface.is_empty() || list.iter().any(|n| n.interface.is_empty());
+    let blocks = list.iter().any(|n| !let_in(n, spot, now));
+    (unsure && blocks).then(|| Lockout::unknown(spot.mac.clone()))
 }
 
 /// would `spot` be kept out once `change` is made to `list`? a change that gives access cannot.
@@ -134,6 +183,7 @@ mod tests {
             address: "192.0.2.50".into(),
             interface: interface.into(),
             mac: mac.map(str::to_string),
+            routed: false,
         }
     }
 
@@ -159,27 +209,61 @@ mod tests {
         );
         assert_eq!(Spot::parse("address=\ninterface=\nmac=\n"), None);
         assert_eq!(Spot::parse(""), None);
+        // an address with no interface is a place that cannot be placed, not no place
+        assert_eq!(
+            Spot::parse("address=fe80::50\ninterface=\nmac=\nrouted=\n"),
+            Some(spot("", None)).map(|s| Spot {
+                address: "fe80::50".into(),
+                ..s
+            })
+        );
+        assert!(
+            Spot::parse("address=192.0.2.50\ninterface=eth2\nrouted=1\n")
+                .unwrap()
+                .routed
+        );
     }
 
     #[test]
     fn a_network_with_ssh_off_keeps_out_a_computer_that_is_not_allowed() {
         let list = [network("lab", "eth2")];
         let held = lockout(&spot("eth2", Some(MAC)), &list, NOW).unwrap();
-        assert_eq!(held.network, "lab");
+        assert_eq!(held.network.as_deref(), Some("lab"));
         assert_eq!(held.mac.as_deref(), Some(MAC));
         // unknown mac: kept out too, since nothing can be matched
         assert!(lockout(&spot("eth2", None), &list, NOW).is_some());
     }
 
     #[test]
-    fn a_connection_from_the_host_network_or_an_unknown_interface_is_never_cut() {
+    fn a_connection_from_the_host_network_is_never_cut() {
         let list = [network("lab", "eth2")];
         assert_eq!(lockout(&spot("eth0", Some(MAC)), &list, NOW), None);
-        // a network read from older settings has no interface yet: it matches nothing
-        assert_eq!(
-            lockout(&spot("", Some(MAC)), &[network("old", "")], NOW),
-            None
-        );
+    }
+
+    #[test]
+    fn a_connection_that_cannot_be_placed_is_unknown_while_a_network_blocks() {
+        let list = [network("lab", "eth2")];
+        // no interface found for the client (an fe80 address without a zone, say)
+        let unknown = lockout(&spot("", Some(MAC)), &list, NOW).unwrap();
+        assert!(unknown.is_unknown());
+        assert!(unknown.commands("gw").is_empty());
+        assert!(unknown.sentence().contains("can't tell which network"));
+        // a stored network with no interface (older settings) can be the one it comes from
+        let old = [network("old", ""), network("lab", "eth2")];
+        assert!(lockout(&spot("eth0", Some(MAC)), &old, NOW)
+            .unwrap()
+            .is_unknown());
+        // but nothing is unsure when every network lets it in, or the interface is found
+        let mut on = network("lab", "eth2");
+        on.ssh.enabled = true;
+        assert_eq!(lockout(&spot("", Some(MAC)), &[on], NOW), None);
+        let mut some = network("lab", "eth2");
+        some.ssh.allow = vec![host(MAC, None)];
+        assert_eq!(lockout(&spot("", Some(MAC)), &[some], NOW), None);
+        assert!(lockout(&spot("eth2", Some(MAC)), &old, NOW)
+            .unwrap()
+            .network
+            .is_some());
     }
 
     #[test]
@@ -215,7 +299,7 @@ mod tests {
         assert_eq!(
             after(&s, &[on.clone()], &off, NOW)
                 .unwrap()
-                .map(|l| l.network),
+                .and_then(|l| l.network),
             Some("lab".to_string())
         );
         // turning it off is fine while this computer stays allowed by its mac
@@ -249,8 +333,9 @@ mod tests {
     #[test]
     fn the_commands_name_the_network_and_the_mac() {
         let held = Lockout {
-            network: "lab".into(),
+            network: Some("lab".into()),
             mac: Some(MAC.into()),
+            routed: false,
         };
         assert_eq!(
             held.commands("gw"),
@@ -259,11 +344,25 @@ mod tests {
                 "lanlord networks gw ssh lab on".to_string()
             ]
         );
-        let unknown = Lockout {
-            network: "lab".into(),
+        let no_mac = Lockout {
             mac: None,
+            ..held.clone()
         };
-        assert_eq!(unknown.commands("gw"), ["lanlord networks gw ssh lab on"]);
+        assert_eq!(no_mac.commands("gw"), ["lanlord networks gw ssh lab on"]);
         assert!(held.sentence().contains("lab") && held.sentence().contains(MAC));
+    }
+
+    #[test]
+    fn behind_a_router_the_whole_network_comes_first_and_the_mac_is_called_the_routers() {
+        let held = Lockout {
+            network: Some("lab".into()),
+            mac: Some(MAC.into()),
+            routed: true,
+        };
+        let commands = held.commands("gw");
+        assert_eq!(commands[0], "lanlord networks gw ssh lab on");
+        assert!(commands[1].starts_with(&format!("lanlord networks gw ssh lab allow {MAC}")));
+        assert!(commands[1].contains("router in front of you"));
+        assert!(held.sentence().contains("through the router"));
     }
 }

@@ -11,21 +11,34 @@ use crate::bootstrap::AskPassword;
 use crate::ssh::Session;
 
 /// what the gateway prints about the connection: the client's address from `$SSH_CONNECTION`, the
-/// interface the route to it leaves by, and the mac of the next hop on it (the client itself, or
+/// interface the route to it leaves by (for a link-local address, the one after its `%`), and the mac of the next hop on it (the client itself, or
 /// the router in front of it), which is what the firewall sees as `ether saddr`. it runs as the
 /// login user, in the same kind of session as the commands, so the variable is there.
 pub const PROBE: &str = r#"set -- $SSH_CONNECTION
 addr=$1
 [ -n "$addr" ] || exit 0
-route=$(ip route get "$addr" 2>/dev/null | head -n 1)
-dev=$(printf '%s\n' "$route" | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
-via=$(printf '%s\n' "$route" | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+dev=
+via=
+case $addr in
+  *%*)
+    # a link-local address names its interface after the %, and ip route get rejects the zone
+    dev=${addr#*%}
+    addr=${addr%%%*}
+    ;;
+  *)
+    route=$(ip route get "$addr" 2>/dev/null | head -n 1)
+    dev=$(printf '%s\n' "$route" | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }')
+    via=$(printf '%s\n' "$route" | awk '{ for (i = 1; i < NF; i++) if ($i == "via") { print $(i + 1); exit } }')
+    ;;
+esac
 hop=${via:-$addr}
 mac=
 if [ -n "$dev" ]; then
   mac=$(ip neigh show "$hop" dev "$dev" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "lladdr") { print $(i + 1); exit } }')
 fi
-printf 'address=%s\ninterface=%s\nmac=%s\n' "$addr" "$dev" "$mac"
+routed=
+[ -n "$via" ] && routed=1
+printf 'address=%s\ninterface=%s\nmac=%s\nrouted=%s\n' "$addr" "$dev" "$mac" "$routed"
 "#;
 
 /// where this connection to `session`'s gateway comes from; none when it cannot be told (no
@@ -109,6 +122,7 @@ esac"#;
                 address: "192.0.2.50".into(),
                 interface: "eth2".into(),
                 mac: Some("02:00:00:00:00:01".into()),
+                routed: false,
             })
         );
     }
@@ -119,6 +133,32 @@ esac"#;
         let spot = Spot::parse(&text).unwrap();
         assert_eq!(spot.interface, "eth2");
         assert_eq!(spot.mac.as_deref(), Some("02:00:00:00:00:09"));
+        assert!(spot.routed);
+    }
+
+    #[test]
+    fn a_link_local_client_gives_its_zone_as_the_interface() {
+        let ip = r#"case "$*" in
+  "neigh show fe80::50 dev eth2") echo "fe80::50 lladdr 02:00:00:00:00:05 REACHABLE" ;;
+  *) echo "route get must not be asked: $*" >&2; exit 2 ;;
+esac"#;
+        let text = probe("fe80::50%eth2 40000 fe80::1%eth2 22", ip);
+        assert_eq!(
+            Spot::parse(&text),
+            Some(Spot {
+                address: "fe80::50".into(),
+                interface: "eth2".into(),
+                mac: Some("02:00:00:00:00:05".into()),
+                routed: false,
+            })
+        );
+    }
+
+    #[test]
+    fn an_address_the_route_cannot_place_is_a_place_with_no_interface() {
+        let spot = Spot::parse(&probe("2001:db8::7 40000 2001:db8::1 22", "exit 1")).unwrap();
+        assert_eq!(spot.address, "2001:db8::7");
+        assert!(spot.interface.is_empty() && spot.mac.is_none());
     }
 
     #[test]
