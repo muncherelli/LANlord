@@ -710,7 +710,8 @@ pub fn show(
                             .inner_margin(Margin::same(MARGIN as i8))
                             .show(ui, |ui| {
                                 ui.spacing_mut().item_spacing = spacing;
-                                content(ui)
+                                // what the contents keep under these ids is not shared with the narrow pass
+                                ui.push_id(("sizing", sizing), content).inner
                             });
                         content_height = framed.response.rect.height();
                         // near empty contents leave the window the height it is meant to open at

@@ -1254,6 +1254,8 @@ fn dragging_the_left_or_top_edge_past_the_least_size_keeps_the_far_edges_still()
     }
 }
 
+static NOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(6000);
+
 /// draw one frame and give back what was painted, as text, to compare frames.
 fn painted(
     desktop: &mut Desktop,
@@ -1264,6 +1266,8 @@ fn painted(
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
         events,
+        // time passes between frames, as in a browser, so what egui eases in has time to show
+        time: Some(f64::from(NOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) / 60.0),
         ..Default::default()
     };
     let mut out = ctx.run_ui(input, |ui| desktop.show(ui));
@@ -1449,5 +1453,89 @@ fn a_window_that_cannot_be_resized_keeps_its_size_when_its_edge_is_dragged() {
     );
     for (i, r) in seen.iter().enumerate() {
         assert_eq!(r.size(), start.size(), "{i}: the window was resized");
+    }
+}
+
+#[test]
+fn pressing_any_edge_or_corner_of_settings_without_moving_paints_the_same_frame() {
+    use eframe::egui::{Event, PointerButton, Pos2, Vec2};
+    let size = Vec2::new(1280.0, 800.0);
+    type Grab = fn(egui::Rect) -> Pos2;
+    let grabs: [(&str, Grab); 8] = [
+        ("left", |r| Pos2::new(r.left() + 1.0, r.center().y)),
+        ("right", |r| Pos2::new(r.right() - 1.0, r.center().y)),
+        ("top", |r| Pos2::new(r.center().x, r.top() + 1.0)),
+        ("bottom", |r| Pos2::new(r.center().x, r.bottom() - 1.0)),
+        ("left edge pixel", |r| Pos2::new(r.left(), r.center().y)),
+        ("top left", |r| Pos2::new(r.left() + 1.0, r.top() + 1.0)),
+        ("bottom right", |r| {
+            Pos2::new(r.right() - 1.0, r.bottom() - 1.0)
+        }),
+        ("bottom left", |r| {
+            Pos2::new(r.left() + 1.0, r.bottom() - 1.0)
+        }),
+    ];
+    for (tall, (name, grab)) in [false, true]
+        .into_iter()
+        .flat_map(|t| grabs.into_iter().map(move |g| (t, g)))
+    {
+        let name = format!("{name} tall={tall}");
+        let (mut desktop, ctx, _) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Settings);
+        frames_on(&mut desktop, &ctx, size, 60);
+        if tall {
+            drag_from(
+                &mut desktop,
+                &ctx,
+                size,
+                Target::Settings,
+                |r| Pos2::new(r.center().x, r.bottom() - 1.0),
+                Vec2::new(0.0, 160.0),
+            );
+            frames_on(&mut desktop, &ctx, size, 60);
+        }
+        let rect = |d: &Desktop| {
+            d.measured
+                .iter()
+                .find(|m| m.0 == Target::Settings)
+                .unwrap()
+                .1
+        };
+        let before = rect(&desktop);
+        let still = painted(&mut desktop, &ctx, size, Vec::new());
+        let at = grab(before);
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // hover, then press, then hold, each in a frame of its own
+        let mut frames = vec![painted(
+            &mut desktop,
+            &ctx,
+            size,
+            vec![Event::PointerMoved(at)],
+        )];
+        frames.push(painted(&mut desktop, &ctx, size, Vec::new()));
+        frames.push(painted(
+            &mut desktop,
+            &ctx,
+            size,
+            vec![Event::PointerMoved(at), button(true)],
+        ));
+        for _ in 0..8 {
+            frames.push(painted(&mut desktop, &ctx, size, Vec::new()));
+        }
+        frames.push(painted(&mut desktop, &ctx, size, vec![button(false)]));
+        for (i, f) in frames.iter().enumerate() {
+            assert_eq!(rect(&desktop), before, "{name}: the window changed");
+            assert_eq!(
+                rects(f),
+                rects(&still),
+                "{name}: frame {i} painted other shapes"
+            );
+        }
     }
 }
