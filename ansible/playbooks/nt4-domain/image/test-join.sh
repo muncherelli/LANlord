@@ -21,8 +21,14 @@ cat > "$work/smb.conf" <<EOF
    server min protocol = NT1
    ntlm auth = ntlmv1-permitted
    lanman auth = no
-   # nt4 does not ask for extended security, so the server must be able to do without it
-   use spnego = no
+   # the client side, read by rpcclient from this same file: what nt 4.0 speaks, which is smb1,
+   # no spnego and ntlmv1 only (the command line options did not take effect)
+   client min protocol = NT1
+   client max protocol = NT1
+   client use spnego = no
+   client ntlmv2 auth = no
+   client lanman auth = no
+   client plaintext auth = no
    security = user
    encrypt passwords = yes
    map to guest = never
@@ -55,13 +61,8 @@ smbd -s "$work/smb.conf" --daemon --no-process-group -l "$work/log"
 trap 'kill "$(cat "$work/run/smbd.pid")" 2>/dev/null || true' EXIT
 sleep 3
 cat "$work"/log/log.smbd 2>/dev/null | tail -5
-# what nt 4.0 speaks: smb1, no spnego, ntlmv1 only
 rpc() {
-  rpcclient -s "$work/smb.conf" -U "root%$pw" \
-    --option='client min protocol=NT1' --option='client max protocol=NT1' \
-    --option='client use spnego=no' --option='client ntlmv2 auth=no' \
-    --option='client lanman auth=no' --option='client plaintext auth=no' \
-    ${RPC_EXTRA:-} 127.0.0.1 -c "$1"
+  rpcclient -s "$work/smb.conf" -U "root%$pw" ${RPC_EXTRA:-} 127.0.0.1 -c "$1"
 }
 rpc 'createdomuser ws1$'
 # level 24 carries the new password encrypted with the smb session key, like nt4 does
