@@ -1620,7 +1620,10 @@ fn settings_left_edge_dragged_400_in_and_out_keeps_its_right_edge_and_its_conten
         // never narrower than its least, nor off the screen
         let inside = r.shrink(crate::windows::FRAME);
         assert!(inside.width() > 0.0 && content > 0.0, "frame {i}: {r:?}");
-        assert!(r.width() >= least.x - 1.5, "frame {i}: {r:?} under {least:?}");
+        assert!(
+            r.width() >= least.x - 1.5,
+            "frame {i}: {r:?} under {least:?}"
+        );
         assert!(r.left() >= 0.0 && r.right() <= size.x, "frame {i}: {r:?}");
     }
     frame_on(&mut desktop, &ctx, size, vec![button(from, false)]);
