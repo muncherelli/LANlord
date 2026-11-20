@@ -618,7 +618,7 @@ mod native {
     /// the demo server is an unprivileged lxc container on proxmox without the features docker needs.
     const DEMO_DOCTOR: &str = "hostname=gateway\ndistro=debian\ndistro_version=13\ninit=systemd\nkernel=6.8.12-4-pve\nvirt_container=lxc\nvirt_vm=none\nuid_map=0 100000 65536\npve_marker=1\nnesting=no\nkeyctl=no\nlink_bridge=ok\nlink_macvlan=ok\nlink_ipvlan=ok\ntun=missing\nip_forward=1\nnft=ok\ndocker_installed=no\n";
 
-    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {id: retronet, name: Retro LAN, subnet: 172.16.120.0/22, gateway: 172.16.120.1, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {id: lab, name: Lab, subnet: 198.51.100.0/24, gateway: 198.51.100.1, ssh_allow: [{mac: \"02:00:00:00:00:03\", name: nt4pc}]}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
+    const DEMO_SETTINGS: &str = "docker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  dhcp:\n    range: [172.16.120.100, 172.16.120.200]\n    lease: 7d\nnetworks:\n  - {name: retronet, interface: eth1, address: 172.16.120.1/22, mtu: 1450, dhcp: {range: [172.16.120.100, 172.16.120.200]}}\n  - {name: lab, interface: eth2, address: 198.51.100.1/24, ssh_allow: [{mac: \"02:00:00:00:00:03\", name: nt4pc}]}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 172.16.120.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
 
     /// what the made-up server's settings were last saved as.
     static DEMO_SAVED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -737,7 +737,7 @@ pub mod round_trip;
 pub mod stream;
 
 #[cfg(any(test, feature = "fake"))]
-pub use fake::Fake;
+pub use fake::{Fake, DEMO_NETWORKS};
 
 #[cfg(any(test, feature = "fake"))]
 mod fake {
@@ -814,6 +814,10 @@ mod fake {
             Self::new()
         }
     }
+
+    /// the networks the browser demo starts with: one LANlord network, ssh off, one computer
+    /// allowed to ssh on its own.
+    pub const DEMO_NETWORKS: &str = "networks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    mtu: 1450\n    dhcp:\n      range: [172.16.120.100, 172.16.120.200]\n    ssh_allow:\n      - {mac: \"02:00:00:00:00:03\", name: nt4pc}\n";
 
     impl Fake {
         pub fn new() -> Self {

@@ -169,6 +169,7 @@ fn web_gateway() -> std::sync::Arc<dyn lanlord_app::gateway::Gateway> {
     {
         let gateway = lanlord_app::gateway::Fake::new();
         *gateway.local.lock().unwrap() = true;
+        *gateway.stored.lock().unwrap() = lanlord_app::gateway::DEMO_NETWORKS.into();
         std::sync::Arc::new(gateway)
     }
     #[cfg(not(feature = "demo"))]
