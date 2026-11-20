@@ -1,5 +1,5 @@
             ┌ ≡ My Server ──────────────────────────────────────────────── _ × ┐
-      ≡     │ [ General ][ Advanced ][ Compatibility ]                         │
+      ≡     │ [ General ][ Advanced ][ SSH ][ Compatibility ]                  │
   My Server │ ┌──────────────────────────────────────────────────────────────┐ │
             │ │┌ Computer ──────────────────────────────────────────────────┐│ │
             │ ││ Server       demo                                          ││ │

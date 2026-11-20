@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- My Server has an SSH tab: ssh sign-in with a password can be turned off and on (an sshd drop-in, `11-lanlord-auth.conf`, checked with `sshd -t` and `sshd -T` and rolled back when sshd would not take it), the administrators' ssh public keys can be listed, added and removed (keys LANlord adds are marked `# added by lanlord`, and the mark goes with the key). turning passwords off, or removing an account's last key while they are off, is refused unless you confirm, while an administrator, the signed-in account, or root (when it may sign in with a password) has no key, or when sshd reads keys from files other than the default ones, so nobody is locked out by accident
+
 ### Changed
 
+- root's ssh access moved out of the Advanced tab to the new SSH tab of My Server
 - the NT4 server image is built with winbind and keeps `rpcclient` and `wbinfo`, so local and built-in groups can be made from User Manager for Domains
 - before an apply changes the NT4 mode, domain name or NetBIOS name, the server's Samba state is copied to `/opt/lanlord/nt4/snapshots` (the five newest are kept)
 - upgrade note: ssh to the server from the computers on your LANlord networks is now off. the firewall drops the sshd ports (read from `sshd -T`, not a fixed 22) on every LANlord interface unless the network is switched on with "Allow ssh to this server" (Networks window, or `lanlord networks HOST ssh NAME on`), or the computer is allowed on its own by mac, for good or until a time (`lanlord networks HOST ssh NAME allow MAC [--for 1h]`). the host network is untouched, and a session that is already open is not cut by the change. My Server tells you so; turn it on before you upgrade if you manage the server over ssh from a LANlord network

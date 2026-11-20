@@ -11,9 +11,10 @@ use crate::bootstrap::AskPassword;
 use crate::ssh::Session;
 
 /// what the gateway prints about the connection: the client's address from `$SSH_CONNECTION`, the
-/// interface the route to it leaves by (for a link-local address, the one after its `%`), and the mac of the next hop on it (the client itself, or
-/// the router in front of it), which is what the firewall sees as `ether saddr`. it runs as the
-/// login user, in the same kind of session as the commands, so the variable is there.
+/// interface the route to it leaves by (for a link-local address, the one after its `%`), and the
+/// mac of the next hop on it (the client itself, or the router in front of it), which is what the
+/// firewall sees as `ether saddr`. it runs as the login user, in the same kind of session as the
+/// commands, so the variable is there.
 pub const PROBE: &str = r#"set -- $SSH_CONNECTION
 addr=$1
 [ -n "$addr" ] || exit 0

@@ -95,8 +95,9 @@ impl AccountWindow {
         let key = if add {
             self.key_draft.trim().to_string()
         } else {
+            // a key is removed by its id, so a line with options in front is found too
             match self.selected_key() {
-                Some(key) => key,
+                Some(key) => lanlord_model::sshauth::key_id(&key).unwrap_or(key),
                 None => return,
             }
         };
@@ -500,6 +501,25 @@ mod tests {
             1,
             "nothing selected, nothing removed"
         );
+        window.update(Msg::SelectKey(0), &services, "gw");
+        window.update(Msg::RemoveKey, &services, "gw");
+        settle(&mut window, &services);
+        assert!(fake.keys.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_key_with_options_in_front_is_removed_by_its_id() {
+        let (mut window, services, fake) = setup();
+        let line = format!(r#"from="192.0.2.7",command="true" {KEY}"#);
+        *fake.keys.lock().unwrap() = vec![line];
+        let start = std::time::Instant::now();
+        while window.keys.data.is_none() {
+            let _ = window.view(&services, Some("gw"));
+            window.poll();
+            assert!(start.elapsed() < std::time::Duration::from_secs(5), "stuck");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        settle(&mut window, &services);
         window.update(Msg::SelectKey(0), &services, "gw");
         window.update(Msg::RemoveKey, &services, "gw");
         settle(&mut window, &services);

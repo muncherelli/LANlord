@@ -6,6 +6,7 @@ use crate::controls;
 use crate::icons;
 use crate::theme::{self, bevel, BLACK, GRAY, NAVY, SHADOW, WHITE};
 use crate::view;
+use crate::wm::host;
 
 /// what the title-bar buttons asked for this frame.
 #[derive(Default)]
@@ -340,36 +341,6 @@ fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
             .is_none_or(|layer| layer.id == Id::unique(id))
 }
 
-/// which of a window's edges a press at `p` takes hold of, by the zones egui grabs: a few pixels
-/// either side of an edge, and a larger square around a corner.
-fn grab_zones(ctx: &egui::Context, rect: Rect, p: Pos2) -> (bool, bool, bool, bool) {
-    let interaction = ctx.global_style().interaction.clone();
-    let (side, corner) = (
-        interaction.resize_grab_radius_side,
-        interaction.resize_grab_radius_corner,
-    );
-    let near = |a: f32, b: f32, r: f32| (a - b).abs() <= r;
-    let mut zones = [
-        near(p.x, rect.left(), side),
-        near(p.x, rect.right(), side),
-        near(p.y, rect.top(), side),
-        near(p.y, rect.bottom(), side),
-    ];
-    // a corner takes both its edges
-    for (x, y, h, v) in [
-        (rect.left(), rect.top(), 0, 2),
-        (rect.right(), rect.top(), 1, 2),
-        (rect.left(), rect.bottom(), 0, 3),
-        (rect.right(), rect.bottom(), 1, 3),
-    ] {
-        if near(p.x, x, corner) && near(p.y, y, corner) {
-            zones[h] = true;
-            zones[v] = true;
-        }
-    }
-    (zones[0], zones[1], zones[2], zones[3])
-}
-
 /// a drag on a window's edge or corner. a drag on the left or top edge moves the window's origin
 /// as well as its size, and egui puts the window at the pointer whatever its least size is, so a
 /// window already at its least slid sideways and its far edge moved. this holds the far edge.
@@ -466,7 +437,13 @@ impl EdgeDrag {
                 .primary_pressed()
                 .then(|| i.pointer.press_origin())
         })??;
-        let (left, right, top, bottom) = grab_zones(ctx, start, p);
+        let interaction = ctx.global_style().interaction.clone();
+        let (left, right, top, bottom) = host::grab(
+            interaction.resize_grab_radius_side,
+            interaction.resize_grab_radius_corner,
+            start,
+            p,
+        );
         let on_it = (left || right || top || bottom)
             && ctx
                 .layer_id_at(p)
@@ -648,11 +625,7 @@ pub fn show(
         .title_bar(false)
         .collapsible(false)
         .resizable(growable)
-        .frame(
-            egui::Frame::new()
-                .fill(GRAY)
-                .inner_margin(Margin::same(FRAME as i8)),
-        );
+        .frame(host::frame());
     let dialog_key = Id::unique(("window-dialog", id));
     let seen = dialog_seen(ctx, id, dialog_key);
     window = if dialog {

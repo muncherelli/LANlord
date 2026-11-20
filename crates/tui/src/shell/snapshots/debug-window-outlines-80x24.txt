@@ -1,5 +1,5 @@
             ┌ my-server: 68x23──────────────────────────────────────────── _ × ┐
-      ≡     │ [ General ][ Advanced ][ Compatibility ]                         │
+      ≡     │ [ General ][ Advanced ][ SSH ][ Compatibility ]                  │
   My Server │ ┌──────────────────────────────────────────────────────────────┐ │
             │ │┌ Computer ──────────────────────────────────────────────────┐│ │
             │ ││ Server       demo                                          ││ │

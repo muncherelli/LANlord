@@ -52,6 +52,7 @@ pub mod settings;
 pub mod setup;
 pub mod signin;
 pub mod ssh;
+pub mod sshauth;
 pub mod stored;
 #[cfg(all(test, unix))]
 mod testgw;
