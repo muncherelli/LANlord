@@ -1024,7 +1024,7 @@ mod tests {
             .collect();
         assert!(
             text.iter()
-                .any(|t| t == "Add NT4 Domain on Retro LAN at 192.0.2.5, Lab"),
+                .any(|t| t == "Add NT4 Server on Retro LAN at 192.0.2.5, Lab"),
             "{text:?}"
         );
     }

@@ -69,9 +69,9 @@ const TOPICS: &[Topic] = &[
         title: "People",
         text: &[
             "People are the accounts that sign in to the domain, one for each person.",
-            "Add them, set their passwords and put them in groups in the NT4 Domain window.",
+            "Add them, set their passwords and put them in groups in the NT4 Server window.",
         ],
-        open: "Open NT4 Domain",
+        open: "Open NT4 Server",
         target: "nt4-domain",
     },
     Topic {
@@ -89,7 +89,7 @@ const TOPICS: &[Topic] = &[
         button: "Components",
         title: "Components",
         text: &[
-            "Components are the services LANlord can run for your networks, such as the gateway, DNS and the NT4 domain.",
+            "Components are the services LANlord can run for your networks, such as the gateway, DNS and the NT4 Server.",
             "The setup wizard switches them on and picks the networks each one joins. Only the ones switched on get a desktop icon.",
         ],
         open: "Open Components",
