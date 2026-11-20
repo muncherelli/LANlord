@@ -1,25 +1,34 @@
 //! the gui's colours for the terminal: the same rgb values as crates/ui/src/theme.rs, written as truecolor when the terminal says it can, or as the
 //! nearest 256-colour or 16-colour entry when it cannot.
 
+use lanlord_app::appearance::{Role, WINDOWS_STANDARD};
 use ratatui::style::Color;
 
 /// an rgb colour from the gui.
 pub type Rgb = (u8, u8, u8);
 
+/// the colour of `role` in the nt4 "windows standard" scheme the terminal draws with.
+const fn role(role: Role) -> Rgb {
+    match WINDOWS_STANDARD.get(role) {
+        Some(rgb) => rgb.tuple(),
+        None => (0, 0, 0),
+    }
+}
+
 /// the desktop.
-pub const TEAL: Rgb = (0, 128, 128);
+pub const TEAL: Rgb = role(Role::Desktop);
 /// windows, the taskbar and buttons.
-pub const GRAY: Rgb = (192, 192, 192);
+pub const GRAY: Rgb = role(Role::Face);
 /// the inner highlight of a raised edge.
-pub const LIGHT: Rgb = (223, 223, 223);
+pub const LIGHT: Rgb = role(Role::Light);
 /// the inner shadow of a raised edge, and disabled text.
-pub const SHADOW: Rgb = (128, 128, 128);
+pub const SHADOW: Rgb = role(Role::Shadow);
 /// the active title bar and the selection.
-pub const NAVY: Rgb = (0, 0, 128);
+pub const NAVY: Rgb = role(Role::ActiveCaption);
 /// the outer highlight, field backgrounds and text on navy.
-pub const WHITE: Rgb = (255, 255, 255);
+pub const WHITE: Rgb = role(Role::Window);
 /// text and the outer shadow.
-pub const BLACK: Rgb = (0, 0, 0);
+pub const BLACK: Rgb = role(Role::WindowText);
 
 /// how many colours the terminal can show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
