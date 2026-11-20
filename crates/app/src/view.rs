@@ -22,6 +22,21 @@ pub enum Node<M> {
     Gap(f32),
     /// a captioned frame around other nodes.
     Group { title: String, body: Vec<Node<M>> },
+    /// a page of nodes that is as tall as the tallest of `others`, which are the other pages it
+    /// can be, so the window does not change size from one page to the next.
+    SameSize {
+        /// stands for what the pages are made of: the height is measured again when it changes
+        key: u64,
+        body: Vec<Node<M>>,
+        others: Vec<Vec<Node<M>>>,
+    },
+    /// a captioned frame of a fixed height, `lines` rows of text, whose body scrolls when it is
+    /// longer: what is shown in it never changes the size of the page it is on.
+    Details {
+        title: String,
+        lines: u8,
+        body: Vec<Node<M>>,
+    },
     /// a list with columns; clicking a row sends `select(row)`.
     Table(Table<M>),
     /// a row of buttons, right aligned, first one rightmost.
@@ -42,6 +57,9 @@ pub enum Node<M> {
         current: usize,
         pick: fn(usize) -> M,
         body: Vec<Node<M>>,
+        /// the other pages by tab number, so a window can be as big as the biggest of them
+        /// whichever is open; may leave out any it cannot build without side effects
+        others: Vec<(usize, Vec<Node<M>>)>,
     },
     /// a red border around things that cannot be undone.
     Danger(Vec<Node<M>>),
@@ -78,6 +96,8 @@ pub enum Node<M> {
         id: &'static str,
         lines: Vec<String>,
         height: f32,
+        /// false draws it with a gray face, like an edit box that is not in use
+        enabled: bool,
     },
     /// the black console: coloured lines that follow the newest one, `height` tall or filling
     /// the window when `None`.
@@ -205,6 +225,8 @@ impl<M> Node<M> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Size {
     Points(f32),
+    /// as wide as this text, the longest the box has to show.
+    Text(&'static str),
     FillLess(f32),
 }
 

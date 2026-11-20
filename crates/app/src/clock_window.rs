@@ -633,16 +633,31 @@ impl ClockPanel {
         match self.loaded.as_mut() {
             Some(loaded) => {
                 loaded.live();
-                let page = match self.tab {
-                    Tab::DateTime => loaded.date_time_tab(gates),
-                    Tab::Zone => loaded.zone_tab(services, host),
-                    Tab::Internet => loaded.internet_tab(gates),
+                // the zone page asks the server about the zone it shows, so it is built only
+                // when it is open; the others are always measured
+                let (page, others) = match self.tab {
+                    Tab::DateTime => (
+                        loaded.date_time_tab(gates),
+                        vec![(Tab::Internet as usize, loaded.internet_tab(gates))],
+                    ),
+                    Tab::Zone => (
+                        loaded.zone_tab(services, host),
+                        vec![
+                            (Tab::DateTime as usize, loaded.date_time_tab(gates)),
+                            (Tab::Internet as usize, loaded.internet_tab(gates)),
+                        ],
+                    ),
+                    Tab::Internet => (
+                        loaded.internet_tab(gates),
+                        vec![(Tab::DateTime as usize, loaded.date_time_tab(gates))],
+                    ),
                 };
                 nodes.push(Node::Tabs {
                     titles: view::titles(&["Date & Time", "Time Zone", "Internet Time"]),
                     current: self.tab as usize,
                     pick: Msg::Tab,
                     body: page,
+                    others,
                 });
             }
             None => nodes.push(Node::Text("Reading the server's clock...".into())),

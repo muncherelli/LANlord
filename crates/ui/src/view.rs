@@ -100,11 +100,13 @@ pub fn draw_pinned(ui: &mut Ui, pinned: &Pinned) {
 
 /// draw a modal box; the message of a click inside it, if there was one.
 pub fn dialog<M: Clone>(ctx: &egui::Context, dialog: &Dialog<M>) -> Option<M> {
-    let sent = dialogs::modal(ctx, dialog.id, &dialog.title, |ui| {
+    let (sent, closed) = dialogs::modal(ctx, dialog.id, &dialog.title, |ui| {
         let sent = nodes_ui(ui, &dialog.body);
         let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
         sent.or_else(|| escaped.then(|| dialog.escape.clone()).flatten())
     });
+    // the close button does what escape does
+    let sent = sent.or_else(|| closed.then(|| dialog.escape.clone()).flatten());
     if sent.is_some() {
         ctx.request_repaint();
     }
@@ -212,6 +214,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             None
         }
         Node::Group { title, body } => controls::group(ui, title, |ui| nodes_ui(ui, body)),
+        Node::SameSize { key, body, others } => {
+            controls::same_size(ui, *key, others.len() + 1, |ui, i| match i {
+                0 => nodes_ui(ui, body),
+                i => nodes_ui(ui, &others[i - 1]),
+            })
+        }
+        Node::Details { title, lines, body } => controls::group(ui, title, |ui| {
+            controls::fixed_lines(ui, *lines, |ui| nodes_ui(ui, body))
+        }),
         Node::Table(table) => Table {
             id: table.id,
             headings: &table.headings,
@@ -270,10 +281,20 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             current,
             pick,
             body,
+            others,
         } => {
             let mut tab = *current;
             let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
-            let inside = controls::tabs(ui, &labels, &mut tab, |ui, _| nodes_ui(ui, body));
+            let inside = controls::tabs(ui, &labels, &mut tab, |ui, i| {
+                if i == *current {
+                    nodes_ui(ui, body)
+                } else {
+                    others
+                        .iter()
+                        .find(|(n, _)| *n == i)
+                        .and_then(|(_, nodes)| nodes_ui(ui, nodes))
+                }
+            });
             if tab == *current {
                 inside
             } else {
@@ -328,9 +349,14 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                 _ => (*text != **value).then(|| edit(text)),
             }
         }
-        Node::Lines { id, lines, height } => {
+        Node::Lines {
+            id,
+            lines,
+            height,
+            enabled,
+        } => {
             let height = controls::grow(ui, *height);
-            theme::sunken(ui, WHITE, |ui| {
+            theme::sunken(ui, if *enabled { WHITE } else { GRAY }, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical()
                     .id_salt(*id)
@@ -646,6 +672,14 @@ fn line_edit(
 ) -> bool {
     let width = match size {
         Size::Points(width) => width,
+        // measured in the real font, with a little over for the cursor
+        Size::Text(text) => {
+            ui.painter()
+                .layout_no_wrap(text.to_string(), theme::font(), BLACK)
+                .size()
+                .x
+                + 2.0
+        }
         Size::FillLess(room) => ui.available_width() - room,
     };
     let response = controls::field(ui, |ui| {
@@ -658,6 +692,8 @@ fn line_edit(
                 .margin(egui::Margin::ZERO),
         )
     });
+    #[cfg(test)]
+    dialogs::note_box(ui.ctx(), response.rect, width);
     if focus {
         response.request_focus();
     }

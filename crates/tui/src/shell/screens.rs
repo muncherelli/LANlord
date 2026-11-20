@@ -453,6 +453,14 @@ fn every_screen_looks_like_its_snapshot() {
         for size in [SMALL, LARGE] {
             let shown = picture(&scene, size).replace("\r\n", "\n") + "\n";
             let file = snapshot_dir().join(format!("{}-{}x{}.txt", scene.name, size.0, size.1));
+            // the DHCP range boxes show a whole address, never its tail
+            if scene.name.starts_with("networks-") && shown.contains("DHCP range ") {
+                assert!(
+                    shown.contains("172.16.120.100") && shown.contains("172.16.120.200"),
+                    "{}: the range is cut:\n{shown}",
+                    scene.name
+                );
+            }
             if update {
                 std::fs::create_dir_all(snapshot_dir()).unwrap();
                 std::fs::write(&file, &shown).unwrap();

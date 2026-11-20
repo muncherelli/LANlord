@@ -1193,6 +1193,7 @@ impl Shell {
             titles: lanlord_app::view::titles(&["Settings", "Logins", "Logon scripts"]),
             current: self.nt4_tab,
             pick: |tab| tab,
+            others: Vec::new(),
             body: Vec::new(),
         });
         // where the strip ends and the page starts

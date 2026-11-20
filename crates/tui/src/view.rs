@@ -183,9 +183,11 @@ fn find<'a, M>(nodes: &'a [Node<M>], path: &[usize]) -> Option<&'a Node<M>> {
         return Some(node);
     }
     match node {
-        Node::Group { body, .. } | Node::Tabs { body, .. } | Node::Scroll { body, .. } => {
-            find(body, rest)
-        }
+        Node::Group { body, .. }
+        | Node::Details { body, .. }
+        | Node::SameSize { body, .. }
+        | Node::Tabs { body, .. }
+        | Node::Scroll { body, .. } => find(body, rest),
         Node::Danger(body) | Node::Row(body) | Node::Disabled(body) => find(body, rest),
         // the next step of a path through columns packs the column and the node in it
         Node::Columns(columns) => {
@@ -499,7 +501,7 @@ impl<'a> Painter<'a> {
             }
             Node::Labelled { body, .. } => self.label_column.get() + self.natural_width(body),
             Node::Table(table) => table_width(table),
-            Node::Group { title, body } => {
+            Node::Group { title, body } | Node::Details { title, body, .. } => {
                 self.natural_width(body).max(title.chars().count() as u16) + BOXED
             }
             Node::Danger(body) => self.natural_width(body) + BOXED,
@@ -515,6 +517,10 @@ impl<'a> Painter<'a> {
                 size: Size::Points(w),
                 ..
             } => cols(*w),
+            Node::Input {
+                size: Size::Text(t),
+                ..
+            } => t.chars().count() as u16 + 2,
             Node::Input { .. } | Node::Secret { .. } => 32,
             Node::Row(body) => {
                 body.iter().map(|n| self.node_width(n)).sum::<u16>()
@@ -522,7 +528,7 @@ impl<'a> Painter<'a> {
             }
             Node::Description(t) | Node::Code(t) => longest(t) + 2 * INSET,
             Node::TextArea { hint, .. } => longest(hint) + 2 * INSET,
-            Node::Disabled(body) => self.natural_width(body),
+            Node::Disabled(body) | Node::SameSize { body, .. } => self.natural_width(body),
             _ => 0,
         }
     }
@@ -590,7 +596,9 @@ impl<'a> Painter<'a> {
             Node::Text(text) => wrap(text, width).len() as u16,
             Node::Bullet(text) => wrap(text, width.saturating_sub(BULLET)).len() as u16,
             Node::Gap(height) => rows(*height),
-            Node::Group { body, .. } => 2 + inner(body, width.saturating_sub(BOXED)),
+            Node::Group { body, .. } | Node::Details { body, .. } => {
+                2 + inner(body, width.saturating_sub(BOXED))
+            }
             Node::Table(table) => rows(table.height).max(3),
             Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(2)),
             Node::Danger(body) => 2 + inner(body, width.saturating_sub(BOXED)),
@@ -628,7 +636,7 @@ impl<'a> Painter<'a> {
                     1
                 }
             }
-            Node::Disabled(body) => inner(body, width),
+            Node::Disabled(body) | Node::SameSize { body, .. } => inner(body, width),
             Node::Labelled { body, .. } => inner(
                 body,
                 width.saturating_sub(self.label_column.get().min(label_share(width))),
@@ -793,7 +801,7 @@ impl<'a> Painter<'a> {
                     self.st(SHADOW, GRAY),
                 );
             }
-            Node::Group { title, body } => {
+            Node::Group { title, body } | Node::Details { title, body, .. } => {
                 frame_box(buf, area, p, SHADOW, Some(title));
                 self.draw(body, boxed(area), buf, path);
             }
@@ -1105,6 +1113,7 @@ impl<'a> Painter<'a> {
                 let rest = Rect::new(area.x + width, area.y, area.width - width, area.height);
                 self.draw(body, rest, buf, path);
             }
+            Node::SameSize { body, .. } => self.draw(body, area, buf, path),
             Node::Disabled(body) => {
                 let before = self.regions.len();
                 self.draw(body, area, buf, path);
@@ -1495,7 +1504,7 @@ impl<'a> Painter<'a> {
                     | Node::ClockFace { .. }
                     | Node::KeyedInput(_)
                     | Node::Input {
-                        size: Size::Points(_),
+                        size: Size::Points(_) | Size::Text(_),
                         ..
                     }
                     | Node::Secret {
@@ -1597,6 +1606,10 @@ impl<'a> Painter<'a> {
                     size: Size::Points(w),
                     ..
                 } => Some(cols(*w)),
+                Node::Input {
+                    size: Size::Text(t),
+                    ..
+                } => Some(t.chars().count() as u16 + 2),
                 Node::Icon(_) => Some(1),
                 Node::Spin { text, .. } => Some(spin_cells(text) + 4),
                 Node::ClockFace { .. } => Some(8),
@@ -1700,6 +1713,8 @@ impl<'a> Painter<'a> {
 fn size_cells(size: &Size, room: u16) -> u16 {
     match size {
         Size::Points(width) => cols(*width).min(room),
+        // the text and the two cells the box's frame and cursor take
+        Size::Text(text) => (text.chars().count() as u16 + 2).min(room),
         Size::FillLess(less) => room.saturating_sub(cols(*less)).max(4).min(room),
     }
 }
@@ -1744,7 +1759,7 @@ const BULLET: u16 = 4;
 fn fills<M>(node: &Node<M>) -> bool {
     match node {
         Node::Log { height: None, .. } | Node::List { .. } | Node::TextArea { .. } => true,
-        Node::Group { body, .. } => body.iter().any(fills),
+        Node::Group { body, .. } | Node::Details { body, .. } => body.iter().any(fills),
         _ => false,
     }
 }
@@ -1958,6 +1973,7 @@ mod tests {
                 titles: lanlord_app::view::titles(&["General", "Advanced"]),
                 current: 0,
                 pick: Msg::Tab,
+                others: Vec::new(),
                 body: vec![
                     Node::List {
                         id: "people",

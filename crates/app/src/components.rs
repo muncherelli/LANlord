@@ -308,6 +308,10 @@ impl Components {
                 };
             }
             Msg::Next => {
+                if self.step == Step::Choose {
+                    // the networks page lists what the server has now
+                    self.invalidate();
+                }
                 self.step = match self.step {
                     Step::Choose if !self.joining().is_empty() => Step::Attach,
                     Step::Choose => Step::Summary,
@@ -496,11 +500,20 @@ impl Components {
                 },
             ];
         }
-        let mut page = match self.step {
-            Step::Choose => self.choose(),
-            Step::Attach => self.attach(),
-            Step::Summary => self.summary(),
-        };
+        // every page is as tall as the tallest, so the wizard keeps one size and its buttons stay
+        // where they are, as the pages of a property sheet do
+        let mut pages = vec![
+            (Step::Choose, self.choose()),
+            (Step::Attach, self.attach()),
+            (Step::Summary, self.summary()),
+        ];
+        let at = pages.iter().position(|(s, _)| *s == self.step).unwrap_or(0);
+        let (_, body) = pages.remove(at);
+        let mut page = vec![Node::SameSize {
+            key: self.pages_key(),
+            body,
+            others: pages.into_iter().map(|(_, p)| p).collect(),
+        }];
         let can_next = match self.step {
             Step::Choose => true,
             Step::Attach => self.problems().is_empty(),
@@ -522,6 +535,19 @@ impl Components {
             page.push(view::status(&self.saving));
         }
         page
+    }
+
+    /// a number that changes when what the pages show changes, which can make one taller.
+    fn pages_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let (candidate, problems) = self.candidate();
+        format!(
+            "{candidate:?}{problems:?}{:?}{:?}",
+            self.networks, self.current
+        )
+        .hash(&mut hasher);
+        hasher.finish()
     }
 
     fn choose(&self) -> Vec<Node<Msg>> {
@@ -580,17 +606,24 @@ impl Components {
                 toggle: Msg::Toggle,
             }),
             Node::Gap(4.0),
-            Node::Description(description),
         ];
+        // what the highlighted component is and what stops it: a box of a fixed height, which
+        // scrolls, so ticking things does not change the size of the page
+        let mut about = vec![Node::Text(description)];
         if !blocked.is_empty() {
-            page.push(Node::Gap(4.0));
-            page.push(Node::Warning(
+            about.push(Node::Gap(4.0));
+            about.push(Node::Warning(
                 "This server cannot run it yet, so it cannot be switched on:".into(),
             ));
             for check in &blocked {
-                page.push(Node::Text(format!("  - {}", check.detail)));
+                about.push(Node::Text(format!("  - {}", check.detail)));
             }
         }
+        page.push(Node::Details {
+            title: highlighted.map_or("Description".into(), |c| c.name().to_string()),
+            lines: 6,
+            body: about,
+        });
         page.push(Node::Gap(4.0));
         page.push(Node::Row(vec![
             Node::Button(Button::new("Details...", details, Msg::Details)),
@@ -641,11 +674,11 @@ impl Components {
                  first, then come back."
                     .into(),
             ));
-        } else {
-            page.push(Node::Text(
-                "Leave the address blank to use the gateway's address on that network.".into(),
-            ));
+            return page;
         }
+        page.push(Node::Text(
+            "Leave the address blank to use the gateway's address on that network.".into(),
+        ));
         for (c, component) in self.joining().iter().enumerate() {
             let choice = draft.enabled.get(component.id());
             let mut body = Vec::new();
@@ -924,6 +957,39 @@ mod tests {
     }
 
     #[test]
+    fn next_reads_the_networks_again_and_the_page_lists_the_new_one() {
+        let (mut window, services, fake) = ready();
+        let added = lanlord_model::lan_edit::Edit::Add(
+            lanlord_model::lan_networks::LanNetwork::new("newnet", "eth1", "172.16.120.1/22"),
+        );
+        let edited = lanlord_model::lan_edit::edit_settings("docker: {}\n", &added).unwrap();
+        *fake.stored.lock().unwrap() = edited;
+        assert_eq!(window.networks().len(), 3);
+        window.update(Msg::Next, &services, "gw");
+        window.refresh(&services, "gw");
+        while window.settings.busy() {
+            window.refresh(&services, "gw");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(window.networks().iter().any(|n| n.id == "newnet"));
+    }
+
+    #[test]
+    fn with_no_lanlord_network_the_page_only_says_so() {
+        let mut window = Components::default();
+        window.take_settings(&Settings::parse("docker: {}\ndns: {}\n").unwrap(), "gw");
+        window.open();
+        let services = Services::new(Arc::new(Fake::default()), Wake::none());
+        window.update(Msg::Next, &services, "gw");
+        assert_eq!(window.step, Step::Attach);
+        let page = window.attach();
+        assert!(!page.iter().any(|n| matches!(n, Node::Group { .. })));
+        assert!(page
+            .iter()
+            .any(|n| matches!(n, Node::Text(t) if t.contains("no LANlord networks yet"))));
+    }
+
+    #[test]
     fn a_bad_address_holds_the_networks_page() {
         let (mut window, services, _) = ready();
         window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
@@ -1102,13 +1168,22 @@ mod tests {
             !window.draft().is_enabled("docker"),
             "docker did not come along"
         );
-        let nodes = window.choose();
+        let page = window.choose();
+        // what stops it is in the box under the list
+        let nodes: Vec<&Node<Msg>> = page
+            .iter()
+            .flat_map(|n| match n {
+                Node::Details { body, .. } => body.iter().collect(),
+                n => vec![n],
+            })
+            .collect();
         assert!(nodes
             .iter()
             .any(|n| matches!(n, Node::Warning(w) if w.contains("cannot be switched on"))));
         assert!(nodes
             .iter()
             .any(|n| matches!(n, Node::Text(t) if t.contains("nesting"))));
+        let nodes = page;
         // the Details link goes to the Compatibility tab
         let link = nodes.iter().find_map(|n| match n {
             Node::Row(items) => items.iter().find_map(|i| match i {

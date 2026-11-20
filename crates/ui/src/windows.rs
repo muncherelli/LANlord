@@ -1,6 +1,6 @@
 //! windows with a navy title bar and the three title-bar buttons.
 
-use eframe::egui::{self, Align2, Id, Margin, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align2, Id, LayerId, Margin, Order, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::controls;
 use crate::icons;
@@ -59,14 +59,13 @@ enum Glyph {
 
 fn title_bar(
     ui: &mut Ui,
+    rect: Rect,
     icon: &str,
     title: &str,
     active: bool,
     dialog: bool,
     fixed: bool,
 ) -> TitleActions {
-    let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), TITLE_BAR), Sense::hover());
     ui.painter()
         .rect_filled(rect, 0.0, if active { NAVY } else { SHADOW });
     icons::draw_small(ui.painter(), rect.left_top() + Vec2::new(3.0, 2.0), icon);
@@ -107,6 +106,13 @@ fn title_bar(
     }
 }
 
+/// the close button at the right end of a dialog's title bar; true when it was clicked.
+pub(crate) fn dialog_close(ui: &mut Ui, bar: Rect, id: Id) -> bool {
+    let size = Vec2::new(TITLE_BUTTON, 14.0);
+    let close = Rect::from_min_size(Pos2::new(bar.right() - 2.0 - size.x, bar.top() + 3.0), size);
+    title_button(ui, close, id, Glyph::Close)
+}
+
 /// where a window goes and how much room it has: the desktop above the taskbar.
 #[derive(Clone, Copy)]
 pub struct Placement {
@@ -128,6 +134,17 @@ pub struct Placement {
     /// the least height a growable window opens at, for the contents that are near empty. a
     /// window with more than that is as tall as its contents.
     pub floor: f32,
+    /// the id of the window's icon, which is not the window's own id.
+    pub icon: &'static str,
+    /// the window has just opened: it takes `start` as its position once, instead of the place
+    /// egui remembers from the last time it was open.
+    pub fresh: bool,
+}
+
+/// the layer a window's area lives on, to raise it with `Context::move_to_top`. it is the id the
+/// window is given in `show`.
+pub fn layer(id: &str) -> LayerId {
+    LayerId::new(Order::Middle, Id::unique(id))
 }
 
 /// what a growable window's contents were, to share its room out the next frame.
@@ -137,10 +154,54 @@ struct Room {
     natural: f32,
     /// how tall the parts that grow were on their own
     claimed: f32,
+    /// a part that never shrinks took room, so the contents are never smaller than they are
+    whole: bool,
     /// the window has been given a size, which it keeps
     user: bool,
     /// frames the contents have been as tall as they are
     age: u8,
+}
+
+/// where a dialog is in being placed. it opens with its middle at the start, and a tabbed one,
+/// once it has a size, is held by its top left instead, so that a different page cannot move it.
+#[derive(Clone, Copy, Default)]
+struct Dialog {
+    /// the window as it was drawn last
+    rect: Option<Rect>,
+    /// frames it has been the same size
+    steady: u8,
+    stage: Pivot,
+}
+
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+enum Pivot {
+    /// the middle is where it was put
+    #[default]
+    Middle,
+    /// this frame it is given its top left, from where it is
+    Switch,
+    /// it is placed by its top left, and moves as the user drags it
+    TopLeft,
+}
+
+impl Dialog {
+    /// what is known after a frame in which the window was `rect` and did or did not hold tabs.
+    fn after(self, rect: Rect, tabbed: bool) -> Self {
+        let steady = match self.rect {
+            Some(r) if r.size() == rect.size() => self.steady.saturating_add(1),
+            _ => 0,
+        };
+        let stage = match self.stage {
+            Pivot::Middle if tabbed && steady >= 1 => Pivot::Switch,
+            Pivot::Switch => Pivot::TopLeft,
+            stage => stage,
+        };
+        Dialog {
+            rect: Some(rect),
+            steady,
+            stage,
+        }
+    }
 }
 
 /// what a window gave back: what its title bar asked for, whether it was clicked and where it is.
@@ -148,6 +209,9 @@ pub struct Shown {
     pub actions: TitleActions,
     pub clicked: bool,
     pub rect: Rect,
+    /// the title bar, as wide as the window inside its border.
+    #[allow(dead_code)] // read by the tests
+    pub bar: Rect,
     /// the height the contents asked for, with their margins.
     pub content: f32,
 }
@@ -162,7 +226,7 @@ pub(crate) const FRAME: f32 = 3.0;
 /// frames a window needs to take the size of its contents
 const SETTLE: u8 = 3;
 
-pub(crate) const MARGIN: f32 = 8.0;
+pub(crate) const MARGIN: f32 = 11.0;
 /// where the title's text starts in the title bar: past the small icon and the gap after it.
 const TITLE_TEXT: f32 = 23.0;
 
@@ -191,6 +255,8 @@ pub fn least_size(ctx: &egui::Context, title: &str, contents: f32) -> Vec2 {
 fn contents_least(before: Option<Room>) -> f32 {
     let least = match before {
         Some(r) if r.claimed > 0.0 => r.natural - r.claimed + r.claimed.min(controls::FILL_MIN),
+        // tabs, whose frame is as big as the biggest page, are the least they are
+        Some(r) if r.whole => r.natural,
         // nothing grows, so the contents scroll when the window is smaller: no smaller than
         // they are, or than a part that fills would be
         Some(r) => (r.natural - 2.0 * MARGIN).min(controls::FILL_MIN),
@@ -276,14 +342,15 @@ fn remember_room(
     key: Id,
     before: Option<Room>,
     natural: f32,
-    claimed: f32,
+    spare: controls::Spare,
     fit: bool,
 ) {
     let grabbed = grabbed_edge(ctx, id);
     let user = !fit || grabbed || before.is_some_and(|r| r.user);
     let now = Room {
         natural,
-        claimed,
+        claimed: spare.claimed,
+        whole: spare.whole,
         user,
         // frames the contents have kept their height, for the window to catch up
         age: before
@@ -365,7 +432,7 @@ pub fn show(
     // only a window with a list, a log or a text can be resized: the rest are forms, as big as
     // their controls
     let mut window = egui::Window::new(title)
-        .id(Id::unique(id))
+        .id(layer(id).id)
         .title_bar(false)
         .collapsible(false)
         .resizable(growable)
@@ -374,17 +441,34 @@ pub fn show(
                 .fill(GRAY)
                 .inner_margin(Margin::same(FRAME as i8)),
         );
+    let dialog_key = Id::unique(("window-dialog", id));
+    let mut seen: Dialog = ctx.data(|d| d.get_temp(dialog_key)).unwrap_or_default();
+    if ctx.memory(|m| m.area_rect(Id::unique(id))).is_none() {
+        // not on screen yet, or its place was forgotten: it opens in the middle again
+        seen = Dialog::default();
+    }
     window = if dialog {
-        // `start` is where the middle of the window goes, so it stays centred once its size
-        // is known
-        window.pivot(Align2::CENTER_CENTER).default_pos(place.start)
+        // `start` is where the middle of the window goes. a dialog of tabs is held by its top
+        // left from its second frame at one size, so it stays where it is whatever its page
+        match (seen.stage, seen.rect) {
+            (Pivot::Switch, Some(r)) => window.pivot(Align2::LEFT_TOP).current_pos(r.min),
+            (Pivot::TopLeft, _) => window.pivot(Align2::LEFT_TOP),
+            _ if place.fresh => window.pivot(Align2::CENTER_CENTER).current_pos(place.start),
+            _ => window.pivot(Align2::CENTER_CENTER).default_pos(place.start),
+        }
     } else {
-        let window = window.constrain_to(place.area).default_pos(place.start);
+        let window = window.constrain_to(place.area);
+        let window = if place.fresh {
+            window.current_pos(place.start)
+        } else {
+            window.default_pos(place.start)
+        };
         match place.height.filter(|_| fixed) {
             Some(h) => window.fixed_size(Vec2::new(place.width, h.min(max_height))),
             None => open_size(window, place, least, before, fit, floor),
         }
     };
+    let mut bar_rect = Rect::NOTHING;
     let shown = window.show(ctx, |ui| {
         // the title bar spans the window inside its 3 pixel border; the contents sit in
         // an 8 pixel margin on every side
@@ -393,13 +477,16 @@ pub fn show(
         }
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.y = 0.0;
-        actions = title_bar(ui, id, title, active, dialog, fixed);
+        // the bar's room is taken now and it is drawn once the contents have settled the
+        // window's width, so it always reaches the right edge
+        let bar_top = ui.cursor().min;
+        ui.allocate_space(Vec2::new(0.0, TITLE_BAR));
         // the contents are laid out in a space as tall as the desktop and the window takes the
         // size they use. asking the window's own ui would cap them at its last size, so a window
         // could never grow
         // a growable window gives its contents the room it has, so they follow its size
         let held = ui.available_height();
-        let room = if sized || fixed {
+        let room = if sized || (fixed && place.height.is_some()) {
             held.clamp(40.0, (max_height - CHROME).max(40.0))
         } else {
             (max_height - CHROME).max(40.0)
@@ -424,7 +511,7 @@ pub fn show(
                     .id_salt(("window-scroll", id))
                     .max_height(scroll_room)
                     .min_scrolled_height((least.y - CHROME - reserve).max(0.0))
-                    .auto_shrink([false, !sized && !fixed])
+                    .auto_shrink([false, !sized && !(fixed && place.height.is_some())])
                     .show(&mut inner, |ui| {
                         let framed = egui::Frame::new()
                             .inner_margin(Margin::same(MARGIN as i8))
@@ -443,7 +530,7 @@ pub fn show(
         });
         if growable {
             let natural = content_height - (extra - spare.extra) + reserve;
-            remember_room(ctx, id, key, before, natural, spare.claimed, fit);
+            remember_room(ctx, id, key, before, natural, spare, fit);
         }
         // a fixed window keeps its width: the scroll bar takes room from the contents, and a
         // control that will not narrow must not widen the window
@@ -452,18 +539,29 @@ pub fn show(
             taken.set_width(room_width);
         }
         ui.allocate_rect(taken, Sense::hover());
+        let bar = Rect::from_min_max(
+            bar_top,
+            Pos2::new(ui.min_rect().right(), bar_top.y + TITLE_BAR),
+        );
+        bar_rect = bar;
+        actions = title_bar(ui, bar, place.icon, title, active, dialog, fixed);
         // the status bar, if the contents end in one, sits below the scrolling part: on the
         // bottom edge of the window, and always in view
         let strip = pinned_strip(ui, pinned.as_ref());
         ctx.data_mut(|d| d.insert_temp(pin_key, strip));
         content_height += strip;
     })?;
+    let tabbed = controls::take_tabbed(ctx);
+    if dialog {
+        ctx.data_mut(|d| d.insert_temp(dialog_key, seen.after(shown.response.rect, tabbed)));
+    }
     let painter = ctx.layer_painter(shown.response.layer_id);
     bevel(&painter, shown.response.rect, true);
     Some(Shown {
         actions,
         clicked: shown.response.is_pointer_button_down_on(),
         rect: shown.response.rect,
+        bar: bar_rect,
         content: content_height,
     })
 }
@@ -482,6 +580,8 @@ mod tests {
                 let at = Pos2::new(480.0, 320.0);
                 let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, max));
                 let place = Placement {
+                    icon: "t",
+                    fresh: false,
                     start: at,
                     width: 300.0,
                     area,
@@ -497,6 +597,85 @@ mod tests {
             });
         }
         rect.expect("shown")
+    }
+
+    /// the window and its title bar, for contents `wide` points across in a window opened at 300.
+    fn bar_of(wide: f32, dialog: bool) -> (Rect, Rect) {
+        let ctx = egui::Context::default();
+        let mut out = None;
+        for _ in 0..3 {
+            testkit::run(&ctx, vec![], |ui| {
+                let place = Placement {
+                    icon: "t",
+                    fresh: false,
+                    start: Pos2::new(480.0, 320.0),
+                    width: 300.0,
+                    area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
+                    growable: false,
+                    fixed: false,
+                    floor: 0.0,
+                    height: None,
+                };
+                out = show(ui.ctx(), "t", "T", place, true, dialog, |ui| {
+                    ui.allocate_space(Vec2::new(wide, 20.0));
+                })
+                .map(|s| (s.rect, s.bar));
+            });
+        }
+        out.expect("shown")
+    }
+
+    #[test]
+    fn the_title_bar_reaches_the_right_edge_even_when_the_contents_are_wider_than_the_window() {
+        for dialog in [true, false] {
+            for wide in [10.0, 400.0] {
+                let (rect, bar) = bar_of(wide, dialog);
+                assert!(rect.width() > 300.0 - 1.0 || wide < 300.0);
+                assert_eq!(
+                    bar.right(),
+                    rect.right() - FRAME,
+                    "dialog {dialog} wide {wide}"
+                );
+                assert_eq!(
+                    bar.left(),
+                    rect.left() + FRAME,
+                    "dialog {dialog} wide {wide}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dialog_keeps_the_same_margin_on_its_left_and_its_right() {
+        let ctx = egui::Context::default();
+        let mut out = None;
+        for _ in 0..3 {
+            testkit::run(&ctx, vec![], |ui| {
+                let place = Placement {
+                    icon: "t",
+                    fresh: false,
+                    start: Pos2::new(480.0, 320.0),
+                    width: 300.0,
+                    area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
+                    growable: false,
+                    fixed: false,
+                    floor: 0.0,
+                    height: None,
+                };
+                let mut row = Rect::NOTHING;
+                let rect = show(ui.ctx(), "t", "T", place, true, true, |ui| {
+                    let w = ui.available_width();
+                    row = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::hover()).0;
+                })
+                .map(|s| s.rect);
+                out = rect.map(|r| (r, row));
+            });
+        }
+        let (rect, row) = out.expect("shown");
+        let left = row.left() - (rect.left() + FRAME);
+        let right = (rect.right() - FRAME) - row.right();
+        assert_eq!(left, MARGIN);
+        assert_eq!(right, MARGIN);
     }
 
     fn height(inner: f32, max: f32) -> f32 {
@@ -518,6 +697,8 @@ mod tests {
                 testkit::run(&ctx, vec![], |ui| {
                     let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, screen));
                     let place = Placement {
+                        icon: "t",
+                        fresh: false,
                         start: Pos2::new(100.0, 100.0),
                         width: 300.0,
                         area,
@@ -560,6 +741,8 @@ mod tests {
             };
             let mut out = ctx.run_ui(input, |ui| {
                 let place = Placement {
+                    icon: "t",
+                    fresh: false,
                     start: Pos2::new(100.0, 100.0),
                     width: 300.0,
                     area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
@@ -591,7 +774,10 @@ mod tests {
     fn a_status_bar_sits_on_the_bottom_edge_of_a_fixed_window() {
         let (rect, top) = with_status_bar(true, 20.0);
         assert!(top > 0.0, "the bar was drawn");
-        assert!(rect.bottom() - top < 30.0, "{top} in {rect:?}");
+        assert!(
+            rect.bottom() - top < 30.0 + MARGIN - 8.0,
+            "{top} in {rect:?}"
+        );
     }
 
     #[test]
@@ -599,7 +785,10 @@ mod tests {
         for fixed in [true, false] {
             let (rect, top) = with_status_bar(fixed, 2000.0);
             assert!(top > 0.0, "the bar was drawn");
-            assert!(rect.bottom() - top < 30.0, "{fixed}: {top} in {rect:?}");
+            assert!(
+                rect.bottom() - top < 30.0 + MARGIN - 8.0,
+                "{fixed}: {top} in {rect:?}"
+            );
         }
     }
 
@@ -610,6 +799,8 @@ mod tests {
         for _ in 0..4 {
             testkit::run(&ctx, vec![], |ui| {
                 let place = Placement {
+                    icon: "t",
+                    fresh: false,
                     start: Pos2::new(100.0, 100.0),
                     width: 300.0,
                     area: Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0)),
@@ -645,8 +836,11 @@ mod tests {
         let short = height(50.0, 600.0);
         let tall = height(150.0, 600.0);
         assert!((tall - short - 100.0).abs() < 1.0, "{short} {tall}");
-        // the 8 pixel margins above and below the contents, a 20 pixel title bar, a 3 pixel border
-        assert!((short - (50.0 + 16.0 + 20.0 + 6.0)).abs() < 1.5, "{short}");
+        // the margins above and below the contents, a 20 pixel title bar, a 3 pixel border
+        assert!(
+            (short - (50.0 + 2.0 * MARGIN + 20.0 + 6.0)).abs() < 1.5,
+            "{short}"
+        );
         // too much for a small screen: it stops at the screen and scrolls
         let clamped = height(2000.0, 300.0);
         assert!(clamped <= 300.0 + 1.0, "{clamped}");
@@ -662,6 +856,8 @@ mod tests {
             for _ in 0..4 {
                 testkit::run_on(&ctx, Vec2::new(800.0, 500.0), vec![], |ui| {
                     let place = Placement {
+                        icon: "t",
+                        fresh: false,
                         start: Pos2::new(110.0, 10.0),
                         width: 300.0,
                         area,
@@ -680,7 +876,7 @@ mod tests {
         };
         let small = run(50.0);
         assert!(
-            (small.height() - (50.0 + 16.0 + 26.0)).abs() < 1.5,
+            (small.height() - (50.0 + 2.0 * MARGIN + 26.0)).abs() < 1.5,
             "{small:?}"
         );
         let tall = run(300.0);
@@ -708,6 +904,8 @@ mod tests {
             for _ in 0..4 {
                 testkit::run_on(&ctx, Vec2::new(800.0, 500.0), vec![], |ui| {
                     let place = Placement {
+                        icon: "t",
+                        fresh: false,
                         start: Pos2::new(400.0, 200.0),
                         width: 300.0,
                         area: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 472.0)),
@@ -729,9 +927,9 @@ mod tests {
             let right = frame.right() - inner.right();
             let bottom = frame.bottom() - inner.bottom();
             assert!(
-                (left - 11.0).abs() < 0.5
-                    && (right - 11.0).abs() < 0.5
-                    && (bottom - 11.0).abs() < 0.5,
+                (left - FRAME - MARGIN).abs() < 0.5
+                    && (right - FRAME - MARGIN).abs() < 0.5
+                    && (bottom - FRAME - MARGIN).abs() < 0.5,
                 "dialog {dialog}: left {left}, right {right}, bottom {bottom}"
             );
         }
@@ -745,6 +943,8 @@ mod tests {
             testkit::run(&ctx, vec![], |ui| {
                 let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 690.0));
                 let place = Placement {
+                    icon: "t",
+                    fresh: false,
                     start: Pos2::new(110.0, 12.0),
                     width: 380.0,
                     area,
@@ -779,6 +979,8 @@ mod tests {
                 testkit::run(&ctx, vec![], |ui| {
                     let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 690.0));
                     let place = Placement {
+                        icon: "t",
+                        fresh: false,
                         start: Pos2::new(110.0, 12.0),
                         width: 380.0,
                         area,
@@ -819,6 +1021,8 @@ mod tests {
             testkit::run(&ctx, events, |ui| {
                 let area = Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 690.0));
                 let place = Placement {
+                    icon: "t",
+                    fresh: false,
                     start: Pos2::new(110.0, 12.0),
                     width: 380.0,
                     area,
@@ -836,5 +1040,33 @@ mod tests {
         let height = rect.unwrap().height();
         let wanted = CHROME + 100.0 + 2.0 * MARGIN;
         assert!((height - wanted).abs() < 2.0, "{height} {wanted}");
+    }
+
+    #[test]
+    fn a_tabbed_dialog_pivots_to_its_corner_once_its_size_has_settled() {
+        let rect = Rect::from_min_size(Pos2::new(100.0, 80.0), Vec2::new(300.0, 200.0));
+        let first = Dialog::default().after(rect, true);
+        assert_eq!(
+            first.stage,
+            Pivot::Middle,
+            "the first frame is still sizing"
+        );
+        let second = first.after(rect, true);
+        assert_eq!(second.stage, Pivot::Switch);
+        assert_eq!(second.after(rect, true).stage, Pivot::TopLeft);
+        let after = second.after(rect, true).after(rect, false);
+        assert_eq!(after.stage, Pivot::TopLeft, "it stays pinned to its corner");
+    }
+
+    #[test]
+    fn a_dialog_without_tabs_keeps_to_the_middle() {
+        let rect = Rect::from_min_size(Pos2::new(100.0, 80.0), Vec2::new(300.0, 200.0));
+        let mut dialog = Dialog::default();
+        for _ in 0..5 {
+            dialog = dialog.after(rect, false);
+        }
+        assert_eq!(dialog.stage, Pivot::Middle);
+        let grown = dialog.after(Rect::from_min_size(rect.min, Vec2::new(300.0, 260.0)), true);
+        assert_eq!(grown.steady, 0, "a new size starts the count again");
     }
 }
