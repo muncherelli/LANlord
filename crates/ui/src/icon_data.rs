@@ -627,9 +627,9 @@ pub(crate) const SMALL_DNS: [&str; 16] = [
 pub(crate) const SMALL_DHCP: [&str; 16] = [
     "................",
     "...kkkkkkkkkk...",
-    "...kykkkykkyk...",
-    "...kykykykkyk...",
-    "...kykkkykyyk...",
+    "...kyyyyyyyyk...",
+    "...kyyyyyyyyk...",
+    "...kyyyyyyyyk...",
     "...kooooooook...",
     "...kkkkkkkkkk...",
     ".......kk.......",
