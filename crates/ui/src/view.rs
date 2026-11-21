@@ -482,9 +482,15 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                     ui.painter().rect_filled(block, 0.0, NAVY);
                     x += 10.0;
                 }
+                // the fill ends at the right edge of the last block (blocks are 8 wide, 2 apart)
+                let edge = if x > rect.left() {
+                    x - 2.0
+                } else {
+                    rect.left()
+                };
                 // the label is drawn twice, clipped at the fill edge: white over the blocks,
                 // black over the rest, as a classic progress bar does
-                let (done, todo) = bar_clips(rect, rect.left() + full);
+                let (done, todo) = bar_clips(rect, edge);
                 for (clip, colour) in [(done, WHITE), (todo, BLACK)] {
                     ui.painter().with_clip_rect(clip).text(
                         rect.center(),
@@ -1248,7 +1254,7 @@ mod tests {
         assert!(ctx.memory(|m| m.focused()).is_some(), "after error appears");
     }
 
-    /// the colours and clips the label of a progress bar was painted with.
+    /// the colours and clips the label of a progress bar was painted with, then the navy blocks.
     fn bar_label(fraction: f32) -> Vec<(egui::Color32, Rect)> {
         fn walk(shape: &Shape, clip: Rect, out: &mut Vec<(egui::Color32, Rect)>) {
             match shape {
@@ -1256,6 +1262,7 @@ mod tests {
                 Shape::Text(t) if t.galley.text() == "50%" => {
                     out.push((t.override_text_color.unwrap_or(t.fallback_color), clip));
                 }
+                Shape::Rect(r) if r.fill == NAVY => out.push((NAVY, r.rect)),
                 _ => {}
             }
         }
@@ -1283,6 +1290,13 @@ mod tests {
     fn the_bar_label_is_white_over_the_blocks_and_black_over_the_rest() {
         let found = bar_label(0.5);
         let white = found.iter().find(|(c, _)| *c == WHITE).expect("white half");
+        // the white label never reaches past the last navy block, or it would be white on white
+        let last = found
+            .iter()
+            .rev()
+            .find(|(c, _)| *c == NAVY)
+            .expect("blocks");
+        assert!(white.1.right() <= last.1.right() + 0.01, "{found:?}");
         let black = found.iter().find(|(c, _)| *c == BLACK).expect("black half");
         // the two halves meet at the fill edge
         assert!((white.1.right() - black.1.left()).abs() < 0.5, "{found:?}");
@@ -1294,7 +1308,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fold_opens_and_closes_when_its_title_is_clicked() {
+    fn a_fold_used_by_the_logon_and_account_windows_opens_and_closes_on_a_title_click() {
         let ctx = egui::Context::default();
         let nodes: Vec<Node<u8>> = vec![Node::Fold {
             id: "details",

@@ -130,12 +130,19 @@ impl ApplyProgress {
                 (kind, format!("{tag} {}{tail}", row.name))
             })
             .collect();
-        // the raw output of the run, or the whole task list when the run printed none
-        let details = if self.raw.is_empty() {
-            tasks.clone()
-        } else {
-            self.raw.clone()
-        };
+        let details = self.details.then(|| {
+            // the raw output of the run, or the whole task list when the run printed none
+            let lines = if self.raw.is_empty() {
+                tasks.clone()
+            } else {
+                self.raw.clone()
+            };
+            if lines.is_empty() {
+                vec![(Kind::Debug, "No output yet.".to_string())]
+            } else {
+                lines
+            }
+        });
         let mut view = vec![
             Node::Text(p.caption()),
             Node::Bar {
@@ -167,7 +174,7 @@ impl ApplyProgress {
                 error: failed,
             },
         ];
-        if self.details {
+        if let Some(details) = details {
             view.insert(
                 5,
                 Node::Log {

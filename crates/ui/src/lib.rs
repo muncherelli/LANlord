@@ -146,8 +146,8 @@ pub async fn start_web(canvas: web_sys::HtmlCanvasElement) -> Result<(), wasm_bi
 }
 
 /// `?demo=1` starts on the demo desktop, `?wmdebug=1` turns the window-manager outlines on and
-/// `?menu=1` shows the debug menu, `?apply=1` plays an apply. `?open=all` opens every window; any other `?open=` list keeps
-/// the safe filter a release has (no purge prompt from a link). true when `all` was handled.
+/// `?menu=1` shows the debug menu, `?apply=1` plays an apply. `?open=all` opens every window;
+/// any other `?open=` list keeps the safe filter a release has (no purge prompt from a link). true when `all` was handled.
 /// only devtools builds look at these; a release keeps the safe list.
 #[cfg(all(target_arch = "wasm32", feature = "devtools"))]
 fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
@@ -157,7 +157,7 @@ fn apply_devtools_links(desktop: &mut desktop::Desktop) -> bool {
     desktop.set_wm_debug(query("wmdebug").as_deref() == Some("1"));
     desktop.set_menu(query("menu").as_deref() == Some("1"));
     // `?apply=1` plays a finished apply into the progress dialog, `?apply=2` with raw output
-    if let Some(mode) = query("apply") {
+    if let Some(mode @ ("1" | "2")) = query("apply").as_deref() {
         desktop.demo_apply(mode == "2");
     }
     let all = query("open").is_some_and(|spec| spec.trim() == "all");

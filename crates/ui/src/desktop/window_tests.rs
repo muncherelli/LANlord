@@ -1662,7 +1662,7 @@ fn the_details_of_the_apply_dialog_open_and_close_when_clicked() {
         frame_on(d, &ctx, size, vec![button(false)]);
         frames_on(d, &ctx, size, 3);
     };
-    // the title of the fold sits under the log: click down the left side until the window
+    // the Details button sits under the log: click down the left side until the window
     // grows to make room for the body
     let mut found = None;
     let mut y = rect.top() + 150.0;
