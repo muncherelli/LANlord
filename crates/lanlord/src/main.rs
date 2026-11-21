@@ -2017,7 +2017,9 @@ fn operate() -> Result<()> {
             .args(["-t", "lanlord", &format!("operation run as {account}")])
             .status();
         operating_caller(&session, account).and_then(|caller| {
-            door_events(|| execute_in(&session, "localhost", &caller, operation, &mut ask))
+            door_events(matches!(operation, Operation::Apply { .. }), || {
+                execute_in(&session, "localhost", &caller, operation, &mut ask)
+            })
         })
     });
     println!(
@@ -2027,22 +2029,21 @@ fn operate() -> Result<()> {
     Ok(())
 }
 
-/// an apply reports its progress as event lines before the response, as the service does.
-#[cfg(all(unix, feature = "webui"))]
-fn door_events<T>(work: impl FnOnce() -> T) -> T {
+/// an apply reports its progress as event lines before the response, as the service does; any
+/// other operation just runs.
+#[cfg(unix)]
+fn door_events<T>(is_apply: bool, work: impl FnOnce() -> T) -> T {
+    if !is_apply {
+        return work();
+    }
     let print = |event: &lanlord_core::apply::ApplyEvent| {
-        if let Some(line) = operations_service::event_line(event) {
+        if let Some(line) = lanlord_core::apply::event_line(event) {
             let mut out = std::io::stdout().lock();
             let _ = out.write_all(&line);
             let _ = out.flush();
         }
     };
-    operations_service::with_events(&print, work)
-}
-
-#[cfg(all(unix, not(feature = "webui")))]
-fn door_events<T>(work: impl FnOnce() -> T) -> T {
-    work()
+    lanlord_core::apply::with_events(&print, work)
 }
 
 /// print the state of one module, for `tools/engine-parity.sh`.
@@ -2300,7 +2301,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_door_returns_what_the_work_returns() {
-        assert_eq!(super::door_events(|| 7), 7);
+        assert_eq!(super::door_events(false, || 7), 7);
+        assert_eq!(super::door_events(true, || 8), 8);
     }
 
     #[cfg(unix)]

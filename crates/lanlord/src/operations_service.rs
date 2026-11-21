@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use lanlord_core::access::{Caller, Denied, Refused};
-use lanlord_core::apply::ApplyEvent;
+use lanlord_core::apply::{event_line, with_events, ApplyEvent};
 use lanlord_core::log::{self, Kind};
 use lanlord_core::operations::{execute_in, execute_setup, login_uids, Operation, Reply, Response};
 use lanlord_core::settings::{login_text_with, LoginText};
@@ -329,49 +329,6 @@ fn single_apply<T>(
     work()
 }
 
-/// sets the flag when dropped, whether the work ended or unwound.
-struct Stop<'a>(&'a AtomicBool);
-
-impl Drop for Stop<'_> {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
-    }
-}
-
-/// run `work` and pass the apply events it publishes to `emit` as they happen. the log reaches
-/// every thread's lines, so only events are taken; the rest still goes to the journal.
-pub(crate) fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
-    let lines = log::subscribe();
-    let done = AtomicBool::new(false);
-    let forward = |line: log::Line| match line.kind {
-        Kind::Event => {
-            if let Ok(event) = serde_json::from_str::<ApplyEvent>(&line.text) {
-                emit(&event);
-            }
-        }
-        Kind::Err | Kind::Info => eprintln!("{}", line.text),
-        _ => {}
-    };
-    std::thread::scope(|scope| {
-        let (done, forward) = (&done, &forward);
-        let forwarder = scope.spawn(move || {
-            while !done.load(Ordering::SeqCst) {
-                if let Ok(line) = lines.recv_timeout(Duration::from_millis(50)) {
-                    forward(line);
-                }
-            }
-            lines.try_iter().for_each(forward);
-        });
-        // set even when the work panics, or the forwarder would never stop and the scope never end
-        let result = {
-            let _stop = Stop(done);
-            work()
-        };
-        let _ = forwarder.join();
-        result
-    })
-}
-
 /// the real thing: the account is read from this machine's groups, and the operation runs locally
 /// as root through core's `execute_in`, which checks `Operation::requires`.
 fn system_answer(line: &[u8], emit: Emit) -> Response {
@@ -424,14 +381,7 @@ async fn read_line<R: tokio::io::AsyncRead + Unpin>(stream: R) -> Result<Vec<u8>
 type Answer = Arc<dyn Fn(&[u8], Emit) -> Response + Send + Sync>;
 
 /// where an operation's apply events are handed as they happen.
-pub(crate) type Emit<'a> = &'a (dyn Fn(&ApplyEvent) + Sync);
-
-/// one line of the service's answer: an apply event.
-pub(crate) fn event_line(event: &ApplyEvent) -> Option<Vec<u8>> {
-    let mut line = serde_json::to_vec(&serde_json::json!({ "event": event })).ok()?;
-    line.push(b'\n');
-    Some(line)
-}
+pub(crate) type Emit<'a> = lanlord_core::apply::Emit<'a>;
 
 /// the last line of the service's answer.
 fn response_line(response: &Response) -> Option<Vec<u8>> {

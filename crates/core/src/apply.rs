@@ -193,6 +193,60 @@ fn publish(event: &ApplyEvent) {
     }
 }
 
+/// where an apply's events are handed as they happen.
+pub type Emit<'a> = &'a (dyn Fn(&ApplyEvent) + Sync);
+
+/// sets the flag when dropped, whether the work ended or unwound.
+struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// run `work` and pass the apply events it publishes to `emit` as they happen. the log reaches
+/// every thread's lines, so only events are taken; errors and notes go to standard error.
+pub fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let lines = crate::log::subscribe();
+    let done = AtomicBool::new(false);
+    let forward = |line: crate::log::Line| match line.kind {
+        Kind::Event => {
+            if let Ok(event) = serde_json::from_str::<ApplyEvent>(&line.text) {
+                emit(&event);
+            }
+        }
+        Kind::Err | Kind::Info => eprintln!("{}", line.text),
+        _ => {}
+    };
+    std::thread::scope(|scope| {
+        let (done, forward) = (&done, &forward);
+        let forwarder = scope.spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                if let Ok(line) = lines.recv_timeout(std::time::Duration::from_millis(50)) {
+                    forward(line);
+                }
+            }
+            lines.try_iter().for_each(forward);
+        });
+        // set even when the work panics, or the forwarder would never stop and the scope never end
+        let result = {
+            let _stop = Stop(done);
+            work()
+        };
+        let _ = forwarder.join();
+        result
+    })
+}
+
+/// one line of an operation's answer: an apply event, as json.
+pub fn event_line(event: &ApplyEvent) -> Option<Vec<u8>> {
+    let mut line = serde_json::to_vec(&serde_json::json!({ "event": event })).ok()?;
+    line.push(b'\n');
+    Some(line)
+}
+
 /// one apply at a time: the dialogs share one progress state, so two runs would mix their
 /// events. the flag is released when the guard drops, on every way out. (under test each
 /// thread has its own flag, because the tests run side by side.)
@@ -282,7 +336,7 @@ fn dispatch(
     run_parts(
         session,
         admin,
-        &wanted,
+        tags,
         &parts,
         settings,
         ask_password,
@@ -301,16 +355,16 @@ fn add_stats(total: &mut apply::Stats, more: apply::Stats) {
 fn run_parts(
     session: &Session,
     admin: &str,
-    wanted: &[&str],
+    tags: &[&str],
     parts: &[Part],
     settings: Option<Vec<u8>>,
     ask_password: AskPassword,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<()> {
     let _busy = Busy::take()?;
-    crate::env::gate(session, admin, wanted, settings.as_deref(), ask_password)?;
+    crate::env::gate(session, admin, tags, settings.as_deref(), ask_password)?;
     // the settings are checked before anything runs, as for a single run
-    script(settings.as_deref(), wanted)?;
+    script(settings.as_deref(), tags)?;
     emit(
         Kind::Info,
         format!(

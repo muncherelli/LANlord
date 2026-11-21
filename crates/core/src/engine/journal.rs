@@ -27,6 +27,8 @@ pub struct Journal {
     dir: String,
     next: usize,
     done: Vec<(String, Undo)>,
+    /// containers to start once the files are back (a failed replace left the old one stopped).
+    restart: Vec<String>,
 }
 
 /// what a rollback did.
@@ -44,7 +46,13 @@ impl Journal {
             dir,
             next: 0,
             done: Vec::new(),
+            restart: Vec::new(),
         }
+    }
+
+    /// start `container` at the end of a rollback, after the files it reads are put back.
+    pub fn restart_after_rollback(&mut self, container: &str) {
+        self.restart.push(container.to_string());
     }
 
     /// keep `bytes` (the earlier content of a file) and say where.
@@ -97,6 +105,14 @@ impl Journal {
                         }
                     }
                 }
+            }
+        }
+        for container in std::mem::take(&mut self.restart) {
+            match host.run(&["docker", "start", &container], None) {
+                Ok(out) if out.success() => {
+                    report.undone.push(format!("started {container} again"));
+                }
+                _ => report.kept = Some(format!("{container} could not be started again")),
             }
         }
         report

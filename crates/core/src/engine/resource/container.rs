@@ -180,7 +180,13 @@ impl Resource for Container {
         })
     }
 
-    fn apply(&self, host: &dyn Host, _: &Change, _: &mut Journal, _: &mut Events) -> Result<Undo> {
+    fn apply(
+        &self,
+        host: &dyn Host,
+        _: &Change,
+        journal: &mut Journal,
+        _: &mut Events,
+    ) -> Result<Undo> {
         let name = self.name.as_str();
         let prev = self.prev();
         let state = |n: &str| -> Result<(bool, bool)> {
@@ -235,10 +241,11 @@ impl Resource for Container {
                     let _ = self.docker(host, &["rename", &prev, name]);
                 }
                 if had_old {
-                    let _ = self.docker(host, &["start", name]);
+                    // started by the rollback, once the files it reads are back
+                    journal.restart_after_rollback(name);
                 }
                 let outcome = if had_old {
-                    "the previous container was restored and is running again."
+                    "the previous container was restored and is started again once its files are back."
                 } else {
                     "there was no previous container to restore."
                 };
@@ -337,10 +344,21 @@ mod tests {
         up(&host);
         host.when("docker exec lanlord-nt4 ping", vec![Output::failed(1, "")]);
         host.when("docker logs", vec![Output::ok("boom\n")]);
-        let error = go(&host, &container()).unwrap_err().to_string();
+        let c = container();
+        let seen = c.check(&host).unwrap();
+        let change = c.diff(&seen, &[]).unwrap();
+        let mut journal = Journal::new("/j".into());
+        let error = c
+            .apply(&host, &change, &mut journal, &mut |_| {})
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("health check failed"), "{error}");
         assert!(error.contains("previous container was restored"), "{error}");
         assert!(error.contains("boom"), "{error}");
+        // the old container is not started until the rollback has put its files back
+        assert_eq!(host.ran("docker start lanlord-nt4"), 0);
+        let report = journal.rollback(&host);
+        assert_eq!(report.undone, vec!["started lanlord-nt4 again"]);
         let log = host.log();
         let pos = |p: &str| log.iter().rposition(|l| l.starts_with(p)).unwrap();
         assert!(
