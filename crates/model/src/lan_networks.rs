@@ -310,7 +310,7 @@ pub fn validate(
         if network.address.is_empty() && !complete {
             continue;
         }
-        errors.extend(seen.address_errors(i, network, &path));
+        errors.extend(seen.address_errors(network, &path));
     }
     errors
 }
@@ -321,7 +321,7 @@ struct Seen {
     names: BTreeSet<String>,
     interfaces: BTreeSet<String>,
     zones: BTreeSet<String>,
-    subnets: Vec<(usize, Subnet)>,
+    subnets: Vec<(String, Subnet)>,
 }
 
 fn fail(path: String, message: String) -> ValidationError {
@@ -377,12 +377,7 @@ impl Seen {
     }
 
     /// the address, its overlaps with earlier networks, and the DNS and DHCP settings.
-    fn address_errors(
-        &mut self,
-        i: usize,
-        network: &LanNetwork,
-        path: &str,
-    ) -> Vec<ValidationError> {
+    fn address_errors(&mut self, network: &LanNetwork, path: &str) -> Vec<ValidationError> {
         let Some((ip, prefix)) = split_address(&network.address) else {
             return vec![fail(
                 format!("{path}.address"),
@@ -398,15 +393,15 @@ impl Seen {
             self.subnets
                 .iter()
                 .filter(|(_, other)| overlap(&subnet, other))
-                .map(|(j, other)| {
+                .map(|(other_name, other)| {
                     fail(
                         format!("{path}.address"),
-                        format!("{subnet} overlaps the network networks[{j}] ({other})"),
+                        format!("{subnet} overlaps the network {other_name} ({other})"),
                     )
                 }),
         );
         errors.extend(dns_errors(network, &subnet, ip, path));
-        self.subnets.push((i, subnet));
+        self.subnets.push((network.name.clone(), subnet));
         errors
     }
 }

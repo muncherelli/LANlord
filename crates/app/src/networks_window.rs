@@ -19,12 +19,13 @@ use lanlord_model::networks::{self, Draft, NetworkRow, Role};
 use lanlord_model::server::Iface;
 use lanlord_model::settings::Settings;
 use lanlord_model::ssh_access::{Change as SshChange, SshAccess};
+use lanlord_model::validate::{cidr_partial, ipv4_partial, mac_partial};
 
 use crate::ask::AskPassword;
 use crate::gateway::Gateway;
 use crate::remote::Remote;
 use crate::services::Services;
-use crate::view::{self, Button, Dialog, Node, Size, Table};
+use crate::view::{self, Button, Dialog, HeldFor, Node, Size, Table};
 
 /// how often an open window reads the status again, so the traffic counts move.
 pub const STATUS_EVERY: f64 = 5.0;
@@ -278,6 +279,87 @@ pub struct NetworksWindow {
     status_at: f64,
     /// writes a unix time for the lease lines; the server's time zone when `None`.
     time: Option<fn(i64) -> String>,
+}
+
+/// which line of the network form a problem belongs under.
+enum Slot {
+    Address,
+    Start,
+    End,
+    /// the range as a whole: one end missing or the two ends in the wrong order
+    Both,
+    Other,
+}
+
+/// a problem in the words of the form: the settings path `networks[N].field: message` becomes
+/// the label of the field it is about, and an address, range start or range end of the network
+/// being edited (`own`) is told apart so it can sit under its own field without any label.
+fn explain(problem: &str, lan: &[LanNetwork], own: usize) -> (Slot, String) {
+    let both = problem.contains("both ends of the DHCP range");
+    let Some((path, message)) = problem.split_once(": ") else {
+        let slot = if both { Slot::Both } else { Slot::Other };
+        return (slot, problem.to_string());
+    };
+    let Some((index, rest)) = path
+        .strip_prefix("networks[")
+        .and_then(|p| p.split_once(']'))
+        .and_then(|(n, rest)| Some((n.parse::<usize>().ok()?, rest.trim_start_matches('.'))))
+    else {
+        return (Slot::Other, problem.to_string());
+    };
+    let network = lan.get(index);
+    if index == own {
+        let slot = match rest {
+            "address" => Some(Slot::Address),
+            "dhcp.range[0]" => Some(Slot::Start),
+            "dhcp.range[1]" => Some(Slot::End),
+            // the order of the two ends is wrong for as long as the second is half typed
+            "dhcp.range" => Some(Slot::Both),
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            return (slot, message.to_string());
+        }
+    }
+    // the n-th entry of a list in the network, by its name
+    let entry = |list: &str, field: &str| -> Option<String> {
+        let (_, tail) = rest.split_once(&format!("{list}["))?;
+        let (n, _) = tail.split_once(']')?;
+        let n: usize = n.parse().ok()?;
+        let name = match list {
+            "dhcp.hosts" => network?.dhcp.as_ref()?.hosts.get(n)?.name.clone(),
+            _ => network?.records.get(n)?.name.clone(),
+        };
+        let kind = if list == "dhcp.hosts" {
+            format!("Static lease {}", n + 1)
+        } else {
+            "Record".to_string()
+        };
+        let shown = if list == "dhcp.hosts" {
+            format!("{kind} ({name})")
+        } else {
+            format!("{kind} {name}")
+        };
+        Some(format!("{shown} {field}"))
+    };
+    let field = rest.rsplit('.').next().unwrap_or(rest);
+    let label = match rest {
+        "name" => "Name".to_string(),
+        "interface" => "Interface".to_string(),
+        "address" => "Address".to_string(),
+        "mtu" => "MTU".to_string(),
+        "zone" => "DNS zone".to_string(),
+        "dhcp.range" | "dhcp.range[0]" | "dhcp.range[1]" => "DHCP range".to_string(),
+        "dhcp.lease" => "Lease time".to_string(),
+        _ => entry("dhcp.hosts", field)
+            .or_else(|| entry("records", field))
+            .unwrap_or_else(|| rest.replace(['.', '_'], " ")),
+    };
+    let whose = match network {
+        Some(n) if index != own => format!("Network {}: ", n.name),
+        _ => String::new(),
+    };
+    (Slot::Other, format!("{whose}{label}: {message}"))
 }
 
 impl NetworksWindow {
@@ -1027,7 +1109,17 @@ impl NetworksWindow {
                 .then(|| form.change(unix_now()).err())
                 .flatten()
         });
-        body.push(Node::Warning(problem.clone().unwrap_or_default()));
+        // a mac address still being typed is not called wrong until the focus leaves it: the
+        // line is about the first of the text fields, the name and the time come after it
+        let after_mac = if matches!(form.how, 1 | 2) { 2 } else { 1 };
+        body.push(match &problem {
+            Some(text) if text.starts_with("mac ") => Node::HeldError {
+                text: text.clone(),
+                partial: mac_partial(form.mac.trim()),
+                field: HeldFor::Above(after_mac),
+            },
+            _ => Node::Warning(problem.clone().unwrap_or_default()),
+        });
         body.push(Node::Buttons(vec![
             Button::new("Cancel", !busy, Msg::SshClose),
             Button::new(
@@ -1182,16 +1274,64 @@ impl NetworksWindow {
             Node::Gap(6.0),
             labelled("Name", name),
             labelled("Interface", card),
-            labelled(
-                "Address",
-                input(Field::Address, &draft.address, "like 172.16.120.1/22"),
-            ),
-            labelled("DHCP range", range),
+        ];
+        // what is typed into an address field is not called wrong while it could still become
+        // one: each such problem sits under its own field and waits for the focus to leave it
+        let empty = Vec::new();
+        let lan = self.rows.data.as_ref().map_or(&empty, |d| &d.lan);
+        let own = form
+            .existing
+            .as_deref()
+            .and_then(|n| lan.iter().position(|l| l.name.eq_ignore_ascii_case(n)))
+            .unwrap_or(lan.len());
+        let (mut address_lines, mut start_lines, mut end_lines, mut pair_lines, mut shown) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for problem in problems {
+            let (slot, text) = explain(&problem, lan, own);
+            let (lines, partial, field) = match slot {
+                Slot::Address => (
+                    &mut address_lines,
+                    cidr_partial(draft.address.trim()),
+                    HeldFor::Above(0),
+                ),
+                Slot::Start => (
+                    &mut start_lines,
+                    ipv4_partial(draft.range_start.trim()),
+                    HeldFor::Above(1),
+                ),
+                Slot::End => (
+                    &mut end_lines,
+                    ipv4_partial(draft.range_end.trim()),
+                    HeldFor::Above(0),
+                ),
+                // one end typed while the other is still empty or half typed is the usual way in
+                Slot::Both => (&mut pair_lines, true, HeldFor::AnyAbove(2)),
+                Slot::Other => {
+                    shown.push(text);
+                    continue;
+                }
+            };
+            lines.push(Node::HeldError {
+                text,
+                partial,
+                field,
+            });
+        }
+        body.push(labelled(
+            "Address",
+            input(Field::Address, &draft.address, "like 172.16.120.1/22"),
+        ));
+        body.extend(address_lines);
+        body.push(labelled("DHCP range", range));
+        body.extend(start_lines);
+        body.extend(end_lines);
+        body.extend(pair_lines);
+        body.extend([
             labelled("Lease time", input(Field::Lease, &draft.lease, "like 7d")),
             labelled("DNS zone", input(Field::Zone, &draft.zone, "the name")),
             labelled("MTU", input(Field::Mtu, &draft.mtu, "the card's own")),
             Node::Text("Leave the DHCP range empty for a network without DHCP.".into()),
-        ];
+        ]);
         let leases = self.leases_lost(form);
         if leases > 0 {
             body.push(Node::Warning(format!(
@@ -1199,7 +1339,6 @@ impl NetworksWindow {
                 if leases == 1 { "" } else { "s" }
             )));
         }
-        let mut shown = problems;
         shown.extend(form.error.clone().filter(|e| !shown_has(&shown, e)));
         body.extend(shown.into_iter().map(Node::Warning));
         body.push(Node::Gap(6.0));
@@ -2187,5 +2326,181 @@ mod tests {
         );
         window.update(Msg::New, &services, "gw", 0.0);
         assert!(!window.editing());
+    }
+
+    /// the problem lines of the open dialog: (held and could still become valid, text) and the
+    /// plain warnings that name `word`.
+    fn lines(window: &NetworksWindow, word: &str) -> (Vec<(bool, HeldFor)>, usize) {
+        let nodes = window.dialog().unwrap().body;
+        let held = nodes
+            .iter()
+            .filter_map(|n| match n {
+                Node::HeldError {
+                    partial,
+                    field,
+                    text,
+                } if text.contains(word) => Some((*partial, *field)),
+                _ => None,
+            })
+            .collect();
+        let warnings = nodes
+            .iter()
+            .filter(|n| matches!(n, Node::Warning(t) if t.contains(word)))
+            .count();
+        (held, warnings)
+    }
+
+    #[test]
+    fn an_address_typed_into_the_network_form_is_held_until_it_is_whole() {
+        let (_fake, services) = services_with("");
+        let mut window = loaded(&services);
+        window.update(Msg::New, &services, "gw", 0.0);
+        typed(&mut window, &services, Field::Name, "lab");
+        for (field, whole, above) in [
+            (Field::Address, "172.16.120.1/22", 0),
+            (Field::RangeStart, "172.16.120.100", 1),
+            (Field::RangeEnd, "172.16.120.200", 0),
+        ] {
+            let mut text = String::new();
+            for ch in whole.chars() {
+                text.push(ch);
+                typed(&mut window, &services, field, &text);
+                let (held, warnings) = lines(&window, &format!("\"{text}\""));
+                // never a plain warning for this field while it is typed in
+                assert_eq!(warnings, 0, "{text:?}");
+                if text != whole {
+                    let body = window.dialog().unwrap().body;
+                    assert!(
+                        !body.iter().any(|n| matches!(n, Node::Warning(_))),
+                        "{text:?}"
+                    );
+                    for (partial, at) in &held {
+                        assert!(*partial && *at == HeldFor::Above(above), "{text:?}");
+                    }
+                }
+            }
+            // a value that can never be valid is not held, and its line has no path in front
+            typed(&mut window, &services, field, &format!("{whole}x"));
+            let (held, _) = lines(&window, &format!("\"{whole}x\""));
+            assert!(held.iter().any(|(partial, _)| !partial), "{whole}x");
+            assert!(!window.dialog().unwrap().body.iter().any(
+                |n| matches!(n, Node::HeldError { text, .. } if text.starts_with("networks["))
+            ));
+            typed(&mut window, &services, field, whole);
+        }
+    }
+
+    #[test]
+    fn one_end_of_the_range_typed_first_is_held_while_either_end_has_the_keyboard() {
+        let (_fake, services) = services_with("");
+        let mut window = loaded(&services);
+        window.update(Msg::New, &services, "gw", 0.0);
+        typed(&mut window, &services, Field::Name, "lab");
+        typed(&mut window, &services, Field::RangeEnd, "");
+        typed(&mut window, &services, Field::RangeStart, "1");
+        let body = window.dialog().unwrap().body;
+        assert!(
+            !body.iter().any(|n| matches!(n, Node::Warning(_))),
+            "{:?}",
+            window.form_edit().err()
+        );
+        assert!(body.iter().any(|n| matches!(
+            n,
+            Node::HeldError { text, partial: true, field: HeldFor::AnyAbove(2) }
+                if text.contains("both ends")
+        )));
+    }
+
+    #[test]
+    fn problems_are_told_in_the_words_of_the_form_not_as_settings_paths() {
+        use lanlord_model::settings::{Dhcp, Record, StaticLease};
+        let mut lab = LanNetwork::new("lab", "eth2", "192.0.2.1/24");
+        lab.records = vec![Record {
+            name: "www".into(),
+            address: "192.0.2.5".into(),
+        }];
+        lab.dhcp = Some(Dhcp {
+            range_start: "192.0.2.100".into(),
+            range_end: "192.0.2.200".into(),
+            lease: "12h".into(),
+            hosts: vec![
+                StaticLease {
+                    name: "a".into(),
+                    mac: "02:00:00:00:00:01".into(),
+                    address: "192.0.2.10".into(),
+                },
+                StaticLease {
+                    name: "ws2".into(),
+                    mac: "02:00:00:00:00:02".into(),
+                    address: "192.0.2.11".into(),
+                },
+            ],
+        });
+        let lan = vec![lab, LanNetwork::new("other", "eth3", "198.51.100.1/24")];
+        let said = |p: &str, own: usize| {
+            let (slot, text) = explain(p, &lan, own);
+            (matches!(slot, Slot::Other), text)
+        };
+        assert_eq!(
+            said("networks[0].dhcp.hosts[1].address: bad", 0),
+            (true, "Static lease 2 (ws2) address: bad".to_string())
+        );
+        assert_eq!(
+            said("networks[0].records[0].address: bad", 0),
+            (true, "Record www address: bad".to_string())
+        );
+        assert_eq!(
+            said("networks[0].zone: bad", 0),
+            (true, "DNS zone: bad".to_string())
+        );
+        assert_eq!(
+            said("networks[0].mtu: bad", 0),
+            (true, "MTU: bad".to_string())
+        );
+        assert_eq!(
+            said("networks[0].dhcp.range: bad", 1),
+            (true, "Network lab: DHCP range: bad".to_string())
+        );
+        // the own address sits under its field without a label, another network's is named
+        assert_eq!(
+            said("networks[0].address: bad", 0),
+            (false, "bad".to_string())
+        );
+        assert_eq!(
+            said("networks[0].address: bad", 1),
+            (true, "Network lab: Address: bad".to_string())
+        );
+    }
+
+    #[test]
+    fn a_mac_address_typed_into_the_ssh_form_is_held_until_it_is_whole() {
+        let (_fake, services) = services_with(LAB);
+        let mut window = loaded(&services);
+        window.update(Msg::Tab(1), &services, "gw", 0.0);
+        window.update(Msg::SshAdd, &services, "gw", 0.0);
+        let mut text = String::new();
+        for ch in "02:00:00:00:00:0a".chars() {
+            text.push(ch);
+            window.update(
+                Msg::SshEdit(SshField::Mac, text.clone()),
+                &services,
+                "gw",
+                0.0,
+            );
+            let (held, warnings) = lines(&window, "mac");
+            assert_eq!(warnings, 0, "{text:?}");
+            // the mac is the first of two text fields above the line (the name follows)
+            assert!(held
+                .iter()
+                .all(|(partial, at)| *partial && *at == HeldFor::Above(1)));
+        }
+        window.update(
+            Msg::SshEdit(SshField::Mac, "not-a-mac".into()),
+            &services,
+            "gw",
+            0.0,
+        );
+        let (held, _) = lines(&window, "mac");
+        assert!(held.iter().any(|(partial, _)| !partial));
     }
 }

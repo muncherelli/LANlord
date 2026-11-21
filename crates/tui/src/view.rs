@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{Datelike, NaiveDate};
-use lanlord_app::view::{Button, Kind, Node, Size};
+use lanlord_app::view::{Button, HeldFor, Kind, Node, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -417,6 +417,10 @@ pub struct Painter<'a> {
     /// the width of the label column of the form being measured or drawn: its longest label
     /// and one column of gap.
     label_column: Cell<u16>,
+    /// where each text field drawn so far sits, and where each keyed one: a held error tells
+    /// from these whether the keyboard is in the field it is about.
+    fields: Vec<Vec<usize>>,
+    keyed: Vec<((usize, usize), Vec<usize>)>,
 }
 
 /// the most of `width` a label column may take: three quarters, so the value beside it keeps
@@ -445,6 +449,8 @@ impl<'a> Painter<'a> {
             active,
             regions: Vec::new(),
             label_column: Cell::new(0),
+            fields: Vec::new(),
+            keyed: Vec::new(),
         }
     }
 
@@ -491,6 +497,7 @@ impl<'a> Painter<'a> {
             |text: &str| text.lines().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
         match node {
             Node::Text(t) | Node::Heading(t) | Node::Warning(t) | Node::FieldError(t) => longest(t),
+            Node::HeldError { text, .. } => longest(text),
             Node::Bullet(t) => longest(t) + BULLET,
             Node::Alert(t) => longest(t) + 5,
             Node::Field { label, value } => {
@@ -1106,9 +1113,39 @@ impl<'a> Painter<'a> {
             Node::KeyedInput(input) => {
                 let rect = Rect::new(area.x, area.y, cols(input.width).min(area.width), 1);
                 self.field(&input.value, false, rect, buf, path);
+                self.keyed.push((input.key, path.to_vec()));
             }
             Node::FieldError(t) => {
                 text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
+            }
+            Node::HeldError {
+                text: t,
+                partial,
+                field,
+            } => {
+                let at: Vec<&Vec<usize>> = match field {
+                    HeldFor::Keyed(key) => self
+                        .keyed
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, p)| p)
+                        .into_iter()
+                        .collect(),
+                    HeldFor::Above(n) => self
+                        .fields
+                        .len()
+                        .checked_sub(n + 1)
+                        .map(|at| &self.fields[at])
+                        .into_iter()
+                        .collect(),
+                    HeldFor::AnyAbove(n) => self.fields[self.fields.len().saturating_sub(*n)..]
+                        .iter()
+                        .collect(),
+                };
+                let typing = at.iter().any(|p| self.focused(p, Part::Field));
+                if !(*partial && typing) {
+                    text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
+                }
             }
             Node::Labelled { label, body } => {
                 let width = self.label_column.get().min(label_share(area.width));
@@ -1687,6 +1724,7 @@ impl<'a> Painter<'a> {
             palette: self.palette,
         }
         .render(rect, buf);
+        self.fields.push(path.to_vec());
         self.push(rect, path, Part::Field, true);
     }
 
@@ -2276,6 +2314,55 @@ mod tests {
             .unwrap() as u16;
         let x = lines(&buf)[y as usize].find("not").unwrap() as u16;
         assert_eq!(buf[(x, y)].fg, Palette::default().color(RED));
+    }
+
+    #[test]
+    fn a_held_error_hides_only_while_a_field_has_the_keyboard() {
+        let input = |value: &str| Node::Input {
+            value: value.into(),
+            size: Size::Points(80.0),
+            hint: String::new(),
+            focus: false,
+            edit: Box::new(|_| Msg::Ok),
+            enter: None,
+        };
+        let held = |text: &str| Node::HeldError {
+            text: text.into(),
+            partial: true,
+            field: HeldFor::Above(0),
+        };
+        let nodes: Vec<Node<Msg>> = vec![
+            input("10."),
+            held("first is not an address"),
+            input("10."),
+            held("second is not an address"),
+        ];
+        let shown = |state: &ViewState, what: &str| {
+            lines(&paint(&nodes, state).0).join("\n").contains(what)
+        };
+        let both = ViewState::default();
+        assert!(shown(&both, "first is not"), "shown once the field is left");
+        let (_, regions) = paint(&nodes, &both);
+        let fields: Vec<_> = regions.iter().filter(|r| r.part == Part::Field).collect();
+        let first = ViewState {
+            focus: Some(fields[0].key.clone()),
+            ..ViewState::default()
+        };
+        assert!(
+            !shown(&first, "first is not"),
+            "hidden while it has the keyboard"
+        );
+        assert!(
+            shown(&first, "second is not"),
+            "the other field's error stays"
+        );
+        // tab to the next field: the one left is called wrong at once
+        let second = ViewState {
+            focus: Some(fields[1].key.clone()),
+            ..ViewState::default()
+        };
+        assert!(shown(&second, "first is not"));
+        assert!(!shown(&second, "second is not"));
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]

@@ -165,6 +165,15 @@ pub enum Node<M> {
     Labelled { label: String, body: Vec<Node<M>> },
     /// a small red line under the field it is about.
     FieldError(String),
+    /// the same red line for a field whose text may still become valid: while `partial` is set
+    /// and the keyboard is in a field, it is not shown (its room stays), so typing an address
+    /// is never met with an error. it appears once the focus leaves the field. `field` says
+    /// which field it is about: the keyboard in any other field does not hide it.
+    HeldError {
+        text: String,
+        partial: bool,
+        field: HeldFor,
+    },
     /// a warning sign beside a message, as in a message box.
     Alert(String),
     /// a value with an up and a down button; a press sends `step(1)` or `step(-1)`.
@@ -316,10 +325,35 @@ fn matches_path(error: &str, path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
 }
 
+/// the field a `Node::HeldError` is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldFor {
+    /// the text field drawn `n` fields before the line: 0 is the one just above it.
+    Above(usize),
+    /// any of the `n` text fields drawn just above the line.
+    AnyAbove(usize),
+    /// the wizard field (`KeyedInput`) with this key.
+    Keyed((usize, usize)),
+}
+
 /// for each of `count` rows, does any error sit under `{prefix}[i]`?
 pub fn bad_rows(errors: &[ValidationError], prefix: &str, count: usize) -> Vec<bool> {
     (0..count)
         .map(|i| !messages(errors, &format!("{prefix}[{i}]")).is_empty())
+        .collect()
+}
+
+/// like `field_errors`, for an address field: the lines stay hidden while the field is being
+/// typed in and `text` could still become an address (see `Node::HeldError`).
+pub fn address_errors<M>(errors: &[ValidationError], path: &str, text: &str) -> Vec<Node<M>> {
+    let partial = lanlord_model::validate::ipv4_partial(text.trim());
+    messages(errors, path)
+        .into_iter()
+        .map(|text| Node::HeldError {
+            text,
+            partial,
+            field: HeldFor::Above(0),
+        })
         .collect()
 }
 
@@ -406,6 +440,7 @@ fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
             Node::Button(b) => (&b.label, b.width.map(f32::to_bits)).hash(h),
             Node::Field { label, value } => (label, value).hash(h),
             Node::Status { text, error } => (text, error).hash(h),
+            Node::HeldError { text, .. } => text.hash(h),
             Node::Tabs {
                 titles,
                 key,
