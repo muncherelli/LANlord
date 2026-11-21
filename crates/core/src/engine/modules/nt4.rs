@@ -1491,6 +1491,25 @@ mod tests {
     }
 
     #[test]
+    fn netlogon_and_software_allow_execute_without_the_unix_x_bit() {
+        let text = "nt4-servers:\n  - name: nt4-domain\n    role: pdc\n    domain: RETRODOM\n    netbios_name: LANLORD\n    address: 192.0.2.1/24\n    software: true\ndomains:\n  RETRODOM: {}\nnt4-domain:\n  admin_password: x\n";
+        let conf = render_conf(&server_of(text)).unwrap();
+        for share in ["[netlogon]", "[software]"] {
+            let body = conf
+                .split(share)
+                .nth(1)
+                .unwrap()
+                .split("\n[")
+                .next()
+                .unwrap();
+            assert!(
+                body.contains("   acl allow execute always = yes\n"),
+                "{share}"
+            );
+        }
+    }
+
+    #[test]
     fn the_configuration_keeps_the_add_machine_hook_and_wins_follows_the_server() {
         let conf = render_conf(&server_of(SETTINGS)).unwrap();
         assert!(conf.contains("   workgroup = RETRONET\n"));
