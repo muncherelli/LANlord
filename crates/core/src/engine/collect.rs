@@ -7,11 +7,10 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::host::Host;
+use super::modules::nt4;
 use super::state::{hex, State};
-use super::Secret;
 
 const STATE: &str = "/opt/lanlord/nt4";
-const NAME: &str = "lanlord-nt4";
 
 fn file(host: &dyn Host, path: &str) -> Result<Value> {
     Ok(match host.read(path)? {
@@ -23,28 +22,23 @@ fn file(host: &dyn Host, path: &str) -> Result<Value> {
     })
 }
 
-/// the nt4-domain module's state. `doc` is the merged settings and `state_dir` the engine's, for
-/// the password comparison.
-pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) -> Result<Value> {
+/// what one server left on the machine.
+fn server_state(host: &dyn Host, target: &nt4::Target, prints: &State) -> Result<Value> {
+    let dir = &target.dir;
+    let name = &target.container;
     let mut files = Map::new();
-    for name in [
-        "config/smb.conf",
-        "bin/entrypoint.sh",
-        "bin/lanlord-user",
-        "lib/netlogon/lanlord.bat",
-    ] {
-        files.insert(name.into(), file(host, &format!("{STATE}/{name}"))?);
+    for f in ["config/smb.conf", "lib/netlogon/lanlord.bat"] {
+        files.insert(f.into(), file(host, &format!("{dir}/{f}"))?);
     }
     let mut dirs = Map::new();
-    for name in ["", "/config", "/bin", "/lib"] {
-        let path = format!("{STATE}{name}");
+    for d in ["", "/config", "/lib"] {
         dirs.insert(
-            if name.is_empty() {
+            if d.is_empty() {
                 "state".into()
             } else {
-                name.to_string()
+                d.to_string()
             },
-            match host.stat(&path)? {
+            match host.stat(&format!("{dir}{d}"))? {
                 Some(stat) => json!(format!("{:04o}", stat.mode)),
                 None => Value::Null,
             },
@@ -56,7 +50,7 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) 
             "inspect",
             "--format",
             "{{.State.Running}} {{.Image}} {{index .Config.Labels \"lanlord.scripts\"}}",
-            NAME,
+            name,
         ],
         None,
     )?;
@@ -66,48 +60,26 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) 
             "inspect",
             "--format",
             "{{.State.Running}}",
-            &format!("{NAME}-prev"),
+            &format!("{name}-prev"),
         ],
         None,
     )?;
-    let listed = host.run(&["docker", "exec", NAME, "lanlord-user", "list"], None)?;
+    let listed = host.run(&["docker", "exec", name, "lanlord-user", "list"], None)?;
     let accounts: Vec<&str> = listed
         .stdout
         .lines()
         .filter_map(|line| line.split(':').next())
         .collect();
-    let prints = State::load(host, state_dir, false)?;
-    let section = doc.get("nt4-domain");
-    let text = |v: Option<&serde_yaml_ng::Value>| match v {
-        Some(serde_yaml_ng::Value::String(s)) => Some(s.clone()),
-        Some(serde_yaml_ng::Value::Number(n)) => Some(n.to_string()),
-        _ => None,
-    };
-    let mut recorded = Map::new();
-    let mut check = |key: &str, password: Option<String>| {
-        if let Some(password) = password {
-            recorded.insert(
-                key.to_string(),
-                json!(prints.is_current(key, &Secret::new(password))),
-            );
-        }
-    };
-    check("admin", section.and_then(|s| text(s.get("admin_password"))));
-    if let Some(users) = section
-        .and_then(|s| s.get("users"))
-        .and_then(|u| u.as_sequence())
-    {
-        for user in users {
-            if let Some(name) = text(user.get("name")) {
-                check(&format!("user:{name}"), text(user.get("password")));
-            }
-        }
-    }
+    let recorded: Map<String, Value> = target
+        .passwords
+        .iter()
+        .map(|(key, secret)| (key.clone(), json!(prints.is_current(key, secret))))
+        .collect();
     let rights = host.run(
         &[
             "docker",
             "exec",
-            NAME,
+            name,
             "net",
             "sam",
             "rights",
@@ -117,7 +89,6 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) 
         None,
     )?;
     Ok(json!({
-        "module": "nt4-domain",
         "files": files,
         "dirs": dirs,
         "container": {
@@ -126,69 +97,131 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) 
         },
         "accounts": accounts,
         "password_recorded_current": recorded,
-        "domain_admins_may_join": rights.stdout.contains("Domain Admins"),
+        "domain_admins_may_join": target.domain && rights.stdout.contains("Domain Admins"),
     }))
 }
 
-/// the state of `module` on this gateway, for the parity run: root only, as it opens the settings.
+/// the nt4-domain module's state, per server of the list. `doc` is the merged settings and
+/// `state_dir` the engine's, for the password comparison.
+pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) -> Result<Value> {
+    let mut servers = Map::new();
+    if let Some(targets) = nt4::targets(host, doc)? {
+        let prints = State::load(host, state_dir, false)?;
+        for target in &targets {
+            servers.insert(target.id.clone(), server_state(host, target, &prints)?);
+        }
+    }
+    let mut shared = Map::new();
+    for name in ["bin/entrypoint.sh", "bin/lanlord-user"] {
+        shared.insert(name.into(), file(host, &format!("{STATE}/{name}"))?);
+    }
+    Ok(json!({
+        "module": "nt4-domain",
+        "shared": shared,
+        "servers": servers,
+    }))
+}
+
+/// the merged settings of this gateway, read as root.
 #[cfg(unix)]
-pub fn state_of(module: &str) -> Result<Value> {
+fn gateway_settings() -> Result<serde_yaml_ng::Value> {
     use crate::ssh::Session;
     crate::crypto::use_gateway_key(crate::crypto::GATEWAY_KEY.into())?;
     let identity = crate::crypto::load_default()?;
     let mut ask = |_: &str| -> Result<String> { anyhow::bail!("no sudo prompt: this is root") };
     let plain = crate::settings::merged_with(&Session::local(), identity.as_ref(), &mut ask)?;
-    let doc: serde_yaml_ng::Value = match plain {
+    Ok(match plain {
         Some(bytes) => serde_yaml_ng::from_slice(&bytes)?,
         None => serde_yaml_ng::Value::Null,
-    };
+    })
+}
+
+/// the state of `module` on this gateway, for the parity run: root only, as it opens the settings.
+#[cfg(unix)]
+pub fn state_of(module: &str) -> Result<Value> {
+    let doc = gateway_settings()?;
     match module {
         "nt4-domain" => nt4_domain(&super::host::RealHost, &doc, super::STATE_DIR),
         other => anyhow::bail!("the engine has no state collector for {other}"),
     }
 }
 
+/// record the settings' passwords of `module` as the ones that are set, without setting them: a
+/// first native apply then leaves a password that was changed from Windows alone. root only.
+/// returns what was recorded, by name.
+#[cfg(unix)]
+pub fn record_of(module: &str) -> Result<Vec<String>> {
+    let doc = gateway_settings()?;
+    super::modules::record(module, &super::host::RealHost, &doc, super::STATE_DIR)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::host::{FakeHost, Output};
+    use crate::engine::Secret;
+
+    const LIST: &str = "nt4-servers:\n  - {name: nt4-domain, role: pdc, domain: R, netbios_name: A, address: 192.0.2.1/24}\n  - {name: lab, role: workgroup, workgroup: W, netbios_name: B, address: 198.51.100.1/24}\nnt4-domain:\n  admin_password: s3cretadmin\n  users:\n    - name: dana\n      password: other\n";
+
+    fn doc(text: &str) -> serde_yaml_ng::Value {
+        serde_yaml_ng::from_str(text).unwrap()
+    }
 
     #[test]
-    fn the_state_says_whether_a_password_is_the_recorded_one_and_never_holds_it() {
+    fn each_server_reports_its_own_state_and_no_password() {
         let host = FakeHost::new();
         host.when(
             "docker exec lanlord-nt4 lanlord-user list",
             vec![Output::ok("root:0:Administrator\ndana:1000:\n")],
         );
+        host.when(
+            "docker exec lanlord-nt4-lab lanlord-user list",
+            vec![Output::ok("dana:1000:\n")],
+        );
+        host.when(
+            "docker exec lanlord-nt4 net sam rights list",
+            vec![Output::ok("R\\Domain Admins\n")],
+        );
+        host.put("/opt/lanlord/nt4/lab/config/smb.conf", b"x", 0o640);
         let mut prints = State::load(&host, "/state", true).unwrap();
         prints
-            .remember(&host, "admin", &Secret::new("s3cretadmin"))
+            .remember(&host, "nt4-domain/admin", &Secret::new("s3cretadmin"))
             .unwrap();
         prints
-            .remember(&host, "user:dana", &Secret::new("older"))
+            .remember(&host, "nt4-domain/user:dana", &Secret::new("older"))
             .unwrap();
-        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(
-            "nt4-domain:\n  admin_password: s3cretadmin\n  users:\n    - name: dana\n      password: other\n",
-        )
-        .unwrap();
-        let state = nt4_domain(&host, &doc, "/state").unwrap();
-        assert_eq!(state["password_recorded_current"]["admin"], true);
-        assert_eq!(state["password_recorded_current"]["user:dana"], false);
+        let state = nt4_domain(&host, &doc(LIST), "/state").unwrap();
+        let main = &state["servers"]["nt4-domain"];
+        assert_eq!(main["password_recorded_current"]["nt4-domain/admin"], true);
+        assert_eq!(
+            main["password_recorded_current"]["nt4-domain/user:dana"],
+            false
+        );
+        assert_eq!(main["domain_admins_may_join"], true);
+        let lab = &state["servers"]["lab"];
+        assert_eq!(lab["accounts"][0], "dana");
+        assert_eq!(lab["domain_admins_may_join"], false);
+        assert!(lab["password_recorded_current"].get("lab/admin").is_none());
+        assert_eq!(lab["password_recorded_current"]["lab/user:dana"], false);
+        assert!(lab["files"]["config/smb.conf"]["sha256"].is_string());
+        assert_eq!(main["files"]["config/smb.conf"], Value::Null);
         let shown = state.to_string();
         assert!(!shown.contains("other") && !shown.contains("s3cretadmin"));
     }
 
     #[test]
-    fn missing_state_says_no_password_is_recorded() {
+    fn missing_state_and_no_list_say_nothing_is_there() {
         let host = FakeHost::new();
-        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(
-            "nt4-domain:\n  admin_password: x\n  users:\n    - name: 7\n      password: 9\n",
-        )
-        .unwrap();
-        let state = nt4_domain(&host, &doc, "/nowhere").unwrap();
-        assert_eq!(state["password_recorded_current"]["admin"], false);
-        assert_eq!(state["password_recorded_current"]["user:7"], false);
-        assert_eq!(state["files"]["config/smb.conf"], Value::Null);
-        assert_eq!(state["domain_admins_may_join"], false);
+        let state = nt4_domain(&host, &doc(LIST), "/nowhere").unwrap();
+        assert_eq!(
+            state["servers"]["nt4-domain"]["password_recorded_current"]["nt4-domain/admin"],
+            false
+        );
+        assert_eq!(
+            state["servers"]["nt4-domain"]["domain_admins_may_join"],
+            false
+        );
+        let none = nt4_domain(&host, &doc("dns: {}\n"), "/nowhere").unwrap();
+        assert!(none["servers"].as_object().unwrap().is_empty());
     }
 }

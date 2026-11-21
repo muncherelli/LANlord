@@ -512,6 +512,13 @@ enum EngineCommand {
         #[arg(long)]
         module: String,
     },
+    /// record the passwords in the settings as already set, without setting any: run it before the
+    /// first native apply so a password changed from Windows is kept
+    Record {
+        /// the module id
+        #[arg(long)]
+        module: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2065,6 +2072,28 @@ fn engine_state(_: &str) -> Result<()> {
     bail!("this runs on the gateway")
 }
 
+/// record the passwords of `module` as set, by name only.
+#[cfg(unix)]
+fn engine_record(module: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if std::fs::metadata("/proc/self")?.uid() != 0 {
+        bail!("this runs as root on the gateway");
+    }
+    let kept = lanlord_core::engine::collect::record_of(module)?;
+    if kept.is_empty() {
+        println!("nothing to record: no account of {module} exists yet");
+    }
+    for name in kept {
+        println!("recorded {name} as set");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn engine_record(_: &str) -> Result<()> {
+    bail!("this runs on the gateway")
+}
+
 /// hand the old client key to the gateway once, so the settings are sealed to the gateway's own
 /// key, and then remove the key here: clients hold no keys, and no copy is kept.
 fn move_secrets(host: &str) -> Result<()> {
@@ -2276,6 +2305,7 @@ fn main() -> Result<()> {
         Some(Command::MoveSecrets { host }) => move_secrets(&host),
         Some(Command::Operate) => operate(),
         Some(Command::Engine(EngineCommand::State { module })) => engine_state(&module),
+        Some(Command::Engine(EngineCommand::Record { module })) => engine_record(&module),
         Some(Command::InternetPrune { refresh }) => internet_prune(refresh),
         Some(Command::Run {
             target,

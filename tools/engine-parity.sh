@@ -26,14 +26,14 @@ collect)
         ;;
     esac
     mkdir -p "$dir"
-    lanlord apply localhost --module "$module"
+    lanlord apply this-server.localhost --module "$module"
     lanlord engine state --module "$module" >"$dir/$label.json"
     echo "saved $dir/$label.json"
     ;;
 compare)
-    # the playbook records no fingerprints, so that one key is expected to differ
+    # the playbook records no fingerprints, so that key, in every server, is expected to differ
     for engine in ansible native; do
-        jq 'del(.password_recorded_current)' "$dir/$engine.json" >"$dir/$engine.cmp"
+        jq 'del(.servers[].password_recorded_current)' "$dir/$engine.json" >"$dir/$engine.cmp"
     done
     if diff -u "$dir/ansible.cmp" "$dir/native.cmp"; then
         echo "parity: $module is the same after both engines"
