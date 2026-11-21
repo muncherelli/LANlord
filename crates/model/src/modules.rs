@@ -43,6 +43,11 @@ impl Module {
     }
 }
 
+/// the DHCP server's entry text, kept out of the table: it shares dnsmasq with the DNS server.
+const DHCP_ICON: [&str; 3] = ["┌─────┐", "│DHCP │", "└─────┘"];
+const DHCP_ABOUT: &str = "dnsmasq in Docker: optional gatewayless DHCP for Windows 98, 2000, NT4 and old Linux clients. It shares one dnsmasq per network with the DNS server; its settings are the dhcp mapping of each network.";
+const DHCP_EXAMPLE: &str = "dhcp: {}\n\n# its settings are the dhcp mapping of each network:\nnetworks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      lease: 7d";
+
 pub const MODULES: &[Module] = &[
     Module::new(
         "gateway",
@@ -92,14 +97,7 @@ pub const MODULES: &[Module] = &[
         "dns:\n  zone: retronet\n  records:\n    - {name: ntsrv1, address: 172.16.120.10}",
         Status::Available,
     ),
-    Module::new(
-        "dhcp",
-        "DHCP",
-        ["┌─────┐", "│DHCP │", "└─────┘"],
-        "dnsmasq in Docker: optional gatewayless DHCP for Windows 98, 2000, NT4 and old Linux clients. It shares one dnsmasq per network with the DNS server; its settings are the dhcp mapping of each network.",
-        "dhcp: {}\n\n# its settings are the dhcp mapping of each network:\nnetworks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      lease: 7d",
-        Status::Available,
-    ),
+    Module::new("dhcp", "DHCP", DHCP_ICON, DHCP_ABOUT, DHCP_EXAMPLE, Status::Available),
     Module::new(
         "time-server",
         "Time Server (NTP)",
