@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 IMAGE = os.path.join(os.path.dirname(__file__), "..", "playbooks", "nt4-domain", "image")
@@ -32,7 +33,7 @@ case $name in
     echo "querying $1 on 192.0.2.255"
     echo "192.0.2.20 $1<00>" ;;
   smbclient)
-    [[ -e $STUBS/put_error ]] && [[ $* == *put* ]] && { echo "NT_STATUS_ACCESS_DENIED"; exit 1; }
+    [[ -e $STUBS/put_error ]] && [[ $* == *put* ]] && { printf 'NT_STATUS_ACCESS_DENIED \001 "x" \\ \a\n'; exit 1; }
     cmds=
     for ((k = 0; k < ${#args[@]}; k++)); do [[ ${args[k]} == -c ]] && cmds=${args[k+1]}; done
     IFS=';' read -ra list <<< "$cmds"
@@ -53,6 +54,7 @@ case $name in
       delete) sed -i "/^$4\$/d" "$STUBS/services" ;;
       start)
         [[ -e $STUBS/start_error ]] && { echo "WERR_ACCESS_DENIED"; exit 1; }
+        [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; wait; }
         [[ -e $STUBS/hang ]] || {
           [[ -e $STUBS/out ]] && cp "$STUBS/out" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
           [[ -e $STUBS/err ]] && cp "$STUBS/err" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
@@ -127,11 +129,13 @@ class LanlordExecTest(unittest.TestCase):
         with open(os.path.join(self.stubs, "calls")) as f:
             return f.read()
 
-    def bat(self):
-        names = os.listdir(os.path.join(self.stubs, "bats"))
+    def bat(self, suffix=".bat"):
+        names = [n for n in os.listdir(os.path.join(self.stubs, "bats")) if n.endswith(suffix)]
+        if suffix == ".bat":
+            names = [n for n in names if not n.endswith(".cmd.bat")]
         self.assertEqual(len(names), 1)
         with open(os.path.join(self.stubs, "bats", names[0]), "rb") as f:
-            return f.read()
+            return f.read().decode()
 
     def remote(self):
         return os.listdir(os.path.join(self.stubs, "remote"))
@@ -168,7 +172,7 @@ class LanlordExecTest(unittest.TestCase):
         self.assert_clean()
         self.assert_no_secret(out)
         calls = self.calls()
-        self.assertIn("nmblookup NT4SRV01", calls)
+        self.assertIn("nmblookup -- NT4SRV01", calls)
         self.assertIn("//192.0.2.20/ADMIN$", calls)
         self.assertIn("client min protocol=NT1", calls)
         self.assertRegex(calls, r"net rpc service create LANlordExec[0-9a-f]{8} LANlord exec")
@@ -182,18 +186,21 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(b"".join(base64.b64decode(e["data"]) for e in streams), b"line one\r\n")
         self.assertEqual(len(streams), 1)
 
-    def test_the_bat_holds_the_command_as_typed(self):
+    def test_the_bat_holds_the_command_as_typed_and_redirects_a_chain_as_a_whole(self):
         out = self.run_exec(command="dir %SystemRoot%\\system32 & for %%i in (a b) do echo %%i")
         self.assertEqual(self.events(out)[-1], {"exit": 0})
-        bat = self.bat().decode()
-        run_id = re.search(r"ll-([0-9a-f]{8})\.out", bat).group(1)
+        outer = self.bat()
+        inner = self.bat(".cmd.bat")
+        run_id = re.search(r"ll-([0-9a-f]{8})\.cmd\.bat", outer).group(1)
+        self.assertEqual(inner, "@echo off\r\ndir %SystemRoot%\\system32 & for %%i in (a b) do echo %%i\r\n")
         self.assertEqual(
-            bat,
+            outer,
             "@echo off\r\n"
-            "dir %SystemRoot%\\system32 & for %%i in (a b) do echo %%i > %SystemRoot%\\Temp\\ll-" + run_id + ".out"
+            "call %SystemRoot%\\Temp\\ll-" + run_id + ".cmd.bat > %SystemRoot%\\Temp\\ll-" + run_id + ".out"
             " 2> %SystemRoot%\\Temp\\ll-" + run_id + ".err\r\n"
             "echo %ERRORLEVEL% > %SystemRoot%\\Temp\\ll-" + run_id + ".rc\r\n",
         )
+        self.assert_clean()
 
     def test_an_explicit_address_skips_the_name_lookup(self):
         out = self.run_exec(args=("--machine", "nt4srv01", "--address", "192.0.2.77", "--timeout", "5"))
@@ -257,6 +264,32 @@ class LanlordExecTest(unittest.TestCase):
         self.assertNotIn("service create", self.calls())
         self.assert_clean()
 
+    def test_the_start_process_group_is_killed_on_timeout(self):
+        self.flag("hang")
+        self.flag("slow")
+        out = self.run_exec(args=("--machine", "nt4srv01", "--timeout", "1"))
+        self.assertEqual(self.events(out)[-1], {"timed_out": True})
+        for name in ("startpid", "sleeppid"):
+            with open(os.path.join(self.stubs, name)) as f:
+                pid = int(f.read())
+            for _ in range(40):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                os.kill(pid, 9)
+                self.fail(name + " survived")
+        self.assert_clean()
+
+    def test_a_non_numeric_exit_code_is_an_error(self):
+        self.scenario(rc="garbage\r\n")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("holds no number", self.events(out)[-1]["error"])
+        self.assert_clean()
+
     def test_a_timeout_cleans_up(self):
         self.flag("hang")
         out = self.run_exec(args=("--machine", "nt4srv01", "--timeout", "1"))
@@ -264,6 +297,41 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(self.events(out)[-1], {"timed_out": True})
         self.assert_clean()
         self.assert_no_secret(out)
+
+    def test_option_looking_names_and_addresses_are_refused(self):
+        for args in (("--machine", "-d10", "--timeout", "5"), ("--machine", "-", "--timeout", "5"),
+                     ("--machine", "ws1", "--address", "-x", "--timeout", "5"),
+                     ("--machine", "ws1", "--address", "999.1.1.1", "--timeout", "5"),
+                     ("--machine", "ws1", "--address", "192.0.2.1/x", "--timeout", "5"),
+                     ("--machine", "ws1", "--timeout", "901")):
+            out = self.run_exec(args=args)
+            self.assertIn("error", self.events(out)[-1], args)
+        self.assertEqual(self.calls(), "")
+
+    def test_the_request_must_be_a_flat_object_of_strings(self):
+        bodies = ('{"user":"a","password":"b","command":"ver","n":1}',
+                  '{"user":"a","password":"b","command":{"x":"ver"}}',
+                  '{"user":"a","password":"b","command":"ver"} junk',
+                  '{"user":"a","password":"b","command":"ver"}{"command":"x"}')
+        for body in bodies:
+            out = subprocess.run(["bash", EXEC, "run", "--machine", "ws1", "--timeout", "5"],
+                                 input=body, text=True, capture_output=True, env=self.env)
+            self.assertIn("error", self.events(out)[-1], body)
+        self.assertEqual(self.calls(), "")
+
+    def test_a_stale_scratch_folder_goes_and_a_fresh_one_stays(self):
+        old = os.path.join(self.scratch, "lanlord-exec.old123")
+        fresh = os.path.join(self.scratch, "lanlord-exec.new123")
+        for d in (old, fresh):
+            os.makedirs(d)
+            with open(os.path.join(d, "auth"), "w") as f:
+                f.write("password=" + SECRET)
+        past = time.time() - 3600
+        os.utime(old, (past, past))
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(fresh))
 
     def test_an_unknown_name_is_an_error(self):
         self.flag("no_wins")
@@ -305,6 +373,23 @@ class LanlordExecTest(unittest.TestCase):
         self.assertNotIn("service create", self.calls())
         self.assert_no_secret(out)
         self.assertEqual(os.listdir(self.scratch), [])
+
+    def test_one_run_per_address(self):
+        os.makedirs(self.locks)
+        holder = subprocess.Popen(["flock", os.path.join(self.locks, "addr-192.0.2.20.lock"), "sleep", "5"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        for _ in range(50):
+            probe = subprocess.run(["flock", "-n", os.path.join(self.locks, "addr-192.0.2.20.lock"), "true"])
+            if probe.returncode != 0:
+                break
+            time.sleep(0.05)
+        # a different name that resolves to the same address is held up, and so is sweep
+        for mode in ("run", "sweep"):
+            out = self.run_exec(mode=mode, args=("--machine", "nt4srv04", "--timeout", "5")
+                                if mode == "run" else ("--machine", "nt4srv04"))
+            self.assertIn("already running", self.events(out)[-1]["error"], mode)
+        self.assertNotIn("service", self.calls())
 
     def test_one_run_per_machine(self):
         os.makedirs(self.locks)

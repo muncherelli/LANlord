@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine
+- the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout keeps running on the machine, as NT4 has no way to kill it from outside, and its output files are removed by the next run
 
 ### Fixed
 
