@@ -2028,7 +2028,7 @@ fn operate() -> Result<()> {
 }
 
 /// an apply reports its progress as event lines before the response, as the service does.
-#[cfg(feature = "webui")]
+#[cfg(all(unix, feature = "webui"))]
 fn door_events<T>(work: impl FnOnce() -> T) -> T {
     let print = |event: &lanlord_core::apply::ApplyEvent| {
         if let Some(line) = operations_service::event_line(event) {
@@ -2040,7 +2040,7 @@ fn door_events<T>(work: impl FnOnce() -> T) -> T {
     operations_service::with_events(&print, work)
 }
 
-#[cfg(not(feature = "webui"))]
+#[cfg(all(unix, not(feature = "webui")))]
 fn door_events<T>(work: impl FnOnce() -> T) -> T {
     work()
 }

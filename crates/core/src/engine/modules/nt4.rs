@@ -550,7 +550,7 @@ pub fn apply(
     };
     let config = &prepared.config;
     let secrets = config.secrets();
-    let mut state = State::load(host, state_dir, true)?;
+    let state = State::load(host, state_dir, true)?;
     let mut journal = Journal::new(format!("{state_dir}/journal/{run}"));
 
     let changes = engine::look(host, &prepared.resources)?;
@@ -565,85 +565,112 @@ pub fn apply(
     )?;
     journal.finish(host);
 
-    let mut steps = vec![
-        "remove the old hash-tagged images",
-        "wait for samba to answer",
-    ];
+    let mut job = Job {
+        host,
+        config,
+        secrets,
+        events,
+        tally,
+        state,
+    };
+    job.after_container();
+    job.clean_images()?;
+    job.wait_for_samba()?;
     if config.domain() {
-        steps.push("domain admins may join computers");
+        job.domain_admins_may_join()?;
     }
-    events(ApplyEvent::Total {
-        n: steps.len() as u32,
-    });
-
-    engine::task(events, &mut tally, &secrets, steps[0], |_| {
-        let listed = docker(
-            host,
-            &["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"],
-        )?;
-        for img in listed
-            .stdout
-            .lines()
-            .filter(|l| l.contains("/lanlord-samba-nt4:") || l.starts_with("lanlord-samba-nt4:"))
-        {
-            let used = docker(
-                host,
-                &["ps", "-a", "--filter", &format!("ancestor={img}"), "-q"],
-            )?;
-            if used.stdout.trim().is_empty() {
-                let _ = docker(host, &["image", "rm", img]);
-            }
-        }
-        Ok((false, String::new()))
-    })?;
-
-    engine::task(events, &mut tally, &secrets, steps[1], |_| {
-        for attempt in 0..20 {
-            if docker(host, &["exec", NAME, "smbcontrol", "smbd", "ping"])?.success() {
-                return Ok((false, String::new()));
-            }
-            if attempt < 19 {
-                host.sleep(Duration::from_secs(2));
-            }
-        }
-        anyhow::bail!("samba does not answer")
-    })?;
-
+    job.accounts()?;
     if config.domain() {
+        job.logon_script(state_dir, run)?;
+    }
+    job.list()?;
+    Ok(job.tally)
+}
+
+/// what the steps after the container share: the machine, the settings, and where the events and
+/// the count of what was done go.
+struct Job<'a, 'e> {
+    host: &'a dyn Host,
+    config: &'a Config,
+    secrets: Vec<Secret>,
+    events: &'e mut Events<'e>,
+    tally: Tally,
+    state: State,
+}
+
+impl Job<'_, '_> {
+    /// say how many steps the first part has.
+    fn after_container(&mut self) {
+        let n = 2 + u32::from(self.config.domain());
+        (self.events)(ApplyEvent::Total { n });
+    }
+
+    fn clean_images(&mut self) -> Result<()> {
+        let host = self.host;
         engine::task(
-            events,
-            &mut tally,
-            &secrets,
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            "remove the old hash-tagged images",
+            |_| {
+                let listed = docker(
+                    host,
+                    &["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"],
+                )?;
+                for img in listed.stdout.lines().filter(|l| {
+                    l.contains("/lanlord-samba-nt4:") || l.starts_with("lanlord-samba-nt4:")
+                }) {
+                    let used = docker(
+                        host,
+                        &["ps", "-a", "--filter", &format!("ancestor={img}"), "-q"],
+                    )?;
+                    if used.stdout.trim().is_empty() {
+                        let _ = docker(host, &["image", "rm", img]);
+                    }
+                }
+                Ok((false, String::new()))
+            },
+        )
+    }
+
+    fn wait_for_samba(&mut self) -> Result<()> {
+        let host = self.host;
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            "wait for samba to answer",
+            |_| {
+                for attempt in 0..20 {
+                    if docker(host, &["exec", NAME, "smbcontrol", "smbd", "ping"])?.success() {
+                        return Ok((false, String::new()));
+                    }
+                    if attempt < 19 {
+                        host.sleep(Duration::from_secs(2));
+                    }
+                }
+                anyhow::bail!("samba does not answer")
+            },
+        )
+    }
+
+    fn domain_admins_may_join(&mut self) -> Result<()> {
+        let (host, config) = (self.host, self.config);
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
             "domain admins may join computers",
             |_| {
-                let have = docker(
-                    host,
-                    &[
-                        "exec",
-                        NAME,
-                        "net",
-                        "sam",
-                        "rights",
-                        "list",
-                        "SeMachineAccountPrivilege",
-                    ],
-                )?;
+                let right = "SeMachineAccountPrivilege";
+                let have = docker(host, &["exec", NAME, "net", "sam", "rights", "list", right])?;
                 if have.stdout.contains("Domain Admins") {
                     return Ok((false, String::new()));
                 }
                 let who = format!("{}\\Domain Admins", config.name);
                 let given = docker(
                     host,
-                    &[
-                        "exec",
-                        NAME,
-                        "net",
-                        "sam",
-                        "rights",
-                        "grant",
-                        &who,
-                        "SeMachineAccountPrivilege",
-                    ],
+                    &["exec", NAME, "net", "sam", "rights", "grant", &who, right],
                 )?;
                 if !given.success() {
                     anyhow::bail!(
@@ -653,112 +680,158 @@ pub fn apply(
                 }
                 Ok((true, "granted".into()))
             },
-        )?;
+        )
     }
 
-    let have = accounts(host).unwrap_or_default();
-    let todo = needs(config, &have, &state);
-    // the steps below: each account change, the sync of a domain, and the listing
-    let accounts_n = u32::from(todo.admin)
-        + (todo.machines.len() + todo.users.len() + todo.deletes.len()) as u32;
-    events(ApplyEvent::Total {
-        n: accounts_n + u32::from(config.domain()) + 1,
-    });
-
-    if todo.admin {
-        if let Some(password) = &config.admin {
-            engine::task(
-                events,
-                &mut tally,
-                &secrets,
-                "set the domain administrator's password",
-                |_| {
-                    let argv = ["docker", "exec", "-i", NAME, "lanlord-user", "admin"];
-                    let out =
-                        host.run(&argv, Some(format!("{}\n", password.expose()).as_bytes()))?;
-                    if !out.success() {
-                        anyhow::bail!("lanlord-user admin failed: {}", out.stderr.trim());
-                    }
-                    state.remember(host, "admin", password)?;
-                    Ok((true, String::new()))
-                },
-            )?;
+    /// the accounts: the administrator, the machines, the users, and the removals.
+    fn accounts(&mut self) -> Result<()> {
+        let have = accounts(self.host).unwrap_or_default();
+        let todo = needs(self.config, &have, &self.state);
+        // the steps below: each account change, the sync of a domain, and the listing
+        let changes = u32::from(todo.admin)
+            + (todo.machines.len() + todo.users.len() + todo.deletes.len()) as u32;
+        (self.events)(ApplyEvent::Total {
+            n: changes + u32::from(self.config.domain()) + 1,
+        });
+        if todo.admin {
+            self.set_admin_password()?;
         }
+        for machine in &todo.machines {
+            self.add_machine(machine)?;
+        }
+        for &index in &todo.users {
+            self.set_up_user(index)?;
+        }
+        for gone in &todo.deletes {
+            self.remove_user(gone)?;
+        }
+        Ok(())
     }
 
-    for machine in &todo.machines {
-        let name = format!("create the account for {machine}");
-        engine::task(events, &mut tally, &secrets, &name, |_| {
-            let out = docker(host, &["exec", NAME, "lanlord-user", "machine", machine])?;
-            if !out.success() {
-                anyhow::bail!("lanlord-user machine failed: {}", out.stderr.trim());
-            }
-            Ok((out.stdout.contains("created"), String::new()))
-        })?;
+    fn set_admin_password(&mut self) -> Result<()> {
+        let host = self.host;
+        let Some(password) = &self.config.admin else {
+            return Ok(());
+        };
+        let state = &mut self.state;
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            "set the domain administrator's password",
+            |_| {
+                let argv = ["docker", "exec", "-i", NAME, "lanlord-user", "admin"];
+                let out = host.run(&argv, Some(format!("{}\n", password.expose()).as_bytes()))?;
+                if !out.success() {
+                    anyhow::bail!("lanlord-user admin failed: {}", out.stderr.trim());
+                }
+                state.remember(host, "admin", password)?;
+                Ok((true, String::new()))
+            },
+        )
     }
 
-    for &index in &todo.users {
-        let user = &config.users[index];
-        let name = format!("set up user {}", user.name);
-        engine::task(events, &mut tally, &secrets, &name, |_| {
-            let role = if user.admin { "admin" } else { "user" };
-            let mut argv = vec![
-                "docker",
-                "exec",
-                "-i",
-                NAME,
-                "lanlord-user",
-                "add",
-                &user.name,
-                role,
-            ];
-            if user.software {
-                argv.push("software");
-            }
-            let out = host.run(
-                &argv,
-                Some(format!("{}\n", user.password.expose()).as_bytes()),
-            )?;
-            if !out.success() {
-                anyhow::bail!(
-                    "lanlord-user add {} failed: {}",
-                    user.name,
-                    out.stderr.trim()
-                );
-            }
-            state.remember(host, &format!("user:{}", user.name), &user.password)?;
-            Ok((out.stdout.contains("created"), String::new()))
-        })?;
+    fn add_machine(&mut self, machine: &str) -> Result<()> {
+        let host = self.host;
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            &format!("create the account for {machine}"),
+            |_| {
+                let out = docker(host, &["exec", NAME, "lanlord-user", "machine", machine])?;
+                if !out.success() {
+                    anyhow::bail!("lanlord-user machine failed: {}", out.stderr.trim());
+                }
+                Ok((out.stdout.contains("created"), String::new()))
+            },
+        )
     }
 
-    for gone in &todo.deletes {
-        let name = format!("remove user {gone}");
-        engine::task(events, &mut tally, &secrets, &name, |_| {
-            let out = docker(host, &["exec", NAME, "lanlord-user", "delete", gone])?;
-            if !out.success() {
-                anyhow::bail!("lanlord-user delete {gone} failed: {}", out.stderr.trim());
-            }
-            state.forget(host, &format!("user:{gone}"))?;
-            Ok((true, String::new()))
-        })?;
+    fn set_up_user(&mut self, index: usize) -> Result<()> {
+        let host = self.host;
+        let user = &self.config.users[index];
+        let state = &mut self.state;
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            &format!("set up user {}", user.name),
+            |_| {
+                let role = if user.admin { "admin" } else { "user" };
+                let mut argv = vec![
+                    "docker",
+                    "exec",
+                    "-i",
+                    NAME,
+                    "lanlord-user",
+                    "add",
+                    &user.name,
+                    role,
+                ];
+                if user.software {
+                    argv.push("software");
+                }
+                let out = host.run(
+                    &argv,
+                    Some(format!("{}\n", user.password.expose()).as_bytes()),
+                )?;
+                if !out.success() {
+                    anyhow::bail!(
+                        "lanlord-user add {} failed: {}",
+                        user.name,
+                        out.stderr.trim()
+                    );
+                }
+                state.remember(host, &format!("user:{}", user.name), &user.password)?;
+                Ok((out.stdout.contains("created"), String::new()))
+            },
+        )
     }
 
-    if config.domain() {
+    fn remove_user(&mut self, gone: &str) -> Result<()> {
+        let host = self.host;
+        let state = &mut self.state;
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            &format!("remove user {gone}"),
+            |_| {
+                let out = docker(host, &["exec", NAME, "lanlord-user", "delete", gone])?;
+                if !out.success() {
+                    anyhow::bail!("lanlord-user delete {gone} failed: {}", out.stderr.trim());
+                }
+                state.forget(host, &format!("user:{gone}"))?;
+                Ok((true, String::new()))
+            },
+        )
+    }
+
+    /// the logon script file, then the sync that hands it to the users.
+    fn logon_script(&mut self, state_dir: &str, run: &str) -> Result<()> {
+        let host = self.host;
         let script: Vec<Box<dyn Resource>> = vec![Box::new(File::new(
             &format!("{STATE}/lib/netlogon/lanlord.bat"),
-            logon_script(config),
+            logon_script(self.config),
             0o644,
         ))];
         let seen = engine::look(host, &script)?;
         let mut after = Journal::new(format!("{state_dir}/journal/{run}-logon"));
         engine::change(
-            host, &script, &seen, &mut after, events, &mut tally, &secrets,
+            host,
+            &script,
+            &seen,
+            &mut after,
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
         )?;
         after.finish(host);
         engine::task(
-            events,
-            &mut tally,
-            &secrets,
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
             "sync the logon scripts and groups",
             |_| {
                 let out = docker(host, &["exec", NAME, "lanlord-user", "sync"])?;
@@ -767,36 +840,38 @@ pub fn apply(
                 }
                 Ok((false, String::new()))
             },
-        )?;
+        )
     }
 
-    engine::task(
-        events,
-        &mut tally,
-        &secrets,
-        "list the accounts",
-        |events| {
-            if let Some(names) = accounts(host) {
-                let names: Vec<String> = names.into_iter().collect();
-                events(ApplyEvent::Log {
-                    text: format!(
-                        "{} is running as a {} named {} on {}; accounts: {}",
-                        config.name,
-                        if config.domain() {
-                            "domain controller"
-                        } else {
-                            "workgroup server"
-                        },
-                        config.netbios,
-                        config.address.split('/').next().unwrap_or(""),
-                        names.join(", ")
-                    ),
-                });
-            }
-            Ok((false, String::new()))
-        },
-    )?;
-    Ok(tally)
+    fn list(&mut self) -> Result<()> {
+        let (host, config) = (self.host, self.config);
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            "list the accounts",
+            |events| {
+                if let Some(names) = accounts(host) {
+                    let names: Vec<String> = names.into_iter().collect();
+                    let kind = if config.domain() {
+                        "domain controller"
+                    } else {
+                        "workgroup server"
+                    };
+                    events(ApplyEvent::Log {
+                        text: format!(
+                            "{} is running as a {kind} named {} on {}; accounts: {}",
+                            config.name,
+                            config.netbios,
+                            config.address.split('/').next().unwrap_or(""),
+                            names.join(", ")
+                        ),
+                    });
+                }
+                Ok((false, String::new()))
+            },
+        )
+    }
 }
 
 #[cfg(test)]

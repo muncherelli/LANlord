@@ -18,7 +18,6 @@ zeroize = "1.9.1"
 tar = "0.4.46"
 sha2 = "0.10"
 hmac = "0.12"
-md4 = "0.10"
 minijinja = "2"
 
 [dev-dependencies]

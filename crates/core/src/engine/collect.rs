@@ -1,23 +1,17 @@
 //! what a module left on the machine, as one json document, so a run of the playbook and a run of
 //! the engine can be compared (`tools/engine-parity.sh`). it holds no secret: a password is
-//! reported only as whether it matches the settings.
+//! reported only as whether LANlord's recorded fingerprint of it is the one in the settings.
 
 use anyhow::Result;
-use md4::Md4;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use super::host::Host;
-use super::state::hex;
+use super::state::{hex, State};
+use super::Secret;
 
 const STATE: &str = "/opt/lanlord/nt4";
 const NAME: &str = "lanlord-nt4";
-
-/// the NT hash of a password, as `pdbedit -w` shows it.
-fn nt_hash(password: &str) -> String {
-    let utf16: Vec<u8> = password.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    hex(&Md4::digest(&utf16)).to_ascii_uppercase()
-}
 
 fn file(host: &dyn Host, path: &str) -> Result<Value> {
     Ok(match host.read(path)? {
@@ -29,8 +23,9 @@ fn file(host: &dyn Host, path: &str) -> Result<Value> {
     })
 }
 
-/// the nt4-domain module's state. `doc` is the merged settings, for the password comparison.
-pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value) -> Result<Value> {
+/// the nt4-domain module's state. `doc` is the merged settings and `state_dir` the engine's, for
+/// the password comparison.
+pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) -> Result<Value> {
     let mut files = Map::new();
     for name in [
         "config/smb.conf",
@@ -75,42 +70,36 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value) -> Result<Value> 
         ],
         None,
     )?;
-    // names and password hashes: `name:uid:LM:NT:[flags]:...`
-    let listed = host.run(&["docker", "exec", NAME, "pdbedit", "-L", "-w"], None)?;
-    let mut hashes = std::collections::BTreeMap::new();
-    for line in listed.stdout.lines() {
-        let mut fields = line.split(':');
-        if let (Some(name), Some(_), Some(_), Some(nt)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        {
-            hashes.insert(name.to_string(), nt.to_string());
-        }
-    }
+    let listed = host.run(&["docker", "exec", NAME, "lanlord-user", "list"], None)?;
+    let accounts: Vec<&str> = listed
+        .stdout
+        .lines()
+        .filter_map(|line| line.split(':').next())
+        .collect();
+    let prints = State::load(host, state_dir, false)?;
     let section = doc.get("nt4-domain");
-    let mut matches = Map::new();
-    let mut check = |account: &str, password: Option<String>| {
-        if let Some(password) = password {
-            matches.insert(
-                account.to_string(),
-                json!(hashes
-                    .get(account)
-                    .is_some_and(|h| h.eq_ignore_ascii_case(&nt_hash(&password)))),
-            );
-        }
-    };
     let text = |v: Option<&serde_yaml_ng::Value>| match v {
         Some(serde_yaml_ng::Value::String(s)) => Some(s.clone()),
         Some(serde_yaml_ng::Value::Number(n)) => Some(n.to_string()),
         _ => None,
     };
-    check("root", section.and_then(|s| text(s.get("admin_password"))));
+    let mut recorded = Map::new();
+    let mut check = |key: &str, password: Option<String>| {
+        if let Some(password) = password {
+            recorded.insert(
+                key.to_string(),
+                json!(prints.is_current(key, &Secret::new(password))),
+            );
+        }
+    };
+    check("admin", section.and_then(|s| text(s.get("admin_password"))));
     if let Some(users) = section
         .and_then(|s| s.get("users"))
         .and_then(|u| u.as_sequence())
     {
         for user in users {
             if let Some(name) = text(user.get("name")) {
-                check(&name, text(user.get("password")));
+                check(&format!("user:{name}"), text(user.get("password")));
             }
         }
     }
@@ -135,8 +124,8 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value) -> Result<Value> 
             "inspect": inspect.stdout.trim(),
             "previous_left_over": prev.success(),
         },
-        "accounts": hashes.keys().collect::<Vec<_>>(),
-        "password_matches_settings": matches,
+        "accounts": accounts,
+        "password_recorded_current": recorded,
         "domain_admins_may_join": rights.stdout.contains("Domain Admins"),
     }))
 }
@@ -154,7 +143,7 @@ pub fn state_of(module: &str) -> Result<Value> {
         None => serde_yaml_ng::Value::Null,
     };
     match module {
-        "nt4-domain" => nt4_domain(&super::host::RealHost, &doc),
+        "nt4-domain" => nt4_domain(&super::host::RealHost, &doc, super::STATE_DIR),
         other => anyhow::bail!("the engine has no state collector for {other}"),
     }
 }
@@ -165,30 +154,27 @@ mod tests {
     use crate::engine::host::{FakeHost, Output};
 
     #[test]
-    fn the_nt_hash_is_the_md4_of_the_utf16_password() {
-        // the well-known NT hash of the empty password and of "password"
-        assert_eq!(nt_hash(""), "31D6CFE0D16AE931B73C59D7E0C089C0");
-        assert_eq!(nt_hash("password"), "8846F7EAEE8FB117AD06BDD830B7586C");
-    }
-
-    #[test]
-    fn the_state_says_whether_a_password_matches_and_never_holds_it() {
+    fn the_state_says_whether_a_password_is_the_recorded_one_and_never_holds_it() {
         let host = FakeHost::new();
         host.when(
-            "docker exec lanlord-nt4 pdbedit -L -w",
-            vec![Output::ok(
-                "root:0:XXX:8846F7EAEE8FB117AD06BDD830B7586C:[U          ]:LCT-1:\ndana:1000:XXX:31D6CFE0D16AE931B73C59D7E0C089C0:[U          ]:LCT-1:\n",
-            )],
+            "docker exec lanlord-nt4 lanlord-user list",
+            vec![Output::ok("root:0:Administrator\ndana:1000:\n")],
         );
+        let mut prints = State::load(&host, "/state", true).unwrap();
+        prints
+            .remember(&host, "admin", &Secret::new("s3cretadmin"))
+            .unwrap();
+        prints
+            .remember(&host, "user:dana", &Secret::new("older"))
+            .unwrap();
         let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(
-            "nt4-domain:\n  admin_password: password\n  users:\n    - name: dana\n      password: other\n",
+            "nt4-domain:\n  admin_password: s3cretadmin\n  users:\n    - name: dana\n      password: other\n",
         )
         .unwrap();
-        let state = nt4_domain(&host, &doc).unwrap();
-        assert_eq!(state["password_matches_settings"]["root"], true);
-        assert_eq!(state["password_matches_settings"]["dana"], false);
+        let state = nt4_domain(&host, &doc, "/state").unwrap();
+        assert_eq!(state["password_recorded_current"]["admin"], true);
+        assert_eq!(state["password_recorded_current"]["user:dana"], false);
         let shown = state.to_string();
-        assert!(!shown.contains("other"));
-        assert!(!shown.contains("8846F7EA"));
+        assert!(!shown.contains("other") && !shown.contains("s3cretadmin"));
     }
 }

@@ -31,7 +31,11 @@ collect)
     echo "saved $dir/$label.json"
     ;;
 compare)
-    if diff -u "$dir/ansible.json" "$dir/native.json"; then
+    # the playbook records no fingerprints, so that one key is expected to differ
+    for engine in ansible native; do
+        jq 'del(.password_recorded_current)' "$dir/$engine.json" >"$dir/$engine.cmp"
+    done
+    if diff -u "$dir/ansible.cmp" "$dir/native.cmp"; then
         echo "parity: $module is the same after both engines"
     else
         echo "parity: $module differs (ansible first, native second)" >&2
