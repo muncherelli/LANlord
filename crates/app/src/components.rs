@@ -727,7 +727,11 @@ impl Components {
                     // its network and address are decided by its own settings, not here
                     body.push(Node::Row(vec![
                         Node::Gap(22.0),
-                        Node::Text("Its address is set in the NT4 Server window.".into()),
+                        Node::Text(
+                            "Its address is the address of its nt4-servers entry in the Settings \
+                             window (the gateway's when blank)."
+                                .into(),
+                        ),
                     ]));
                 } else if joined && component.own_address() && !network.external {
                     // the model asks for an address when it is not a host bind
@@ -1157,7 +1161,7 @@ mod tests {
             .unwrap();
         assert!(!has_input(body), "no address box for it here");
         assert!(body.iter().any(|n| matches!(n, Node::Row(r)
-            if r.iter().any(|n| matches!(n, Node::Text(t) if t.contains("NT4 Server window"))))));
+            if r.iter().any(|n| matches!(n, Node::Text(t) if t.contains("nt4-servers entry"))))));
     }
 
     #[test]
