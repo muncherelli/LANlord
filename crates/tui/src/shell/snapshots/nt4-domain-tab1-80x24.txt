@@ -2,9 +2,9 @@
 │ NT4 Server                                                                   │
 │ Status: available                                                            │
 │                                                                              │
-│ A Samba server in Docker for old Windows clients, on the networks chosen in  │
-│ Components (the gateway's address unless given its own): an NT4-style domain │
-│ controller or a plain workgroup.                                             │
+│ A Samba server in Docker for old Windows clients, on the network its own     │
+│ settings give it (the gateway's address unless it is given its own): an      │
+│ NT4-style domain controller or a plain workgroup.                            │
 │ ──────────────────────────────────────────────────────────────────────────── │
 │ [ Settings ][ Logins ][ Logon scripts ]                                      │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │

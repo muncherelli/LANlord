@@ -723,7 +723,13 @@ impl Components {
                     enabled: true,
                     toggle: Msg::ToggleNet(c, n),
                 }]));
-                if joined && component.own_address() && !network.external {
+                if joined && component.id() == "nt4-domain" && !network.external {
+                    // its network and address are decided by its own settings, not here
+                    body.push(Node::Row(vec![
+                        Node::Gap(22.0),
+                        Node::Text("Its address is set in the NT4 Server window.".into()),
+                    ]));
+                } else if joined && component.own_address() && !network.external {
                     // the model asks for an address when it is not a host bind
                     let required = component.needs_own_address
                         || choice.is_some_and(|ch| ch.mechanism != Mechanism::HostBind);
@@ -1093,12 +1099,12 @@ mod tests {
         walk(page)
     }
 
-    fn nt4_address(window: &Components) -> Option<Option<Ipv4Addr>> {
+    fn dns_address(window: &Components) -> Option<Option<Ipv4Addr>> {
         window
             .candidate()
             .0
             .enabled
-            .get("nt4-domain")
+            .get("dns")
             .and_then(|c| c.attach.first())
             .map(|a| a.address)
     }
@@ -1106,48 +1112,58 @@ mod tests {
     #[test]
     fn a_joined_network_defaults_to_the_gateway_address() {
         let (mut window, services, _) = ready();
-        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
         window.update(Msg::Next, &services, "gw");
         let page = window.attach();
         assert!(has_check(&page, "Gateway address (192.0.2.1)"));
         assert!(!has_input(&page), "no box until it has its own address");
-        assert_eq!(nt4_address(&window), Some(None));
+        assert_eq!(dns_address(&window), Some(None));
     }
 
     #[test]
     fn choosing_its_own_address_and_going_back_to_the_gateway() {
         let (mut window, services, _) = ready();
-        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
         window.update(Msg::Next, &services, "gw");
-        let nt4 = window
+        let dns = window
             .joining()
             .iter()
-            .position(|c| c.id() == "nt4-domain")
+            .position(|c| c.id() == "dns")
             .unwrap();
         let own: Ipv4Addr = "192.0.2.150".parse().unwrap();
-        window.update(Msg::OwnAddress((nt4, 1), true), &services, "gw");
+        window.update(Msg::OwnAddress((dns, 1), true), &services, "gw");
         assert!(has_input(&window.attach()));
-        window.update(Msg::Address((nt4, 1), own.to_string()), &services, "gw");
-        assert_eq!(nt4_address(&window), Some(Some(own)));
-        window.update(Msg::OwnAddress((nt4, 1), false), &services, "gw");
+        window.update(Msg::Address((dns, 1), own.to_string()), &services, "gw");
+        assert_eq!(dns_address(&window), Some(Some(own)));
+        window.update(Msg::OwnAddress((dns, 1), false), &services, "gw");
         assert!(!has_input(&window.attach()));
         assert_eq!(
-            nt4_address(&window),
+            dns_address(&window),
             Some(None),
             "the typed address is gone"
         );
     }
 
     #[test]
-    fn a_mechanism_other_than_host_bind_requires_an_address() {
+    fn nt4_points_to_its_own_window_for_the_address() {
         let (mut window, services, _) = ready();
         window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
-        window
-            .draft_mut()
-            .enabled
-            .get_mut("nt4-domain")
-            .unwrap()
-            .mechanism = Mechanism::Ipvlan;
+        window.update(Msg::Next, &services, "gw");
+        let page = window.attach();
+        let body = page
+            .iter()
+            .find_map(|n| match n {
+                Node::Group { title, body } if title == "NT4 Server" => Some(body),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!has_input(body), "no address box for it here");
+        assert!(body.iter().any(|n| matches!(n, Node::Row(r)
+            if r.iter().any(|n| matches!(n, Node::Text(t) if t.contains("NT4 Server window"))))));
+    }
+
+    #[test]
+    fn a_mechanism_other_than_host_bind_requires_an_address() {
+        let (mut window, services, _) = ready();
+        window.draft_mut().enabled.get_mut("dns").unwrap().mechanism = Mechanism::Ipvlan;
         window.update(Msg::Next, &services, "gw");
         let page = window.attach();
         let group = |title: &str| {
@@ -1158,51 +1174,43 @@ mod tests {
                 })
                 .unwrap()
         };
-        let nt4 = group("NT4 Server");
-        assert!(has_input(nt4), "the box is there with no gateway option");
-        assert!(!has_check(nt4, "Gateway address (192.0.2.1)"));
-        assert!(has_check(group("DNS"), "Gateway address (192.0.2.1)"));
+        let dns = group("DNS");
+        assert!(has_input(dns), "the box is there with no gateway option");
+        assert!(!has_check(dns, "Gateway address (192.0.2.1)"));
+        assert!(has_check(group("DHCP"), "Gateway address (192.0.2.1)"));
     }
 
     #[test]
     fn leaving_a_network_forgets_the_address_typed_for_it() {
         let (mut window, services, _) = ready();
-        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
         window.update(Msg::Next, &services, "gw");
-        let nt4 = window
+        let dns = window
             .joining()
             .iter()
-            .position(|c| c.id() == "nt4-domain")
+            .position(|c| c.id() == "dns")
             .unwrap();
-        window.update(Msg::OwnAddress((nt4, 1), true), &services, "gw");
+        window.update(Msg::OwnAddress((dns, 1), true), &services, "gw");
         window.update(
-            Msg::Address((nt4, 1), "192.0.2.150".into()),
+            Msg::Address((dns, 1), "192.0.2.150".into()),
             &services,
             "gw",
         );
-        window.update(Msg::ToggleNet(nt4, 1), &services, "gw");
+        window.update(Msg::ToggleNet(dns, 1), &services, "gw");
         assert!(window.typed.is_empty());
-        window.update(Msg::ToggleNet(nt4, 1), &services, "gw");
+        window.update(Msg::ToggleNet(dns, 1), &services, "gw");
         assert!(!has_input(&window.attach()), "it rejoins on the gateway");
     }
 
     #[test]
     fn an_existing_own_address_opens_as_its_own_address() {
         let (mut window, services, _) = ready();
-        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
         let own: Ipv4Addr = "192.0.2.150".parse().unwrap();
-        window
-            .draft_mut()
-            .enabled
-            .get_mut("nt4-domain")
-            .unwrap()
-            .attach[0]
-            .address = Some(own);
+        window.draft_mut().enabled.get_mut("dns").unwrap().attach[0].address = Some(own);
         window.current = Some(window.draft());
         window.open();
         window.update(Msg::Next, &services, "gw");
         assert!(has_input(&window.attach()));
-        assert_eq!(nt4_address(&window), Some(Some(own)));
+        assert_eq!(dns_address(&window), Some(Some(own)));
     }
 
     #[test]
