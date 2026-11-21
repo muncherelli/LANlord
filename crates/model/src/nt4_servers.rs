@@ -159,8 +159,6 @@ fn network_of(server: &Mapping, default_network: &str) -> String {
 /// `default_network` is where a server with no `network` goes: the first network.
 pub fn validate(root: &Mapping, default_network: &str) -> Vec<ValidationError> {
     let mut errors = Vec::new();
-    let mut fail = |path: String, message: String| errors.push(ValidationError { path, message });
-
     let domains: Vec<String> = match root.get(DOMAINS) {
         Some(Value::Mapping(map)) => map
             .keys()
@@ -169,120 +167,171 @@ pub fn validate(root: &Mapping, default_network: &str) -> Vec<ValidationError> {
             .collect(),
         _ => Vec::new(),
     };
-    for name in root
-        .get(DOMAINS)
-        .and_then(Value::as_mapping)
-        .into_iter()
-        .flat_map(|m| m.keys().filter_map(Value::as_str))
-    {
-        if !crate::nt4::netbios_ok(name) {
-            fail(
-                format!("{DOMAINS}.{name}"),
-                "a domain name is up to 15 letters, digits, - or _".into(),
-            );
-        }
-    }
-
+    check_domain_names(root, &mut errors);
     let Some(Value::Sequence(servers)) = root.get(SERVERS) else {
         return errors;
     };
-    let mut names: BTreeMap<String, usize> = BTreeMap::new();
-    let mut netbios: BTreeMap<(String, String), usize> = BTreeMap::new();
-    let mut pdcs: BTreeMap<(String, String), usize> = BTreeMap::new();
-    let mut wins: BTreeMap<String, usize> = BTreeMap::new();
-    let mut addresses: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut seen = Seen::default();
     for (i, server) in servers.iter().enumerate() {
-        let at = |key: &str| format!("{SERVERS}[{i}].{key}");
         let Value::Mapping(server) = server else {
-            fail(format!("{SERVERS}[{i}]"), "must be a mapping".into());
+            errors.push(error(format!("{SERVERS}[{i}]"), "must be a mapping".into()));
             continue;
         };
-        let name = text(server, "name").unwrap_or_default();
-        let lower = name.to_ascii_lowercase();
-        if name.is_empty() {
-            fail(at("name"), "a server needs a name".into());
-        } else if RESERVED.contains(&lower.as_str()) || lower.ends_with("-prev") {
-            fail(at("name"), format!("{name} is kept for other uses"));
-        } else if let Some(first) = names.insert(lower, i) {
-            fail(
-                at("name"),
-                format!("{name} is also the name of server {first}"),
-            );
-        }
         let network = network_of(server, default_network);
-        match text(server, "netbios_name") {
-            Some(n) if !crate::nt4::netbios_ok(&n) => {
-                fail(
-                    at("netbios_name"),
-                    "up to 15 letters, digits, - or _, starting with a letter or digit".into(),
-                );
-            }
-            other => {
-                // no name means the machine's own, which two servers cannot share either
-                let key = (
-                    network.clone(),
-                    other.unwrap_or_default().to_ascii_uppercase(),
-                );
-                if let Some(first) = netbios.insert(key, i) {
-                    fail(
-                        at("netbios_name"),
-                        format!("server {first} has the same NetBIOS name on this network"),
-                    );
-                }
-            }
-        }
-        let role = text(server, "role").unwrap_or_default();
-        match role.as_str() {
-            "pdc" => {
-                let domain = text(server, "domain").unwrap_or_default();
-                if !domains.contains(&domain.to_ascii_uppercase()) {
-                    fail(at("domain"), format!("there is no domain {domain}"));
-                } else if let Some(first) =
-                    pdcs.insert((network.clone(), domain.to_ascii_uppercase()), i)
-                {
-                    fail(
-                        at("domain"),
-                        format!("server {first} is already the domain controller of {domain} on this network"),
-                    );
-                }
-            }
-            "workgroup" => {
-                let group = text(server, "workgroup").unwrap_or_default();
-                if !crate::nt4::netbios_ok(&group) {
-                    fail(
-                        at("workgroup"),
-                        "up to 15 letters, digits, - or _, starting with a letter or digit".into(),
-                    );
-                }
-            }
-            _ => fail(at("role"), "must be pdc or workgroup".into()),
-        }
-        // servers run on the host network: each one needs its own address on the network. no
-        // address means the gateway's, which only one server can have
-        let address = text(server, "address")
-            .map(|a| a.split('/').next().unwrap_or_default().to_string())
-            .unwrap_or_default();
-        if let Some(first) = addresses.insert((network.clone(), address.clone()), i) {
-            let which = if address.is_empty() {
-                "the gateway's address".to_string()
-            } else {
-                format!("the address {address}")
-            };
-            fail(
-                at("address"),
-                format!("server {first} already uses {which} on this network; give this server an address of its own"),
-            );
-        }
-        if text(server, "wins").unwrap_or_else(|| "serve".into()) == "serve" {
-            if let Some(first) = wins.insert(network, i) {
-                fail(
-                    at("wins"),
-                    format!("server {first} already serves WINS on this network; set wins: off on one of them"),
-                );
-            }
-        }
+        let one = One {
+            i,
+            server,
+            network: &network,
+        };
+        check_name(&one, &mut seen, &mut errors);
+        check_netbios(&one, &mut seen, &mut errors);
+        check_role(&one, &domains, &mut seen, &mut errors);
+        check_address(&one, &mut seen, &mut errors);
+        check_wins(&one, &mut seen, &mut errors);
     }
     errors
+}
+
+fn error(path: String, message: String) -> ValidationError {
+    ValidationError { path, message }
+}
+
+/// what the servers seen so far hold, to find the next one that clashes with them.
+#[derive(Default)]
+struct Seen {
+    names: BTreeMap<String, usize>,
+    netbios: BTreeMap<(String, String), usize>,
+    pdcs: BTreeMap<(String, String), usize>,
+    wins: BTreeMap<String, usize>,
+    addresses: BTreeMap<(String, String), usize>,
+}
+
+/// the server being checked: its place in the list, its entry and its network.
+struct One<'a> {
+    i: usize,
+    server: &'a Mapping,
+    network: &'a str,
+}
+
+impl One<'_> {
+    fn at(&self, key: &str) -> String {
+        format!("{SERVERS}[{}].{key}", self.i)
+    }
+}
+
+const NETBIOS_RULE: &str = "up to 15 letters, digits, - or _, starting with a letter or digit";
+
+fn check_domain_names(root: &Mapping, errors: &mut Vec<ValidationError>) {
+    let names = root
+        .get(DOMAINS)
+        .and_then(Value::as_mapping)
+        .into_iter()
+        .flat_map(|m| m.keys().filter_map(Value::as_str));
+    for name in names.filter(|n| !crate::nt4::netbios_ok(n)) {
+        errors.push(error(
+            format!("{DOMAINS}.{name}"),
+            "a domain name is up to 15 letters, digits, - or _".into(),
+        ));
+    }
+}
+
+fn check_name(one: &One, seen: &mut Seen, errors: &mut Vec<ValidationError>) {
+    let name = text(one.server, "name").unwrap_or_default();
+    let lower = name.to_ascii_lowercase();
+    if name.is_empty() {
+        errors.push(error(one.at("name"), "a server needs a name".into()));
+    } else if RESERVED.contains(&lower.as_str()) || lower.ends_with("-prev") {
+        errors.push(error(
+            one.at("name"),
+            format!("{name} is kept for other uses"),
+        ));
+    } else if let Some(first) = seen.names.insert(lower, one.i) {
+        errors.push(error(
+            one.at("name"),
+            format!("{name} is also the name of server {first}"),
+        ));
+    }
+}
+
+fn check_netbios(one: &One, seen: &mut Seen, errors: &mut Vec<ValidationError>) {
+    let given = text(one.server, "netbios_name");
+    if given.as_deref().is_some_and(|n| !crate::nt4::netbios_ok(n)) {
+        errors.push(error(one.at("netbios_name"), NETBIOS_RULE.into()));
+        return;
+    }
+    // no name means the machine's own, which two servers cannot share either
+    let key = (
+        one.network.to_string(),
+        given.unwrap_or_default().to_ascii_uppercase(),
+    );
+    if let Some(first) = seen.netbios.insert(key, one.i) {
+        errors.push(error(
+            one.at("netbios_name"),
+            format!("server {first} has the same NetBIOS name on this network"),
+        ));
+    }
+}
+
+fn check_role(one: &One, domains: &[String], seen: &mut Seen, errors: &mut Vec<ValidationError>) {
+    match text(one.server, "role").unwrap_or_default().as_str() {
+        "pdc" => {
+            let domain = text(one.server, "domain").unwrap_or_default();
+            let upper = domain.to_ascii_uppercase();
+            if !domains.contains(&upper) {
+                errors.push(error(
+                    one.at("domain"),
+                    format!("there is no domain {domain}"),
+                ));
+            } else if let Some(first) = seen.pdcs.insert((one.network.to_string(), upper), one.i) {
+                errors.push(error(
+                    one.at("domain"),
+                    format!("server {first} is already the domain controller of {domain} on this network"),
+                ));
+            }
+        }
+        "workgroup" => {
+            let group = text(one.server, "workgroup").unwrap_or_default();
+            if !crate::nt4::netbios_ok(&group) {
+                errors.push(error(one.at("workgroup"), NETBIOS_RULE.into()));
+            }
+        }
+        _ => errors.push(error(one.at("role"), "must be pdc or workgroup".into())),
+    }
+}
+
+/// servers run on the host network: each one needs its own address on the network. no address
+/// means the gateway's, which only one server can have.
+fn check_address(one: &One, seen: &mut Seen, errors: &mut Vec<ValidationError>) {
+    let address = text(one.server, "address")
+        .map(|a| a.split('/').next().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    let key = (one.network.to_string(), address.clone());
+    let Some(first) = seen.addresses.insert(key, one.i) else {
+        return;
+    };
+    let which = if address.is_empty() {
+        "the gateway's address".to_string()
+    } else {
+        format!("the address {address}")
+    };
+    errors.push(error(
+        one.at("address"),
+        format!("server {first} already uses {which} on this network; give this server an address of its own"),
+    ));
+}
+
+fn check_wins(one: &One, seen: &mut Seen, errors: &mut Vec<ValidationError>) {
+    if text(one.server, "wins").unwrap_or_else(|| "serve".into()) != "serve" {
+        return;
+    }
+    if let Some(first) = seen.wins.insert(one.network.to_string(), one.i) {
+        errors.push(error(
+            one.at("wins"),
+            format!(
+                "server {first} already serves WINS on this network; set wins: off on one of them"
+            ),
+        ));
+    }
 }
 
 #[cfg(test)]
