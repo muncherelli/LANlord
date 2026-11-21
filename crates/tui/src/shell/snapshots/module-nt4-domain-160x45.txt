@@ -2,25 +2,26 @@
       ≡       │ NT4 Server                                                                             │
   My Server   │ Status: available                                                                      │
               │                                                                                        │
-              │ A Samba server in Docker for old Windows clients, on the internal network only: an     │
-      □       │ NT4-style domain controller or a plain workgroup, with a basic set of logins.          │
-   Networks   │ ────────────────────────────────────────────────────────────────────────────────────── │
+              │ A Samba server in Docker for old Windows clients, on the network its own settings give │
+      □       │ it (the gateway's address unless it is given its own): an NT4-style domain controller  │
+   Networks   │ or a plain workgroup.                                                                  │
+              │ ────────────────────────────────────────────────────────────────────────────────────── │
               │ [ Settings ][ Logins ][ Logon scripts ]                                                │
-              │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
-      ►       │ │┌ Domain ──────────────────────────────────────────────────────────────────────────┐│ │
-   Gateway    │ ││ Domain name    RETRONET                                                          ││ │
+      ►       │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+   Gateway    │ │┌ Domain ──────────────────────────────────────────────────────────────────────────┐│ │
+              │ ││ Domain name    RETRONET                                                          ││ │
               │ ││ Server name                                                                      ││ │
-              │ ││               blank: the gateway's hostname                                      ││ │
-      ▦       │ ││ Mode           domain ▼                                                          ││ │
-   Settings   │ ││ Options       [ ] Roaming profiles                                               ││ │
+      ▦       │ ││               blank: the gateway's hostname                                      ││ │
+   Settings   │ ││ Mode           domain ▼                                                          ││ │
+              │ ││ Options       [ ] Roaming profiles                                               ││ │
               │ ││               [ ] Software share (S:)                                            ││ │
-              │ ││ Administrator password: not set                                                  ││ │
-      >       │ ││               [ Set password... ]                                                ││ │
-   Console    │ ││ a domain needs an administrator password                                         ││ │
+      >       │ ││ Administrator password: not set                                                  ││ │
+   Console    │ ││               [ Set password... ]                                                ││ │
+              │ ││ a domain needs an administrator password                                         ││ │
               │ │└──────────────────────────────────────────────────────────────────────────────────┘│ │
-              │ │┌ Machines to prepare accounts for ────────────────────────────────────────────────┐│ │
-      ▣       │ ││  Machine                                                                         ││ │
-    Hosts     │ ││                                                                                  ││ │
+      ▣       │ │┌ Machines to prepare accounts for ────────────────────────────────────────────────┐│ │
+    Hosts     │ ││  Machine                                                                         ││ │
+              │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
@@ -30,7 +31,6 @@
               │ │loaded the settings                                                                 │ │
               │ └────────────────────────────────────────────────────────────────────────────────────┘ │
               └────────────────────────────────────────────────────────────────────────────────────────┘
-
 
 
 

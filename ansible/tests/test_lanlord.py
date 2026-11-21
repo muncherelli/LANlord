@@ -157,7 +157,7 @@ class NetworksTest(unittest.TestCase):
             expr, = find(yaml.safe_load(handle), 'dns_names')
         for bad in ('', '\n', '\r\n'):
             with self.subTest(play='dns-render', tail=bad):
-                variables = {'net': {'zone': 'lab'}, 'dns_host': 'gw', 'dns_nt4_name': '', 'dns_nt4_network': '',
+                variables = {'net': {'name': 'lab', 'zone': 'lab'}, 'dns_host': 'gw', 'dns_nt4_names': [], 'dns_nt4_networks': [],
                              'dns_proxy_hosts': ['www.lab', 'www.lab' + bad]}
                 names = render(expr, variables)
                 self.assertIn('www.lab', names)

@@ -1,0 +1,17 @@
+# included by nt4-domain.yml when the settings have an nt4-servers list: remove the container of
+# every server that is no longer in it. only containers named lanlord-nt4 or lanlord-nt4-<name>
+# are touched. the data folders are never removed: a server added again finds its accounts, its
+# secrets and its files where it left them.
+- name: list the nt4 containers
+  ansible.builtin.command: "docker ps -a --filter 'name=^lanlord-nt4' --format '{% raw %}{{.Names}}{% endraw %}'"
+  register: nt4_containers
+  changed_when: false
+
+- name: remove the containers of servers that are gone
+  ansible.builtin.command: "docker rm -f {{ item }}"
+  loop: "{{ nt4_containers.stdout_lines }}"
+  # a previous copy (-prev) goes with its server; names that are not lanlord's are never touched
+  when: >-
+    item is match('^lanlord-nt4(-[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)?\\Z')
+    and item | regex_replace('-prev$', '') not in nt4_wanted
+  changed_when: true

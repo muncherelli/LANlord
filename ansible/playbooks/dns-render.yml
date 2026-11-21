@@ -8,7 +8,8 @@
     dns_others: "{{ lanlord_networks | rejectattr('name', 'equalto', net.name) | map(attribute='interface') | list }}"
     dns_names: >-
       {{ (['lanlord.' ~ net.zone, dns_host ~ '.' ~ net.zone]
-          + ([dns_nt4_name ~ '.' ~ net.zone] if dns_nt4_name != '' and dns_nt4_network == net.name else [])
+          + (dns_nt4_names | zip(dns_nt4_networks) | selectattr('1', 'equalto', net.name) | map(attribute='0')
+             | map('regex_replace', '$', '.' ~ net.zone) | list)
           + (dns_proxy_hosts | select('match', '^[a-z0-9.-]+\.' ~ net.zone ~ '\Z') | list)) | unique | list }}
 
 - name: make the folder
