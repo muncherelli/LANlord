@@ -419,8 +419,11 @@ impl Selection {
         // `enabled: false`, or the old way of reading would switch it back on
         for component in catalogue() {
             let id = component.id();
-            // `dhcp` too: with no entry it would be read as the old settings and switched back on
-            let written = settings.section(id).is_some() || (id == DHCP && self.is_enabled("dns"));
+            // `dhcp` and `dns` too: with no entry the playbook would read the old settings, and
+            // a missing `dhcp` would switch it back on, a missing `dns` beside a ticked dhcp too
+            let written = settings.section(id).is_some()
+                || (id == DHCP && self.is_enabled("dns"))
+                || (id == "dns" && self.is_enabled(DHCP));
             if !self.is_enabled(id) && written && !entries.contains_key(id) {
                 entries.insert(
                     Value::String(id.into()),
@@ -1638,6 +1641,25 @@ mod tests {
         s.enabled.remove("dns");
         s.enabled.insert("dhcp".into(), Choice::default());
         s.apply_to(&mut settings);
+        let back = Selection::from_settings(&settings).unwrap();
+        assert!(!back.is_enabled("dns") && back.is_enabled("dhcp"));
+    }
+
+    #[test]
+    fn only_dhcp_ticked_writes_dns_off_beside_it() {
+        // a networks-list install: no dns section, only dhcp ticked
+        let mut settings = Settings::parse(
+            "networks:\n  - {name: lab, interface: eth1, address: 172.16.120.1/22}\n",
+        )
+        .unwrap();
+        let mut s = Selection::default();
+        s.enabled.insert("dhcp".into(), Choice::default());
+        s.apply_to(&mut settings);
+        let text = serde_yaml_ng::to_string(settings.section("components").unwrap()).unwrap();
+        assert!(
+            text.contains("dns:") && text.contains("enabled: false"),
+            "{text}"
+        );
         let back = Selection::from_settings(&settings).unwrap();
         assert!(!back.is_enabled("dns") && back.is_enabled("dhcp"));
     }

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- upgrade note: the DNS and DHCP entries of Add/Remove Components now take effect on the DNS/DHCP play. An install with DNS or DHCP switched off there, or with an old `subcomponents` list that left one out, stops that service on the next apply. With both off the containers go but the lease folders under /opt/lanlord/dns stay, so turning DHCP back on keeps the leases
 - the NT4 Domain module is now called NT4 Server on the desktop, in its window title, in Add/Remove Components, in the text interface and in the docs, since it can be a plain file server as well as a domain controller; module ids, settings keys and container names are unchanged
 - root's ssh access moved out of the Advanced tab to the new SSH tab of My Server
 - the NT4 server image is built with winbind and keeps `rpcclient` and `wbinfo`, so local and built-in groups can be made from User Manager for Domains

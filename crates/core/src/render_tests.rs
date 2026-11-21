@@ -523,7 +523,7 @@ const DOCKER_HARNESS: &str = r#"
     - ansible.builtin.include_tasks: dns-migrate.yml
       when: dns_networks | length > 0
     - ansible.builtin.include_tasks: dns-cleanup.yml
-      when: networks is defined
+      when: networks is defined or not (dns_serves_dns or dns_serves_dhcp)
 "#;
 
 const DOCKER_STUB: &str = r#"#!/bin/sh
@@ -600,6 +600,111 @@ fn ansible_moves_a_single_dnsmasq_and_removes_the_networks_that_are_gone() {
             "{kept} must stay:\n{calls}"
         );
     }
+}
+
+const ONE_NETWORK: &str = "networks:\n  - {name: lab, interface: eth1, address: 172.16.120.1/22, dhcp: {range: [172.16.123.1, 172.16.123.254]}}\n";
+
+#[test]
+fn ansible_serves_only_dns_when_dhcp_is_unticked() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    let settings = format!("components:\n  dns: {{}}\n  dhcp: {{enabled: false}}\n{ONE_NETWORK}");
+    let out = render("dns-only", &settings).unwrap();
+    let conf = lines(&out.join("dns/lab/dnsmasq.conf"));
+    assert!(has(&conf, "local=/lab/"), "{conf:#?}");
+    assert!(
+        !conf
+            .iter()
+            .any(|l| l.starts_with("dhcp-") && !l.starts_with("dhcp-leasefile")),
+        "no dhcp-range or dhcp option: {conf:#?}"
+    );
+}
+
+#[test]
+fn ansible_serves_only_dhcp_with_port_zero_when_dns_is_unticked() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    // dhcp is the only entry of the list: dns is off without being written
+    let settings = format!("components:\n  dhcp: {{}}\n{ONE_NETWORK}");
+    let out = render("dhcp-only", &settings).unwrap();
+    let conf = lines(&out.join("dns/lab/dnsmasq.conf"));
+    assert!(has(&conf, "port=0"), "{conf:#?}");
+    assert!(
+        has(
+            &conf,
+            "dhcp-range=172.16.123.1,172.16.123.254,255.255.252.0,7d"
+        ),
+        "{conf:#?}"
+    );
+    assert!(
+        !conf.iter().any(|l| l.starts_with("dhcp-option=6")
+            || l.starts_with("host-record")
+            || l.starts_with("local=")),
+        "{conf:#?}"
+    );
+    // a network without a dhcp mapping gets no dnsmasq at all
+    let two = format!("{settings}  - {{name: bare, interface: eth2, address: 192.168.50.1/24}}\n");
+    let out = render("dhcp-only-two", &two).unwrap();
+    assert!(out.join("dns/lab/dnsmasq.conf").exists());
+    assert!(!out.join("dns/bare").exists());
+}
+
+#[test]
+fn ansible_removes_the_containers_but_keeps_the_leases_when_both_are_off() {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return;
+    }
+    let bin = temp("stub-off");
+    let bin = bin.path();
+    let stub = bin.join("docker");
+    fs::write(&stub, DOCKER_STUB).unwrap();
+    Command::new("chmod").arg("+x").arg(&stub).status().unwrap();
+    let log = bin.join("log");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let settings = format!(
+        "components:\n  dns: {{enabled: false}}\n  dhcp: {{enabled: false}}\n{ONE_NETWORK}"
+    );
+    let out = run_harness(
+        "both-off",
+        &settings,
+        DOCKER_HARNESS,
+        &[("PATH", path), ("STUB_LOG", log.display().to_string())],
+        |out| {
+            let lab = out.join("dns/lab");
+            fs::create_dir_all(&lab).unwrap();
+            fs::write(
+                lab.join("dnsmasq.leases"),
+                "1 02:00:00:00:00:01 172.16.123.5 ws1 *\n",
+            )
+            .unwrap();
+        },
+    )
+    .unwrap();
+    let calls = fs::read_to_string(&log).unwrap();
+    for removed in [
+        "lanlord-dns-retronet",
+        "lanlord-dns-lab",
+        "lanlord-dns-gone",
+        "lanlord-dns-gone-prev",
+    ] {
+        assert!(
+            calls
+                .lines()
+                .any(|l| l == format!("docker rm -f {removed}")),
+            "{removed} in\n{calls}"
+        );
+    }
+    assert!(!calls.contains("rm -f lanlord-caddy"), "{calls}");
+    assert!(
+        out.join("dns/lab/dnsmasq.leases").exists(),
+        "the leases stay for when dhcp is turned back on"
+    );
+    assert!(!out.join("dns/lab/dnsmasq.conf").exists());
 }
 
 /// the `when:` lines of the docker.yml task called `name`, empty when it has none.
