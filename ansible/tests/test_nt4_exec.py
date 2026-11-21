@@ -182,15 +182,15 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(b"".join(base64.b64decode(e["data"]) for e in streams), b"line one\r\n")
         self.assertEqual(len(streams), 1)
 
-    def test_the_bat_content_and_escaping(self):
-        out = self.run_exec(command="echo 100% > c:\\x & dir %TEMP%")
+    def test_the_bat_holds_the_command_as_typed(self):
+        out = self.run_exec(command="dir %SystemRoot%\\system32 & for %%i in (a b) do echo %%i")
         self.assertEqual(self.events(out)[-1], {"exit": 0})
         bat = self.bat().decode()
         run_id = re.search(r"ll-([0-9a-f]{8})\.out", bat).group(1)
         self.assertEqual(
             bat,
             "@echo off\r\n"
-            "echo 100%% > c:\\x & dir %%TEMP%% > %SystemRoot%\\Temp\\ll-" + run_id + ".out"
+            "dir %SystemRoot%\\system32 & for %%i in (a b) do echo %%i > %SystemRoot%\\Temp\\ll-" + run_id + ".out"
             " 2> %SystemRoot%\\Temp\\ll-" + run_id + ".err\r\n"
             "echo %ERRORLEVEL% > %SystemRoot%\\Temp\\ll-" + run_id + ".rc\r\n",
         )

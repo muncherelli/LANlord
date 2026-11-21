@@ -229,11 +229,11 @@ fi
 
 run_id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 bat=ll-$run_id
-# the .bat: every % is doubled, as batch files read it as an escape
-escaped=${command//%/%%}
+# the .bat: the command is written as it is, so %SystemRoot% and the like expand as at a prompt.
+# batch-file rules apply, though: a for loop variable needs %%i, not %i
 {
   printf '@echo off\r\n'
-  printf '%s > %%SystemRoot%%\\Temp\\%s.out 2> %%SystemRoot%%\\Temp\\%s.err\r\n' "$escaped" "$bat" "$bat"
+  printf '%s > %%SystemRoot%%\\Temp\\%s.out 2> %%SystemRoot%%\\Temp\\%s.err\r\n' "$command" "$bat" "$bat"
   printf 'echo %%ERRORLEVEL%% > %%SystemRoot%%\\Temp\\%s.rc\r\n' "$bat"
 } >"$work/$bat.bat"
 made_bat=1
