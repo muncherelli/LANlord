@@ -340,7 +340,7 @@ impl Drop for Stop<'_> {
 
 /// run `work` and pass the apply events it publishes to `emit` as they happen. the log reaches
 /// every thread's lines, so only events are taken; the rest still goes to the journal.
-fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
+pub(crate) fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
     let lines = log::subscribe();
     let done = AtomicBool::new(false);
     let forward = |line: log::Line| match line.kind {
@@ -424,10 +424,10 @@ async fn read_line<R: tokio::io::AsyncRead + Unpin>(stream: R) -> Result<Vec<u8>
 type Answer = Arc<dyn Fn(&[u8], Emit) -> Response + Send + Sync>;
 
 /// where an operation's apply events are handed as they happen.
-type Emit<'a> = &'a (dyn Fn(&ApplyEvent) + Sync);
+pub(crate) type Emit<'a> = &'a (dyn Fn(&ApplyEvent) + Sync);
 
 /// one line of the service's answer: an apply event.
-fn event_line(event: &ApplyEvent) -> Option<Vec<u8>> {
+pub(crate) fn event_line(event: &ApplyEvent) -> Option<Vec<u8>> {
     let mut line = serde_json::to_vec(&serde_json::json!({ "event": event })).ok()?;
     line.push(b'\n');
     Some(line)

@@ -505,6 +505,16 @@ enum BridgeMode {
 }
 
 #[derive(Subcommand)]
+enum EngineCommand {
+    /// print what a module left on this machine as json (passwords only as matches or not)
+    State {
+        /// the module id
+        #[arg(long)]
+        module: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// open the native window
     Gui,
@@ -707,6 +717,10 @@ enum Command {
     /// operations that need its key (not meant to be run by hand)
     #[command(hide = true)]
     Operate,
+    /// what the native apply engine looks at, for comparing it with the playbooks (run as root on
+    /// the gateway; not meant to be run by hand)
+    #[command(subcommand, hide = true)]
+    Engine(EngineCommand),
     /// take the internet grants that have ended out of the settings (run by a timer on the
     /// gateway, as root)
     #[command(name = "internet-prune", hide = true)]
@@ -2002,14 +2016,52 @@ fn operate() -> Result<()> {
         let _ = std::process::Command::new("logger")
             .args(["-t", "lanlord", &format!("operation run as {account}")])
             .status();
-        operating_caller(&session, account)
-            .and_then(|caller| execute_in(&session, "localhost", &caller, operation, &mut ask))
+        operating_caller(&session, account).and_then(|caller| {
+            door_events(|| execute_in(&session, "localhost", &caller, operation, &mut ask))
+        })
     });
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({ "response": response }))?
     );
     Ok(())
+}
+
+/// an apply reports its progress as event lines before the response, as the service does.
+#[cfg(feature = "webui")]
+fn door_events<T>(work: impl FnOnce() -> T) -> T {
+    let print = |event: &lanlord_core::apply::ApplyEvent| {
+        if let Some(line) = operations_service::event_line(event) {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&line);
+            let _ = out.flush();
+        }
+    };
+    operations_service::with_events(&print, work)
+}
+
+#[cfg(not(feature = "webui"))]
+fn door_events<T>(work: impl FnOnce() -> T) -> T {
+    work()
+}
+
+/// print the state of one module, for `tools/engine-parity.sh`.
+#[cfg(unix)]
+fn engine_state(module: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if std::fs::metadata("/proc/self")?.uid() != 0 {
+        bail!("this runs as root on the gateway");
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&lanlord_core::engine::collect::state_of(module)?)?
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn engine_state(_: &str) -> Result<()> {
+    bail!("this runs on the gateway")
 }
 
 /// hand the old client key to the gateway once, so the settings are sealed to the gateway's own
@@ -2222,6 +2274,7 @@ fn main() -> Result<()> {
         }
         Some(Command::MoveSecrets { host }) => move_secrets(&host),
         Some(Command::Operate) => operate(),
+        Some(Command::Engine(EngineCommand::State { module })) => engine_state(&module),
         Some(Command::InternetPrune { refresh }) => internet_prune(refresh),
         Some(Command::Run {
             target,
