@@ -47,6 +47,8 @@ pub enum Msg {
     ToggleNet(usize, usize),
     /// the address field `key` now holds this text.
     Address((usize, usize), String),
+    /// choose its own address (true) or the gateway's (false) on a network.
+    OwnAddress((usize, usize), bool),
     /// open the Compatibility tab of My Server.
     Compat,
     Back,
@@ -317,6 +319,18 @@ impl Components {
                 {
                     self.typed
                         .insert((component.id().to_string(), network.id.clone()), text);
+                }
+            }
+            Msg::OwnAddress((c, n), own) => {
+                if let (Some(component), Some(network)) =
+                    (self.joining().into_iter().nth(c), self.networks.get(n))
+                {
+                    let key = (component.id().to_string(), network.id.clone());
+                    if own {
+                        self.typed.entry(key).or_default();
+                    } else {
+                        self.typed.remove(&key);
+                    }
                 }
             }
             Msg::Back => {
@@ -688,9 +702,6 @@ impl Components {
             ));
             return page;
         }
-        page.push(Node::Text(
-            "Leave the address blank to use the gateway's address on that network.".into(),
-        ));
         for (c, component) in self.joining().iter().enumerate() {
             let choice = draft.enabled.get(component.id());
             let mut body = Vec::new();
@@ -704,26 +715,53 @@ impl Components {
                     Some(subnet) => format!("{} ({subnet})", network.name),
                     None => network.name.clone(),
                 };
-                let mut row = vec![Node::Check {
+                body.push(Node::Row(vec![Node::Check {
                     label,
                     checked: joined,
                     enabled: true,
                     toggle: Msg::ToggleNet(c, n),
-                }];
+                }]));
                 if joined && component.own_address() && !network.external {
-                    row.push(Node::Text("Address:".into()));
-                    row.push(Node::KeyedInput(KeyedInput {
-                        key: (c, n),
-                        value: self
-                            .typed
-                            .get(&(component.id().to_string(), network.id.clone()))
-                            .cloned()
-                            .unwrap_or_default(),
-                        width: 110.0,
-                        edit: Msg::Address,
-                    }));
+                    let key = (component.id().to_string(), network.id.clone());
+                    // an address held for this network means it has chosen its own
+                    let own = self.typed.contains_key(&key);
+                    let required = component.needs_own_address;
+                    if !required {
+                        let gateway = match network.gateway {
+                            Some(ip) => format!("Gateway address ({ip})"),
+                            None => "Gateway address".to_string(),
+                        };
+                        body.push(Node::Row(vec![
+                            Node::Gap(22.0),
+                            Node::Check {
+                                label: gateway,
+                                checked: !own,
+                                enabled: true,
+                                toggle: Msg::OwnAddress((c, n), false),
+                            },
+                        ]));
+                    }
+                    let mut own_row = vec![Node::Gap(22.0)];
+                    if required {
+                        own_row.push(Node::Text("Its own address:".into()));
+                    } else {
+                        own_row.push(Node::Check {
+                            label: "Its own address:".into(),
+                            checked: own,
+                            enabled: true,
+                            toggle: Msg::OwnAddress((c, n), true),
+                        });
+                    }
+                    if own || required {
+                        own_row.push(Node::KeyedInput(KeyedInput {
+                            key: (c, n),
+                            value: self.typed.get(&key).cloned().unwrap_or_default(),
+                            width: 110.0,
+                            edit: Msg::Address,
+                        }));
+                    }
+                    body.push(Node::Row(own_row));
                 }
-                body.push(Node::Row(row));
             }
             page.push(Node::Gap(4.0));
             page.push(Node::Group {
@@ -1010,6 +1048,92 @@ mod tests {
         assert!(page
             .iter()
             .any(|n| matches!(n, Node::Text(t) if t.contains("no LANlord networks yet"))));
+    }
+
+    fn has_check(page: &[Node<Msg>], text: &str) -> bool {
+        fn walk(nodes: &[Node<Msg>], text: &str) -> bool {
+            nodes.iter().any(|n| match n {
+                Node::Check { label, .. } => label == text,
+                Node::Row(body) | Node::Group { body, .. } => walk(body, text),
+                _ => false,
+            })
+        }
+        walk(page, text)
+    }
+
+    fn has_input(page: &[Node<Msg>]) -> bool {
+        fn walk(nodes: &[Node<Msg>]) -> bool {
+            nodes.iter().any(|n| match n {
+                Node::KeyedInput(_) => true,
+                Node::Row(body) | Node::Group { body, .. } => walk(body),
+                _ => false,
+            })
+        }
+        walk(page)
+    }
+
+    fn nt4_address(window: &Components) -> Option<Option<Ipv4Addr>> {
+        window
+            .candidate()
+            .0
+            .enabled
+            .get("nt4-domain")
+            .and_then(|c| c.attach.first())
+            .map(|a| a.address)
+    }
+
+    #[test]
+    fn a_joined_network_defaults_to_the_gateway_address() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window.update(Msg::Next, &services, "gw");
+        let page = window.attach();
+        assert!(has_check(&page, "Gateway address (192.0.2.1)"));
+        assert!(!has_input(&page), "no box until it has its own address");
+        assert_eq!(nt4_address(&window), Some(None));
+    }
+
+    #[test]
+    fn choosing_its_own_address_and_going_back_to_the_gateway() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window.update(Msg::Next, &services, "gw");
+        let nt4 = window
+            .joining()
+            .iter()
+            .position(|c| c.id() == "nt4-domain")
+            .unwrap();
+        let own: Ipv4Addr = "192.0.2.150".parse().unwrap();
+        window.update(Msg::OwnAddress((nt4, 1), true), &services, "gw");
+        assert!(has_input(&window.attach()));
+        window.update(Msg::Address((nt4, 1), own.to_string()), &services, "gw");
+        assert_eq!(nt4_address(&window), Some(Some(own)));
+        window.update(Msg::OwnAddress((nt4, 1), false), &services, "gw");
+        assert!(!has_input(&window.attach()));
+        assert_eq!(
+            nt4_address(&window),
+            Some(None),
+            "the typed address is gone"
+        );
+    }
+
+    #[test]
+    fn an_existing_own_address_opens_as_its_own_address() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        let own: Ipv4Addr = "192.0.2.150".parse().unwrap();
+        window
+            .draft_mut()
+            .enabled
+            .get_mut("nt4-domain")
+            .unwrap()
+            .attach[0]
+            .address = Some(own);
+        window.current = Some(window.draft());
+        window.open();
+        window.update(Msg::Next, &services, "gw");
+        assert!(has_input(&window.attach()));
+        assert_eq!(nt4_address(&window), Some(Some(own)));
     }
 
     #[test]

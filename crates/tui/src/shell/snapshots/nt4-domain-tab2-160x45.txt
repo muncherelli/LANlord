@@ -2,25 +2,26 @@
       ≡       │ NT4 Server                                                                             │
   My Server   │ Status: available                                                                      │
               │                                                                                        │
-              │ A Samba server in Docker for old Windows clients, on the internal network only: an     │
-      □       │ NT4-style domain controller or a plain workgroup, with a basic set of logins.          │
-   Networks   │ ────────────────────────────────────────────────────────────────────────────────────── │
+              │ A Samba server in Docker for old Windows clients, on the networks chosen in Components │
+      □       │ (the gateway's address unless given its own): an NT4-style domain controller or a      │
+   Networks   │ plain workgroup.                                                                       │
+              │ ────────────────────────────────────────────────────────────────────────────────────── │
               │ [ Settings ][ Logins ][ Logon scripts ]                                                │
-              │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
-      ►       │ │Every domain logon runs these after S: is mapped: logon.bat for everyone, then      │ │
-   Gateway    │ │<login>.bat for one login.                                                          │ │
+      ►       │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
+   Gateway    │ │Every domain logon runs these after S: is mapped: logon.bat for everyone, then      │ │
+              │ │<login>.bat for one login.                                                          │ │
               │ │┌ Scripts ─────────────────────────────────────────────────────────────────────────┐│ │
-              │ ││  Script                 Runs for                                                 ││ │
-      ▦       │ ││  logon.bat              everyone (not saved yet)                                 ││ │
-   Settings   │ ││                                                                                  ││ │
+      ▦       │ ││  Script                 Runs for                                                 ││ │
+   Settings   │ ││  logon.bat              everyone (not saved yet)                                 ││ │
               │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
-      >       │ ││ [ New script...  ] [ Reload scripts ]                                            ││ │
-   Console    │ │└──────────────────────────────────────────────────────────────────────────────────┘│ │
+      >       │ ││                                                                                  ││ │
+   Console    │ ││ [ New script...  ] [ Reload scripts ]                                            ││ │
+              │ │└──────────────────────────────────────────────────────────────────────────────────┘│ │
               │ │┌ logon.bat ───────────────────────────────────────────────────────────────────────┐│ │
-              │ ││                                                                                  ││ │
       ▣       │ ││                                                                                  ││ │
     Hosts     │ ││                                                                                  ││ │
+              │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
               │ ││                                                                                  ││ │
@@ -32,7 +33,6 @@
               │ │loaded the logon scripts                                                            │ │
               │ └────────────────────────────────────────────────────────────────────────────────────┘ │
               └────────────────────────────────────────────────────────────────────────────────────────┘
-
 
 
 
