@@ -847,8 +847,14 @@ fn legacy(settings: &Settings, networks: &[Network]) -> BTreeMap<String, Choice>
             let section = settings.section(c.id());
             let mut attach = Vec::new();
             if c.id() == "nt4-domain" {
+                // the address is on the first nt4 server once the settings are migrated
+                let server = match settings.section("nt4-servers") {
+                    Some(Value::Sequence(list)) => list.first(),
+                    _ => None,
+                };
                 let address = section
                     .and_then(|s| s.get("address"))
+                    .or_else(|| server.and_then(|s| s.get("address")))
                     .and_then(Value::as_str)
                     .and_then(cidr)
                     .map(|(address, _)| address);

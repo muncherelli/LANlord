@@ -65,7 +65,7 @@ pub fn area_of_section(key: &str) -> Area {
     match key {
         "dns" => Area::Dns,
         "firewall" => Area::Firewall,
-        "nt4-domain" => Area::Domain,
+        "nt4-domain" | "nt4-servers" | "domains" => Area::Domain,
         "network" | "networks" => Area::Network,
         "remote-commands" => Area::Commands,
         SECTION => Area::Users,
