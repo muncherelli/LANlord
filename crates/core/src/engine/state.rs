@@ -15,6 +15,8 @@ pub struct State {
     dir: String,
     key: Vec<u8>,
     prints: BTreeMap<String, String>,
+    /// whether this load made the key.
+    created: bool,
 }
 
 pub fn hex(bytes: &[u8]) -> String {
@@ -33,9 +35,11 @@ impl State {
     /// read the state; a missing key is made when `create` is set (an apply), and not otherwise
     /// (a plan changes nothing).
     pub fn load(host: &dyn Host, dir: &str, create: bool) -> Result<Self> {
+        let mut created = false;
         let key = match host.read(&Self::key_path(dir))? {
             Some(key) if key.len() >= 32 => key,
             _ if create => {
+                created = true;
                 let mut key = vec![0u8; 32];
                 getrandom::fill(&mut key).map_err(|e| anyhow::anyhow!("no random bytes: {e}"))?;
                 host.mkdir(dir, 0o700)?;
@@ -64,7 +68,14 @@ impl State {
             dir: dir.into(),
             key,
             prints,
+            created,
         })
+    }
+
+    /// whether nothing is recorded as set: the key was just made, or no fingerprint is kept (a
+    /// first native apply, or a lost key). every password then counts as changed.
+    pub fn is_fresh(&self) -> bool {
+        self.created || self.prints.is_empty()
     }
 
     pub fn fingerprint(&self, secret: &Secret) -> String {
@@ -141,5 +152,17 @@ mod tests {
         let host = FakeHost::new();
         State::load(&host, "/s", false).unwrap();
         assert!(host.text("/s/fingerprint.key").is_none());
+    }
+
+    #[test]
+    fn a_state_is_fresh_until_something_is_recorded() {
+        let host = FakeHost::new();
+        let mut state = State::load(&host, "/s", true).unwrap();
+        assert!(state.is_fresh());
+        state.remember(&host, "a", &Secret::new("x")).unwrap();
+        assert!(!State::load(&host, "/s", true).unwrap().is_fresh());
+        // a lost key is made again, and that is fresh even with fingerprints left
+        host.remove("/s/fingerprint.key").unwrap();
+        assert!(State::load(&host, "/s", true).unwrap().is_fresh());
     }
 }

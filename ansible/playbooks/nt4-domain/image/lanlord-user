@@ -5,6 +5,8 @@
 #                             without being one. both only apply when the account is created: the
 #                             membership of an account that exists is whatever windows made of it
 #   lanlord-user sync         rebuild the software admins group and give every user its logon wrapper
+#   lanlord-user ensure NAME...  for accounts that exist: their unix account, groups, home folder and logon
+#                             wrapper, without touching a password (a new container starts without them)
 #   lanlord-user restore      recreate the unix groups, memberships and primary groups from the state
 #                             files (entrypoint.sh runs it when the container starts)
 #   lanlord-user admin        set the password of the domain administrator
@@ -329,6 +331,21 @@ case "$cmd" in
     ensure_logon "$name"
     if [[ -n $new ]]; then echo "created $name"; else echo "updated $name"; fi
     ;;
+  ensure)
+    shift
+    for name in "$@"; do
+      valid "$name"
+      pdbedit -L -u "$name" >/dev/null 2>&1 || { echo "no account $name" >&2; exit 1; }
+      id "$name" >/dev/null 2>&1 || useradd -M -g domusers -s /usr/sbin/nologin "$name"
+    done
+    restore
+    sync_software
+    for name in "$@"; do
+      make_home "$name"
+      ensure_logon "$name"
+    done
+    echo "ensured $#"
+    ;;
   admin)
     read_password
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a root >/dev/null
@@ -382,7 +399,7 @@ case "$cmd" in
     pdbedit -L
     ;;
   *)
-    echo "usage: lanlord-user add NAME | admin | machine NAME [reset] | delete NAME | sync | restore | list | hook ACTION ..." >&2
+    echo "usage: lanlord-user add NAME | ensure NAME... | admin | machine NAME [reset] | delete NAME | sync | restore | list | hook ACTION ..." >&2
     exit 2
     ;;
 esac
