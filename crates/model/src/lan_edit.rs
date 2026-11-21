@@ -260,6 +260,14 @@ pub fn network_users(settings: &Settings, name: &str) -> Vec<String> {
             users.push("the nt4-domain network".to_string());
         }
     }
+    if let Some(Value::Sequence(servers)) = settings.section("nt4-servers") {
+        for server in servers {
+            if names(server.get("network")) {
+                let id = server.get("name").and_then(Value::as_str).unwrap_or("?");
+                users.push(format!("the nt4 server {id}"));
+            }
+        }
+    }
     if let Some(Value::Mapping(components)) = settings.section("components") {
         for (component, entry) in components {
             let Some(Value::Sequence(attach)) = entry.get("attach") else {

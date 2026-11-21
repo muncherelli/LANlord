@@ -88,8 +88,8 @@ fn a_newer_file_is_refused_for_both_kinds_and_never_stamped_over() {
 #[test]
 fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V3, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(5));
-    assert_eq!(Kind::Plain.current(), 5);
+    assert_eq!(settings.format().unwrap().0, Some(6));
+    assert_eq!(Kind::Plain.current(), 6);
     assert!(settings.text().contains("name: lab"));
     assert!(!settings.text().contains("internet"));
     // a file with grants is current, and an older lanlord (format 3) refuses it
@@ -105,7 +105,7 @@ fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else()
 #[test]
 fn step_four_stamps_networks_that_may_allow_ssh_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V4, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(5));
+    assert_eq!(settings.format().unwrap().0, Some(6));
     let text = settings.text();
     // the keys of format 4 are kept as they were, and no ssh key appears
     assert!(
@@ -122,4 +122,30 @@ fn step_four_stamps_networks_that_may_allow_ssh_and_changes_nothing_else() {
     assert!(with.contains("ssh: true"), "{with}");
     assert!(lanlord_model::format::check(5, None, 4).is_err());
     assert!(lanlord_model::format::check(4, None, 4).is_ok());
+}
+
+const V5: &str = include_str!("fixtures/stored/plain-v5-nt4-domain.yml");
+
+#[test]
+fn step_five_splits_the_nt4_domain_into_a_domain_and_a_server_and_is_stable() {
+    let settings = load(Kind::Plain, V5, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(6));
+    let server = settings.section("nt4-servers").unwrap()[0].clone();
+    assert_eq!(server["name"], "nt4-domain");
+    assert_eq!(server["role"], "pdc");
+    assert_eq!(server["domain"], "RETRODOM");
+    assert_eq!(server["netbios_name"], "LANLORD");
+    assert_eq!(server["network"], "lab");
+    assert_eq!(server["software"], true);
+    let domains = settings.section("domains").unwrap();
+    assert_eq!(domains["RETRODOM"]["roaming_profiles"], true);
+    assert_eq!(domains["RETRODOM"]["machines"][1], "ws2");
+    // the logins stay where they were; what moved is gone from the old section
+    let old = settings.section("nt4-domain").unwrap();
+    assert_eq!(old["admin_password"], "example-secret");
+    assert_eq!(old["users"][0]["name"], "dana");
+    assert!(old.get("mode").is_none());
+    // a second load changes nothing
+    let again = load(Kind::Plain, &settings.text(), &admins()).unwrap();
+    assert_eq!(again.text(), settings.text());
 }

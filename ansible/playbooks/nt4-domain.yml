@@ -1,21 +1,32 @@
-# the nt4-domain module: a samba server in docker for old windows clients,
-# bound to the internal network only. as an nt4-style domain controller
-# (mode: domain) or a plain workgroup server (mode: workgroup). the docker
-# module must have been applied first. it does nothing until your settings
-# have an `nt4-domain:` section.
+# the nt4 server module: samba in docker for old windows clients, bound to the lanlord networks
+# only. each server in the `nt4-servers:` list is one container, as an nt4-style domain controller
+# (role: pdc) or a plain workgroup server (role: workgroup). the docker module must have been
+# applied first. it does nothing until your settings have an `nt4-servers:` list.
+#
+# domains:
+#   RETRONET:                    # the domain name; you choose
+#     backend: nt4
+#     roaming_profiles: false    # true stores users' profiles on the server (a profiles share)
+#     machines: [ws1, ws2]       # computers to create accounts for in advance; join them without
+#                                # ticking "Create a Computer Account in the Domain"
+# nt4-servers:
+#   - name: nt4-domain           # the id. this one keeps the container lanlord-nt4 and /opt/lanlord/nt4;
+#                                # any other is lanlord-nt4-<name> with its data in /opt/lanlord/nt4/<name>
+#     role: pdc                  # or workgroup (then `workgroup: NAME` instead of `domain:`)
+#     domain: RETRONET           # a key of `domains`
+#     netbios_name: LANLORD      # the server's name; default: this machine's hostname
+#     network: retronet          # which lanlord network it is on; default: the first (see networks.yml)
+#     address: 172.16.120.1/22   # default: that network's address
+#     wins: serve                # or off; one server per network serves wins
+#     software: false            # true adds a software share (S: at logon): domain users read it,
+#                                # domain admins and users with software_admin write to it
+#
+# a server taken out of the list loses its container, never its data folder.
+#
+# the logins and the samba tuning keys are still in the `nt4-domain:` section:
 #
 # nt4-domain:
-#   mode: domain                 # or workgroup
-#   name: RETRONET               # the domain or workgroup name; you choose
-#   netbios_name: LANLORD        # the server's name; default: this machine's hostname
-#   network: retronet            # which lanlord network it is on; default: the first (see networks.yml)
-#   address: 172.16.120.1/22     # default: that network's address
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
-#   roaming_profiles: false      # true stores users' profiles on the server (a profiles share)
-#   software: false              # true adds a software share (S: at logon): domain users read it,
-#                                # domain admins and users with software_admin write to it
-#   machines: [ws1, ws2]         # computers to create accounts for in advance; join them without
-#                                # ticking "Create a Computer Account in the Domain"
 #   users:
 #     - name: dana
 #       password: change-me
@@ -25,7 +36,7 @@
 #     # account that exists is whatever User Manager for Domains made of it; apply never reverts it
 #     - name: olduser
 #       state: absent
-- name: lanlord nt4 domain
+- name: lanlord nt4 servers
   hosts: localhost
   connection: local
   gather_facts: true
@@ -37,48 +48,15 @@
     # the image is pinned to the lanlord release that runs this playbook (lanlord passes the image version as an extra var)
     image_version: "{{ lanlord_image_version }}"
     image: "ghcr.io/muncherelli/lanlord-nt4-server-components:{{ image_version }}"
-    container: lanlord-nt4
-    state_dir: /opt/lanlord/nt4
+    nt4_root: /opt/lanlord/nt4
   tasks:
-    # a hyphenated name cannot be written as a variable, so look it up
-    - name: read the nt4-domain settings
-      ansible.builtin.set_fact:
-        nt4: "{{ lookup('ansible.builtin.vars', 'nt4-domain') }}"
-      when: "lookup('ansible.builtin.varnames', '^nt4-domain$', wantlist=True) | length > 0"
-
-    - name: work out the network the domain controller is on, its interface and its address
-      ansible.builtin.include_tasks: networks.yml
-      vars:
-        net_primary_name: "{{ nt4.network | default('') }}"
-      when: nt4 is defined
-
-    - name: work out the defaults
-      ansible.builtin.set_fact:
-        nt4_mode: "{{ nt4.mode | default('') }}"
-        nt4_name: "{{ nt4.name | default('') | upper }}"
-        nt4_netbios_name: "{{ (nt4.netbios_name | default(ansible_facts['hostname']) | upper)[:15] }}"
-        nt4_address: "{{ nt4.address | default(internal_address | default('')) }}"
-      when: nt4 is defined
-
-    - name: check the settings
-      ansible.builtin.assert:
-        that:
-          - nt4_mode in ['domain', 'workgroup']
-          - nt4_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}\\Z')
-          - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}\\Z')
-          - nt4_address is match('^[0-9.]+/[0-9]{1,2}\\Z')
-          - nt4_mode == 'workgroup' or (nt4.admin_password | default('')) | length > 0
-          - (nt4.machines | default([])) | select('match', '^[A-Za-z][A-Za-z0-9-]{0,14}\\Z') | list | length == (nt4.machines | default([])) | length
-        fail_msg: >-
-          nt4-domain settings: mode must be domain or workgroup; name is the domain or workgroup
-          (up to 15 letters, digits, - or _); address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
-          a domain needs an admin_password
-      when: nt4 is defined
+    - name: read the nt4 servers
+      ansible.builtin.include_tasks: nt4-plan.yml
 
     - name: check that docker is installed
       ansible.builtin.command: docker info --format '{% raw %}{{.ServerVersion}}{% endraw %}'
       changed_when: false
-      when: nt4 is defined
+      when: nt4_listed
 
     - name: make the state directories
       ansible.builtin.file:
@@ -86,61 +64,9 @@
         state: directory
         mode: "0750"
       loop:
-        - "{{ state_dir }}"
-        - "{{ state_dir }}/config"
-        - "{{ state_dir }}/bin"
-      when: nt4 is defined
-
-    # samba's directory holds the shares, so domain users must be able to pass through it; the
-    # password database stays in its own root-only folder and the parent /opt/lanlord is private
-    - name: make samba's data directory passable
-      ansible.builtin.file:
-        path: "{{ state_dir }}/lib"
-        state: directory
-        mode: "0751"
-      when: nt4 is defined
-
-    # the domain's identity (its name, its sid) lives in secrets.tdb and passdb.tdb; changing the
-    # mode, the name or the netbios name starts a different domain, so keep a copy of the state first
-    - name: read the previous samba configuration
-      ansible.builtin.slurp:
-        src: "{{ state_dir }}/config/smb.conf"
-      register: old_conf
-      failed_when: false
-      when: nt4 is defined
-
-    - name: see whether the domain identity changes
-      ansible.builtin.set_fact:
-        nt4_identity_changed: >-
-          {{ old_conf.content is defined and (
-               (old_text | regex_findall('(?m)^\s*workgroup = (\S+)') | first | default('')) != nt4_name
-               or (old_text | regex_findall('(?m)^\s*netbios name = (\S+)') | first | default('')) != nt4_netbios_name
-               or ('domain logons = yes' in old_text) != (nt4_mode == 'domain')) }}
-      vars:
-        old_text: "{{ (old_conf.content | b64decode) if old_conf.content is defined else '' }}"
-      when: nt4 is defined
-
-    - name: snapshot samba's state before the domain identity changes
-      ansible.builtin.shell: |
-        set -eu
-        umask 077
-        [ -d lib ] || exit 0
-        docker stop {{ container }} >/dev/null 2>&1 || true
-        mkdir -p snapshots
-        tar -czf "snapshots/lib-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" lib
-        ls -1t snapshots/lib-*.tar.gz | tail -n +6 | xargs -r rm -f
-      args:
-        chdir: "{{ state_dir }}"
-      changed_when: true
-      when: nt4 is defined and nt4_identity_changed | bool
-
-    - name: write the samba configuration
-      ansible.builtin.template:
-        src: nt4-domain/smb.conf.j2
-        dest: "{{ state_dir }}/config/smb.conf"
-        mode: "0640"
-      register: smb_conf
-      when: nt4 is defined
+        - "{{ nt4_root }}"
+        - "{{ nt4_root }}/bin"
+      when: nt4_listed
 
     # when the image cannot be pulled (offline, or the package is private) the same Dockerfile
     # is built here, from the source tarball
@@ -150,66 +76,53 @@
       register: image_pull
       changed_when: false
       failed_when: false
-      when: nt4 is defined
+      when: nt4_listed and nt4_servers | length > 0
 
     - name: build the image here when it could not be pulled
       ansible.builtin.command:
         argv: [docker, build, --quiet, --build-arg, "IMAGE_VERSION={{ image_version }}", -t, "{{ image }}", "{{ image_dir }}"]
       changed_when: true
-      when: nt4 is defined and image_pull.rc != 0
+      when: nt4_listed and nt4_servers | length > 0 and image_pull.rc != 0
 
     # the scripts are mounted, so a changed script needs a new container: it is remembered as a label
     # the playbook files are not executable, so the scripts are copied to a folder that is mounted
     - name: copy the scripts the container runs
       ansible.builtin.copy:
         src: "{{ image_dir }}/{{ item }}"
-        dest: "{{ state_dir }}/bin/{{ item }}"
+        dest: "{{ nt4_root }}/bin/{{ item }}"
         remote_src: true
         mode: "0755"
       loop: [entrypoint.sh, lanlord-user]
-      when: nt4 is defined
+      when: nt4_listed
 
     - name: work out the version of the scripts
       ansible.builtin.shell: cat entrypoint.sh lanlord-user | sha256sum | cut -c1-12
       args:
-        chdir: "{{ state_dir }}/bin"
+        chdir: "{{ nt4_root }}/bin"
       register: scripts_hash
       changed_when: false
-      when: nt4 is defined
+      when: nt4_listed
 
     - name: look at the image the container uses
       ansible.builtin.command:
         argv: [docker, image, inspect, --format, '{% raw %}{{.Id}}{% endraw %}', "{{ image }}"]
       register: image_id
       changed_when: false
-      when: nt4 is defined
+      when: nt4_listed and nt4_servers | length > 0
 
-    - name: see which image the container uses
-      ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Image}} {{index .Config.Labels \"lanlord.scripts\"}}{% endraw %}' {{ container }}"
-      register: current
-      changed_when: false
-      failed_when: false
-      when: nt4 is defined
+    # the same steps for every server, each with its own container and data folder
+    - name: run each nt4 server
+      ansible.builtin.include_tasks: nt4-server.yml
+      loop: "{{ nt4_servers }}"
+      loop_control:
+        loop_var: srv
+        label: "{{ srv.name }}"
+      when: nt4_listed
 
-    - name: replace the container when it is new, stopped or out of date
-      when: >-
-        nt4 is defined and (current.stdout != 'true ' ~ image_id.stdout ~ ' ' ~ scripts_hash.stdout
-        or smb_conf is changed)
-      block:
-        - name: replace the container, keeping the old one until the new one is healthy
-          ansible.builtin.include_tasks: replace-container.yml
-          vars:
-            rc_name: "{{ container }}"
-            rc_health: "docker exec {{ container }} smbcontrol smbd ping"
-            rc_retries: 20
-            rc_run: >-
-              docker run -d --name {{ container }} --network host --restart unless-stopped
-              --label lanlord.scripts={{ scripts_hash.stdout }}
-              -v {{ state_dir }}/bin/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
-              -v {{ state_dir }}/bin/lanlord-user:/usr/local/bin/lanlord-user:ro
-              -v {{ state_dir }}/lib:/var/lib/samba
-              -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
-              {{ image }}
+    # a server that left the list loses its container; its data folder stays
+    - name: remove the containers of servers that are gone
+      ansible.builtin.include_tasks: nt4-cleanup.yml
+      when: nt4_listed
 
     # the content-hash tags of earlier versions, once nothing runs them
     - name: remove the old hash-tagged images
@@ -218,90 +131,4 @@
           docker ps -a --filter "ancestor=$img" -q | grep -q . || docker image rm "$img" >/dev/null 2>&1 || true
         done
       changed_when: false
-      when: nt4 is defined
-
-    - name: wait for samba to answer
-      ansible.builtin.command: "docker exec {{ container }} smbcontrol smbd ping"
-      register: samba_ping
-      until: samba_ping.rc == 0
-      retries: 20
-      delay: 2
-      changed_when: false
-      when: nt4 is defined
-
-    - name: set the domain administrator's password
-      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user admin"
-      args:
-        stdin: "{{ nt4.admin_password }}"
-      no_log: true
-      changed_when: false
-      when: nt4 is defined and nt4_mode == 'domain'
-
-    - name: create machine accounts in advance
-      ansible.builtin.command: "docker exec {{ container }} lanlord-user machine {{ item | lower }}"
-      loop: "{{ nt4.machines | default([]) }}"
-      register: machine_results
-      changed_when: "'created' in machine_results.stdout"
-      when: nt4 is defined and nt4_mode == 'domain'
-
-    - name: create or update the users
-      ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }} {{ 'admin' if item.admin | default(false) else 'user' }}{{ ' software' if item.software_admin | default(false) else '' }}"
-      args:
-        stdin: "{{ item.password }}"
-      loop: >-
-        {{ (nt4.users | default([]) | rejectattr('state', 'defined') | list)
-           + (nt4.users | default([]) | selectattr('state', 'defined') | rejectattr('state', 'equalto', 'absent') | list) }}
-      loop_control:
-        label: "{{ item.name }}"
-      register: user_results
-      changed_when: "'created' in user_results.stdout"
-      no_log: true
-      when: nt4 is defined
-
-    - name: remove the users marked absent
-      ansible.builtin.command: "docker exec {{ container }} lanlord-user delete {{ item.name }}"
-      loop: "{{ nt4.users | default([]) | selectattr('state', 'defined') | selectattr('state', 'equalto', 'absent') | list }}"
-      loop_control:
-        label: "{{ item.name }}"
-      register: user_removed
-      changed_when: "'deleted' in user_removed.stdout"
-      when: nt4 is defined
-
-    # every user's logon script (netlogon\users\<user>.bat, made by lanlord-user) sets %USERNAME%, which
-    # windows 9x does not, and runs this one; it needs dos line endings. your own scripts are
-    # netlogon\logon.bat (everyone) and netlogon\<user>.bat (one user), which domain admins can edit
-    - name: write the logon script
-      ansible.builtin.copy:
-        dest: "{{ state_dir }}/lib/netlogon/lanlord.bat"
-        mode: "0644"
-        content: '{{ logon_lines | join(crlf) }}{{ crlf }}'
-      vars:
-        crlf: "\r\n"
-        unc: '{{ "\\" ~ nt4_netbios_name }}'
-        logon_lines:
-          - '@echo off'
-          - '{{ ("net use S: " ~ unc ~ "\software /persistent:no") if nt4.software | default(false) else "" }}'
-          - "{{ 'if not \"%OS%\"==\"Windows_NT\" net use H: /home' if nt4.roaming_profiles | default(false) else '' }}"
-          - 'if exist {{ unc }}\netlogon\logon.bat call {{ unc }}\netlogon\logon.bat'
-          - 'if exist {{ unc }}\netlogon\%USERNAME%.bat call {{ unc }}\netlogon\%USERNAME%.bat'
-      when: nt4 is defined and nt4_mode == 'domain'
-
-    # the logon wrappers of all users, and the software admins group
-    - name: sync the logon scripts and groups
-      ansible.builtin.command: "docker exec {{ container }} lanlord-user sync"
-      changed_when: false
-      when: nt4 is defined and nt4_mode == 'domain'
-
-    - name: list the accounts
-      ansible.builtin.command: "docker exec {{ container }} lanlord-user list"
-      register: accounts
-      changed_when: false
-      when: nt4 is defined
-
-    - name: report
-      ansible.builtin.debug:
-        msg: >-
-          {{ nt4_name }} is running as a {{ 'domain controller' if nt4_mode == 'domain' else 'workgroup server' }}
-          named {{ nt4_netbios_name }} on {{ nt4_address.split('/')[0] }};
-          accounts: {{ accounts.stdout_lines | map('split', ':') | map('first') | list }}
-      when: nt4 is defined
+      when: nt4_listed

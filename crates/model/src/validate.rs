@@ -541,6 +541,22 @@ const NT4_USER: Kind = Kind::Map(&[
     ("software_admin", Kind::Flag),
     ("state", Kind::OneOf(&["present", "absent"])),
 ]);
+const NT4_SERVER: Kind = Kind::Map(&[
+    ("name", NAME),
+    ("network", NAME),
+    ("netbios_name", Kind::Text(netbios_name)),
+    ("role", Kind::OneOf(&["pdc", "workgroup"])),
+    ("domain", Kind::Text(netbios_name)),
+    ("workgroup", Kind::Text(netbios_name)),
+    ("address", Kind::Text(ipv4_cidr)),
+    ("wins", Kind::OneOf(&["serve", "off"])),
+    ("software", Kind::Flag),
+]);
+const DOMAIN: Kind = Kind::Map(&[
+    ("backend", Kind::OneOf(&["nt4"])),
+    ("roaming_profiles", Kind::Flag),
+    ("machines", Kind::List(&Kind::Text(machine_name))),
+]);
 const WEB_PROXY_SITE: Kind = Kind::Map(&[
     ("host", Kind::Text(hostname)),
     ("upstream", Kind::Text(upstream)),
@@ -606,6 +622,8 @@ const SECTIONS: &[(&str, Kind)] = &[
             ("users", Kind::List(&NT4_USER)),
         ]),
     ),
+    ("domains", Kind::Map(&[])),
+    ("nt4-servers", Kind::List(&NT4_SERVER)),
     (
         "web-proxy",
         Kind::Map(&[
@@ -880,6 +898,21 @@ fn check_components(value: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// the domains: each is named like a NetBIOS domain and holds what a domain holds.
+fn check_domains(value: &Value) -> Result<(), Invalid> {
+    let Value::Mapping(map) = value else {
+        return Err(Invalid::new("domains", "must be a mapping"));
+    };
+    for (key, entry) in map {
+        let name = key.as_str().unwrap_or_default();
+        netbios_name(name).map_err(|reason| Invalid::new(format!("domains.{name}"), reason))?;
+        if !entry.is_null() {
+            check_kind(&format!("domains.{name}"), entry, &DOMAIN)?;
+        }
+    }
+    Ok(())
+}
+
 fn section_kind(name: &str) -> Option<&'static Kind> {
     SECTIONS
         .iter()
@@ -917,6 +950,8 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
         }
         if name == COMPONENT_SECTION {
             check_components(value)?;
+        } else if name == "domains" {
+            check_domains(value)?;
         } else if let Some(kind) = section_kind(name) {
             if !value.is_null() {
                 check_kind(name, value, kind)?;
@@ -925,7 +960,22 @@ pub fn settings_value(document: &Value) -> Result<(), Invalid> {
             check_words(name, value)?;
         }
     }
-    Ok(())
+    // the servers and domains must also fit each other (names, controllers, wins)
+    let default_network = match map.get("networks") {
+        Some(Value::Sequence(list)) => list
+            .first()
+            .and_then(|n| n.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        _ => "retronet",
+    };
+    match crate::nt4_servers::validate(map, default_network)
+        .into_iter()
+        .next()
+    {
+        Some(error) => Err(Invalid::new(error.path, error.message)),
+        None => Ok(()),
+    }
 }
 
 /// check settings text before it is stored or applied.
@@ -1022,6 +1072,11 @@ pub fn for_ansible(text: &str) -> Result<String, Invalid> {
             if let Some(section) = map.get_mut(*name) {
                 normalise_flags(section, kind);
             }
+        }
+        if let Some(Value::Mapping(domains)) = map.get_mut("domains") {
+            domains
+                .values_mut()
+                .for_each(|entry| normalise_flags(entry, &DOMAIN));
         }
         if let Some(Value::Mapping(components)) = map.get_mut(COMPONENT_SECTION) {
             components

@@ -69,8 +69,8 @@ if have docker; then
   for c in lanlord-nt4 lanlord-dns lanlord-caddy; do
     if docker inspect "$c" >/dev/null 2>&1; then act "remove container $c" docker rm -f "$c"; fi
   done
-  # one dnsmasq per lanlord network, and any previous copy left by an interrupted replacement
-  for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep '^lanlord-dns-'); do
+  # one dnsmasq per lanlord network, one nt4 server per extra server, and any previous copy left by an interrupted replacement
+  for c in $(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^lanlord-(dns|nt4)-'); do
     act "remove container $c" docker rm -f "$c"
   done
   for img in $(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep lanlord); do
@@ -244,7 +244,7 @@ mod tests {
   "inspect lanlord-nt4") exit 0 ;;
   "inspect "*) exit 1 ;;
   "image ls") printf 'ghcr.io/x/lanlord-nt4-server-components:1.0.0\ncaddy:2-alpine\n'; exit 0 ;;
-  "ps -a") printf 'lanlord-dns-retronet\nlanlord-dns-lab-prev\nunrelated\n'; exit 0 ;;
+  "ps -a") printf 'lanlord-dns-retronet\nlanlord-dns-lab-prev\nlanlord-nt4-files\nunrelated\n'; exit 0 ;;
 esac
 echo "docker $*" >> LOG"#,
                 ),
@@ -375,6 +375,7 @@ esac"#,
         for dns in [
             "remove container lanlord-dns-retronet",
             "remove container lanlord-dns-lab-prev",
+            "remove container lanlord-nt4-files",
         ] {
             assert!(out.contains(dns), "{dns} in\n{out}");
         }

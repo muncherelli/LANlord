@@ -83,7 +83,7 @@ fn filter(yaml: &str) -> Result<Vec<serde_json::Value>, String> {
 
 const ONE: &str = "networks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    mtu: 1450\n    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      hosts:\n        - {name: ws1, mac: \"02:00:00:00:00:01\", address: 172.16.121.1}\n";
 
-const THREE: &str = "docker: {}\nnt4-domain:\n  mode: domain\n  netbios_name: LANLORD\n  network: lab\nnetworks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    mtu: 1450\n    records:\n      - {name: ntsrv1, address: 172.16.120.10}\n    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      lease: 12h\n      hosts:\n        - {name: ws1, mac: \"02:00:00:00:00:01\", address: 172.16.121.1}\n  - name: lab\n    interface: eth2\n    address: 192.168.50.1/24\n    dhcp:\n      range: [192.168.50.100, 192.168.50.200]\n  - name: lone\n    interface: eth3\n    address: 10.77.0.1/24\n";
+const THREE: &str = "docker: {}\nnt4-servers:\n  - {name: nt4-domain, role: pdc, domain: RETRODOM, netbios_name: LANLORD, network: lab}\nnetworks:\n  - name: retronet\n    interface: eth1\n    address: 172.16.120.1/22\n    mtu: 1450\n    records:\n      - {name: ntsrv1, address: 172.16.120.10}\n    dhcp:\n      range: [172.16.123.1, 172.16.123.254]\n      lease: 12h\n      hosts:\n        - {name: ws1, mac: \"02:00:00:00:00:01\", address: 172.16.121.1}\n  - name: lab\n    interface: eth2\n    address: 192.168.50.1/24\n    dhcp:\n      range: [192.168.50.100, 192.168.50.200]\n  - name: lone\n    interface: eth3\n    address: 10.77.0.1/24\n";
 
 const OLDER: &str = "network:\n  internal_interface: eth1\ndocker:\n  internal_address: 172.16.120.1/22\ndns:\n  zone: retronet\n  records:\n    - {name: ntsrv1, address: 172.16.120.10}\n  dhcp:\n    range: [172.16.123.1, 172.16.123.254]\n    hosts:\n      - {name: ws1, mac: \"02:00:00:00:00:01\", address: 172.16.121.1}\n";
 
@@ -189,7 +189,7 @@ const HARNESS: &str = r#"
           eth1: {ipv4: {address: 172.16.120.1, prefix: 22, netmask: 255.255.252.0}}
     - ansible.builtin.include_tasks: networks.yml
       vars:
-        net_primary_name: "{{ (lookup('ansible.builtin.vars', 'nt4-domain', default={})).network | default('') }}"
+        net_primary_name: "{{ (lookup('ansible.builtin.vars', 'nt4-servers', default=[]) | first | default({})).network | default('') }}"
       when: dns is defined or networks is defined or docker is defined
     - ansible.builtin.include_tasks: dns-facts.yml
     - ansible.builtin.copy:
@@ -497,7 +497,7 @@ fn ansible_refuses_bad_networks_before_writing_anything() {
     let on_host = "networks:\n  - {name: a, interface: eth0, address: 10.0.0.1/24}\n";
     let err = render("host", on_host).unwrap_err();
     assert!(err.contains("is the host network"), "{err}");
-    let unknown = "nt4-domain:\n  network: nope\nnetworks:\n  - {name: a, interface: eth1, address: 10.0.0.1/24}\n";
+    let unknown = "nt4-servers:\n  - {name: nt4-domain, role: workgroup, workgroup: WG, network: nope}\nnetworks:\n  - {name: a, interface: eth1, address: 10.0.0.1/24}\n";
     let err = render("unknown", unknown).unwrap_err();
     assert!(err.contains("there is no network called nope"), "{err}");
 }
@@ -1044,4 +1044,158 @@ fn the_filter_checks_internet_settings() {
             .map(|e| !e.is_empty());
         assert!(rust.unwrap_or(true), "model accepted {bad}");
     }
+}
+
+/// the nt4 servers: plan the list, write each server's files, remove the containers of servers
+/// that are gone. docker is a stand-in that logs the calls and lists some containers.
+const NT4_HARNESS: &str = r#"
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    nt4_root: "{{ lookup('ansible.builtin.env', 'OUT') }}/nt4"
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_facts:
+          hostname: gw
+          default_ipv4: {interface: eth0}
+          interfaces: [lo, eth0, eth2, eth3]
+          eth0: {ipv4: {address: 192.0.2.10, prefix: 24, netmask: 255.255.255.0}}
+          eth2: {ipv4: {address: 192.0.2.1, prefix: 24, netmask: 255.255.255.0}}
+          eth3: {ipv4: {address: 198.51.100.1, prefix: 24, netmask: 255.255.255.0}}
+    - ansible.builtin.include_tasks: nt4-plan.yml
+    - ansible.builtin.include_tasks: nt4-server-files.yml
+      loop: "{{ nt4_servers }}"
+      loop_control: {loop_var: srv, label: "{{ srv.name }}"}
+    - ansible.builtin.include_tasks: nt4-cleanup.yml
+      when: nt4_listed
+"#;
+
+const NT4_STUB: &str = r#"#!/bin/sh
+echo "docker $*" >> "$STUB_LOG"
+case "$1" in
+  ps) printf 'lanlord-nt4\nlanlord-nt4-files\nlanlord-nt4-files-prev\nlanlord-caddy\nnt4-other\n' ;;
+esac
+exit 0
+"#;
+
+const NT4_NETWORKS: &str = "networks:\n  - {name: lab, interface: eth2, address: 192.0.2.1/24}\n  - {name: other, interface: eth3, address: 198.51.100.1/24}\n";
+
+/// the settings of an install from before the list, as the upgrade turns them.
+const NT4_LEGACY: &str = "nt4-domain:\n  mode: domain\n  name: RETRODOM\n  netbios_name: LANLORD\n  network: lab\n  roaming_profiles: true\n  software: true\n  lanman_auth: false\n  log_level: \"2\"\n  admin_password: example-secret\n";
+
+/// run the nt4 harness; the output folder and the docker calls.
+fn nt4_run(name: &str, yaml: &str, prepare: impl FnOnce(&Path)) -> Option<(Rendered, String)> {
+    if !on_path("ansible-playbook") {
+        eprintln!("skipped: no ansible");
+        return None;
+    }
+    let bin = temp("stub-bin");
+    let bin = bin.path();
+    let stub = bin.join("docker");
+    fs::write(&stub, NT4_STUB).unwrap();
+    Command::new("chmod").arg("+x").arg(&stub).status().unwrap();
+    let log = bin.join("log");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let out = run_harness(
+        name,
+        yaml,
+        NT4_HARNESS,
+        &[("PATH", path), ("STUB_LOG", log.display().to_string())],
+        prepare,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    Some((out, calls))
+}
+
+fn migrated_text(legacy: &str) -> String {
+    let mut settings = Settings::parse(&format!("{NT4_NETWORKS}{legacy}")).unwrap();
+    lanlord_model::nt4_servers::migrate_legacy(&mut settings, &Default::default()).unwrap();
+    settings.text()
+}
+
+#[test]
+fn a_migrated_single_nt4_server_renders_the_same_samba_configuration_as_before() {
+    let Some((out, calls)) = nt4_run("nt4-golden", &migrated_text(NT4_LEGACY), |_| {}) else {
+        return;
+    };
+    let golden = include_str!("../tests/fixtures/nt4-smb-single.conf");
+    let conf = fs::read_to_string(out.join("nt4/config/smb.conf")).unwrap();
+    assert_eq!(conf, golden);
+    // the first server keeps the old data folder and touches no container here
+    assert!(out.join("nt4/lib").is_dir());
+    assert!(
+        !calls.lines().any(|l| l == "docker rm -f lanlord-nt4"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn two_nt4_servers_on_one_network_get_their_own_folder_and_name() {
+    let yaml = format!(
+        "{NT4_NETWORKS}nt4-domain:\n  admin_password: example-secret\ndomains:\n  RETRODOM: {{backend: nt4}}\nnt4-servers:\n  - {{name: nt4-domain, role: pdc, domain: RETRODOM, netbios_name: LANLORD, network: lab}}\n  - {{name: files, role: workgroup, workgroup: HOME, netbios_name: FILES, network: lab, wins: \"off\"}}\n"
+    );
+    let Some((out, _)) = nt4_run("nt4-two", &yaml, |_| {}) else {
+        return;
+    };
+    let first = fs::read_to_string(out.join("nt4/config/smb.conf")).unwrap();
+    let second = fs::read_to_string(out.join("nt4/files/config/smb.conf")).unwrap();
+    assert!(first.contains("netbios name = LANLORD") && first.contains("wins support = yes"));
+    assert!(second.contains("netbios name = FILES") && second.contains("wins support = no"));
+    assert!(second.contains("workgroup = HOME") && !second.contains("domain logons = yes"));
+    // same network, so the same interface address
+    assert!(
+        first.contains("interfaces = 192.0.2.1/24") && second.contains("interfaces = 192.0.2.1/24")
+    );
+}
+
+#[test]
+fn nt4_servers_on_different_networks_listen_on_their_own_addresses() {
+    let yaml = format!(
+        "{NT4_NETWORKS}nt4-domain:\n  admin_password: example-secret\nnt4-servers:\n  - {{name: nt4-domain, role: workgroup, workgroup: HOME, netbios_name: LANLORD, network: lab}}\n  - {{name: files, role: workgroup, workgroup: HOME, netbios_name: LANLORD, network: other}}\n"
+    );
+    let Some((out, _)) = nt4_run("nt4-apart", &yaml, |_| {}) else {
+        return;
+    };
+    let first = fs::read_to_string(out.join("nt4/config/smb.conf")).unwrap();
+    let second = fs::read_to_string(out.join("nt4/files/config/smb.conf")).unwrap();
+    assert!(first.contains("interfaces = 192.0.2.1/24"), "{first}");
+    assert!(second.contains("interfaces = 198.51.100.1/24"), "{second}");
+}
+
+#[test]
+fn removing_an_nt4_server_removes_its_container_and_keeps_its_data() {
+    let yaml = format!(
+        "{NT4_NETWORKS}nt4-domain:\n  admin_password: example-secret\nnt4-servers:\n  - {{name: nt4-domain, role: workgroup, workgroup: HOME, netbios_name: LANLORD, network: lab}}\n"
+    );
+    let Some((out, calls)) = nt4_run("nt4-removed", &yaml, |out| {
+        let lib = out.join("nt4/files/lib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("passdb.tdb"), "accounts\n").unwrap();
+    }) else {
+        return;
+    };
+    for removed in ["rm -f lanlord-nt4-files", "rm -f lanlord-nt4-files-prev"] {
+        assert!(
+            calls.lines().any(|l| l == format!("docker {removed}")),
+            "{removed} in\n{calls}"
+        );
+    }
+    for kept in ["lanlord-nt4 ", "lanlord-caddy", "nt4-other"] {
+        assert!(
+            !calls.contains(&format!("rm -f {kept}"))
+                && !calls.contains(&format!("rm -f {kept}\n")),
+            "{kept} must stay:\n{calls}"
+        );
+    }
+    assert!(
+        !calls.lines().any(|l| l == "docker rm -f lanlord-nt4"),
+        "{calls}"
+    );
+    // the data of the removed server is where it was
+    assert_eq!(
+        fs::read_to_string(out.join("nt4/files/lib/passdb.tdb")).unwrap(),
+        "accounts\n"
+    );
 }
