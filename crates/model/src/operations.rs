@@ -169,7 +169,7 @@ pub enum Operation {
     /// keep sending the events of `topic` (see [`topic`]). the web ui serves it as a stream on
     /// its own route, not as a reply; the other backends refuse it.
     Subscribe { topic: String },
-    /// the machine accounts of the domain, by name.
+    /// the machine names of the domain; they are low sensitivity, so a view of the domain is enough.
     Machines,
     /// run a command on a domain machine; the reply is its output and exit code. `timeout_secs`
     /// is 1 to 900 and 120 when left out.
@@ -412,7 +412,7 @@ pub enum Reply {
     /// a text that may not exist yet, such as a logon script.
     Text(Option<String>),
     ExitCode(i32),
-    /// the machine accounts of the domain.
+    /// the machine names of the domain, without the trailing `$`, as `MachineRun` takes them.
     Machines(Vec<String>),
     /// what a command on a machine did. the output is decoded text, capped at 1 MiB per stream
     /// (`truncated` says it was cut). `exit_code` is `None` when the run timed out.
@@ -657,7 +657,7 @@ mod tests {
             },
             Operation::MachinePreset {
                 machine: "NT4SRV01".into(),
-                preset: "web-start".into(),
+                preset: "startweb".into(),
                 args: vec!["1".into()],
             },
             Operation::ChangeInternet {
@@ -924,7 +924,7 @@ mod tests {
             Reply::Text(None),
             Reply::Text(Some("echo hi".into())),
             Reply::ExitCode(3),
-            Reply::Machines(vec!["NT4SRV01$".into()]),
+            Reply::Machines(vec!["NT4SRV01".into()]),
             Reply::MachineRun {
                 exit_code: Some(3),
                 stdout: "out".into(),

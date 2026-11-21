@@ -185,7 +185,7 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "mkwebdir",
         "Create a virtual directory",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\mkwebdir.vbs -c W3SVC/{site} -v {name},{path}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\mkwebdir.vbs -c localhost -w {site} -v {name},{path}",
         ["site", "name", "path"],
         true
     ),
@@ -196,16 +196,20 @@ pub fn find(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|preset| preset.id == id)
 }
 
-/// an argument: 1 to 64 characters of `[A-Za-z0-9_./:,-]`.
+/// an argument: 1 to 64 characters of `[A-Za-z0-9_./:\-]`, not starting with `-` (that would be
+/// an option) and without `,` (that would add a name,path pair).
 pub fn check_arg(arg: &str) -> Result<(), &'static str> {
     if arg.is_empty() || arg.len() > MAX_ARG_BYTES {
         return Err("must be 1 to 64 characters");
     }
+    if arg.starts_with('-') {
+        return Err("must not start with -");
+    }
     if !arg
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b"_./:,-".contains(&b))
+        .all(|b| b.is_ascii_alphanumeric() || b"_./:\\-".contains(&b))
     {
-        return Err("may only hold letters, digits and _ . / : , -");
+        return Err("may only hold letters, digits and _ . / : \\ -");
     }
     Ok(())
 }
@@ -299,8 +303,9 @@ mod tests {
         );
         assert_eq!(
             render("mkwebdir", &args(&["1", "docs", "C:/inetpub/docs"])).unwrap(),
-            r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\mkwebdir.vbs -c W3SVC/1 -v docs,C:/inetpub/docs"
+            r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\mkwebdir.vbs -c localhost -w 1 -v docs,C:/inetpub/docs"
         );
+        assert!(render("mkwebdir", &args(&["1", "docs", r"C:\inetpub\docs"])).is_ok());
         assert_eq!(
             render("iisadmin-stop", &[]).unwrap(),
             "net stop iisadmin /y"
@@ -316,6 +321,9 @@ mod tests {
             "",
             "1 & del *",
             "1;x",
+            "a,b",
+            "-c",
+            "--computer",
             "a\"b",
             "%PATH%",
             "1\n2",
