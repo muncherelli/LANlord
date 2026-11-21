@@ -173,6 +173,9 @@ pub fn description(ui: &mut Ui, text: &str) {
 /// a keyed one-line field; the message of an edit.
 pub fn keyed_input<M>(ui: &mut Ui, input: &KeyedInput<M>) -> Option<M> {
     let mut text = input.value.clone();
-    ui.push_id(input.key, |ui| controls::edit(ui, &mut text, input.width));
+    let response = ui
+        .push_id(input.key, |ui| controls::edit(ui, &mut text, input.width))
+        .inner;
+    controls::note_keyed(ui.ctx(), input.key, response.id);
     (text != input.value).then(|| (input.edit)(input.key, text))
 }
