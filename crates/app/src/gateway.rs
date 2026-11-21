@@ -1245,6 +1245,11 @@ mod fake {
                 Operation::Subscribe { .. } => {
                     anyhow::bail!("live streams are served by the web ui, not run as an operation")
                 }
+                Operation::Machines
+                | Operation::MachineRun { .. }
+                | Operation::MachinePreset { .. } => {
+                    anyhow::bail!("running commands on machines is not implemented yet")
+                }
             })
         }
 
