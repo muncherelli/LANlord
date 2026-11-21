@@ -1,0 +1,290 @@
+#!/bin/bash
+# runs one command on a domain member over smb1, psexec style: nothing is installed on the machine.
+# a .bat goes into ADMIN$\Temp, a service runs it with cmd.exe, and the output is streamed back.
+#   lanlord-exec run --machine NAME [--address ADDR] --timeout N
+#                             stdin: {"user":"...","password":"...","command":"..."}
+#   lanlord-exec sweep --machine NAME [--address ADDR]
+#                             stdin: {"user":"...","password":"..."}
+#                             remove services and files that an earlier run left behind
+# stdout is one json object per line after the LANLORD_EVENT marker:
+#   {"stream":"out"|"err","data":"<base64>"}   new bytes of the command's output
+#   {"exit":N} | {"timed_out":true} | {"error":"..."}   the last line of a run
+# the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
+# argument, never in the environment and never printed.
+set -u
+umask 077
+
+LOCK_DIR=${LANLORD_EXEC_DIR:-/var/lib/samba/private/exec}
+TMP_DIR=${LANLORD_EXEC_TMP:-/dev/shm}
+POLL=${LANLORD_EXEC_POLL:-1}
+MAX_COMMAND=2000
+SMB_OPT='client min protocol=NT1'
+
+work=
+addr=
+machine=
+run_id=
+made_bat=0
+made_service=0
+start_pid=
+final_sent=0
+
+event() { printf 'LANLORD_EVENT %s\n' "$1"; }
+
+# a json string holding only what is safe to quote
+json_quote() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/ }
+  s=${s//$'\r'/ }
+  s=${s//$'\n'/ }
+  printf '%s' "$s"
+}
+
+fail() {
+  if ((final_sent == 0)); then
+    final_sent=1
+    event "{\"error\":\"$(json_quote "$1")\"}"
+  fi
+  exit 1
+}
+
+smb() { smbclient "//$addr/ADMIN\$" -A "$work/auth" --option="$SMB_OPT" "$@"; }
+rpc() {
+  local verb=$1
+  shift
+  net rpc service "$verb" "$@" -S "$addr" -A "$work/auth" --option="$SMB_OPT"
+}
+
+# delete the service and the temp files; runs on every way out
+cleanup() {
+  trap - EXIT INT TERM HUP
+  if [[ -n $start_pid ]]; then
+    kill "$start_pid" 2>/dev/null
+    wait "$start_pid" 2>/dev/null
+  fi
+  if [[ -n $work && -n $addr && -f $work/auth ]]; then
+    if ((made_service)); then
+      rpc delete "LANlordExec$run_id" >/dev/null 2>&1
+    fi
+    if ((made_bat)); then
+      smb -c "cd Temp; del ll-$run_id.bat; del ll-$run_id.out; del ll-$run_id.err; del ll-$run_id.rc" >/dev/null 2>&1
+    fi
+  fi
+  [[ -n $work ]] && rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
+# reads a flat json object of strings from $1 into the J array
+declare -A J=()
+parse_json() {
+  local t=$1 i=0 key c hex n
+  skip() { while [[ -n ${t:i:1} && ${t:i:1} =~ [[:space:]] ]]; do i=$((i + 1)); done; }
+  str() {
+    local out=""
+    i=$((i + 1))
+    while :; do
+      c=${t:i:1}
+      [[ -z $c ]] && return 1
+      case $c in
+        '"') i=$((i + 1)); REPLY=$out; return 0 ;;
+        '\')
+          i=$((i + 1))
+          c=${t:i:1}
+          case $c in
+            '"' | '\' | '/') out+=$c ;;
+            n) out+=$'\n' ;;
+            r) out+=$'\r' ;;
+            t) out+=$'\t' ;;
+            b) out+=$'\b' ;;
+            f) out+=$'\f' ;;
+            u)
+              hex=${t:i+1:4}
+              [[ $hex =~ ^[0-9a-fA-F]{4}$ ]] || return 1
+              n=$((16#$hex))
+              ((n > 0 && n < 128)) || return 1
+              printf -v c '\\x%02x' "$n"
+              printf -v c "$c"
+              out+=$c
+              i=$((i + 4))
+              ;;
+            *) return 1 ;;
+          esac
+          i=$((i + 1))
+          ;;
+        *) out+=$c; i=$((i + 1)) ;;
+      esac
+    done
+  }
+  skip
+  [[ ${t:i:1} == '{' ]] || return 1
+  i=$((i + 1))
+  while :; do
+    skip
+    while [[ ${t:i:1} == ',' ]]; do i=$((i + 1)); skip; done
+    [[ ${t:i:1} == '}' ]] && return 0
+    [[ ${t:i:1} == '"' ]] || return 1
+    str || return 1
+    key=$REPLY
+    skip
+    [[ ${t:i:1} == ':' ]] || return 1
+    i=$((i + 1))
+    skip
+    if [[ ${t:i:1} == '"' ]]; then
+      str || return 1
+      J[$key]=$REPLY
+    else
+      while [[ -n ${t:i:1} && ${t:i:1} != ',' && ${t:i:1} != '}' ]]; do i=$((i + 1)); done
+    fi
+  done
+}
+
+# base64 on one line of the bytes in file $1 from byte offset $2
+b64_from() { tail -c +"$(($2 + 1))" "$1" | base64 | tr -d '\n'; }
+
+# service names left by earlier runs, and their files, are removed
+sweep_stale() {
+  local names svc n=0
+  names=$(rpc list 2>/dev/null | grep -o 'LANlordExec[0-9a-f]\{8\}' | sort -u)
+  for svc in $names; do
+    rpc delete "$svc" >/dev/null 2>&1
+    n=$((n + 1))
+  done
+  smb -c 'cd Temp; del ll-*.bat; del ll-*.out; del ll-*.err; del ll-*.rc' >/dev/null 2>&1
+  SWEPT=$n
+}
+
+mode=${1:-}
+[[ $mode == run || $mode == sweep ]] || fail "usage: lanlord-exec run|sweep --machine NAME [--address ADDR] [--timeout N]"
+shift
+timeout=120
+while (($#)); do
+  case $1 in
+    --machine) machine=${2:-}; shift 2 || fail "--machine needs a value" ;;
+    --address) addr=${2:-}; shift 2 || fail "--address needs a value" ;;
+    --timeout) timeout=${2:-}; shift 2 || fail "--timeout needs a value" ;;
+    *) fail "unknown argument $1" ;;
+  esac
+done
+[[ $machine =~ ^[A-Za-z0-9_-]{1,15}$ ]] || fail "the machine name is not valid"
+[[ -z $addr || $addr =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || fail "the address is not valid"
+[[ $timeout =~ ^[0-9]{1,4}$ ]] && ((timeout >= 1)) || fail "the timeout is not valid"
+machine=${machine^^}
+
+work=$(mktemp -d "$TMP_DIR/lanlord-exec.XXXXXX") || fail "no scratch folder"
+
+# the request: a nul byte would vanish in a shell variable, so it is looked for in the file
+cat >"$work/in"
+if [[ $(tr -d '\0' <"$work/in" | wc -c) != "$(wc -c <"$work/in")" ]]; then
+  fail "the request holds a nul byte"
+fi
+parse_json "$(cat "$work/in")" || fail "the request is not a json object of strings"
+rm -f "$work/in"
+user=${J[user]:-}
+password=${J[password]:-}
+command=${J[command]:-}
+unset 'J[password]'
+[[ -n $user && -n $password ]] || fail "user and password are needed"
+if [[ $user == *[$'\r\n']* || $password == *[$'\r\n']* ]]; then
+  fail "the credentials hold a line break"
+fi
+if [[ $mode == run ]]; then
+  [[ -n $command ]] || fail "the command is empty"
+  [[ $command != *[$'\r\n']* ]] || fail "the command holds a line break"
+  ((${#command} <= MAX_COMMAND)) || fail "the command is longer than $MAX_COMMAND characters"
+fi
+
+# the password file; a DOMAIN\user name is split the way smbclient wants it
+{
+  if [[ $user == *\\* ]]; then
+    printf 'domain=%s\n' "${user%%\\*}"
+    printf 'username=%s\n' "${user#*\\}"
+  else
+    printf 'username=%s\n' "$user"
+  fi
+  printf 'password=%s\n' "$password"
+} >"$work/auth"
+chmod 600 "$work/auth"
+password=
+user=
+
+# one run per machine
+mkdir -p "$LOCK_DIR" || fail "no lock folder"
+exec 9>"$LOCK_DIR/$machine.lock"
+flock -n 9 || fail "another command is already running on $machine"
+
+if [[ -z $addr ]]; then
+  addr=$(nmblookup "$machine" 2>/dev/null | grep -m1 -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+  [[ -n $addr ]] || fail "$machine does not answer to its name"
+fi
+
+sweep_stale
+if [[ $mode == sweep ]]; then
+  event "{\"swept\":$SWEPT}"
+  final_sent=1
+  exit 0
+fi
+
+run_id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+bat=ll-$run_id
+# the .bat: every % is doubled, as batch files read it as an escape
+escaped=${command//%/%%}
+{
+  printf '@echo off\r\n'
+  printf '%s > %%SystemRoot%%\\Temp\\%s.out 2> %%SystemRoot%%\\Temp\\%s.err\r\n' "$escaped" "$bat" "$bat"
+  printf 'echo %%ERRORLEVEL%% > %%SystemRoot%%\\Temp\\%s.rc\r\n' "$bat"
+} >"$work/$bat.bat"
+made_bat=1
+smb -c "cd Temp; put $work/$bat.bat $bat.bat" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(head -c 200 "$work/put.log")"
+
+made_service=1
+rpc create "LANlordExec$run_id" "LANlord exec" \
+  "%SystemRoot%\\system32\\cmd.exe /Q /c %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
+  fail "could not create the service on $machine: $(head -c 200 "$work/create.log")"
+
+# the service never answers the service manager, so the start ends in error 1053 after a while while
+# the command keeps running; it is started in the background and watched through the .rc file
+(
+  rpc start "LANlordExec$run_id" >"$work/start.log" 2>&1
+  echo $? >"$work/start.rc"
+) >/dev/null 2>&1 &
+start_pid=$!
+
+emit_new() {
+  local stream=$1 file=$2 var=$3 size data
+  [[ -f $file ]] || return 0
+  size=$(wc -c <"$file")
+  if ((size > ${!var})); then
+    data=$(b64_from "$file" "${!var}")
+    printf -v "$var" '%s' "$size"
+    event "{\"stream\":\"$stream\",\"data\":\"$data\"}"
+  fi
+}
+
+off_out=0
+off_err=0
+rc=
+SECONDS=0
+while :; do
+  rm -f "$work/rc" "$work/out" "$work/err"
+  smb -c "cd Temp; get $bat.rc $work/rc; get $bat.out $work/out; get $bat.err $work/err" >/dev/null 2>&1
+  [[ -s $work/rc ]] && rc=$(tr -dc '0-9' <"$work/rc")
+  emit_new out "$work/out" off_out
+  emit_new err "$work/err" off_err
+  [[ -n $rc ]] && break
+  if [[ -f $work/start.rc ]] && [[ $(cat "$work/start.rc") != 0 ]] &&
+    ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond' "$work/start.log"; then
+    fail "could not start the service on $machine: $(head -c 200 "$work/start.log")"
+  fi
+  if ((SECONDS >= timeout)); then
+    final_sent=1
+    event '{"timed_out":true}'
+    exit 0
+  fi
+  sleep "$POLL"
+done
+final_sent=1
+event "{\"exit\":$rc}"
+exit 0

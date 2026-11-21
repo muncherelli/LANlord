@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine
+
 ### Fixed
 
 - Windows NT 4.0 machines now run the logon script at sign-in, so the `S:` software drive is mapped (Samba refused to let NT start a script that had no execute bit), and installers on `S:` can be started from the share. Existing gateways get this on their next apply
