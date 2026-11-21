@@ -177,4 +177,18 @@ mod tests {
         let shown = state.to_string();
         assert!(!shown.contains("other") && !shown.contains("s3cretadmin"));
     }
+
+    #[test]
+    fn missing_state_says_no_password_is_recorded() {
+        let host = FakeHost::new();
+        let doc: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+            "nt4-domain:\n  admin_password: x\n  users:\n    - name: 7\n      password: 9\n",
+        )
+        .unwrap();
+        let state = nt4_domain(&host, &doc, "/nowhere").unwrap();
+        assert_eq!(state["password_recorded_current"]["admin"], false);
+        assert_eq!(state["password_recorded_current"]["user:7"], false);
+        assert_eq!(state["files"]["config/smb.conf"], Value::Null);
+        assert_eq!(state["domain_admins_may_join"], false);
+    }
 }

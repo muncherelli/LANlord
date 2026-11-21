@@ -2299,6 +2299,12 @@ fn main() -> Result<()> {
 mod tests {
     #[cfg(unix)]
     #[test]
+    fn the_door_returns_what_the_work_returns() {
+        assert_eq!(super::door_events(|| 7), 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn an_outcome_is_told_as_ok_denied_or_an_error_of_one_line() {
         use lanlord_core::operations::{Reply, Response};
         let refused: anyhow::Error = lanlord_core::access::Refused("no".into()).into();

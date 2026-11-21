@@ -1143,4 +1143,177 @@ mod tests {
             "@echo off\r\nnet use S: \\\\SRV\\software /persistent:no\r\n\r\nif exist \\\\SRV\\netlogon\\logon.bat call \\\\SRV\\netlogon\\logon.bat\r\nif exist \\\\SRV\\netlogon\\%USERNAME%.bat call \\\\SRV\\netlogon\\%USERNAME%.bat\r\n"
         );
     }
+
+    fn settled_host() -> FakeHost {
+        let host = FakeHost::new();
+        healthy(&host);
+        settled(&host);
+        host
+    }
+
+    fn failure_of(host: &FakeHost, events: &mut Vec<ApplyEvent>) -> String {
+        apply(host, &doc(SETTINGS), "/s", "r1", &mut |e| events.push(e))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn samba_that_never_answers_stops_the_apply_after_waiting() {
+        let host = settled_host();
+        host.when(
+            "docker exec lanlord-nt4 smbcontrol smbd ping",
+            vec![Output::failed(1, "no")],
+        );
+        let mut events = Vec::new();
+        let error = failure_of(&host, &mut events);
+        assert!(error.contains("samba does not answer"), "{error}");
+        assert_eq!(host.ran("docker exec lanlord-nt4 smbcontrol smbd ping"), 20);
+        assert_eq!(*host.slept.borrow(), Duration::from_secs(38));
+    }
+
+    #[test]
+    fn a_refused_join_right_names_the_reason() {
+        let host = settled_host();
+        host.when(
+            "docker exec lanlord-nt4 net sam rights list",
+            vec![Output::ok("")],
+        );
+        host.when(
+            "docker exec lanlord-nt4 net sam rights grant",
+            vec![Output::failed(1, "denied")],
+        );
+        let mut events = Vec::new();
+        let error = failure_of(&host, &mut events);
+        assert!(
+            error.contains("could not let Domain Admins join computers: denied"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_machine_that_is_missing_is_created_and_a_failure_is_reported() {
+        let host = settled_host();
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user list",
+            vec![Output::ok("root:0:\ndana:1000:\n")],
+        );
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user machine ws1",
+            vec![Output::ok("created\n")],
+        );
+        let mut tally = Vec::new();
+        let done = apply(&host, &doc(SETTINGS), "/s", "r1", &mut |e| tally.push(e)).unwrap();
+        assert!(done.changed >= 1);
+        assert_eq!(
+            host.ran("docker exec lanlord-nt4 lanlord-user machine ws1"),
+            1
+        );
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user machine ws1",
+            vec![Output::failed(1, "no room")],
+        );
+        let mut events = Vec::new();
+        let error = failure_of(&host, &mut events);
+        assert!(
+            error.contains("lanlord-user machine failed: no room"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_failing_user_change_is_reported_and_does_not_record_the_password() {
+        let host = settled_host();
+        host.when(
+            "docker exec -i lanlord-nt4 lanlord-user add dana",
+            vec![Output::failed(1, "weak password")],
+        );
+        let mut events = Vec::new();
+        let error = failure_of(&host, &mut events);
+        assert!(
+            error.contains("lanlord-user add dana failed: weak password"),
+            "{error}"
+        );
+        assert!(!host
+            .text("/s/state.json")
+            .unwrap_or_default()
+            .contains("user:dana"));
+    }
+
+    #[test]
+    fn a_failing_removal_and_a_failing_sync_are_reported() {
+        let text = format!("{SETTINGS}    - name: olduser\n      state: absent\n");
+        let host = settled_host();
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user list",
+            vec![Output::ok(
+                "root:0:\ndana:1000:\nolduser:1001:\nws1$:1002:\n",
+            )],
+        );
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user delete",
+            vec![Output::failed(1, "busy")],
+        );
+        let error = apply(&host, &doc(&text), "/s", "r1", &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("lanlord-user delete olduser failed: busy"),
+            "{error}"
+        );
+        let host = settled_host();
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user sync",
+            vec![Output::failed(1, "no sync")],
+        );
+        let mut events = Vec::new();
+        let error = failure_of(&host, &mut events);
+        assert!(
+            error.contains("lanlord-user sync failed: no sync"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_failing_admin_password_names_the_command() {
+        let host = settled_host();
+        host.when(
+            "docker exec -i lanlord-nt4 lanlord-user admin",
+            vec![Output::failed(1, "locked")],
+        );
+        let mut events = Vec::new();
+        let error = failure_of(&host, &mut events);
+        assert!(
+            error.contains("lanlord-user admin failed: locked"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn old_images_nobody_uses_are_removed_and_the_accounts_are_listed() {
+        let host = settled_host();
+        host.when(
+            "docker image ls",
+            vec![Output::ok(
+                "lanlord-samba-nt4:old\nother:1\nlanlord-samba-nt4:busy\n",
+            )],
+        );
+        host.when(
+            "docker ps -a --filter ancestor=lanlord-samba-nt4:old",
+            vec![Output::ok("")],
+        );
+        host.when(
+            "docker ps -a --filter ancestor=lanlord-samba-nt4:busy",
+            vec![Output::ok("abc\n")],
+        );
+        let mut events = Vec::new();
+        apply(&host, &doc(SETTINGS), "/s", "r1", &mut |e| events.push(e)).unwrap();
+        assert_eq!(host.ran("docker image rm lanlord-samba-nt4:old"), 1);
+        assert_eq!(host.ran("docker image rm lanlord-samba-nt4:busy"), 0);
+        let shown = format!("{events:?}");
+        assert!(
+            shown.contains("domain controller named LANLORD on 192.0.2.1"),
+            "{shown}"
+        );
+        assert!(shown.contains("accounts: dana, root, ws1$"), "{shown}");
+    }
 }
