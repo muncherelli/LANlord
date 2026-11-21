@@ -25,7 +25,6 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
@@ -720,6 +719,7 @@ mod tests {
     use super::*;
     use lanlord_core::access::{authorize, Grants};
     use lanlord_core::operations::NO_KEY;
+    use std::sync::atomic::Ordering;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()

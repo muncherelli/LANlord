@@ -47,7 +47,7 @@ const LANLORD_USER: &str =
 const SMB_CONF: &str = include_str!("../../../../../ansible/playbooks/nt4-domain/smb.conf.j2");
 
 /// what an apply says when no password is recorded as set.
-const FIRST_APPLY: &str = "no password is recorded as set yet (this is the first native apply, or the fingerprint key was lost and made again), so every password in the settings is set once now, a password changed from Windows included; to keep those, stop and run `sudo lanlord engine record --module nt4-domain` first";
+const FIRST_APPLY: &str = "no password is recorded as set yet (this is the first native apply, or the fingerprint key was lost and made again), so every password in the settings is set once now, a password changed from Windows included; to keep those, stop and run `sudo lanlord engine record --module nt4-domain` first (it marks every existing account's password as already set and keeps it as it is, even if it differs from the settings)";
 
 fn unsupported(why: impl Into<String>) -> anyhow::Error {
     anyhow::Error::new(Unsupported(why.into()))
