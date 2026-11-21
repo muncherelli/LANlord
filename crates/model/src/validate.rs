@@ -903,9 +903,19 @@ fn check_domains(value: &Value) -> Result<(), Invalid> {
     let Value::Mapping(map) = value else {
         return Err(Invalid::new("domains", "must be a mapping"));
     };
+    let mut seen: Vec<String> = Vec::new();
     for (key, entry) in map {
         let name = key.as_str().unwrap_or_default();
         netbios_name(name).map_err(|reason| Invalid::new(format!("domains.{name}"), reason))?;
+        // domain names are not case sensitive: two keys that differ only in case are one domain
+        let lower = name.to_ascii_lowercase();
+        if seen.contains(&lower) {
+            return Err(Invalid::new(
+                format!("domains.{name}"),
+                "there is already a domain with this name (domain names ignore case)",
+            ));
+        }
+        seen.push(lower);
         if !entry.is_null() {
             check_kind(&format!("domains.{name}"), entry, &DOMAIN)?;
         }
@@ -1700,6 +1710,17 @@ mod tests {
 
     fn refused(text: &str) -> String {
         settings_document(text).expect_err(text).to_string()
+    }
+
+    #[test]
+    fn domain_names_that_differ_only_in_case_are_refused() {
+        let text = "domains:\n  RETRODOM: {}\n  retrodom: {}\n";
+        assert!(
+            refused(text).contains("domains.retrodom"),
+            "{}",
+            refused(text)
+        );
+        assert!(settings_document("domains:\n  RETRODOM: {}\n  OTHER: {}\n").is_ok());
     }
 
     #[test]

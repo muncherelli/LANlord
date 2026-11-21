@@ -56,6 +56,14 @@ const MOVED: [&str; 8] = [
     "machines",
 ];
 
+/// the key of `domains` that is `name`, ignoring case (domain names are not case sensitive).
+pub fn domain_key(domains: &Mapping, name: &str) -> Option<Value> {
+    domains
+        .keys()
+        .find(|k| k.as_str().is_some_and(|k| k.eq_ignore_ascii_case(name)))
+        .cloned()
+}
+
 fn text(map: &Mapping, key: &str) -> Option<String> {
     match map.get(key)? {
         Value::String(s) => Some(s.clone()),
@@ -87,26 +95,6 @@ pub fn migrate_legacy(settings: &mut Settings, _: &Context) -> Result<()> {
     let mode = text(&old, "mode").unwrap_or_else(|| "domain".into());
     let name = text(&old, "name").unwrap_or_else(|| "RETRONET".into());
 
-    // what the components entry chose, when the old section did not say
-    let attach = match settings.section("components") {
-        Some(Value::Mapping(c)) => c
-            .get(LEGACY)
-            .and_then(|e| e.get("attach"))
-            .and_then(Value::as_sequence)
-            .and_then(|a| a.first())
-            .and_then(Value::as_mapping)
-            .cloned(),
-        _ => None,
-    };
-    let wins_off = match settings.section("components") {
-        Some(Value::Mapping(c)) => c
-            .get(LEGACY)
-            .and_then(|e| e.get("subcomponents"))
-            .and_then(Value::as_sequence)
-            .is_some_and(|s| !s.is_empty() && !s.iter().any(|v| v.as_str() == Some("wins"))),
-        _ => false,
-    };
-
     let mut domain = Mapping::new();
     domain.insert("backend".into(), "nt4".into());
     if let Some(v) = old.get("roaming_profiles") {
@@ -118,7 +106,9 @@ pub fn migrate_legacy(settings: &mut Settings, _: &Context) -> Result<()> {
 
     let mut server = Mapping::new();
     server.insert("name".into(), LEGACY.into());
-    let network = text(&old, "network").or_else(|| text(attach.as_ref()?, "network"));
+    // the old play read only the network of this section (and served WINS whatever the
+    // components entry listed), so nothing else is inferred: the install behaves as before
+    let network = text(&old, "network");
     if let Some(network) = network {
         server.insert("network".into(), network.into());
     }
@@ -135,7 +125,7 @@ pub fn migrate_legacy(settings: &mut Settings, _: &Context) -> Result<()> {
     if let Some(v) = text(&old, "address") {
         server.insert("address".into(), v.into());
     }
-    server.insert("wins".into(), if wins_off { "off" } else { "serve" }.into());
+    server.insert("wins".into(), "serve".into());
     if let Some(v) = old.get("software") {
         server.insert("software".into(), v.clone());
     }
@@ -200,6 +190,7 @@ pub fn validate(root: &Mapping, default_network: &str) -> Vec<ValidationError> {
     let mut netbios: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut pdcs: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut wins: BTreeMap<String, usize> = BTreeMap::new();
+    let mut addresses: BTreeMap<(String, String), usize> = BTreeMap::new();
     for (i, server) in servers.iter().enumerate() {
         let at = |key: &str| format!("{SERVERS}[{i}].{key}");
         let Value::Mapping(server) = server else {
@@ -266,6 +257,22 @@ pub fn validate(root: &Mapping, default_network: &str) -> Vec<ValidationError> {
             }
             _ => fail(at("role"), "must be pdc or workgroup".into()),
         }
+        // servers run on the host network: each one needs its own address on the network. no
+        // address means the gateway's, which only one server can have
+        let address = text(server, "address")
+            .map(|a| a.split('/').next().unwrap_or_default().to_string())
+            .unwrap_or_default();
+        if let Some(first) = addresses.insert((network.clone(), address.clone()), i) {
+            let which = if address.is_empty() {
+                "the gateway's address".to_string()
+            } else {
+                format!("the address {address}")
+            };
+            fail(
+                at("address"),
+                format!("server {first} already uses {which} on this network; give this server an address of its own"),
+            );
+        }
         if text(server, "wins").unwrap_or_else(|| "serve".into()) == "serve" {
             if let Some(first) = wins.insert(network, i) {
                 fail(
@@ -301,7 +308,7 @@ mod tests {
     #[test]
     fn a_clean_list_has_no_errors() {
         let text = format!(
-            "{DOMAIN}nt4-servers:\n  - {{name: a, role: pdc, domain: RETRODOM, netbios_name: ONE, network: lab}}\n  - {{name: b, role: workgroup, workgroup: WG, netbios_name: TWO, network: lab, wins: off}}\n"
+            "{DOMAIN}nt4-servers:\n  - {{name: a, role: pdc, domain: RETRODOM, netbios_name: ONE, network: lab}}\n  - {{name: b, role: workgroup, workgroup: WG, netbios_name: TWO, network: lab, address: 192.0.2.5/24, wins: off}}\n"
         );
         assert_eq!(errors(&text), Vec::<String>::new());
     }
@@ -345,6 +352,22 @@ mod tests {
     }
 
     #[test]
+    fn two_servers_cannot_share_an_address_on_a_network() {
+        let gateway = "nt4-servers:\n  - {name: a, role: workgroup, workgroup: WG, netbios_name: ONE, network: lab}\n  - {name: b, role: workgroup, workgroup: WG, netbios_name: TWO, network: lab, wins: off}\n";
+        let found = errors(gateway);
+        assert!(
+            found
+                .iter()
+                .any(|e| e.starts_with("nt4-servers[1].address") && e.contains("gateway's")),
+            "{found:?}"
+        );
+        let same = "nt4-servers:\n  - {name: a, role: workgroup, workgroup: WG, netbios_name: ONE, network: lab, address: 192.0.2.5/24}\n  - {name: b, role: workgroup, workgroup: WG, netbios_name: TWO, network: lab, address: 192.0.2.5/24, wins: off}\n";
+        assert!(errors(same).iter().any(|e| e.contains("192.0.2.5")));
+        let apart = "nt4-servers:\n  - {name: a, role: workgroup, workgroup: WG, netbios_name: ONE, network: lab}\n  - {name: b, role: workgroup, workgroup: WG, netbios_name: TWO, network: lab, address: 192.0.2.5/24, wins: off}\n  - {name: c, role: workgroup, workgroup: WG, netbios_name: THREE, network: other}\n";
+        assert_eq!(errors(apart), Vec::<String>::new());
+    }
+
+    #[test]
     fn a_pdc_needs_its_domain() {
         let text =
             "nt4-servers:\n  - {name: a, role: pdc, domain: NOPE, netbios_name: ONE, network: lab}\n";
@@ -385,13 +408,14 @@ mod tests {
     }
 
     #[test]
-    fn the_attach_list_gives_the_network_and_subcomponents_give_wins() {
+    fn the_components_entry_changes_neither_the_network_nor_wins() {
+        // the old play served WINS and read only the section's own network
         let settings = migrated(
             "components:\n  nt4-domain:\n    attach: [{network: lab}]\n    subcomponents: [files]\nnt4-domain:\n  mode: domain\n  name: RETRODOM\n",
         );
         let server = &settings.section(SERVERS).unwrap()[0];
-        assert_eq!(server["network"], "lab");
-        assert_eq!(server["wins"], "off");
+        assert!(server.get("network").is_none());
+        assert_eq!(server["wins"], "serve");
     }
 
     #[test]

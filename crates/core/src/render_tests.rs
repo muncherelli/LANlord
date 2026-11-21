@@ -1134,7 +1134,7 @@ fn a_migrated_single_nt4_server_renders_the_same_samba_configuration_as_before()
 #[test]
 fn two_nt4_servers_on_one_network_get_their_own_folder_and_name() {
     let yaml = format!(
-        "{NT4_NETWORKS}nt4-domain:\n  admin_password: example-secret\ndomains:\n  RETRODOM: {{backend: nt4}}\nnt4-servers:\n  - {{name: nt4-domain, role: pdc, domain: RETRODOM, netbios_name: LANLORD, network: lab}}\n  - {{name: files, role: workgroup, workgroup: HOME, netbios_name: FILES, network: lab, wins: \"off\"}}\n"
+        "{NT4_NETWORKS}nt4-domain:\n  admin_password: example-secret\ndomains:\n  RETRODOM: {{backend: nt4}}\nnt4-servers:\n  - {{name: nt4-domain, role: pdc, domain: RETRODOM, netbios_name: LANLORD, network: lab}}\n  - {{name: files, role: workgroup, workgroup: HOME, netbios_name: FILES, network: lab, address: 192.0.2.5/24, wins: \"off\"}}\n"
     );
     let Some((out, _)) = nt4_run("nt4-two", &yaml, |_| {}) else {
         return;
@@ -1144,10 +1144,9 @@ fn two_nt4_servers_on_one_network_get_their_own_folder_and_name() {
     assert!(first.contains("netbios name = LANLORD") && first.contains("wins support = yes"));
     assert!(second.contains("netbios name = FILES") && second.contains("wins support = no"));
     assert!(second.contains("workgroup = HOME") && !second.contains("domain logons = yes"));
-    // same network, so the same interface address
-    assert!(
-        first.contains("interfaces = 192.0.2.1/24") && second.contains("interfaces = 192.0.2.1/24")
-    );
+    // same network, but each server listens on its own address (they share the host network)
+    assert!(first.contains("interfaces = 192.0.2.1/24"), "{first}");
+    assert!(second.contains("interfaces = 192.0.2.5/24"), "{second}");
 }
 
 #[test]

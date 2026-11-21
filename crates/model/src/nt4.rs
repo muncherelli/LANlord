@@ -84,9 +84,12 @@ impl Nt4Settings {
         let workgroup = text(server, "role").as_deref() == Some("workgroup");
         let name = text(server, if workgroup { "workgroup" } else { "domain" });
         let domain = name.as_ref().and_then(|n| match settings.section(DOMAINS) {
-            Some(Value::Mapping(domains)) => match domains.get(n.as_str()) {
-                Some(Value::Mapping(d)) => Some((n.clone(), d.clone())),
-                _ => None,
+            Some(Value::Mapping(domains)) => match nt4_servers::domain_key(domains, n) {
+                Some(key) => match domains.get(&key) {
+                    Some(Value::Mapping(d)) => Some((n.clone(), d.clone())),
+                    _ => None,
+                },
+                None => None,
             },
             _ => None,
         });
@@ -170,29 +173,38 @@ impl Nt4Settings {
 
         // the domain moves with a rename unless another server still names the old one
         let shared = servers.iter().skip(1).any(|s| {
-            ["domain", "workgroup"]
-                .iter()
-                .any(|k| s.as_mapping().and_then(|m| text(m, k)).as_deref() == Some(old.as_str()))
+            ["domain", "workgroup"].iter().any(|k| {
+                s.as_mapping()
+                    .and_then(|m| text(m, k))
+                    .is_some_and(|v| v.eq_ignore_ascii_case(&old))
+            })
         });
         let mut domains = match settings.section(DOMAINS) {
             Some(Value::Mapping(m)) => m.clone(),
             _ => Mapping::new(),
         };
-        let mut domain = match domains.get(old.as_str()) {
+        // domain names are not case sensitive: find the entry whatever its case
+        let old_key = nt4_servers::domain_key(&domains, &old);
+        let mut domain = match old_key.as_ref().and_then(|k| domains.get(k)) {
             Some(Value::Mapping(d)) => d.clone(),
             _ => Mapping::new(),
         };
-        if old != self.name && !shared {
-            domains.remove(old.as_str());
+        let new_key = nt4_servers::domain_key(&domains, &self.name);
+        if !old.eq_ignore_ascii_case(&self.name) && !shared {
+            if let Some(k) = &old_key {
+                domains.remove(k);
+            }
         }
-        if let Some(Value::Mapping(existing)) = domains.get(self.name.as_str()) {
+        if let Some(Value::Mapping(existing)) = new_key.as_ref().and_then(|k| domains.get(k)) {
             domain = existing.clone();
         }
         domain.insert("backend".into(), "nt4".into());
         domain.insert("roaming_profiles".into(), self.roaming_profiles.into());
         let machines = self.machines.iter().map(|m| m.as_str().into()).collect();
         domain.insert("machines".into(), Value::Sequence(machines));
-        domains.insert(self.name.as_str().into(), Value::Mapping(domain));
+        // an entry that differs only in case is updated in place, not added twice
+        let key = new_key.unwrap_or_else(|| self.name.as_str().into());
+        domains.insert(key, Value::Mapping(domain));
         settings.set_section(DOMAINS, Value::Mapping(domains));
         settings.set_section(SERVERS, Value::Sequence(servers));
     }
@@ -339,5 +351,21 @@ mod split_tests {
         let first = &settings.section(SERVERS).unwrap()[0];
         assert_eq!(first["role"], "workgroup");
         assert_eq!(first["workgroup"], "HOME");
+    }
+
+    #[test]
+    fn the_domain_is_found_whatever_its_case() {
+        let mut settings = Settings::parse(
+            "domains:\n  retrodom: {machines: [ws1]}\nnt4-servers:\n  - {name: nt4-domain, role: pdc, domain: RETRODOM, netbios_name: LANLORD}\n",
+        )
+        .unwrap();
+        let mut nt4 = Nt4Settings::from_settings(&settings).unwrap();
+        assert_eq!(nt4.machines, vec!["ws1".to_string()]);
+        nt4.roaming_profiles = true;
+        nt4.apply_to(&mut settings);
+        // the entry is updated where it is, not added a second time
+        let domains = settings.section(DOMAINS).unwrap().as_mapping().unwrap();
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains["retrodom"]["roaming_profiles"], true);
     }
 }

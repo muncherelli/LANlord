@@ -124,6 +124,15 @@
       ansible.builtin.include_tasks: nt4-cleanup.yml
       when: nt4_listed
 
+    # every server worked out the network facts (internal_interface and the like) for its own
+    # network; leave them as the first server's, as they were with a single server, and not as the
+    # last one's
+    - name: leave the network facts as the first server's
+      ansible.builtin.include_tasks: networks.yml
+      vars:
+        net_primary_name: "{{ (nt4_servers | first).network | default('') }}"
+      when: nt4_listed and nt4_servers | length > 1
+
     # the content-hash tags of earlier versions, once nothing runs them
     - name: remove the old hash-tagged images
       ansible.builtin.shell: |
