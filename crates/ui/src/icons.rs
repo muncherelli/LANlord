@@ -42,7 +42,8 @@ pub fn art(id: &str) -> &'static [&'static str] {
         "nt4-domain" => &data::NT4,
         "web-proxy" => &data::WEB,
         "remote-commands" => &data::COMMANDS,
-        "dns" | "dhcp" => &data::DNS,
+        "dns" => &data::DNS,
+        "dhcp" => &data::DHCP,
         "console" => &data::CONSOLE,
         "settings" | "components" => &data::SETTINGS,
         "folder" => &data::FOLDER,
@@ -61,7 +62,8 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "nt4-domain" => &data::SMALL_NT4,
         "web-proxy" => &data::SMALL_WEB,
         "remote-commands" => &data::SMALL_COMMANDS,
-        "dns" | "dhcp" => &data::SMALL_DNS,
+        "dns" => &data::SMALL_DNS,
+        "dhcp" => &data::SMALL_DHCP,
         "console" => &data::SMALL_CONSOLE,
         "settings" | "components" => &data::SMALL_SETTINGS,
         "folder" => &data::SMALL_FOLDER,
@@ -201,8 +203,9 @@ pub fn draw_small(painter: &Painter, pos: Pos2, id: &str) {
 mod tests {
     use super::*;
 
-    const IDS: [&str; 12] = [
+    const IDS: [&str; 13] = [
         "gateway",
+        "dhcp",
         "docker",
         "nt4-domain",
         "web-proxy",

@@ -1,5 +1,5 @@
-┌ ▌ NT4 Domain ───────────────────────────────────────────────────────── _ □ × ┐
-│ NT4 Domain                                                                   │
+┌ ▌ NT4 Server ───────────────────────────────────────────────────────── _ □ × ┐
+│ NT4 Server                                                                   │
 │ Status: available                                                            │
 │                                                                              │
 │ A Samba server in Docker for old Windows clients, on the internal network    │
@@ -21,4 +21,4 @@
 │ │loaded the settings                                                       │ │
 │ └──────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────┘
-[ L LANlord ] [ ▌ NT4 Domain ]                                        12:00 PM
+[ L LANlord ] [ ▌ NT4 Server ]                                        12:00 PM

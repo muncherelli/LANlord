@@ -274,7 +274,7 @@ pub struct Shell {
     logon: LogonPanel,
     dns: DnsPanel,
     commands: CommandPanel,
-    /// the open tab of the NT4 Domain window: Settings, Logins or Logon scripts.
+    /// the open tab of the NT4 Server window: Settings, Logins or Logon scripts.
     nt4_tab: usize,
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
     clock_panel: ClockPanel,
@@ -1177,7 +1177,7 @@ impl Shell {
         }
     }
 
-    /// the NT4 Domain window: its header and tab strip, and the open tab's page under them.
+    /// the NT4 Server window: its header and tab strip, and the open tab's page under them.
     /// the page's regions carry `PAGE` in front of their paths.
     fn nt4_window(
         &mut self,
@@ -1283,7 +1283,7 @@ impl Shell {
         answer
     }
 
-    /// the open tab of the NT4 Domain window, run through `pass`.
+    /// the open tab of the NT4 Server window, run through `pass`.
     fn nt4_page(
         &mut self,
         pass: &mut Pass,

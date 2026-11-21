@@ -21,7 +21,7 @@ pub struct Named {
 pub const COMPONENTS: &[Named] = &[
     Named {
         name: "nt4",
-        title: "NT4 (domain controller or file sharing)",
+        title: "NT4 Server",
         module: "nt4-domain",
     },
     Named {

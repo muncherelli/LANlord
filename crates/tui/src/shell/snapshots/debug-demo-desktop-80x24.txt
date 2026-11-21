@@ -16,7 +16,7 @@
 
 
       ▌           ▣
-  NT4 Domain    Hosts                   ┌─────────────────────────┐
+  NT4 Server    Hosts                   ┌─────────────────────────┐
                                         │ ✓ Demo desktop          │
                                         │   Window manager debug  │
                                         │   Open all windows      │

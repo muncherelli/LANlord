@@ -7,7 +7,7 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 | `playbooks/site.yml` | The entry point: the gateway baseline, then each module. |
 | `playbooks/network.yml` | Shared tasks: find the host and internal interfaces and the address already on the internal one. |
 | `playbooks/docker.yml` | The Docker module. |
-| `playbooks/nt4-domain.yml` | The NT4 Domain module. The `nt4-domain/` folder holds the Samba image and `smb.conf.j2`. |
+| `playbooks/nt4-domain.yml` | The NT4 Server module. The `nt4-domain/` folder holds the Samba image and `smb.conf.j2`. |
 | `playbooks/web-proxy.yml` | The Web Proxy module. The `web-proxy/` folder holds the `Caddyfile.j2`. |
 | `playbooks/dns.yml` | The DNS module. The `dns/` folder holds `dnsmasq.conf.j2` and the dnsmasq image. |
 | `playbooks/time.yml` | The Time Server module. The `time/` folder holds `chrony.conf.j2` and the chrony image; `time-facts.yml` works out which networks it serves. |
@@ -22,7 +22,7 @@ Everything LANlord applies to a gateway lives here. The `playbooks/` folder is e
 
 ## Replacing a container safely
 
-The NT4 Domain, DNS, Time Server and Web Proxy modules replace their container through the shared `playbooks/replace-container.yml` whenever its image or configuration changes:
+The NT4 Server, DNS, Time Server and Web Proxy modules replace their container through the shared `playbooks/replace-container.yml` whenever its image or configuration changes:
 
 1. The old container `<name>` is renamed `<name>-prev` and stopped (not removed). With host networking the two cannot listen on the same ports at once.
 2. The new container starts and must stay healthy for 3 checks in a row, 2 seconds apart: running, not restarting, and the module's check passing (`smbcontrol smbd ping` for Samba, the running state for dnsmasq, chrony and Caddy).
