@@ -92,7 +92,10 @@ impl Target {
             | Self::Progress
             | Self::TaskManager => true,
             // the modules with a list of logins, hosts or commands; the rest are plain forms
-            Self::Module(i) => matches!(MODULES[i].id, "nt4-domain" | "dns" | "remote-commands"),
+            Self::Module(i) => matches!(
+                MODULES[i].id,
+                "nt4-domain" | "dns" | "dhcp" | "remote-commands"
+            ),
             _ => false,
         }
     }
@@ -118,7 +121,7 @@ impl Target {
         match self {
             Self::Module(i) => Some(match MODULES[i].id {
                 "nt4-domain" => Area::Domain,
-                "dns" => Area::Dns,
+                "dns" | "dhcp" => Area::Dns,
                 "remote-commands" => Area::Commands,
                 _ => Area::Services,
             }),
@@ -180,7 +183,7 @@ impl Target {
         match self {
             Self::Module(i) => match MODULES[i].id {
                 "nt4-domain" => (600.0, 600.0),
-                "dns" => (620.0, 580.0),
+                "dns" | "dhcp" => (620.0, 580.0),
                 "remote-commands" => (580.0, 580.0),
                 _ => (480.0, 320.0),
             },

@@ -23,6 +23,10 @@
      DNS
 
 
+      ◆
+     DHCP
+
+
       ▦
    Settings
 
@@ -33,10 +37,6 @@
 
       ▣
     Hosts
-
-
-
-
                                                                                                                         ┌─────────────────────────┐
                                                                                                                         │ ✓ Demo desktop          │
                                                                                                                         │   Window manager debug  │

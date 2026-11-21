@@ -1,5 +1,8 @@
 # written by lanlord for the network {{ net.name }}; changes here are overwritten
-{% if net.internet_any %}
+{% if not dns_serves_dns %}
+# the DNS server is switched off: dnsmasq answers no dns here and only hands out addresses
+port=0
+{% elif net.internet_any %}
 # someone on this network may go out to the internet, so names outside the zone are forwarded to
 # the gateway's own resolvers (dnsmasq cannot choose by client, so every client here gets them);
 # the zone below stays answered here and is never forwarded
@@ -7,11 +10,15 @@
 # local names only: nothing is ever resolved outside the zone
 no-resolv
 {% endif %}
+{% if dns_serves_dns %}
 domain-needed
 bogus-priv
 local=/{{ net.zone }}/
+{% endif %}
 domain={{ net.zone }}
+{% if dns_serves_dns %}
 expand-hosts
+{% endif %}
 # this dnsmasq belongs to one address, nothing else: no interface= here, because it would also claim
 # every other address on the interface and a second service on another address could not bind port 53
 # (dhcp on udp 67 still binds per interface, so one dhcp server per network in the host namespace)
@@ -27,13 +34,15 @@ except-interface={{ other }}
 user=root
 dhcp-leasefile=/var/lib/misc/dnsmasq.leases
 
+{% if dns_serves_dns %}
 {% for name in dns_names %}
 host-record={{ name }},{{ net.ip }}
 {% endfor %}
 {% for record in net.records %}
 host-record={{ record.name }}.{{ net.zone }},{{ record.address }}
 {% endfor %}
-{% if net.dhcp %}
+{% endif %}
+{% if net.dhcp and dns_serves_dhcp %}
 
 {% if net.internet %}
 # internet for the whole network: the gateway is the router for every client
@@ -56,7 +65,9 @@ dhcp-option=tag:inet,3,{{ net.ip }}
 {% else %}
 dhcp-option=3
 {% endif %}
+{% if dns_serves_dns %}
 dhcp-option=6,{{ net.ip }}
+{% endif %}
 dhcp-option=15,{{ net.zone }}
 dhcp-option=44,{{ net.ip }}
 {% if net.name | lower in time_network_names %}

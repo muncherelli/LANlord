@@ -43,6 +43,7 @@ pub fn art(id: &str) -> &'static [&'static str] {
         "web-proxy" => &data::WEB,
         "remote-commands" => &data::COMMANDS,
         "dns" => &data::DNS,
+        "dhcp" => &data::DHCP,
         "console" => &data::CONSOLE,
         "settings" | "components" => &data::SETTINGS,
         "folder" => &data::FOLDER,
@@ -62,6 +63,7 @@ pub fn small(id: &str) -> &'static [&'static str] {
         "web-proxy" => &data::SMALL_WEB,
         "remote-commands" => &data::SMALL_COMMANDS,
         "dns" => &data::SMALL_DNS,
+        "dhcp" => &data::SMALL_DHCP,
         "console" => &data::SMALL_CONSOLE,
         "settings" | "components" => &data::SMALL_SETTINGS,
         "folder" => &data::SMALL_FOLDER,
@@ -201,8 +203,9 @@ pub fn draw_small(painter: &Painter, pos: Pos2, id: &str) {
 mod tests {
     use super::*;
 
-    const IDS: [&str; 12] = [
+    const IDS: [&str; 13] = [
         "gateway",
+        "dhcp",
         "docker",
         "nt4-domain",
         "web-proxy",

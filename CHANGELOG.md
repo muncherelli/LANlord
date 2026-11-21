@@ -9,10 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- the DHCP server is an entry of its own in Add or Remove Components, next to the DNS server (the two share one dnsmasq per network). DNS on with DHCP off writes no dhcp-range, DHCP on with DNS off sets `port=0`, and with both off the container is removed. Settings from before the split come up with both ticked
 - My Server has an SSH tab: ssh sign-in with a password can be turned off and on (an sshd drop-in, `11-lanlord-auth.conf`, checked with `sshd -t` and `sshd -T` and rolled back when sshd would not take it), the administrators' ssh public keys can be listed, added and removed (keys LANlord adds are marked `# added by lanlord`, and the mark goes with the key). turning passwords off, or removing an account's last key while they are off, is refused unless you confirm, while an administrator, the signed-in account, or root (when it may sign in with a password) has no key, or when sshd reads keys from files other than the default ones, so nobody is locked out by accident
 
 ### Changed
 
+- upgrade note: the DNS and DHCP entries of Add/Remove Components now take effect on the DNS/DHCP play. An install with DNS or DHCP switched off there, or with an old `subcomponents` list that left one out, stops that service on the next apply. With both off the containers go but the lease folders under /opt/lanlord/dns stay, so turning DHCP back on keeps the leases
 - the NT4 Domain module is now called NT4 Server on the desktop, in its window title, in Add/Remove Components, in the text interface and in the docs, since it can be a plain file server as well as a domain controller; module ids, settings keys and container names are unchanged
 - root's ssh access moved out of the Advanced tab to the new SSH tab of My Server
 - the NT4 server image is built with winbind and keeps `rpcclient` and `wbinfo`, so local and built-in groups can be made from User Manager for Domains

@@ -587,6 +587,8 @@ const SECTIONS: &[(&str, Kind)] = &[
     ),
     ("networks", Kind::List(&NETWORK_ENTRY)),
     ("dns", DNS),
+    // the dhcp server has no settings of its own: they are the dhcp mapping of each network
+    ("dhcp", Kind::Map(&[])),
     (
         "nt4-domain",
         Kind::Map(&[

@@ -21,7 +21,9 @@
     and item | regex_replace('^lanlord-dns-', '') is match(label_re)
   changed_when: true
 
+# with dns and dhcp both off the folders stay, so the leases are there when dhcp is turned back on
 - name: list the folders
+  when: dns_serves_dns or dns_serves_dhcp
   ansible.builtin.find:
     paths: "{{ state_root }}"
     file_type: directory
@@ -35,4 +37,6 @@
   loop: "{{ dns_folders.files }}"
   loop_control:
     label: "{{ item.path }}"
-  when: (item.path | basename) is match(label_re) and (item.path | basename) not in dns_wanted
+  when: >-
+    (dns_serves_dns or dns_serves_dhcp)
+    and (item.path | basename) is match(label_re) and (item.path | basename) not in dns_wanted

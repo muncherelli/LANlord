@@ -41,6 +41,6 @@
 - name: say what this dnsmasq does
   ansible.builtin.debug:
     msg: >-
-      {{ net.name }}: dnsmasq answers for .{{ net.zone }} on {{ net.ip }} ({{ net.interface }}),
-      {{ dns_names | length + net.records | length }} names,
-      {{ ('dhcp ' ~ net.dhcp.range[0] ~ ' to ' ~ net.dhcp.range[1]) if net.dhcp else 'no dhcp' }}
+      {{ net.name }}: dnsmasq on {{ net.ip }} ({{ net.interface }}),
+      {{ ('answers for .' ~ net.zone ~ ', ' ~ (dns_names | length + net.records | length) ~ ' names') if dns_serves_dns else 'dns off (port 0)' }},
+      {{ ('dhcp ' ~ net.dhcp.range[0] ~ ' to ' ~ net.dhcp.range[1]) if (net.dhcp and dns_serves_dhcp) else 'no dhcp' }}

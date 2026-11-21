@@ -4,9 +4,38 @@
 - name: work out which networks the time server serves
   ansible.builtin.include_tasks: time-facts.yml
 
+# the DNS server and the DHCP server are two entries of the components list that share one dnsmasq
+# per network: dns on and dhcp off is a dnsmasq without a dhcp-range, dhcp on and dns off is one
+# with port=0, and with both off there is no container at all. settings from before the split have
+# no `components.dhcp`: both are on, unless the old `components.dns.subcomponents` left one out.
+- name: read the DNS and DHCP choice
+  ansible.builtin.set_fact:
+    dns_comps: "{{ components | default({}, true) }}"
+    dns_comp: "{{ (components | default({}, true)).get('dns') or {} }}"
+
+- name: work out what each dnsmasq serves
+  ansible.builtin.set_fact:
+    dns_old_parts: "{{ dns_comp.get('subcomponents') or [] }}"
+
+- name: say whether the DNS and the DHCP server are on
+  ansible.builtin.set_fact:
+    # a components list that names dhcp but not dns left dns unticked (a top-level `dns:` section
+    # with no components key at all still means on)
+    dns_serves_dns: >-
+      {{ dns_comp.get('enabled', true) and (dns_old_parts | length == 0 or 'dns' in dns_old_parts)
+         and not ('dhcp' in dns_comps and 'dns' not in dns_comps) }}
+    dns_serves_dhcp: >-
+      {{ ((dns_comps.get('dhcp') or {}).get('enabled', true)) if 'dhcp' in dns_comps
+         else (dns_comp.get('enabled', true) and (dns_old_parts | length == 0 or 'dhcp' in dns_old_parts)) }}
+
 - name: pick the networks that get a dnsmasq
   ansible.builtin.set_fact:
-    dns_networks: "{{ lanlord_networks | default([]) | selectattr('dns_enabled') | list }}"
+    # with dns off, only the networks that have a dhcp mapping get a dnsmasq
+    dns_networks: >-
+      {{ (lanlord_networks | default([]) | selectattr('dns_enabled') | list
+          if dns_serves_dns else
+          lanlord_networks | default([]) | selectattr('dns_enabled') | selectattr('dhcp') | list)
+         if (dns_serves_dns or dns_serves_dhcp) else [] }}
     dns_proxy: "{{ lookup('ansible.builtin.vars', 'web-proxy', default={}) }}"
     dns_nt4: "{{ lookup('ansible.builtin.vars', 'nt4-domain', default={}) }}"
 

@@ -54,6 +54,7 @@ fn only_the_switched_on_components_get_icons_and_menu_items() {
             "gateway",
             "docker",
             "dns",
+            "dhcp",
             "settings",
             "console",
             "hosts"

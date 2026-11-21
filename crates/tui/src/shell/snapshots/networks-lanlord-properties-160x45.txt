@@ -19,20 +19,20 @@
      DNS      │ │└─────────────────────────────────│ Name       retronet                                    │
               │ └──────────────────────────────────│ Interface   eth1 ▼                                     │
               │                   [ Properties... ]│ Address     172.16.120.1/22                            │
-      ▦       │                                    │ DHCP range  172.16.120.100   to    172.16.120.200      │
-   Settings   │ ┌ Network interfaces ──────────────│ Lease time  7d                                         │
+      ◆       │                                    │ DHCP range  172.16.120.100   to    172.16.120.200      │
+     DHCP     │ ┌ Network interfaces ──────────────│ Lease time  7d                                         │
               │ │  eth0   192.0.2.10/24   MTU 1500 │ DNS zone    retronet                                   │
               │ │  eth1   172.16.120.1/22   MTU 145│ MTU         the card's own                             │
-      >       │ └──────────────────────────────────│ Leave the DHCP range empty for a network without DHCP. │
-   Console    │ up to date                         │      [ Remove network... ] [ Save & apply ] [ Cancel ] │
+      ▦       │ └──────────────────────────────────│ Leave the DHCP range empty for a network without DHCP. │
+   Settings   │ up to date                         │      [ Remove network... ] [ Save & apply ] [ Cancel ] │
               └────────────────────────────────────└────────────────────────────────────────────────────────┘
+
+      >
+   Console
+
 
       ▣
     Hosts
-
-
-
-
 
 
 

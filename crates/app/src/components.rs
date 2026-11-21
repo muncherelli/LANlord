@@ -881,6 +881,7 @@ mod tests {
         let (window, _, _) = ready();
         let current = window.current().unwrap();
         assert!(current.is_enabled("gateway") && current.is_enabled("dns"));
+        assert!(current.is_enabled("dhcp"), "the old dns entry brings dhcp");
         assert!(!current.is_enabled("nt4-domain"));
         assert_eq!(
             window.networks().len(),
@@ -973,6 +974,7 @@ mod tests {
         assert_eq!(window.step, Step::Choose);
         // with nothing that joins networks the networks page is skipped
         window.update(Msg::Toggle(row("dns")), &services, "gw");
+        window.update(Msg::Toggle(row("dhcp")), &services, "gw");
         window.update(Msg::Next, &services, "gw");
         assert_eq!(window.step, Step::Summary);
     }
@@ -1127,17 +1129,21 @@ mod tests {
     #[test]
     fn details_toggle_parts_and_shade_the_box() {
         let (mut window, services, _) = ready();
-        window.update(Msg::Pick(row("dns")), &services, "gw");
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window.update(Msg::Pick(row("nt4-domain")), &services, "gw");
         window.update(Msg::Details, &services, "gw");
         assert!(window.dialog().is_some());
         window.update(Msg::TogglePart(1), &services, "gw");
-        assert_eq!(window.draft().enabled["dns"].subcomponents, ["dns"]);
+        assert_eq!(
+            window.draft().enabled["nt4-domain"].subcomponents,
+            ["domain-controller"]
+        );
         window.update(Msg::CloseDetails, &services, "gw");
         assert!(window.dialog().is_none());
         let Node::CheckList(list) = window.choose().remove(5) else {
             panic!("the list is the sixth node");
         };
-        assert!(list.rows[row("dns")].partial);
+        assert!(list.rows[row("nt4-domain")].partial);
     }
 
     #[test]
@@ -1166,6 +1172,12 @@ mod tests {
         window.update(Msg::Toggle(row("docker")), &services, "gw");
         assert!(window.draft().is_enabled("docker"), "dns needs docker");
         window.update(Msg::Toggle(row("dns")), &services, "gw");
+        window.update(Msg::Toggle(row("docker")), &services, "gw");
+        assert!(
+            window.draft().is_enabled("docker"),
+            "dhcp still needs docker"
+        );
+        window.update(Msg::Toggle(row("dhcp")), &services, "gw");
         window.update(Msg::Toggle(row("docker")), &services, "gw");
         assert!(!window.draft().is_enabled("docker"));
         window.update(Msg::Toggle(row("web-proxy")), &services, "gw");

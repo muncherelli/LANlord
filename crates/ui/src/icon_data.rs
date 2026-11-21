@@ -246,6 +246,41 @@ pub(crate) const DNS: [&str; 32] = [
     "................................",
 ];
 
+pub(crate) const DHCP: [&str; 32] = [
+    "................................",
+    "................................",
+    ".......kkkkkkkkkkkkkkkkkk.......",
+    ".......kykyyyyyyyyyyyyyok.......",
+    ".......kykykkkyykkkkyyyok.......",
+    ".......kykyykyyykyykyyyok.......",
+    ".......kyyyykyyykkkkyyyok.......",
+    ".......kyyyykyyykyyyyyyok.......",
+    ".......kyyyykyyykyyyyyyok.......",
+    ".......kyyykkkyykyyyyyyok.......",
+    ".......kooooooooooooooook.......",
+    ".......kkkkkkkkkkkkkkkkkk.......",
+    "...............kk...............",
+    "...............kk...............",
+    "...............kk...............",
+    ".........kkkkkkkkkkkkkk.........",
+    ".........k............k.........",
+    ".....kkkkkkkkk....kkkkkkkkk.....",
+    ".....kwwwwwwdk....kwwwwwwdk.....",
+    ".....kwccccctk....kwccccctk.....",
+    ".....kwttttttk....kwttttttk.....",
+    ".....kwttttttk....kwttttttk.....",
+    ".....kdddddddk....kdddddddk.....",
+    ".....kkkkkkkkk....kkkkkkkkk.....",
+    "......kkkkkkk......kkkkkkk......",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+    "................................",
+];
+
 pub(crate) const SETTINGS: [&str; 32] = [
     "................................",
     "................................",
@@ -586,6 +621,25 @@ pub(crate) const SMALL_DNS: [&str; 16] = [
     "ktttkktttk.ktttk",
     "kkkkkkkkkk.kkkkk",
     "dddddddddd.ddddd",
+    "................",
+];
+
+pub(crate) const SMALL_DHCP: [&str; 16] = [
+    "................",
+    "...kkkkkkkkkk...",
+    "...kyyyyyyyyk...",
+    "...kyyyyyyyyk...",
+    "...kyyyyyyyyk...",
+    "...kooooooook...",
+    "...kkkkkkkkkk...",
+    ".......kk.......",
+    ".......kk.......",
+    "...kkkkkkkkkk...",
+    ".kkkkk....kkkkk.",
+    ".kwttk....kwttk.",
+    ".ktttk....ktttk.",
+    ".kkkkk....kkkkk.",
+    ".ddddd....ddddd.",
     "................",
 ];
 
