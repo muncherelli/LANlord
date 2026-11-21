@@ -10,6 +10,7 @@ pub mod compat;
 pub mod components;
 pub mod dns_dhcp;
 pub mod doctor;
+pub mod engine;
 pub mod format;
 pub mod identity;
 pub mod internet;

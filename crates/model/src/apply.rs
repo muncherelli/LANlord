@@ -55,6 +55,14 @@ pub enum ApplyEvent {
     Log {
         text: String,
     },
+    /// which engine runs a module in this apply, and why when it is not the one asked for. older
+    /// clients ignore it.
+    Engine {
+        module: String,
+        engine: String,
+        #[serde(default)]
+        reason: String,
+    },
     Finished {
         stats: Stats,
     },
@@ -169,7 +177,7 @@ impl Progress {
                 changed,
                 msg,
             } => self.finish_task(name, *status, *changed, msg),
-            ApplyEvent::Started | ApplyEvent::Log { .. } => {}
+            ApplyEvent::Started | ApplyEvent::Log { .. } | ApplyEvent::Engine { .. } => {}
             ApplyEvent::Finished { stats } => {
                 self.finished = Some(*stats);
                 self.current = None;

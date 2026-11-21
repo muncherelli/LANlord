@@ -505,6 +505,23 @@ enum BridgeMode {
 }
 
 #[derive(Subcommand)]
+enum EngineCommand {
+    /// print what a module left on this machine as json (passwords only as matches or not)
+    State {
+        /// the module id
+        #[arg(long)]
+        module: String,
+    },
+    /// record the passwords in the settings as already set, without setting any: run it before the
+    /// first native apply so a password changed from Windows is kept
+    Record {
+        /// the module id
+        #[arg(long)]
+        module: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// open the native window
     Gui,
@@ -707,6 +724,10 @@ enum Command {
     /// operations that need its key (not meant to be run by hand)
     #[command(hide = true)]
     Operate,
+    /// what the native apply engine looks at, for comparing it with the playbooks (run as root on
+    /// the gateway; not meant to be run by hand)
+    #[command(subcommand, hide = true)]
+    Engine(EngineCommand),
     /// take the internet grants that have ended out of the settings (run by a timer on the
     /// gateway, as root)
     #[command(name = "internet-prune", hide = true)]
@@ -2002,14 +2023,75 @@ fn operate() -> Result<()> {
         let _ = std::process::Command::new("logger")
             .args(["-t", "lanlord", &format!("operation run as {account}")])
             .status();
-        operating_caller(&session, account)
-            .and_then(|caller| execute_in(&session, "localhost", &caller, operation, &mut ask))
+        operating_caller(&session, account).and_then(|caller| {
+            door_events(matches!(operation, Operation::Apply { .. }), || {
+                execute_in(&session, "localhost", &caller, operation, &mut ask)
+            })
+        })
     });
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({ "response": response }))?
     );
     Ok(())
+}
+
+/// an apply reports its progress as event lines before the response, as the service does; any
+/// other operation just runs.
+#[cfg(unix)]
+fn door_events<T>(is_apply: bool, work: impl FnOnce() -> T) -> T {
+    if !is_apply {
+        return work();
+    }
+    let print = |event: &lanlord_core::apply::ApplyEvent| {
+        if let Some(line) = lanlord_core::apply::event_line(event) {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&line);
+            let _ = out.flush();
+        }
+    };
+    lanlord_core::apply::with_events(&print, work)
+}
+
+/// print the state of one module, for `tools/engine-parity.sh`.
+#[cfg(unix)]
+fn engine_state(module: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if std::fs::metadata("/proc/self")?.uid() != 0 {
+        bail!("this runs as root on the gateway");
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&lanlord_core::engine::collect::state_of(module)?)?
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn engine_state(_: &str) -> Result<()> {
+    bail!("this runs on the gateway")
+}
+
+/// record the passwords of `module` as set, by name only.
+#[cfg(unix)]
+fn engine_record(module: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if std::fs::metadata("/proc/self")?.uid() != 0 {
+        bail!("this runs as root on the gateway");
+    }
+    let kept = lanlord_core::engine::collect::record_of(module)?;
+    if kept.is_empty() {
+        println!("nothing to record: no account of {module} exists yet");
+    }
+    for name in kept {
+        println!("recorded {name} as set");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn engine_record(_: &str) -> Result<()> {
+    bail!("this runs on the gateway")
 }
 
 /// hand the old client key to the gateway once, so the settings are sealed to the gateway's own
@@ -2222,6 +2304,8 @@ fn main() -> Result<()> {
         }
         Some(Command::MoveSecrets { host }) => move_secrets(&host),
         Some(Command::Operate) => operate(),
+        Some(Command::Engine(EngineCommand::State { module })) => engine_state(&module),
+        Some(Command::Engine(EngineCommand::Record { module })) => engine_record(&module),
         Some(Command::InternetPrune { refresh }) => internet_prune(refresh),
         Some(Command::Run {
             target,
@@ -2244,6 +2328,13 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_door_returns_what_the_work_returns() {
+        assert_eq!(super::door_events(false, || 7), 7);
+        assert_eq!(super::door_events(true, || 8), 8);
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_outcome_is_told_as_ok_denied_or_an_error_of_one_line() {

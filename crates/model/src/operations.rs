@@ -37,6 +37,9 @@ pub enum Operation {
     Bootstrap,
     /// apply these modules (all of them when empty) with the stored settings.
     Apply { modules: Vec<String> },
+    /// what applying these modules would change, without changing anything: the engine's check
+    /// and diff. a module that runs on Ansible says so instead of a preview.
+    PlanApply { modules: Vec<String> },
     /// the plain settings text and which secrets are set.
     LoadDocument,
     /// store exactly `plain` as the plain settings and set these secrets; blank values change
@@ -174,7 +177,7 @@ impl Operation {
     pub fn requires(&self) -> Need {
         match self {
             Operation::Bootstrap | Operation::MigrateStored { .. } => Need::manage(Area::Updates),
-            Operation::Apply { .. } => Need::manage(Area::Services),
+            Operation::Apply { .. } | Operation::PlanApply { .. } => Need::manage(Area::Services),
             Operation::LoadDocument => Need::view(Area::Services),
             Operation::SaveDocument { .. } | Operation::MoveSecrets { .. } => {
                 Need::manage(Area::Services)
@@ -250,6 +253,7 @@ impl Operation {
         matches!(
             self,
             Operation::Apply { .. }
+                | Operation::PlanApply { .. }
                 | Operation::LoadDocument
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
@@ -366,6 +370,8 @@ pub enum Reply {
     Interfaces(Vec<InterfaceStatus>),
     /// what the server said, one line each.
     Lines(Vec<String>),
+    /// what an apply would change, per module.
+    Plan(Vec<crate::engine::ModulePlan>),
     Clock(ClockState),
     ZoneNow(ZoneNow),
     /// what the server said about a clock change, and whether it was kept in the settings.
@@ -446,6 +452,9 @@ mod tests {
             Operation::Bootstrap,
             Operation::Apply {
                 modules: vec!["dns".into()],
+            },
+            Operation::PlanApply {
+                modules: vec!["nt4-domain".into()],
             },
             Operation::LoadDocument,
             Operation::SaveDocument {
@@ -651,6 +660,7 @@ mod tests {
             Operation::SetPasswordLogin { .. } => 44,
             Operation::AddAdminKey { .. } => 45,
             Operation::RemoveAdminKey { .. } => 46,
+            Operation::PlanApply { .. } => 47,
         }
     }
 
@@ -662,7 +672,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 47;
+    const VARIANTS: usize = 48;
 
     #[test]
     fn every_operation_says_what_it_needs() {
@@ -719,7 +729,10 @@ mod tests {
         for operation in every_operation() {
             if matches!(
                 operation,
-                Operation::Apply { .. } | Operation::Power { .. } | Operation::Run { .. }
+                Operation::Apply { .. }
+                    | Operation::PlanApply { .. }
+                    | Operation::Power { .. }
+                    | Operation::Run { .. }
             ) {
                 assert!(
                     matches!(operation.requires(), Need::Area(_, Level::Manage)),

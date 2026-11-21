@@ -1241,6 +1241,7 @@ mod fake {
                     *self.access.lock().unwrap() = access;
                     Reply::Done
                 }
+                Operation::PlanApply { .. } => anyhow::bail!("the test gateway has no engine"),
                 Operation::Subscribe { .. } => {
                     anyhow::bail!("live streams are served by the web ui, not run as an operation")
                 }

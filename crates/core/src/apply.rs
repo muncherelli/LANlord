@@ -120,7 +120,7 @@ pub(crate) fn apply_lines(
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let settings = settings::merged_with(session, identity, ask_password)?;
-    run_tags(session, admin, &tags, settings, ask_password, on_line)
+    dispatch(session, admin, &tags, settings, ask_password, on_line)
 }
 
 /// apply `tags` with exactly `settings` instead of the ones stored on the gateway, for the
@@ -178,8 +178,73 @@ fn publish(event: &ApplyEvent) {
             }
         }
         ApplyEvent::Log { text } => emit(Kind::Out, text.as_str()),
+        ApplyEvent::Engine {
+            module,
+            engine,
+            reason,
+        } => {
+            if reason.is_empty() {
+                emit(Kind::Info, format!("{module}: {engine} engine"));
+            } else {
+                emit(Kind::Info, format!("{module}: {engine} engine ({reason})"));
+            }
+        }
         _ => {}
     }
+}
+
+/// where an apply's events are handed as they happen.
+pub type Emit<'a> = &'a (dyn Fn(&ApplyEvent) + Sync);
+
+/// sets the flag when dropped, whether the work ended or unwound.
+struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for Stop<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// run `work` and pass the apply events it publishes to `emit` as they happen. the log reaches
+/// every thread's lines, so only events are taken; errors and notes go to standard error.
+pub fn with_events<T>(emit: Emit, work: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let lines = crate::log::subscribe();
+    let done = AtomicBool::new(false);
+    let forward = |line: crate::log::Line| match line.kind {
+        Kind::Event => {
+            if let Ok(event) = serde_json::from_str::<ApplyEvent>(&line.text) {
+                emit(&event);
+            }
+        }
+        Kind::Err | Kind::Info => eprintln!("{}", line.text),
+        _ => {}
+    };
+    std::thread::scope(|scope| {
+        let (done, forward) = (&done, &forward);
+        let forwarder = scope.spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                if let Ok(line) = lines.recv_timeout(std::time::Duration::from_millis(50)) {
+                    forward(line);
+                }
+            }
+            lines.try_iter().for_each(forward);
+        });
+        // set even when the work panics, or the forwarder would never stop and the scope never end
+        let result = {
+            let _stop = Stop(done);
+            work()
+        };
+        let _ = forwarder.join();
+        result
+    })
+}
+
+/// one line of an operation's answer: an apply event, as json.
+pub fn event_line(event: &ApplyEvent) -> Option<Vec<u8>> {
+    let mut line = serde_json::to_vec(&serde_json::json!({ "event": event })).ok()?;
+    line.push(b'\n');
+    Some(line)
 }
 
 /// one apply at a time: the dialogs share one progress state, so two runs would mix their
@@ -213,6 +278,288 @@ impl Drop for Busy {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+use lanlord_model::engine::{mode_for, Mode, ModulePlan};
+
+/// one stretch of an apply: modules for Ansible together, or one module for the engine.
+#[derive(Debug, PartialEq)]
+enum Part<'a> {
+    Ansible(Vec<&'a str>),
+    /// the engine looks at a module Ansible just applied.
+    Shadow(&'a str),
+    Native(&'a str),
+}
+
+/// the parts of an apply in module order: neighbours for Ansible share a run, a shadowed module is
+/// Ansible's run followed by the engine's look, a native module stands alone.
+fn split<'a>(wanted: &[&'a str], mode_of: impl Fn(&str) -> Mode) -> Vec<Part<'a>> {
+    let mut parts: Vec<Part> = Vec::new();
+    for &module in wanted {
+        match mode_of(module) {
+            Mode::Native => parts.push(Part::Native(module)),
+            Mode::Shadow => {
+                parts.push(Part::Ansible(vec![module]));
+                parts.push(Part::Shadow(module));
+            }
+            Mode::Ansible => match parts.last_mut() {
+                Some(Part::Ansible(batch)) => batch.push(module),
+                _ => parts.push(Part::Ansible(vec![module])),
+            },
+        }
+    }
+    parts
+}
+
+/// pick the engine per module. when every module is Ansible's (the default) this is the same
+/// single run as ever; otherwise the apply is split in parts that run in order.
+fn dispatch(
+    session: &Session,
+    admin: &str,
+    tags: &[&str],
+    settings: Option<Vec<u8>>,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let parsed = settings
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| lanlord_model::settings::Settings::parse(text).ok());
+    let wanted: Vec<&str> = if tags.is_empty() {
+        crate::engine::modules::ORDER.to_vec()
+    } else {
+        tags.to_vec()
+    };
+    let mode_of = |module: &str| {
+        if session.is_local() && crate::engine::modules::has_native(module) {
+            mode_for(parsed.as_ref(), module)
+        } else {
+            Mode::Ansible
+        }
+    };
+    if wanted.iter().all(|m| mode_of(m) == Mode::Ansible) {
+        return run_tags(session, admin, tags, settings, ask_password, on_line);
+    }
+    let parts = split(&wanted, mode_of);
+    run_parts(
+        session,
+        admin,
+        tags,
+        &parts,
+        settings,
+        ask_password,
+        on_line,
+    )
+}
+
+fn add_stats(total: &mut apply::Stats, more: apply::Stats) {
+    total.ok += more.ok;
+    total.changed += more.changed;
+    total.failed += more.failed;
+    total.skipped += more.skipped;
+    total.unreachable += more.unreachable;
+}
+
+fn run_parts(
+    session: &Session,
+    admin: &str,
+    tags: &[&str],
+    parts: &[Part],
+    settings: Option<Vec<u8>>,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let _busy = Busy::take()?;
+    crate::env::gate(session, admin, tags, settings.as_deref(), ask_password)?;
+    // the settings are checked before anything runs, as for a single run
+    script(settings.as_deref(), tags)?;
+    emit(
+        Kind::Info,
+        format!(
+            "using your settings ({} bytes)",
+            settings.as_ref().map_or(0, Vec::len)
+        ),
+    );
+    let doc: serde_yaml_ng::Value = match &settings {
+        Some(plain) => serde_yaml_ng::from_slice(plain)?,
+        None => serde_yaml_ng::Value::Null,
+    };
+    publish(&ApplyEvent::Started);
+    let total = std::cell::RefCell::new(apply::Stats::default());
+    // one run of the playbooks for `tags`; its own start and end are folded into this apply's
+    let mut ansible = |tags: &[&str], on_line: &mut dyn FnMut(&str)| -> Result<()> {
+        let script = script(settings.as_deref(), tags)?;
+        let ended = std::cell::Cell::new(false);
+        let mut sink = |line: &str| match apply::parse_line(line) {
+            Some(ApplyEvent::Started) => {}
+            Some(ApplyEvent::Finished { stats }) => {
+                ended.set(true);
+                add_stats(&mut total.borrow_mut(), stats);
+            }
+            Some(event) => publish(&event),
+            None => on_line(line),
+        };
+        let ran = run_as_root_lines(session, admin, script, ask_password, &mut sink);
+        if !ended.get() && !matches!(ran, Ok(0)) {
+            total.borrow_mut().failed += 1;
+        }
+        match ran? {
+            0 => Ok(()),
+            NOT_INSTALLED_STATUS => bail!(NOT_INSTALLED_MESSAGE),
+            code => bail!("apply failed with status {code}"),
+        }
+    };
+    let run_id = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        std::process::id()
+    );
+    let host = crate::engine::host::RealHost;
+    let mut outcome: Result<()> = Ok(());
+    for part in parts {
+        let step = match part {
+            Part::Ansible(tags) => ansible(tags, on_line),
+            Part::Shadow(module) => {
+                publish(&ApplyEvent::Engine {
+                    module: (*module).into(),
+                    engine: Mode::Shadow.as_str().into(),
+                    reason: "Ansible applied it; the engine compares".into(),
+                });
+                match crate::engine::modules::plan(
+                    module,
+                    &host,
+                    &doc,
+                    crate::engine::STATE_DIR,
+                    true,
+                ) {
+                    Ok(left) => {
+                        for event in crate::engine::modules::shadow_lines(module, &left) {
+                            publish(&event);
+                        }
+                    }
+                    Err(error) => emit(Kind::Info, format!("engine shadow: {module}: {error}")),
+                }
+                Ok(())
+            }
+            Part::Native(module) => {
+                publish(&ApplyEvent::Engine {
+                    module: (*module).into(),
+                    engine: Mode::Native.as_str().into(),
+                    reason: String::new(),
+                });
+                let done = crate::engine::modules::apply(
+                    module,
+                    &host,
+                    &doc,
+                    crate::engine::STATE_DIR,
+                    &run_id,
+                    &mut |event| publish(&event),
+                );
+                match done {
+                    Ok(tally) => {
+                        add_stats(&mut total.borrow_mut(), tally.stats());
+                        Ok(())
+                    }
+                    Err(error) => match error.downcast_ref::<crate::engine::Unsupported>() {
+                        Some(why) => {
+                            publish(&ApplyEvent::Engine {
+                                module: (*module).into(),
+                                engine: Mode::Ansible.as_str().into(),
+                                reason: why.to_string(),
+                            });
+                            ansible(&[module], on_line)
+                        }
+                        None => {
+                            total.borrow_mut().failed += 1;
+                            Err(error)
+                        }
+                    },
+                }
+            }
+        };
+        if step.is_err() {
+            outcome = step;
+            break;
+        }
+    }
+    publish(&ApplyEvent::Finished {
+        stats: total.into_inner(),
+    });
+    outcome?;
+    emit(Kind::Info, "apply finished");
+    Ok(())
+}
+
+/// what an apply of `modules` would do, per module, from the settings on this gateway. only the
+/// engine can say; a module that runs with Ansible is listed as such.
+pub fn plan(
+    session: &Session,
+    identity: Option<&age::x25519::Identity>,
+    modules: &[String],
+    ask_password: AskPassword,
+) -> Result<Vec<ModulePlan>> {
+    if !session.is_local() {
+        bail!("a preview is made on the gateway itself");
+    }
+    let plain = settings::merged_with(session, identity, ask_password)?;
+    let parsed = plain
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| lanlord_model::settings::Settings::parse(text).ok());
+    let doc: serde_yaml_ng::Value = match &plain {
+        Some(bytes) => serde_yaml_ng::from_slice(bytes)?,
+        None => serde_yaml_ng::Value::Null,
+    };
+    let wanted: Vec<String> = if modules.is_empty() {
+        crate::engine::modules::ORDER
+            .iter()
+            .filter(|m| crate::engine::modules::has_native(m))
+            .map(|m| m.to_string())
+            .collect()
+    } else {
+        modules.to_vec()
+    };
+    let host = crate::engine::host::RealHost;
+    let mut out = Vec::new();
+    for module in wanted {
+        if self::modules::find(&module).is_none() {
+            bail!("unknown module: {module}");
+        }
+        let mode = if crate::engine::modules::has_native(&module) {
+            mode_for(parsed.as_ref(), &module)
+        } else {
+            Mode::Ansible
+        };
+        let mut entry = ModulePlan {
+            module: module.clone(),
+            engine: Mode::Ansible.as_str().into(),
+            reason: "runs with Ansible; preview not available".into(),
+            changes: Vec::new(),
+        };
+        if mode != Mode::Ansible {
+            match crate::engine::modules::plan(
+                &module,
+                &host,
+                &doc,
+                crate::engine::STATE_DIR,
+                false,
+            ) {
+                Ok(changes) => {
+                    entry.engine = mode.as_str().into();
+                    entry.reason = String::new();
+                    entry.changes = changes;
+                }
+                Err(error) => match error.downcast_ref::<crate::engine::Unsupported>() {
+                    Some(why) => entry.reason = format!("runs with Ansible: {why}"),
+                    None => return Err(error),
+                },
+            }
+        }
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 fn run_tags(
@@ -752,5 +1099,32 @@ esac"#
         // and the flag is let go after a failed run too
         assert!(apply_with(&gateway_printing(&[], 3), "gw", None, &[], &mut no_password).is_err());
         drop(Busy::take().expect("released after the failed run"));
+    }
+
+    #[test]
+    fn an_apply_is_split_so_each_engine_runs_in_module_order() {
+        let mode = |m: &str| match m {
+            "nt4-domain" => Mode::Native,
+            "dns" => Mode::Shadow,
+            _ => Mode::Ansible,
+        };
+        assert_eq!(
+            split(
+                &["docker", "network", "dns", "dhcp", "nt4-domain", "time"],
+                mode
+            ),
+            [
+                Part::Ansible(vec!["docker", "network"]),
+                Part::Ansible(vec!["dns"]),
+                Part::Shadow("dns"),
+                Part::Ansible(vec!["dhcp"]),
+                Part::Native("nt4-domain"),
+                Part::Ansible(vec!["time"]),
+            ]
+        );
+        assert_eq!(
+            split(&["a", "b"], |_| Mode::Ansible),
+            [Part::Ansible(vec!["a", "b"])]
+        );
     }
 }

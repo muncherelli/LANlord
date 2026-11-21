@@ -602,6 +602,11 @@ const SECTIONS: &[(&str, Kind)] = &[
         ]),
     ),
     ("networks", Kind::List(&NETWORK_ENTRY)),
+    // which engine applies a module: ansible (the default), shadow or native
+    (
+        "engine",
+        Kind::Map(&[("nt4-domain", Kind::OneOf(&["ansible", "shadow", "native"]))]),
+    ),
     ("dns", DNS),
     // the dhcp server has no settings of its own: they are the dhcp mapping of each network
     ("dhcp", Kind::Map(&[])),
@@ -676,7 +681,7 @@ const SECTIONS: &[(&str, Kind)] = &[
 const MULTILINE: &[&str] = &["gateway.motd", "gateway.login_text"];
 
 /// sections no playbook reads: they are kept in the settings file but never handed to ansible.
-const NOT_FOR_PLAYBOOKS: &[&str] = &["access", "firewall", "remote-commands"];
+const NOT_FOR_PLAYBOOKS: &[&str] = &["access", "firewall", "remote-commands", "engine"];
 
 /// the sections that hold named entries whose own keys are checked as components.
 const COMPONENT_SECTION: &str = "components";
@@ -1256,7 +1261,7 @@ fn check_network_edit(edit: &crate::lan_edit::Edit) -> Result<(), Invalid> {
 /// field that is wrong is named.
 pub fn operation(operation: &Operation) -> Result<(), Invalid> {
     match operation {
-        Operation::Apply { modules } => check_modules(modules),
+        Operation::Apply { modules } | Operation::PlanApply { modules } => check_modules(modules),
         Operation::MigrateStored { stamp } => named("stamp", backup_stamp, stamp),
         Operation::SaveDocument { plain, updates } => check_save(plain, updates),
         Operation::ChangeUsers { changes } => changes.iter().try_for_each(check_change),
