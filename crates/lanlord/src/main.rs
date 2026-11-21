@@ -108,6 +108,15 @@ enum MachinesCommand {
     Remove { name: String },
     /// set a machine's account back to its first password, so it can join the domain again
     Reset { name: String },
+    /// run a command on a domain machine through the gateway and show its output
+    Run {
+        name: String,
+        /// seconds to wait for the command, 1 to 900
+        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS)]
+        timeout: u32,
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -611,11 +620,12 @@ enum Command {
         #[command(subcommand)]
         action: NetworksCommand,
     },
-    /// manage the machine accounts of the nt4-domain module
+    /// manage the machine accounts of the nt4-domain module; with no action, list the machines
+    /// of the domain
     Machines {
         host: String,
         #[command(subcommand)]
-        action: MachinesCommand,
+        action: Option<MachinesCommand>,
     },
     /// edit the logon scripts every domain logon runs
     Logon {
@@ -808,9 +818,32 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
     lanlord_core::remote::change_users(host, &[change], &mut ask).map(|_| ())
 }
 
-fn machines(host: &str, action: MachinesCommand) -> Result<()> {
+fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
+    let Some(action) = action else {
+        let Reply::Machines(names) = execute(host, &Operation::Machines, &mut ask)? else {
+            bail!("the server answered something other than machines");
+        };
+        for name in names {
+            println!("{name}");
+        }
+        return Ok(());
+    };
+    if let MachinesCommand::Run {
+        name,
+        timeout,
+        command,
+    } = action
+    {
+        let operation = Operation::MachineRun {
+            machine: name,
+            command: command.join(" "),
+            timeout_secs: timeout,
+        };
+        let reply = execute(host, &operation, &mut ask)?;
+        std::process::exit(print_run(&reply)?);
+    }
+
     use lanlord_core::nt4::{edit_machines, valid_machine, MachineChange, Nt4Settings};
-    use lanlord_core::operations::{execute, Operation, Reply};
     let change = match action {
         MachinesCommand::List => {
             let document = lanlord_core::remote::document(host, &mut ask)?;
@@ -820,6 +853,7 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
             }
             return Ok(());
         }
+        MachinesCommand::Run { .. } => unreachable!("run is handled above"),
         MachinesCommand::Add { name } => MachineChange::Add(name),
         MachinesCommand::Remove { name } => MachineChange::Remove(name),
         MachinesCommand::Reset { name } => {
@@ -839,6 +873,29 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
         |plain| edit_machines(plain, &change),
         &mut ask,
     )
+}
+
+/// show what a machine run did; returns the exit code (124 for a timeout, as `timeout(1)` does).
+fn print_run(reply: &Reply) -> Result<i32> {
+    let Reply::MachineRun {
+        exit_code,
+        stdout,
+        stderr,
+        timed_out,
+        truncated,
+    } = reply
+    else {
+        bail!("the server answered something other than a run");
+    };
+    print!("{stdout}");
+    eprint!("{stderr}");
+    if *truncated {
+        eprintln!("(output cut at 1 MiB)");
+    }
+    if *timed_out {
+        eprintln!("timed out; the command may still be running");
+    }
+    Ok(exit_code.unwrap_or(124))
 }
 
 fn networks(host: &str, action: NetworksCommand) -> Result<()> {
@@ -2319,7 +2376,7 @@ fn main() -> Result<()> {
                 },
                 None => Target::Gateway { host: target },
             };
-            std::process::exit(exec(&target, &command)?);
+            std::process::exit(exec(&target, &command, &mut ask)?);
         }
         Some(Command::InstallLauncher { dry_run, force }) => launcher::install(dry_run, force),
         Some(Command::UninstallLauncher { dry_run }) => launcher::uninstall(dry_run),

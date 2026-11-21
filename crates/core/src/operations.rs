@@ -14,8 +14,8 @@ use crate::{
     access, authkeys, internet, lan, operate, save_guard, self_service, settings, stored, users,
 };
 use crate::{
-    account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, power, purge,
-    rootssh, setup, sshauth,
+    account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, nt4_exec, power,
+    purge, rootssh, setup, sshauth,
 };
 
 /// the message when the gateway has no key to decrypt the secrets with.
@@ -544,9 +544,38 @@ fn dispatch(
         Operation::Subscribe { .. } => {
             bail!("live streams are served by the web ui, not run as an operation")
         }
-        Operation::Machines | Operation::MachineRun { .. } | Operation::MachinePreset { .. } => {
-            bail!("running commands on machines is not implemented yet")
+        Operation::Machines => Reply::Machines(nt4_exec::machines(session, ask)?),
+        Operation::MachineRun {
+            machine,
+            command,
+            timeout_secs,
+        } => machine_run(session, &key()?, ask, (machine, command, *timeout_secs))?,
+        Operation::MachinePreset {
+            machine,
+            preset,
+            args,
+        } => {
+            let command = nt4_exec::render(preset, args).map_err(|reason| anyhow!("{reason}"))?;
+            let timeout = DEFAULT_TIMEOUT_SECS;
+            machine_run(session, &key()?, ask, (machine, &command, timeout))?
         }
+    })
+}
+
+/// run a command on a machine and answer with what it did.
+fn machine_run(
+    session: &Session,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+    job: nt4_exec::Job,
+) -> Result<Reply> {
+    let outcome = nt4_exec::run(session, identity, ask, job, &mut |_, _| {})?;
+    Ok(Reply::MachineRun {
+        stdout: outcome.stdout_text(),
+        stderr: outcome.stderr_text(),
+        exit_code: outcome.exit_code,
+        timed_out: outcome.timed_out,
+        truncated: outcome.truncated,
     })
 }
 
