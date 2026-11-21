@@ -24,7 +24,9 @@ static GPU: Mutex<()> = Mutex::new(());
 /// do not depend on the time of day. `setup` opens what the fixture shows.
 fn shot(name: &str, setup: impl Fn(&mut Desktop)) {
     // a test that failed while holding the lock only poisons it: the guard still serialises
-    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    let _gpu = GPU
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut results = SnapshotResults::new();
     for ppp in [1.0, 2.0] {
         let mut harness = Harness::builder()
