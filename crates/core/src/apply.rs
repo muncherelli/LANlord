@@ -120,7 +120,7 @@ pub(crate) fn apply_lines(
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
     let settings = settings::merged_with(session, identity, ask_password)?;
-    run_tags(session, admin, &tags, settings, ask_password, on_line)
+    dispatch(session, admin, &tags, settings, ask_password, on_line)
 }
 
 /// apply `tags` with exactly `settings` instead of the ones stored on the gateway, for the
@@ -178,6 +178,17 @@ fn publish(event: &ApplyEvent) {
             }
         }
         ApplyEvent::Log { text } => emit(Kind::Out, text.as_str()),
+        ApplyEvent::Engine {
+            module,
+            engine,
+            reason,
+        } => {
+            if reason.is_empty() {
+                emit(Kind::Info, format!("{module}: {engine} engine"));
+            } else {
+                emit(Kind::Info, format!("{module}: {engine} engine ({reason})"));
+            }
+        }
         _ => {}
     }
 }
@@ -213,6 +224,268 @@ impl Drop for Busy {
     fn drop(&mut self) {
         self.0.store(false, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+use lanlord_model::engine::{mode_for, Mode, ModulePlan};
+
+/// one stretch of an apply: modules for Ansible together, or one module for the engine.
+enum Part<'a> {
+    Ansible(Vec<&'a str>),
+    /// the engine looks at a module Ansible just applied.
+    Shadow(&'a str),
+    Native(&'a str),
+}
+
+/// pick the engine per module. when every module is Ansible's (the default) this is the same
+/// single run as ever; otherwise the apply is split in parts that run in order.
+fn dispatch(
+    session: &Session,
+    admin: &str,
+    tags: &[&str],
+    settings: Option<Vec<u8>>,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let parsed = settings
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| lanlord_model::settings::Settings::parse(text).ok());
+    let wanted: Vec<&str> = if tags.is_empty() {
+        crate::engine::modules::ORDER.to_vec()
+    } else {
+        tags.to_vec()
+    };
+    let mode_of = |module: &str| {
+        if session.is_local() && crate::engine::modules::has_native(module) {
+            mode_for(parsed.as_ref(), module)
+        } else {
+            Mode::Ansible
+        }
+    };
+    if wanted.iter().all(|m| mode_of(m) == Mode::Ansible) {
+        return run_tags(session, admin, tags, settings, ask_password, on_line);
+    }
+    let mut parts: Vec<Part> = Vec::new();
+    for module in &wanted {
+        match mode_of(module) {
+            Mode::Native => parts.push(Part::Native(module)),
+            Mode::Shadow => {
+                parts.push(Part::Ansible(vec![module]));
+                parts.push(Part::Shadow(module));
+            }
+            Mode::Ansible => match parts.last_mut() {
+                Some(Part::Ansible(batch)) => batch.push(module),
+                _ => parts.push(Part::Ansible(vec![module])),
+            },
+        }
+    }
+    run_parts(
+        session,
+        admin,
+        &wanted,
+        &parts,
+        settings,
+        ask_password,
+        on_line,
+    )
+}
+
+fn add_stats(total: &mut apply::Stats, more: apply::Stats) {
+    total.ok += more.ok;
+    total.changed += more.changed;
+    total.failed += more.failed;
+    total.skipped += more.skipped;
+    total.unreachable += more.unreachable;
+}
+
+fn run_parts(
+    session: &Session,
+    admin: &str,
+    wanted: &[&str],
+    parts: &[Part],
+    settings: Option<Vec<u8>>,
+    ask_password: AskPassword,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<()> {
+    let _busy = Busy::take()?;
+    crate::env::gate(session, admin, wanted, settings.as_deref(), ask_password)?;
+    // the settings are checked before anything runs, as for a single run
+    script(settings.as_deref(), wanted)?;
+    emit(
+        Kind::Info,
+        format!(
+            "using your settings ({} bytes)",
+            settings.as_ref().map_or(0, Vec::len)
+        ),
+    );
+    let doc: serde_yaml_ng::Value = match &settings {
+        Some(plain) => serde_yaml_ng::from_slice(plain)?,
+        None => serde_yaml_ng::Value::Null,
+    };
+    publish(&ApplyEvent::Started);
+    let total = std::cell::RefCell::new(apply::Stats::default());
+    // one run of the playbooks for `tags`; its own start and end are folded into this apply's
+    let mut ansible = |tags: &[&str], on_line: &mut dyn FnMut(&str)| -> Result<()> {
+        let script = script(settings.as_deref(), tags)?;
+        let ended = std::cell::Cell::new(false);
+        let mut sink = |line: &str| match apply::parse_line(line) {
+            Some(ApplyEvent::Started) => {}
+            Some(ApplyEvent::Finished { stats }) => {
+                ended.set(true);
+                add_stats(&mut total.borrow_mut(), stats);
+            }
+            Some(event) => publish(&event),
+            None => on_line(line),
+        };
+        let ran = run_as_root_lines(session, admin, script, ask_password, &mut sink);
+        if !ended.get() && !matches!(ran, Ok(0)) {
+            total.borrow_mut().failed += 1;
+        }
+        match ran? {
+            0 => Ok(()),
+            NOT_INSTALLED_STATUS => bail!(NOT_INSTALLED_MESSAGE),
+            code => bail!("apply failed with status {code}"),
+        }
+    };
+    let run_id = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        std::process::id()
+    );
+    let host = crate::engine::host::RealHost;
+    let mut outcome: Result<()> = Ok(());
+    for part in parts {
+        let step = match part {
+            Part::Ansible(tags) => ansible(tags, on_line),
+            Part::Shadow(module) => {
+                publish(&ApplyEvent::Engine {
+                    module: (*module).into(),
+                    engine: Mode::Shadow.as_str().into(),
+                    reason: "Ansible applied it; the engine compares".into(),
+                });
+                match crate::engine::modules::plan(module, &host, &doc, crate::engine::STATE_DIR) {
+                    Ok(left) => {
+                        for event in crate::engine::modules::shadow_lines(module, &left) {
+                            publish(&event);
+                        }
+                    }
+                    Err(error) => emit(Kind::Info, format!("engine shadow: {module}: {error}")),
+                }
+                Ok(())
+            }
+            Part::Native(module) => {
+                publish(&ApplyEvent::Engine {
+                    module: (*module).into(),
+                    engine: Mode::Native.as_str().into(),
+                    reason: String::new(),
+                });
+                let done = crate::engine::modules::apply(
+                    module,
+                    &host,
+                    &doc,
+                    crate::engine::STATE_DIR,
+                    &run_id,
+                    &mut |event| publish(&event),
+                );
+                match done {
+                    Ok(tally) => {
+                        add_stats(&mut total.borrow_mut(), tally.stats());
+                        Ok(())
+                    }
+                    Err(error) => match error.downcast_ref::<crate::engine::Unsupported>() {
+                        Some(why) => {
+                            publish(&ApplyEvent::Engine {
+                                module: (*module).into(),
+                                engine: Mode::Ansible.as_str().into(),
+                                reason: why.to_string(),
+                            });
+                            ansible(&[module], on_line)
+                        }
+                        None => {
+                            total.borrow_mut().failed += 1;
+                            Err(error)
+                        }
+                    },
+                }
+            }
+        };
+        if step.is_err() {
+            outcome = step;
+            break;
+        }
+    }
+    publish(&ApplyEvent::Finished {
+        stats: total.into_inner(),
+    });
+    outcome?;
+    emit(Kind::Info, "apply finished");
+    Ok(())
+}
+
+/// what an apply of `modules` would do, per module, from the settings on this gateway. only the
+/// engine can say; a module that runs with Ansible is listed as such.
+pub fn plan(
+    session: &Session,
+    identity: Option<&age::x25519::Identity>,
+    modules: &[String],
+    ask_password: AskPassword,
+) -> Result<Vec<ModulePlan>> {
+    if !session.is_local() {
+        bail!("a preview is made on the gateway itself");
+    }
+    let plain = settings::merged_with(session, identity, ask_password)?;
+    let parsed = plain
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| lanlord_model::settings::Settings::parse(text).ok());
+    let doc: serde_yaml_ng::Value = match &plain {
+        Some(bytes) => serde_yaml_ng::from_slice(bytes)?,
+        None => serde_yaml_ng::Value::Null,
+    };
+    let wanted: Vec<String> = if modules.is_empty() {
+        crate::engine::modules::ORDER
+            .iter()
+            .filter(|m| crate::engine::modules::has_native(m))
+            .map(|m| m.to_string())
+            .collect()
+    } else {
+        modules.to_vec()
+    };
+    let host = crate::engine::host::RealHost;
+    let mut out = Vec::new();
+    for module in wanted {
+        if self::modules::find(&module).is_none() {
+            bail!("unknown module: {module}");
+        }
+        let mode = if crate::engine::modules::has_native(&module) {
+            mode_for(parsed.as_ref(), &module)
+        } else {
+            Mode::Ansible
+        };
+        let mut entry = ModulePlan {
+            module: module.clone(),
+            engine: Mode::Ansible.as_str().into(),
+            reason: "runs with Ansible; preview not available".into(),
+            changes: Vec::new(),
+        };
+        if mode != Mode::Ansible {
+            match crate::engine::modules::plan(&module, &host, &doc, crate::engine::STATE_DIR) {
+                Ok(changes) => {
+                    entry.engine = mode.as_str().into();
+                    entry.reason = String::new();
+                    entry.changes = changes;
+                }
+                Err(error) => match error.downcast_ref::<crate::engine::Unsupported>() {
+                    Some(why) => entry.reason = format!("runs with Ansible: {why}"),
+                    None => return Err(error),
+                },
+            }
+        }
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 fn run_tags(

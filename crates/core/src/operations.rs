@@ -347,6 +347,9 @@ fn dispatch(
             apply::apply_with(session, host, keys()?.as_ref(), modules, ask)?;
             Reply::Done
         }
+        Operation::PlanApply { modules } => {
+            Reply::Plan(apply::plan(session, keys()?.as_ref(), modules, ask)?)
+        }
         Operation::LoadDocument => {
             Reply::Document(settings::load_document_with(session, &key()?, ask)?)
         }
