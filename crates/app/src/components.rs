@@ -12,7 +12,7 @@ use std::net::Ipv4Addr;
 use lanlord_model::compat::{self, mark};
 pub use lanlord_model::components::Selection;
 use lanlord_model::components::{
-    catalogue, networks_from_settings, Attachment, Choice, Component, Network,
+    catalogue, networks_from_settings, Attachment, Choice, Component, Mechanism, Network,
 };
 use lanlord_model::doctor::{Check, Report, Status};
 use lanlord_model::settings::Settings;
@@ -439,6 +439,8 @@ impl Components {
         match choice.attach.iter().position(|a| a.network == network.id) {
             Some(at) => {
                 choice.attach.remove(at);
+                // what was typed for a network it has left is not kept
+                self.typed.remove(&(component.id().to_string(), network.id));
             }
             None => choice.attach.push(Attachment {
                 network: network.id,
@@ -722,7 +724,10 @@ impl Components {
                     toggle: Msg::ToggleNet(c, n),
                 }]));
                 if joined && component.own_address() && !network.external {
-                    body.extend(self.address_rows(component, network, (c, n)));
+                    // the model asks for an address when it is not a host bind
+                    let required = component.needs_own_address
+                        || choice.is_some_and(|ch| ch.mechanism != Mechanism::HostBind);
+                    body.extend(self.address_rows(component, network, (c, n), required));
                 }
             }
             page.push(Node::Gap(4.0));
@@ -744,11 +749,11 @@ impl Components {
         component: &Component,
         network: &Network,
         at: (usize, usize),
+        required: bool,
     ) -> Vec<Node<Msg>> {
         let key = (component.id().to_string(), network.id.clone());
         // an address held for this network means it has chosen its own
         let own = self.typed.contains_key(&key);
-        let required = component.needs_own_address;
         let mut rows = Vec::new();
         if !required {
             let gateway = match network.gateway {
@@ -1131,6 +1136,54 @@ mod tests {
             Some(None),
             "the typed address is gone"
         );
+    }
+
+    #[test]
+    fn a_mechanism_other_than_host_bind_requires_an_address() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window
+            .draft_mut()
+            .enabled
+            .get_mut("nt4-domain")
+            .unwrap()
+            .mechanism = Mechanism::Ipvlan;
+        window.update(Msg::Next, &services, "gw");
+        let page = window.attach();
+        let group = |title: &str| {
+            page.iter()
+                .find_map(|n| match n {
+                    Node::Group { title: t, body } if t == title => Some(body),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let nt4 = group("NT4 Server");
+        assert!(has_input(nt4), "the box is there with no gateway option");
+        assert!(!has_check(nt4, "Gateway address (192.0.2.1)"));
+        assert!(has_check(group("DNS"), "Gateway address (192.0.2.1)"));
+    }
+
+    #[test]
+    fn leaving_a_network_forgets_the_address_typed_for_it() {
+        let (mut window, services, _) = ready();
+        window.update(Msg::Toggle(row("nt4-domain")), &services, "gw");
+        window.update(Msg::Next, &services, "gw");
+        let nt4 = window
+            .joining()
+            .iter()
+            .position(|c| c.id() == "nt4-domain")
+            .unwrap();
+        window.update(Msg::OwnAddress((nt4, 1), true), &services, "gw");
+        window.update(
+            Msg::Address((nt4, 1), "192.0.2.150".into()),
+            &services,
+            "gw",
+        );
+        window.update(Msg::ToggleNet(nt4, 1), &services, "gw");
+        assert!(window.typed.is_empty());
+        window.update(Msg::ToggleNet(nt4, 1), &services, "gw");
+        assert!(!has_input(&window.attach()), "it rejoins on the gateway");
     }
 
     #[test]
