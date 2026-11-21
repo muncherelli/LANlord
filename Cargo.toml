@@ -3,15 +3,15 @@ resolver = "2"
 members = ["crates/model", "crates/core", "crates/app", "crates/lanlord", "crates/ui", "crates/tui", "crates/web", "crates/auth-helper"]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-lanlord-app = { path = "crates/app", version = "0.1.4", default-features = false }
-lanlord-model = { path = "crates/model", version = "0.1.4" }
+lanlord-app = { path = "crates/app", version = "0.1.5", default-features = false }
+lanlord-model = { path = "crates/model", version = "0.1.5" }
 serde_json = "1"
 
 # the browser build (crates/web/Trunk.toml picks it): every visitor downloads it, so it trades
