@@ -1100,30 +1100,31 @@ esac"#
         assert!(apply_with(&gateway_printing(&[], 3), "gw", None, &[], &mut no_password).is_err());
         drop(Busy::take().expect("released after the failed run"));
     }
-}
-#[test]
-fn an_apply_is_split_so_each_engine_runs_in_module_order() {
-    let mode = |m: &str| match m {
-        "nt4-domain" => Mode::Native,
-        "dns" => Mode::Shadow,
-        _ => Mode::Ansible,
-    };
-    assert_eq!(
-        split(
-            &["docker", "network", "dns", "dhcp", "nt4-domain", "time"],
-            mode
-        ),
-        [
-            Part::Ansible(vec!["docker", "network"]),
-            Part::Ansible(vec!["dns"]),
-            Part::Shadow("dns"),
-            Part::Ansible(vec!["dhcp"]),
-            Part::Native("nt4-domain"),
-            Part::Ansible(vec!["time"]),
-        ]
-    );
-    assert_eq!(
-        split(&["a", "b"], |_| Mode::Ansible),
-        [Part::Ansible(vec!["a", "b"])]
-    );
+
+    #[test]
+    fn an_apply_is_split_so_each_engine_runs_in_module_order() {
+        let mode = |m: &str| match m {
+            "nt4-domain" => Mode::Native,
+            "dns" => Mode::Shadow,
+            _ => Mode::Ansible,
+        };
+        assert_eq!(
+            split(
+                &["docker", "network", "dns", "dhcp", "nt4-domain", "time"],
+                mode
+            ),
+            [
+                Part::Ansible(vec!["docker", "network"]),
+                Part::Ansible(vec!["dns"]),
+                Part::Shadow("dns"),
+                Part::Ansible(vec!["dhcp"]),
+                Part::Native("nt4-domain"),
+                Part::Ansible(vec!["time"]),
+            ]
+        );
+        assert_eq!(
+            split(&["a", "b"], |_| Mode::Ansible),
+            [Part::Ansible(vec!["a", "b"])]
+        );
+    }
 }
