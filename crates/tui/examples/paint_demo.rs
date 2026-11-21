@@ -21,7 +21,7 @@ const ICONS: [(&str, &str); 11] = [
     ("networks", "Networks"),
     ("gateway", "Gateway"),
     ("docker", "Docker"),
-    ("nt4-domain", "NT4 Domain"),
+    ("nt4-domain", "NT4 Server"),
     ("web-proxy", "Web Proxy"),
     ("remote-commands", "Remote Cmds"),
     ("dns", "DNS"),

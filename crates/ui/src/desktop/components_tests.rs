@@ -61,7 +61,7 @@ fn only_the_switched_on_components_get_icons_and_menu_items() {
     );
     let labels = labels(&desktop);
     assert!(labels.iter().any(|l| l == "DNS"));
-    assert!(!labels.iter().any(|l| l == "NT4 Domain"));
+    assert!(!labels.iter().any(|l| l == "NT4 Server"));
     assert!(labels.iter().any(|l| l == "Add/Remove Components..."));
 }
 
