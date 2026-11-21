@@ -14,6 +14,8 @@ const KEEP: usize = 1000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Msg {
     Close,
+    /// open or close the details under the task list.
+    Details,
 }
 
 #[derive(Default)]
@@ -28,6 +30,9 @@ pub struct ApplyProgress {
     started: Option<f64>,
     now: f64,
     done: bool,
+    /// the details are open. kept here, not in the front end, so a click always lands, and kept
+    /// from one apply to the next.
+    details: bool,
 }
 
 impl ApplyProgress {
@@ -55,6 +60,7 @@ impl ApplyProgress {
             *self = Self {
                 active: true,
                 fresh: true,
+                details: self.details,
                 ..Self::default()
             };
         }
@@ -90,6 +96,7 @@ impl ApplyProgress {
     pub fn update(&mut self, msg: Msg) {
         match msg {
             Msg::Close => self.done = true,
+            Msg::Details => self.details = !self.details,
         }
     }
 
@@ -105,7 +112,7 @@ impl ApplyProgress {
     pub fn view(&self) -> Vec<Node<Msg>> {
         let p = &self.progress;
         let failed = p.finished.is_some_and(|s| s.failed + s.unreachable > 0);
-        let tasks = p
+        let tasks: Vec<(Kind, String)> = p
             .rows
             .iter()
             .map(|row| {
@@ -123,7 +130,13 @@ impl ApplyProgress {
                 (kind, format!("{tag} {}{tail}", row.name))
             })
             .collect();
-        vec![
+        // the raw output of the run, or the whole task list when the run printed none
+        let details = if self.raw.is_empty() {
+            tasks.clone()
+        } else {
+            self.raw.clone()
+        };
+        let mut view = vec![
             Node::Text(p.caption()),
             Node::Bar {
                 fraction: f32::from(p.percent()) / 100.0,
@@ -135,15 +148,15 @@ impl ApplyProgress {
                 lines: tasks,
                 height: None,
             },
-            Node::Fold {
-                id: "apply-details",
-                title: "Details".into(),
-                body: vec![Node::Log {
-                    id: "apply-raw",
-                    lines: self.raw.clone(),
-                    height: Some(120.0),
-                }],
-            },
+            Node::Button(Button::new(
+                if self.details {
+                    "\u{25bc} Details"
+                } else {
+                    "\u{25ba} Details"
+                },
+                true,
+                Msg::Details,
+            )),
             Node::Buttons(vec![Button::new("Close", !self.running(), Msg::Close)]),
             Node::Status {
                 text: match (p.finished, failed) {
@@ -153,7 +166,18 @@ impl ApplyProgress {
                 },
                 error: failed,
             },
-        ]
+        ];
+        if self.details {
+            view.insert(
+                5,
+                Node::Log {
+                    id: "apply-raw",
+                    lines: details,
+                    height: Some(120.0),
+                },
+            );
+        }
+        view
     }
 }
 
@@ -402,5 +426,63 @@ mod tests {
         );
         assert!(!p.running());
         assert_eq!(p.progress().percent(), 100);
+    }
+
+    fn details(p: &ApplyProgress) -> Option<Vec<(Kind, String)>> {
+        p.view().iter().find_map(|n| match n {
+            Node::Log {
+                id: "apply-raw",
+                lines,
+                ..
+            } => Some(lines.clone()),
+            _ => None,
+        })
+    }
+
+    fn details_label(p: &ApplyProgress) -> String {
+        p.view()
+            .iter()
+            .find_map(|n| match n {
+                Node::Button(b) if b.label.ends_with("Details") => Some(b.label.clone()),
+                _ => None,
+            })
+            .expect("a details button")
+    }
+
+    #[test]
+    fn the_details_button_opens_and_closes_them_and_the_arrow_follows() {
+        let mut p = ApplyProgress::default();
+        event(&mut p, ApplyEvent::Total { n: 1 });
+        assert!(details(&p).is_none());
+        assert_eq!(details_label(&p), "\u{25ba} Details");
+        p.update(Msg::Details);
+        assert!(details(&p).is_some());
+        assert_eq!(details_label(&p), "\u{25bc} Details");
+        // a new apply keeps what was chosen
+        event(&mut p, ApplyEvent::Started);
+        assert!(details(&p).is_some());
+        p.update(Msg::Details);
+        assert!(details(&p).is_none());
+    }
+
+    #[test]
+    fn the_details_show_the_raw_output_or_else_every_task_with_its_status() {
+        let mut p = ApplyProgress::default();
+        p.update(Msg::Details);
+        event(&mut p, ApplyEvent::Total { n: 3 });
+        event(&mut p, done("a", TaskStatus::Ok, ""));
+        event(&mut p, done("b", TaskStatus::Skipped, ""));
+        event(&mut p, done("c", TaskStatus::Failed, "no space"));
+        let lines = details(&p).unwrap();
+        let text: Vec<&str> = lines.iter().map(|l| l.1.as_str()).collect();
+        assert_eq!(text, ["ok      a", "skipped b", "FAILED  c no space"]);
+        p.line(&Line {
+            kind: Kind::Out,
+            text: "plain output".into(),
+        });
+        assert_eq!(
+            details(&p).unwrap(),
+            [(Kind::Out, "plain output".to_string())]
+        );
     }
 }

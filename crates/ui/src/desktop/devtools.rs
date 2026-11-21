@@ -98,6 +98,46 @@ impl Desktop {
         self.devtools.menu = on;
     }
 
+    /// play a finished apply into the progress dialog, for looking at it: four tasks, and with
+    /// `lines` some raw output as well.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn demo_apply(&mut self, lines: bool) {
+        use lanlord_app::apply_progress::{ApplyEvent, Stats};
+        use lanlord_app::log::{Kind, Line};
+        use lanlord_model::apply::TaskStatus;
+        let apply = &mut self.console.apply;
+        apply.event(&ApplyEvent::Started);
+        apply.event(&ApplyEvent::Total { n: 4 });
+        for (name, status, changed) in [
+            ("write the dnsmasq config", TaskStatus::Ok, true),
+            ("check the lease folder", TaskStatus::Ok, false),
+            ("restart the dhcp server", TaskStatus::Skipped, false),
+            ("open the firewall ports", TaskStatus::Ok, true),
+        ] {
+            apply.event(&ApplyEvent::TaskStart { name: name.into() });
+            if lines {
+                apply.line(&Line {
+                    kind: Kind::Out,
+                    text: format!("TASK [{name}]"),
+                });
+            }
+            apply.event(&ApplyEvent::TaskDone {
+                name: name.into(),
+                status,
+                changed,
+                msg: String::new(),
+            });
+        }
+        apply.event(&ApplyEvent::Finished {
+            stats: Stats {
+                ok: 3,
+                changed: 2,
+                skipped: 1,
+                ..Stats::default()
+            },
+        });
+    }
+
     /// open every window there is, for looking at the window manager.
     pub fn open_all(&mut self) {
         for target in devtools::open_all(&self.icons) {
