@@ -1,0 +1,107 @@
+# included by nt4-server.yml (loop variable `srv` is the server) and by the tests: check one server
+# and write its data folders and its samba configuration. nothing here touches docker except
+# stopping the container to snapshot its state.
+- name: work out the network the server is on, its interface and its address
+  ansible.builtin.include_tasks: networks.yml
+  vars:
+    net_primary_name: "{{ srv.network | default('') }}"
+
+- name: work out the defaults
+  ansible.builtin.set_fact:
+    nt4_legacy: "{{ srv.name == 'nt4-domain' }}"
+    nt4_mode: "{{ 'domain' if srv.role | default('') == 'pdc' else (srv.role | default('')) }}"
+    nt4_name: "{{ (srv.domain | default(srv.workgroup | default(''))) | upper }}"
+    nt4_netbios_name: "{{ (srv.netbios_name | default(ansible_facts['hostname']) | upper)[:15] }}"
+    nt4_address: "{{ srv.address | default(internal_address | default('')) }}"
+    nt4_wins: "{{ srv.wins | default('serve') == 'serve' }}"
+
+- name: work out the container and the data folder
+  ansible.builtin.set_fact:
+    container: "{{ 'lanlord-nt4' if nt4_legacy else 'lanlord-nt4-' ~ srv.name }}"
+    state_dir: "{{ nt4_root if nt4_legacy else nt4_root ~ '/' ~ srv.name }}"
+
+- name: check the settings
+  ansible.builtin.assert:
+    that:
+      - srv.name is match('^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\Z')
+      - srv.name not in ['bin', 'config', 'lib', 'snapshots'] and not srv.name.endswith('-prev')
+      - nt4_mode in ['domain', 'workgroup']
+      - nt4_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}\\Z')
+      - nt4_netbios_name is match('^[A-Z0-9][A-Z0-9_-]{0,14}\\Z')
+      - nt4_address is match('^[0-9.]+/[0-9]{1,2}\\Z')
+      - nt4_mode == 'workgroup' or (lookup('ansible.builtin.vars', 'nt4-domain', default={}).admin_password | default('')) | length > 0
+    fail_msg: >-
+      nt4 server {{ srv.name }}: role must be pdc or workgroup; the domain or workgroup name is up to 15 letters,
+      digits, - or _; address looks like 172.16.120.1/22 (the internal interface needs an ipv4 address);
+      a domain needs an admin_password
+
+# what the old nt4-domain section held, and the domain and the server it is now split into, as one
+# map: the samba configuration and the logon script read these names
+- name: put the server and its domain together
+  ansible.builtin.set_fact:
+    nt4: >-
+      {{ lookup('ansible.builtin.vars', 'nt4-domain', default={}) | combine({
+           'mode': nt4_mode, 'name': nt4_name, 'network': srv.network | default(''),
+           'roaming_profiles': nt4_domain.roaming_profiles | default(false),
+           'machines': nt4_domain.machines | default([]),
+           'software': srv.software | default(false)}) }}
+  vars:
+    nt4_domain: >-
+      {{ domains | default({}) | dict2items | selectattr('key', 'match', '(?i)^' ~ nt4_name ~ '\Z')
+         | map(attribute='value') | first | default({}) }}
+
+- name: make the state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - "{{ state_dir }}"
+    - "{{ state_dir }}/config"
+
+# samba's directory holds the shares, so domain users must be able to pass through it; the
+# password database stays in its own root-only folder and the parent /opt/lanlord is private
+- name: make samba's data directory passable
+  ansible.builtin.file:
+    path: "{{ state_dir }}/lib"
+    state: directory
+    mode: "0751"
+
+# the domain's identity (its name, its sid) lives in secrets.tdb and passdb.tdb; changing the
+# role, the name or the netbios name starts a different domain, so keep a copy of the state first
+- name: read the previous samba configuration
+  ansible.builtin.slurp:
+    src: "{{ state_dir }}/config/smb.conf"
+  register: old_conf
+  failed_when: false
+
+- name: see whether the domain identity changes
+  ansible.builtin.set_fact:
+    nt4_identity_changed: >-
+      {{ old_conf.content is defined and (
+           (old_text | regex_findall('(?m)^\s*workgroup = (\S+)') | first | default('')) != nt4_name
+           or (old_text | regex_findall('(?m)^\s*netbios name = (\S+)') | first | default('')) != nt4_netbios_name
+           or ('domain logons = yes' in old_text) != (nt4_mode == 'domain')) }}
+  vars:
+    old_text: "{{ (old_conf.content | b64decode) if old_conf.content is defined else '' }}"
+
+- name: snapshot samba's state before the domain identity changes
+  ansible.builtin.shell: |
+    set -eu
+    umask 077
+    [ -d lib ] || exit 0
+    docker stop {{ container }} >/dev/null 2>&1 || true
+    mkdir -p snapshots
+    tar -czf "snapshots/lib-$(date -u +%Y%m%dT%H%M%SZ).tar.gz" lib
+    ls -1t snapshots/lib-*.tar.gz | tail -n +6 | xargs -r rm -f
+  args:
+    chdir: "{{ state_dir }}"
+  changed_when: true
+  when: nt4_identity_changed | bool
+
+- name: write the samba configuration
+  ansible.builtin.template:
+    src: nt4-domain/smb.conf.j2
+    dest: "{{ state_dir }}/config/smb.conf"
+    mode: "0640"
+  register: smb_conf

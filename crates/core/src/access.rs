@@ -231,6 +231,15 @@ fn section_map(settings: &Settings, key: &str) -> Option<serde_yaml_ng::Mapping>
 
 /// callers without Domain View see only their own login, and no machine names.
 fn only_self_in_users(settings: &mut Settings, user: &str) {
+    // the machine names are in the domains now
+    if let Some(mut domains) = section_map(settings, "domains") {
+        for domain in domains.values_mut() {
+            if let Value::Mapping(domain) = domain {
+                domain.remove("machines");
+            }
+        }
+        settings.set_section("domains", Value::Mapping(domains));
+    }
     let Some(mut map) = section_map(settings, "nt4-domain") else {
         return;
     };
