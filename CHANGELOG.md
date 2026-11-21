@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-21
+
 ### Added
 
 - the DHCP server is an entry of its own in Add or Remove Components, next to the DNS server (the two share one dnsmasq per network). DNS on with DHCP off writes no dhcp-range, DHCP on with DNS off sets `port=0`, and with both off the container is removed. Settings from before the split come up with both ticked
