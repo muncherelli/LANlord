@@ -722,45 +722,7 @@ impl Components {
                     toggle: Msg::ToggleNet(c, n),
                 }]));
                 if joined && component.own_address() && !network.external {
-                    let key = (component.id().to_string(), network.id.clone());
-                    // an address held for this network means it has chosen its own
-                    let own = self.typed.contains_key(&key);
-                    let required = component.needs_own_address;
-                    if !required {
-                        let gateway = match network.gateway {
-                            Some(ip) => format!("Gateway address ({ip})"),
-                            None => "Gateway address".to_string(),
-                        };
-                        body.push(Node::Row(vec![
-                            Node::Gap(22.0),
-                            Node::Check {
-                                label: gateway,
-                                checked: !own,
-                                enabled: true,
-                                toggle: Msg::OwnAddress((c, n), false),
-                            },
-                        ]));
-                    }
-                    let mut own_row = vec![Node::Gap(22.0)];
-                    if required {
-                        own_row.push(Node::Text("Its own address:".into()));
-                    } else {
-                        own_row.push(Node::Check {
-                            label: "Its own address:".into(),
-                            checked: own,
-                            enabled: true,
-                            toggle: Msg::OwnAddress((c, n), true),
-                        });
-                    }
-                    if own || required {
-                        own_row.push(Node::KeyedInput(KeyedInput {
-                            key: (c, n),
-                            value: self.typed.get(&key).cloned().unwrap_or_default(),
-                            width: 110.0,
-                            edit: Msg::Address,
-                        }));
-                    }
-                    body.push(Node::Row(own_row));
+                    body.extend(self.address_rows(component, network, (c, n)));
                 }
             }
             page.push(Node::Gap(4.0));
@@ -771,21 +733,75 @@ impl Components {
         }
         if let Some(problem) = self.problems().first() {
             page.push(Node::Gap(4.0));
-            // an address still being typed is not called wrong until the focus leaves its own
-            // field: the problem is matched to the address it quotes
-            match self.typed_address_for(problem) {
-                Some((field, true)) => page.push(Node::HeldError {
-                    text: problem.clone(),
-                    partial: true,
-                    field: HeldFor::Keyed(field),
-                }),
-                _ => page.push(Node::Status {
-                    text: problem.clone(),
-                    error: true,
-                }),
-            }
+            page.push(self.problem_line(problem));
         }
         page
+    }
+
+    /// the rows under a joined network: the gateway's address or its own, with the box for it.
+    fn address_rows(
+        &self,
+        component: &Component,
+        network: &Network,
+        at: (usize, usize),
+    ) -> Vec<Node<Msg>> {
+        let key = (component.id().to_string(), network.id.clone());
+        // an address held for this network means it has chosen its own
+        let own = self.typed.contains_key(&key);
+        let required = component.needs_own_address;
+        let mut rows = Vec::new();
+        if !required {
+            let gateway = match network.gateway {
+                Some(ip) => format!("Gateway address ({ip})"),
+                None => "Gateway address".to_string(),
+            };
+            rows.push(Node::Row(vec![
+                Node::Gap(22.0),
+                Node::Check {
+                    label: gateway,
+                    checked: !own,
+                    enabled: true,
+                    toggle: Msg::OwnAddress(at, false),
+                },
+            ]));
+        }
+        let mut own_row = vec![Node::Gap(22.0)];
+        if required {
+            own_row.push(Node::Text("Its own address:".into()));
+        } else {
+            own_row.push(Node::Check {
+                label: "Its own address:".into(),
+                checked: own,
+                enabled: true,
+                toggle: Msg::OwnAddress(at, true),
+            });
+        }
+        if own || required {
+            own_row.push(Node::KeyedInput(KeyedInput {
+                key: at,
+                value: self.typed.get(&key).cloned().unwrap_or_default(),
+                width: 110.0,
+                edit: Msg::Address,
+            }));
+        }
+        rows.push(Node::Row(own_row));
+        rows
+    }
+
+    /// the problem line of the networks page. an address still being typed is not called wrong
+    /// until the focus leaves its own field: the problem is matched to the address it quotes.
+    fn problem_line(&self, problem: &str) -> Node<Msg> {
+        match self.typed_address_for(problem) {
+            Some((field, true)) => Node::HeldError {
+                text: problem.to_string(),
+                partial: true,
+                field: HeldFor::Keyed(field),
+            },
+            _ => Node::Status {
+                text: problem.to_string(),
+                error: true,
+            },
+        }
     }
 
     fn summary(&self) -> Vec<Node<Msg>> {
