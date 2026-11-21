@@ -78,6 +78,8 @@
    create mask = 0664
    force create mode = 0664
    directory mask = 2775
+   # nt starts the logon script with execute access; samba denies execute without the unix x bit
+   acl allow execute always = yes
    guest ok = no
 {% if nt4.software | default(false) %}
 
@@ -92,6 +94,8 @@
    force create mode = 0664
    directory mask = 2775
    force directory mode = 2775
+   # installers run straight from the share are opened with execute access too
+   acl allow execute always = yes
 {% endif %}
 {% if nt4.roaming_profiles | default(false) %}
 
