@@ -8,15 +8,23 @@
 
 use eframe::egui::Vec2;
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use super::{Desktop, Target};
 
 const SIZE: Vec2 = Vec2::new(760.0, 480.0);
 
+/// one software-vulkan instance at a time. every harness makes its own wgpu instance and device,
+/// and building and tearing down several lavapipe devices on parallel test threads crashed the
+/// lib tests now and then on the ci runner (SIGSEGV, issue 184).
+static GPU: Mutex<()> = Mutex::new(());
+
 /// a desktop on the fake gateway and one fake server, whose clock the taskbar shows, so the pixels
 /// do not depend on the time of day. `setup` opens what the fixture shows.
 fn shot(name: &str, setup: impl Fn(&mut Desktop)) {
+    // a test that failed while holding the lock only poisons it: the guard still serialises
+    let _gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
     let mut results = SnapshotResults::new();
     for ppp in [1.0, 2.0] {
         let mut harness = Harness::builder()
