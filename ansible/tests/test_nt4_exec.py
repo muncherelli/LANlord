@@ -41,7 +41,11 @@ case $name in
       read -ra w <<< "$c"
       case ${w[0]:-} in
         put) cp "${w[1]}" "$remote/${w[2]}"; cp "${w[1]}" "$STUBS/bats/${w[2]}" ;;
-        get) [[ -f $remote/${w[1]} ]] && cp "$remote/${w[1]}" "${w[2]}" ;;
+        get)
+          # in the slow scenario the poll waits until the start stub has written its pids, so the kill
+          # on timeout can never come first
+          if [[ -e $STUBS/slow ]]; then n=0; while [[ ! -e $STUBS/ready ]] && ((n++ < 200)); do sleep 0.05; done; fi
+          [[ -f $remote/${w[1]} ]] && cp "$remote/${w[1]}" "${w[2]}" ;;
         del) rm -f $remote/${w[1]} ;;
       esac
     done
@@ -54,7 +58,7 @@ case $name in
       delete) sed -i "/^$4\$/d" "$STUBS/services" ;;
       start)
         [[ -e $STUBS/start_error ]] && { echo "WERR_ACCESS_DENIED"; exit 1; }
-        [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; wait; }
+        [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; touch "$STUBS/ready"; wait; }
         [[ -e $STUBS/hang ]] || {
           [[ -e $STUBS/out ]] && cp "$STUBS/out" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
           [[ -e $STUBS/err ]] && cp "$STUBS/err" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
