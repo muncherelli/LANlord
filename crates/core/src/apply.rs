@@ -283,11 +283,32 @@ impl Drop for Busy {
 use lanlord_model::engine::{mode_for, Mode, ModulePlan};
 
 /// one stretch of an apply: modules for Ansible together, or one module for the engine.
+#[derive(Debug, PartialEq)]
 enum Part<'a> {
     Ansible(Vec<&'a str>),
     /// the engine looks at a module Ansible just applied.
     Shadow(&'a str),
     Native(&'a str),
+}
+
+/// the parts of an apply in module order: neighbours for Ansible share a run, a shadowed module is
+/// Ansible's run followed by the engine's look, a native module stands alone.
+fn split<'a>(wanted: &[&'a str], mode_of: impl Fn(&str) -> Mode) -> Vec<Part<'a>> {
+    let mut parts: Vec<Part> = Vec::new();
+    for &module in wanted {
+        match mode_of(module) {
+            Mode::Native => parts.push(Part::Native(module)),
+            Mode::Shadow => {
+                parts.push(Part::Ansible(vec![module]));
+                parts.push(Part::Shadow(module));
+            }
+            Mode::Ansible => match parts.last_mut() {
+                Some(Part::Ansible(batch)) => batch.push(module),
+                _ => parts.push(Part::Ansible(vec![module])),
+            },
+        }
+    }
+    parts
 }
 
 /// pick the engine per module. when every module is Ansible's (the default) this is the same
@@ -319,20 +340,7 @@ fn dispatch(
     if wanted.iter().all(|m| mode_of(m) == Mode::Ansible) {
         return run_tags(session, admin, tags, settings, ask_password, on_line);
     }
-    let mut parts: Vec<Part> = Vec::new();
-    for module in &wanted {
-        match mode_of(module) {
-            Mode::Native => parts.push(Part::Native(module)),
-            Mode::Shadow => {
-                parts.push(Part::Ansible(vec![module]));
-                parts.push(Part::Shadow(module));
-            }
-            Mode::Ansible => match parts.last_mut() {
-                Some(Part::Ansible(batch)) => batch.push(module),
-                _ => parts.push(Part::Ansible(vec![module])),
-            },
-        }
-    }
+    let parts = split(&wanted, mode_of);
     run_parts(
         session,
         admin,
@@ -419,7 +427,13 @@ fn run_parts(
                     engine: Mode::Shadow.as_str().into(),
                     reason: "Ansible applied it; the engine compares".into(),
                 });
-                match crate::engine::modules::plan(module, &host, &doc, crate::engine::STATE_DIR) {
+                match crate::engine::modules::plan(
+                    module,
+                    &host,
+                    &doc,
+                    crate::engine::STATE_DIR,
+                    true,
+                ) {
                     Ok(left) => {
                         for event in crate::engine::modules::shadow_lines(module, &left) {
                             publish(&event);
@@ -525,7 +539,13 @@ pub fn plan(
             changes: Vec::new(),
         };
         if mode != Mode::Ansible {
-            match crate::engine::modules::plan(&module, &host, &doc, crate::engine::STATE_DIR) {
+            match crate::engine::modules::plan(
+                &module,
+                &host,
+                &doc,
+                crate::engine::STATE_DIR,
+                false,
+            ) {
                 Ok(changes) => {
                     entry.engine = mode.as_str().into();
                     entry.reason = String::new();
@@ -1080,4 +1100,30 @@ esac"#
         assert!(apply_with(&gateway_printing(&[], 3), "gw", None, &[], &mut no_password).is_err());
         drop(Busy::take().expect("released after the failed run"));
     }
+}
+#[test]
+fn an_apply_is_split_so_each_engine_runs_in_module_order() {
+    let mode = |m: &str| match m {
+        "nt4-domain" => Mode::Native,
+        "dns" => Mode::Shadow,
+        _ => Mode::Ansible,
+    };
+    assert_eq!(
+        split(
+            &["docker", "network", "dns", "dhcp", "nt4-domain", "time"],
+            mode
+        ),
+        [
+            Part::Ansible(vec!["docker", "network"]),
+            Part::Ansible(vec!["dns"]),
+            Part::Shadow("dns"),
+            Part::Ansible(vec!["dhcp"]),
+            Part::Native("nt4-domain"),
+            Part::Ansible(vec!["time"]),
+        ]
+    );
+    assert_eq!(
+        split(&["a", "b"], |_| Mode::Ansible),
+        [Part::Ansible(vec!["a", "b"])]
+    );
 }

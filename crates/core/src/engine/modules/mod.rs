@@ -27,15 +27,17 @@ pub fn has_native(module: &str) -> bool {
 }
 
 /// what an apply of `module` would change. `Unsupported` is in the error when the playbook has to
-/// do it.
+/// do it. `shadow` is a plan after Ansible ran the module, which leaves no record of the passwords
+/// it set: a password is then not reported as changed.
 pub fn plan(
     module: &str,
     host: &dyn Host,
     doc: &Value,
     state_dir: &str,
+    shadow: bool,
 ) -> Result<Vec<ChangeView>> {
     match module {
-        nt4::ID => nt4::plan(host, doc, state_dir),
+        nt4::ID => nt4::plan(host, doc, state_dir, shadow),
         _ => Err(anyhow::Error::new(super::Unsupported(format!(
             "{module} runs with Ansible"
         )))),
@@ -56,6 +58,14 @@ pub fn apply(
         _ => Err(anyhow::Error::new(super::Unsupported(format!(
             "{module} runs with Ansible"
         )))),
+    }
+}
+
+/// record the passwords in the settings as set, without setting them; what was recorded, by name.
+pub fn record(module: &str, host: &dyn Host, doc: &Value, state_dir: &str) -> Result<Vec<String>> {
+    match module {
+        nt4::ID => nt4::record(host, doc, state_dir),
+        _ => Err(anyhow::anyhow!("{module} keeps no password fingerprints")),
     }
 }
 
