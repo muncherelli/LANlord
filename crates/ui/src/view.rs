@@ -482,13 +482,18 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
                     ui.painter().rect_filled(block, 0.0, NAVY);
                     x += 10.0;
                 }
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    text,
-                    egui::FontId::proportional(12.0),
-                    BLACK,
-                );
+                // the label is drawn twice, clipped at the fill edge: white over the blocks,
+                // black over the rest, as a classic progress bar does
+                let (done, todo) = bar_clips(rect, rect.left() + full);
+                for (clip, colour) in [(done, WHITE), (todo, BLACK)] {
+                    ui.painter().with_clip_rect(clip).text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        text,
+                        egui::FontId::proportional(12.0),
+                        colour,
+                    );
+                }
             });
             None
         }
@@ -897,6 +902,16 @@ fn calendar(
     picked
 }
 
+/// the parts of a progress bar left and right of its fill edge: the label is white on the
+/// first and black on the second.
+fn bar_clips(rect: Rect, edge: f32) -> (Rect, Rect) {
+    let edge = edge.clamp(rect.left(), rect.right());
+    (
+        Rect::from_min_max(rect.min, Pos2::new(edge, rect.bottom())),
+        Rect::from_min_max(Pos2::new(edge, rect.top()), rect.max),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1231,5 +1246,86 @@ mod tests {
         drawn(&ctx, &page("1", false, true), vec![]);
         // the page is measured again (its key changed) and the field is still the one typed in
         assert!(ctx.memory(|m| m.focused()).is_some(), "after error appears");
+    }
+
+    /// the colours and clips the label of a progress bar was painted with.
+    fn bar_label(fraction: f32) -> Vec<(egui::Color32, Rect)> {
+        fn walk(shape: &Shape, clip: Rect, out: &mut Vec<(egui::Color32, Rect)>) {
+            match shape {
+                Shape::Vec(inner) => inner.iter().for_each(|s| walk(s, clip, out)),
+                Shape::Text(t) if t.galley.text() == "50%" => {
+                    out.push((t.override_text_color.unwrap_or(t.fallback_color), clip));
+                }
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        let nodes: Vec<Node<()>> = vec![Node::Bar {
+            fraction,
+            text: "50%".into(),
+        }];
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, testkit::SCREEN)),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            show(ui, &nodes);
+        });
+        out.textures_delta.clear();
+        let mut found = Vec::new();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, clipped.clip_rect, &mut found);
+        }
+        found
+    }
+
+    #[test]
+    fn the_bar_label_is_white_over_the_blocks_and_black_over_the_rest() {
+        let found = bar_label(0.5);
+        let white = found.iter().find(|(c, _)| *c == WHITE).expect("white half");
+        let black = found.iter().find(|(c, _)| *c == BLACK).expect("black half");
+        // the two halves meet at the fill edge
+        assert!((white.1.right() - black.1.left()).abs() < 0.5, "{found:?}");
+        assert!(white.1.width() > 1.0 && black.1.width() > 1.0, "{found:?}");
+        // an empty bar has no filled part to be white in
+        assert!(bar_label(0.0)
+            .iter()
+            .all(|(c, r)| *c != WHITE || r.width() < 0.5));
+    }
+
+    #[test]
+    fn a_fold_opens_and_closes_when_its_title_is_clicked() {
+        let ctx = egui::Context::default();
+        let nodes: Vec<Node<u8>> = vec![Node::Fold {
+            id: "details",
+            title: "Details".into(),
+            body: vec![Node::Text("one".into()), Node::Text("two".into())],
+        }];
+        let height = std::cell::Cell::new(0.0);
+        let drawn = |events| {
+            testkit::run(&ctx, events, |ui| {
+                show(ui, &nodes);
+                height.set(ui.min_rect().height());
+            })
+        };
+        for _ in 0..3 {
+            drawn(vec![]);
+        }
+        let closed = height.get();
+        let at = Pos2::new(40.0, 14.0);
+        for open in [true, false] {
+            for event in testkit::click(at) {
+                drawn(vec![event]);
+            }
+            for _ in 0..3 {
+                drawn(vec![]);
+            }
+            assert_eq!(
+                height.get() > closed + 10.0,
+                open,
+                "{closed} {}",
+                height.get()
+            );
+        }
     }
 }

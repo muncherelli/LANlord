@@ -1628,3 +1628,57 @@ fn settings_left_edge_dragged_400_in_and_out_keeps_its_right_edge_and_its_conten
     }
     frame_on(&mut desktop, &ctx, size, vec![button(from, false)]);
 }
+
+#[test]
+fn the_details_of_the_apply_dialog_open_and_close_when_clicked() {
+    use eframe::egui::{Event, PointerButton};
+    use lanlord_app::apply_progress::ApplyEvent;
+    let size = egui::Vec2::new(1280.0, 720.0);
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.console.apply.event(&ApplyEvent::Total { n: 2 });
+    desktop.console.apply.event(&ApplyEvent::TaskStart {
+        name: "write the config".into(),
+    });
+    frames_on(&mut desktop, &ctx, size, 12);
+    let rect_of = |d: &Desktop| {
+        d.measured
+            .iter()
+            .find(|m| m.0 == Target::Progress)
+            .unwrap()
+            .1
+    };
+    let rect = rect_of(&desktop);
+    let closed = rect.height();
+    let click = |d: &mut Desktop, at: egui::Pos2| {
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame_on(d, &ctx, size, vec![Event::PointerMoved(at)]);
+        frame_on(d, &ctx, size, vec![button(true)]);
+        frame_on(d, &ctx, size, vec![button(false)]);
+        frames_on(d, &ctx, size, 3);
+    };
+    // the title of the fold sits under the log: click down the left side until the window
+    // grows to make room for the body
+    let mut found = None;
+    let mut y = rect.top() + 150.0;
+    while y < rect.bottom() {
+        let at = egui::pos2(rect.left() + 40.0, y);
+        click(&mut desktop, at);
+        if rect_of(&desktop).height() > closed + 50.0 {
+            found = Some(at);
+            break;
+        }
+        y += 4.0;
+    }
+    let at = found.expect("clicking the title opens the details");
+    click(&mut desktop, at);
+    assert!(
+        rect_of(&desktop).height() < closed + 5.0,
+        "a second click closes it"
+    );
+}
