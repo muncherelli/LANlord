@@ -78,17 +78,37 @@ pub fn note_keyed(ctx: &eframe::egui::Context, key: (usize, usize), id: eframe::
 /// the line, or the wizard field with `key`?
 pub fn field_has_keyboard(ctx: &eframe::egui::Context, which: lanlord_app::view::HeldFor) -> bool {
     use lanlord_app::view::HeldFor;
-    let field = match which {
-        HeldFor::Above(n) => ctx.data(|d| {
-            let recent =
-                d.get_temp::<Vec<eframe::egui::Id>>(eframe::egui::Id::unique("recent-text-edits"))?;
-            recent.len().checked_sub(n + 1).map(|at| recent[at])
-        }),
-        HeldFor::Keyed(key) => ctx.data(|d| {
-            d.get_temp::<eframe::egui::Id>(eframe::egui::Id::unique("keyed-text-edit").with(key))
-        }),
+    let recent = || {
+        ctx.data(|d| {
+            d.get_temp::<Vec<eframe::egui::Id>>(eframe::egui::Id::unique("recent-text-edits"))
+        })
+        .unwrap_or_default()
     };
-    field.is_some() && ctx.egui_wants_keyboard_input() && ctx.memory(|m| m.focused()) == field
+    let fields: Vec<eframe::egui::Id> = match which {
+        HeldFor::Above(n) => {
+            let recent = recent();
+            recent
+                .len()
+                .checked_sub(n + 1)
+                .map(|at| recent[at])
+                .into_iter()
+                .collect()
+        }
+        HeldFor::AnyAbove(n) => {
+            let recent = recent();
+            recent[recent.len().saturating_sub(n)..].to_vec()
+        }
+        HeldFor::Keyed(key) => ctx
+            .data(|d| {
+                d.get_temp::<eframe::egui::Id>(
+                    eframe::egui::Id::unique("keyed-text-edit").with(key),
+                )
+            })
+            .into_iter()
+            .collect(),
+    };
+    ctx.egui_wants_keyboard_input()
+        && ctx.memory(|m| m.focused().is_some_and(|f| fields.contains(&f)))
 }
 
 /// a check box with its label; `changed` is set when it was toggled.

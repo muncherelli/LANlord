@@ -1123,17 +1123,26 @@ impl<'a> Painter<'a> {
                 partial,
                 field,
             } => {
-                let at = match field {
-                    HeldFor::Keyed(key) => {
-                        self.keyed.iter().find(|(k, _)| k == key).map(|(_, p)| p)
-                    }
+                let at: Vec<&Vec<usize>> = match field {
+                    HeldFor::Keyed(key) => self
+                        .keyed
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map(|(_, p)| p)
+                        .into_iter()
+                        .collect(),
                     HeldFor::Above(n) => self
                         .fields
                         .len()
                         .checked_sub(n + 1)
-                        .map(|at| &self.fields[at]),
+                        .map(|at| &self.fields[at])
+                        .into_iter()
+                        .collect(),
+                    HeldFor::AnyAbove(n) => self.fields[self.fields.len().saturating_sub(*n)..]
+                        .iter()
+                        .collect(),
                 };
-                let typing = at.is_some_and(|p| self.focused(p, Part::Field));
+                let typing = at.iter().any(|p| self.focused(p, Part::Field));
                 if !(*partial && typing) {
                     text(buf, area.x, area.y, area.width, t, self.st(RED, GRAY));
                 }

@@ -330,6 +330,8 @@ fn matches_path(error: &str, path: &str) -> bool {
 pub enum HeldFor {
     /// the text field drawn `n` fields before the line: 0 is the one just above it.
     Above(usize),
+    /// any of the `n` text fields drawn just above the line.
+    AnyAbove(usize),
     /// the wizard field (`KeyedInput`) with this key.
     Keyed((usize, usize)),
 }
