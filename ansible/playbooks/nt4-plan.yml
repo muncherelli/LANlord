@@ -1,0 +1,27 @@
+# included by nt4-domain.yml (and its tests): read the nt4 servers from the settings. it sets
+#
+#   nt4_listed    whether the settings have an nt4-servers list at all (without one nothing is touched)
+#   nt4_servers   the list
+#   nt4_wanted    the container names the list asks for
+#
+# the server named nt4-domain is the one from before the list existed: container lanlord-nt4. any
+# other server is lanlord-nt4-<name>.
+# a hyphenated name cannot be written as a variable, so look it up
+- name: no nt4 servers unless the settings list them
+  ansible.builtin.set_fact:
+    nt4_listed: false
+    nt4_servers: []
+    nt4_wanted: []
+
+- name: read the nt4 servers
+  ansible.builtin.set_fact:
+    nt4_listed: true
+    nt4_servers: "{{ lookup('ansible.builtin.vars', 'nt4-servers') or [] }}"
+  when: "lookup('ansible.builtin.varnames', '^nt4-servers$', wantlist=True) | length > 0"
+
+- name: work out the containers the list asks for
+  ansible.builtin.set_fact:
+    nt4_wanted: >-
+      {{ nt4_servers | map(attribute='name') | map('regex_replace', '^nt4-domain$', '')
+         | map('regex_replace', '^(.+)$', '-\1') | map('regex_replace', '^', 'lanlord-nt4') | list }}
+  when: nt4_listed

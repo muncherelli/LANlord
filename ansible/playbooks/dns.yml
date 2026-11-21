@@ -15,7 +15,7 @@
 #     hosts:                      # static leases by mac
 #       - {name: ntsrv1, mac: "aa:bb:cc:dd:ee:ff", address: 172.16.120.10}
 #
-# lanlord.<zone>, the gateway's hostname, the nt4-domain netbios name and the web-proxy hosts
+# lanlord.<zone>, the gateway's hostname, the nt4 servers' netbios names and the web-proxy hosts
 # ending in .<zone> all point at the network's address. each network has its own container,
 # lanlord-dns-<name>, and its own folder, /opt/lanlord/dns/<name>, with the leases in
 # dnsmasq.leases. a network that is taken out of the settings has its container and folder removed.

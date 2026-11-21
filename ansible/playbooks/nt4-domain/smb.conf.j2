@@ -21,7 +21,7 @@
    idmap config * : backend = tdb
    idmap config * : range = 3000-7999
 
-   wins support = yes
+   wins support = {{ 'yes' if nt4_wins | default(true) else 'no' }}
    dns proxy = no
    # raise this (for example '2 rpc_srv:10 passdb:10 auth:5') with nt4-domain.log_level to debug a join
    log level = {{ nt4.log_level | default('1') }}

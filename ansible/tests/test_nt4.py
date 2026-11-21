@@ -241,13 +241,18 @@ class LanlordUserTest(unittest.TestCase):
 
 class PlaybookTest(unittest.TestCase):
     def setUp(self):
-        with open(os.path.join(PLAYBOOKS, "nt4-domain.yml")) as f:
-            self.text = f.read()
+        # the play is split: the per-server files and container tasks are included files
+        self.text = ""
+        for name in ("nt4-domain.yml", "nt4-server-files.yml", "nt4-server.yml"):
+            with open(os.path.join(PLAYBOOKS, name)) as f:
+                self.text += f.read() + "\n"
         with open(os.path.join(PLAYBOOKS, "nt4-domain", "smb.conf.j2")) as f:
             self.conf = f.read()
 
     def test_playbook_is_yaml(self):
-        yaml.safe_load(self.text)
+        for name in ("nt4-domain.yml", "nt4-plan.yml", "nt4-server-files.yml", "nt4-server.yml", "nt4-cleanup.yml"):
+            with open(os.path.join(PLAYBOOKS, name)) as f:
+                yaml.safe_load(f.read())
 
     def test_every_account_hook_is_set(self):
         for key in ("add user script", "delete user script", "rename user script", "add group script",

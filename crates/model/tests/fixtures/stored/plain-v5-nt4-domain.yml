@@ -1,0 +1,17 @@
+lanlord_format: 5
+lanlord_version: "0.1"
+networks:
+  - name: lab
+    interface: eth2
+    address: 192.0.2.1/24
+nt4-domain:
+  mode: domain
+  name: RETRODOM
+  netbios_name: LANLORD
+  network: lab
+  roaming_profiles: true
+  software: true
+  machines: [ws1, ws2]
+  admin_password: example-secret
+  users:
+    - {name: dana, password: example-pass}

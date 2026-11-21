@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-21
+
 ### Added
 
 - the DHCP server is an entry of its own in Add or Remove Components, next to the DNS server (the two share one dnsmasq per network). DNS on with DHCP off writes no dhcp-range, DHCP on with DNS off sets `port=0`, and with both off the container is removed. Settings from before the split come up with both ticked
 - My Server has an SSH tab: ssh sign-in with a password can be turned off and on (an sshd drop-in, `11-lanlord-auth.conf`, checked with `sshd -t` and `sshd -T` and rolled back when sshd would not take it), the administrators' ssh public keys can be listed, added and removed (keys LANlord adds are marked `# added by lanlord`, and the mark goes with the key). turning passwords off, or removing an account's last key while they are off, is refused unless you confirm, while an administrator, the signed-in account, or root (when it may sign in with a password) has no key, or when sshd reads keys from files other than the default ones, so nobody is locked out by accident
+- the settings and the apply can hold more than one NT4 Server: a `nt4-servers` list (name, network, NetBIOS name, role, domain or workgroup, placement) and a `domains` map, one Samba container and one data folder per server. the settings checks refuse duplicate server names, a NetBIOS name used twice on a network, two domain controllers for one domain on a network, two WINS servers on a network, two servers on one address of a network (they share the host network, so a second server needs an address of its own), a domain controller without its domain and NetBIOS names over 15 characters. there is no screen for it yet: the NT4 Server window, the text interface and the web API still edit the first server
 
 ### Changed
 
+- upgrade note: the settings format is now 6. `lanlord upgrade` (and the first save) turns the `nt4-domain:` section into one `domains` entry and one `nt4-servers` entry, and keeps a `.bak` copy of the old file. the migrated server keeps its container (`lanlord-nt4`), its data folder (`/opt/lanlord/nt4`) and its NetBIOS name, so nothing changes on the network and the domain keeps its SID and accounts. logins (`users`, `admin_password`) stay in `nt4-domain:`. a LANlord older than this one refuses the new file. servers added later run as `lanlord-nt4-<name>` with data in `/opt/lanlord/nt4/<name>`; removing a server removes its container but keeps its data folder
 - upgrade note: the DNS and DHCP entries of Add/Remove Components now take effect on the DNS/DHCP play. An install with DNS or DHCP switched off there, or with an old `subcomponents` list that left one out, stops that service on the next apply. With both off the containers go but the lease folders under /opt/lanlord/dns stay, so turning DHCP back on keeps the leases
 - the NT4 Domain module is now called NT4 Server on the desktop, in its window title, in Add/Remove Components, in the text interface and in the docs, since it can be a plain file server as well as a domain controller; module ids, settings keys and container names are unchanged
 - root's ssh access moved out of the Advanced tab to the new SSH tab of My Server

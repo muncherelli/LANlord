@@ -1,0 +1,111 @@
+# included by nt4-domain.yml once per server (loop variable `srv`): its files, its container and its
+# accounts. the image and the scripts were made once, before the loop.
+- name: check one server and write its files
+  ansible.builtin.include_tasks: nt4-server-files.yml
+
+- name: see which image the container uses
+  ansible.builtin.command: "docker inspect --format '{% raw %}{{.State.Running}} {{.Image}} {{index .Config.Labels \"lanlord.scripts\"}}{% endraw %}' {{ container }}"
+  register: current
+  changed_when: false
+  failed_when: false
+
+- name: replace the container when it is new, stopped or out of date
+  when: >-
+    current.stdout != 'true ' ~ image_id.stdout ~ ' ' ~ scripts_hash.stdout
+    or smb_conf is changed
+  block:
+    - name: replace the container, keeping the old one until the new one is healthy
+      ansible.builtin.include_tasks: replace-container.yml
+      vars:
+        rc_name: "{{ container }}"
+        rc_health: "docker exec {{ container }} smbcontrol smbd ping"
+        rc_retries: 20
+        rc_run: >-
+          docker run -d --name {{ container }} --network host --restart unless-stopped
+          --label lanlord.scripts={{ scripts_hash.stdout }}
+          -v {{ nt4_root }}/bin/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
+          -v {{ nt4_root }}/bin/lanlord-user:/usr/local/bin/lanlord-user:ro
+          -v {{ state_dir }}/lib:/var/lib/samba
+          -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
+          {{ image }}
+
+- name: wait for samba to answer
+  ansible.builtin.command: "docker exec {{ container }} smbcontrol smbd ping"
+  register: samba_ping
+  until: samba_ping.rc == 0
+  retries: 20
+  delay: 2
+  changed_when: false
+
+- name: set the domain administrator's password
+  ansible.builtin.command: "docker exec -i {{ container }} lanlord-user admin"
+  args:
+    stdin: "{{ nt4.admin_password }}"
+  no_log: true
+  changed_when: false
+  when: nt4_mode == 'domain'
+
+- name: create machine accounts in advance
+  ansible.builtin.command: "docker exec {{ container }} lanlord-user machine {{ item | lower }}"
+  loop: "{{ nt4.machines | default([]) }}"
+  register: machine_results
+  changed_when: "'created' in machine_results.stdout"
+  when: nt4_mode == 'domain'
+
+- name: create or update the users
+  ansible.builtin.command: "docker exec -i {{ container }} lanlord-user add {{ item.name }} {{ 'admin' if item.admin | default(false) else 'user' }}{{ ' software' if item.software_admin | default(false) else '' }}"
+  args:
+    stdin: "{{ item.password }}"
+  loop: >-
+    {{ (nt4.users | default([]) | rejectattr('state', 'defined') | list)
+       + (nt4.users | default([]) | selectattr('state', 'defined') | rejectattr('state', 'equalto', 'absent') | list) }}
+  loop_control:
+    label: "{{ item.name }}"
+  register: user_results
+  changed_when: "'created' in user_results.stdout"
+  no_log: true
+
+- name: remove the users marked absent
+  ansible.builtin.command: "docker exec {{ container }} lanlord-user delete {{ item.name }}"
+  loop: "{{ nt4.users | default([]) | selectattr('state', 'defined') | selectattr('state', 'equalto', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: user_removed
+  changed_when: "'deleted' in user_removed.stdout"
+
+# every user's logon script (netlogon\users\<user>.bat, made by lanlord-user) sets %USERNAME%, which
+# windows 9x does not, and runs this one; it needs dos line endings. your own scripts are
+# netlogon\logon.bat (everyone) and netlogon\<user>.bat (one user), which domain admins can edit
+- name: write the logon script
+  ansible.builtin.copy:
+    dest: "{{ state_dir }}/lib/netlogon/lanlord.bat"
+    mode: "0644"
+    content: '{{ logon_lines | join(crlf) }}{{ crlf }}'
+  vars:
+    crlf: "\r\n"
+    unc: '{{ "\\" ~ nt4_netbios_name }}'
+    logon_lines:
+      - '@echo off'
+      - '{{ ("net use S: " ~ unc ~ "\software /persistent:no") if nt4.software | default(false) else "" }}'
+      - "{{ 'if not \"%OS%\"==\"Windows_NT\" net use H: /home' if nt4.roaming_profiles | default(false) else '' }}"
+      - 'if exist {{ unc }}\netlogon\logon.bat call {{ unc }}\netlogon\logon.bat'
+      - 'if exist {{ unc }}\netlogon\%USERNAME%.bat call {{ unc }}\netlogon\%USERNAME%.bat'
+  when: nt4_mode == 'domain'
+
+# the logon wrappers of all users, and the software admins group
+- name: sync the logon scripts and groups
+  ansible.builtin.command: "docker exec {{ container }} lanlord-user sync"
+  changed_when: false
+  when: nt4_mode == 'domain'
+
+- name: list the accounts
+  ansible.builtin.command: "docker exec {{ container }} lanlord-user list"
+  register: accounts
+  changed_when: false
+
+- name: report
+  ansible.builtin.debug:
+    msg: >-
+      {{ nt4_name }} is running as a {{ 'domain controller' if nt4_mode == 'domain' else 'workgroup server' }}
+      named {{ nt4_netbios_name }} on {{ nt4_address.split('/')[0] }};
+      accounts: {{ accounts.stdout_lines | map('split', ':') | map('first') | list }}

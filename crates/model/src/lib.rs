@@ -26,6 +26,7 @@ pub mod netstatus;
 pub mod network;
 pub mod networks;
 pub mod nt4;
+pub mod nt4_servers;
 pub mod operations;
 pub mod passwords;
 pub mod power;
