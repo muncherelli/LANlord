@@ -75,7 +75,9 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
 # the service helper lanlord-exec copies to an nt4 machine: a plain win32 exe with no c runtime. it is
 # cross compiled with clang and lld (they exist for every build host architecture, unlike a mingw gcc)
 # against import libraries made from the few kernel32 and advapi32 functions it calls; the build
-# fails unless the result is an i386 pe with subsystem 4.0 that imports only those two dlls
+# fails unless the result is an i386 pe with subsystem 4.0 that imports only those two dlls. it is built
+# for a 486 with no sse, mmx or p6-only instructions (cmov): nt4 does not enable sse and runs on a 486,
+# so such an instruction traps as illegal; the build fails if the disassembly shows one
 FROM ${ALPINE_IMAGE} AS svc
 RUN apk add --no-cache clang lld llvm
 COPY lanlord-svc/lanlord-svc.c /src/lanlord-svc.c
@@ -86,7 +88,8 @@ RUN set -eux; \
     llvm-dlltool -m i386 -k -d kernel32.def -l libkernel32.a; \
     llvm-dlltool -m i386 -k -d advapi32.def -l libadvapi32.a; \
     mkdir -p /out/usr/lib/lanlord; \
-    clang --target=i686-w64-windows-gnu -Os -Wall -Wextra -ffreestanding -fno-stack-protector -nostdlib \
+    clang --target=i686-w64-windows-gnu -march=i486 -mno-mmx -mno-sse -mno-sse2 \
+      -Os -Wall -Wextra -ffreestanding -fno-stack-protector -nostdlib \
       -fuse-ld=lld -Wl,-e,_svc_entry -Wl,--subsystem,console:4.0 -Wl,--major-os-version,4 \
       -Wl,--minor-os-version,0 -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 -Wl,-s \
       -o /out/usr/lib/lanlord/lanlord-svc.exe lanlord-svc.c -L. -lkernel32 -ladvapi32; \
@@ -100,7 +103,10 @@ RUN set -eux; \
     echo "$dump" | grep -Eq '^MajorSubsystemVersion[[:space:]]+4$'; \
     echo "$dump" | grep -Eq '^MinorSubsystemVersion[[:space:]]+0$'; \
     dlls=$(echo "$dump" | grep 'DLL Name' | sed 's/.*DLL Name: //' | sort | tr '\n' ' '); \
-    test "$dlls" = "ADVAPI32.dll KERNEL32.dll "
+    test "$dlls" = "ADVAPI32.dll KERNEL32.dll "; \
+    dis=$(llvm-objdump -d "$exe"); \
+    if echo "$dis" | grep -Eq '%(x|y|z)?mm[0-9]|\bcmov|\bf(u)?comip?\b'; then \
+      echo "lanlord-svc.exe uses instructions nt4 or a 486 cannot run" >&2; exit 1; fi
 
 FROM ${ALPINE_IMAGE}
 ARG SAMBA_VERSION=4.22.11
