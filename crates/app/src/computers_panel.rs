@@ -65,6 +65,8 @@ pub struct Gates {
 /// the box that asks what to run: a command line or a preset, then (for a command, or a preset
 /// that changes the machine) whether it is really meant.
 struct RunBox {
+    /// the host the box was opened on; it only ever runs there.
+    host: String,
     machine: String,
     /// `Some` for the iis box: the index in `PRESETS`.
     preset: Option<usize>,
@@ -80,8 +82,9 @@ struct RunBox {
 }
 
 impl RunBox {
-    fn free(machine: &str) -> Self {
+    fn free(host: &str, machine: &str) -> Self {
         Self {
+            host: host.into(),
             machine: machine.into(),
             preset: None,
             command: String::new(),
@@ -94,8 +97,8 @@ impl RunBox {
         }
     }
 
-    fn iis(machine: &str) -> Self {
-        let mut run = Self::free(machine);
+    fn iis(host: &str, machine: &str) -> Self {
+        let mut run = Self::free(host, machine);
         run.set_preset(0);
         run
     }
@@ -339,12 +342,11 @@ impl ComputersPanel {
         if self.remote.poll() {
             let count = self.remote.data.as_ref().map_or(0, Vec::len);
             self.selected = self.selected.filter(|i| *i < count);
-            // another host's machines are not this host's: nothing carries over
-            let source = self.remote.source().map(str::to_string);
-            if source != self.shown_host {
+            // another host's machines are not this host's: nothing carries over. only `view`
+            // says which host is on screen, so this clears and never sets `shown_host`
+            if self.remote.source() != self.shown_host.as_deref() {
                 self.selected = None;
                 self.last = None;
-                self.shown_host = source;
             }
         }
         let Some(running) = self.running.take() else {
@@ -354,7 +356,8 @@ impl ComputersPanel {
             None => self.running = Some(running),
             Some(result) => {
                 // a run started on another host than the one shown is not shown under it
-                if self.remote.belongs_to(&running.host) {
+                let shown = self.shown_host.as_deref() == Some(running.host.as_str());
+                if shown && self.remote.belongs_to(&running.host) {
                     let secs = running.started.elapsed().as_secs_f32();
                     self.last = Some(finish(running.machine, running.what, result, secs));
                 }
@@ -398,6 +401,14 @@ impl ComputersPanel {
     }
 
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
+        // another host than the one shown: nothing carries over, even before its list arrives
+        if host != self.shown_host.as_deref() {
+            self.selected = None;
+            self.last = None;
+            // a box opened on the old host would show its machine under the new one
+            self.ask = None;
+            self.shown_host = host.map(str::to_string);
+        }
         let stale = host.filter(|h| self.remote.wants_load(h, false));
         if let Some(host) = stale {
             self.reload(services, host);
@@ -493,7 +504,8 @@ impl ComputersPanel {
         // the same rules as the buttons: a front end may send any message
         let gates = self.gates(services, host);
         let allowed = match msg {
-            Msg::Pick(_) => true,
+            // rows of another host's list are not this host's machines
+            Msg::Pick(_) => self.remote.belongs_to(host),
             Msg::Run => gates.run,
             Msg::Iis => gates.iis,
             Msg::Reload => gates.reload,
@@ -504,8 +516,8 @@ impl ComputersPanel {
         let machine = self.current().cloned();
         match (msg, machine) {
             (Msg::Pick(i), _) => self.selected = Some(i),
-            (Msg::Run, Some(machine)) => self.ask = Some(RunBox::free(&machine)),
-            (Msg::Iis, Some(machine)) => self.ask = Some(RunBox::iis(&machine)),
+            (Msg::Run, Some(machine)) => self.ask = Some(RunBox::free(host, &machine)),
+            (Msg::Iis, Some(machine)) => self.ask = Some(RunBox::iis(host, &machine)),
             (Msg::Reload, _) => self.reload(services, host),
             (Msg::Run | Msg::Iis, None) => {}
         }
@@ -541,6 +553,10 @@ impl ComputersPanel {
                             run.confirming = true;
                         } else {
                             let started = match host {
+                                Some(host) if host != run.host => Err(format!(
+                                    "this box was opened on {}, not {host}; cancel and try again",
+                                    run.host
+                                )),
                                 Some(host) => self.start(services, host, &run, operation),
                                 None => Err("there is no host to run on".to_string()),
                             };
@@ -650,6 +666,7 @@ mod tests {
         let services = Services::new(fake.clone(), Wake::none());
         let mut panel = ComputersPanel::default();
         panel.set_can_run(true);
+        panel.shown_host = Some("a@b".into());
         panel.reload(&services, "a@b");
         wait(&mut panel);
         (panel, services, fake)
@@ -789,7 +806,7 @@ mod tests {
 
     #[test]
     fn preset_arguments_are_checked_inline() {
-        let mut run = RunBox::iis("NT4DEV01");
+        let mut run = RunBox::iis("a@b", "NT4DEV01");
         let start = PRESETS.iter().position(|p| p.id == "startweb").unwrap();
         run.set_preset(start);
         assert_eq!(run.args.len(), 1);
@@ -884,9 +901,57 @@ mod tests {
         panel.reload(&services, "a@b");
         wait(&mut panel);
         assert!(panel.current().is_some() && panel.last_summary().is_some());
-        panel.reload(&services, "c@d");
+        panel.view(&services, Some("c@d"));
         wait(&mut panel);
         assert!(panel.current().is_none() && panel.last_summary().is_none());
+    }
+
+    #[test]
+    fn a_box_opened_on_one_host_refuses_ok_on_another() {
+        let (mut panel, services, fake) = panel();
+        panel.select("NT4DEV01");
+        for open in [Msg::Run, Msg::Iis] {
+            panel.update(open, &services, "a@b");
+            if panel.ask.as_ref().unwrap().preset.is_none() {
+                panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+                panel.update_dialog(BoxMsg::Ok, &services, Some("c@d"));
+            }
+            panel.update_dialog(BoxMsg::Ok, &services, Some("c@d"));
+            panel.update_dialog(BoxMsg::Ok, &services, Some("c@d"));
+            let open = panel.ask.as_ref().unwrap();
+            assert!(open.error.as_ref().unwrap().contains("a@b"));
+            assert!(!panel.running());
+            panel.update_dialog(BoxMsg::Cancel, &services, Some("a@b"));
+            panel.update_dialog(BoxMsg::Cancel, &services, Some("a@b"));
+            assert!(!panel.box_open());
+        }
+        assert!(!fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains("machine-") && c.contains("c@d")));
+    }
+
+    #[test]
+    fn switching_hosts_clears_the_pick_and_the_last_run_before_any_list_loads() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        wait(&mut panel);
+        // the same host keeps both across frames
+        panel.view(&services, Some("a@b"));
+        assert!(panel.current().is_some() && panel.last_summary().is_some());
+        // the other host's first frame: cleared at once, its list is still loading
+        panel.view(&services, Some("c@d"));
+        assert!(panel.current().is_none() && panel.last_summary().is_none());
+        assert_eq!(panel.shown_host.as_deref(), Some("c@d"));
+        // a stale row cannot be picked while the other host's list is not here
+        panel.update(Msg::Pick(0), &services, "c@d");
+        assert!(panel.current().is_none());
     }
 
     #[test]
@@ -898,9 +963,44 @@ mod tests {
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         assert!(panel.running());
-        panel.reload(&services, "c@d");
+        panel.view(&services, Some("c@d"));
         wait(&mut panel);
         assert!(panel.last_summary().is_none());
+    }
+
+    #[test]
+    fn a_run_from_the_old_host_never_shows_under_the_new_one() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        assert!(panel.running());
+        // the new host is on screen while the old run is still going
+        panel.view(&services, Some("c@d"));
+        let start = std::time::Instant::now();
+        while panel.running() {
+            panel.poll();
+            assert!(start.elapsed() < Duration::from_secs(5), "never finished");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(panel.last_summary().is_none());
+        wait(&mut panel);
+        assert!(panel.last_summary().is_none());
+        assert_eq!(panel.shown_host.as_deref(), Some("c@d"));
+    }
+
+    #[test]
+    fn a_host_change_closes_a_box_opened_on_the_old_host() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        assert!(panel.box_open());
+        panel.view(&services, Some("a@b"));
+        assert!(panel.box_open());
+        panel.view(&services, Some("c@d"));
+        assert!(!panel.box_open());
     }
 
     #[test]
