@@ -128,7 +128,7 @@ COPY --from=svc /out/usr/lib/lanlord/lanlord-svc.exe /usr/lib/lanlord/lanlord-sv
 # samba's own libraries live in /usr/lib/samba; musl finds them through this path file
 RUN echo /usr/lib/samba:/lib:/usr/local/lib:/usr/lib > /etc/ld-musl-$(uname -m).path \
  && cd /usr/bin && rm -f cifsdd dbwrap_tool gentest ldb* locktest masktest mdsearch mvxattr ndrdump oLschema2ldif \
-      profiles regdiff regpatch regshell regtree samba-log-parser sharesec smbcacls smbcquotas \
+      profiles regdiff regpatch regshell regtree samba-log-parser sharesec smbcquotas \
       smbget smbspool smbtar smbtree wspsearch ntlm_auth \
  && { [ -e /usr/sbin/nologin ] || ln -s /sbin/nologin /usr/sbin/nologin; } \
  && mkdir -p /run/samba /var/log/samba /var/lib/samba /var/cache/samba /etc/samba
