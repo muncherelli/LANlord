@@ -1,8 +1,8 @@
 #!/bin/bash
 # runs one command on a domain member over smb1, psexec style: nothing is installed on the machine.
-# a .bat and a small service helper (lanlord-svc.exe, built into the image) go into ADMIN$\Temp (made first: a default
-# nt4 has no such folder), a
-# service started from the helper runs the .bat with cmd.exe, and the output is streamed back.
+# a .bat and a small service helper (lanlord-svc.exe, built into the image) go into ADMIN$\Temp (made
+# first: a default nt4 has no such folder), a service started from the helper runs the .bat with
+# cmd.exe, and the output is streamed back.
 #   lanlord-exec run --machine NAME [--address ADDR] --timeout N [--hash-command]
 #                             stdin: {"user":"...","password":"...","command":"...","caller":"..."}
 #                             caller is optional (letters, digits and ._@- only; "cli" when absent)
@@ -239,9 +239,9 @@ sweep_stale() {
     rpc delete "$svc" >/dev/null 2>&1
     n=$((n + 1))
   done
-  # earlier versions dropped their files in the root of %SystemRoot%: only exact ll-<8 chars> names go
+  # earlier versions dropped their files in the root of %SystemRoot%: only exact ll-<8 chars> names go (in Temp too: a missing Temp makes the cd fail and the dels run in the root)
   local root=ll-????????
-  smb -c "del $root.exe; del $root.bat; del $root.cmd.bat; del $root.out; del $root.err; del $root.rc; cd Temp; del ll-*.exe; del ll-*.bat; del ll-*.out; del ll-*.err; del ll-*.rc" >/dev/null 2>&1
+  smb -c "del $root.exe; del $root.bat; del $root.cmd.bat; del $root.out; del $root.err; del $root.rc; cd Temp; del $root.exe; del $root.bat; del $root.cmd.bat; del $root.out; del $root.err; del $root.rc" >/dev/null 2>&1
   SWEPT=$n
 }
 
@@ -351,12 +351,16 @@ bat=ll-$run_id
 made_bat=1
 # a default nt4 has no %SystemRoot%\Temp: make it, an existing one is fine. smbclient exits 0 even when a
 # cd fails and then works in the root, so the output is checked for both
-smb -c "mkdir Temp" >"$work/mkdir.log" 2>&1
-if grep -q 'NT_STATUS_' "$work/mkdir.log" && ! grep -q 'NT_STATUS_OBJECT_NAME_COLLISION' "$work/mkdir.log"; then
+mkdir_rc=0
+smb -c "mkdir Temp" >"$work/mkdir.log" 2>&1 || mkdir_rc=$?
+if grep -q -e 'session setup failed' -e 'tree connect failed' -e 'Connection to .* failed' -e 'NT_STATUS_LOGON_FAILURE' -e 'NT_STATUS_IO_TIMEOUT' -e 'NT_STATUS_HOST_UNREACHABLE' -e 'NT_STATUS_CONNECTION' -e 'NT_STATUS_BAD_NETWORK_NAME' "$work/mkdir.log" || ((mkdir_rc)); then
+  fail "could not connect to $machine: $(excerpt "$work/mkdir.log")"
+elif grep -q 'NT_STATUS_' "$work/mkdir.log" && ! grep -q 'NT_STATUS_OBJECT_NAME_COLLISION' "$work/mkdir.log"; then
   fail "could not create %SystemRoot%\\Temp on $machine: $(excerpt "$work/mkdir.log")"
 fi
 smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat; put $SVC_EXE $bat.exe" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
-grep -q 'NT_STATUS_OBJECT_NAME_NOT_FOUND' "$work/put.log" &&
+# the exit code follows the last command only, so any error line counts (a failed cd included)
+grep -q 'NT_STATUS_' "$work/put.log" &&
   fail "could not copy the script to $machine: %SystemRoot%\\Temp is not usable: $(excerpt "$work/put.log")"
 
 made_service=1
