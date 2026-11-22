@@ -88,7 +88,8 @@ RUN set -eux; \
     llvm-dlltool -m i386 -k -d kernel32.def -l libkernel32.a; \
     llvm-dlltool -m i386 -k -d advapi32.def -l libadvapi32.a; \
     mkdir -p /out/usr/lib/lanlord; \
-    clang --target=i686-w64-windows-gnu -march=i486 -mno-mmx -mno-sse -mno-sse2 -Os -Wall -Wextra -ffreestanding -fno-stack-protector -nostdlib \
+    clang --target=i686-w64-windows-gnu -march=i486 -mno-mmx -mno-sse -mno-sse2 \
+      -Os -Wall -Wextra -ffreestanding -fno-stack-protector -nostdlib \
       -fuse-ld=lld -Wl,-e,_svc_entry -Wl,--subsystem,console:4.0 -Wl,--major-os-version,4 \
       -Wl,--minor-os-version,0 -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 -Wl,-s \
       -o /out/usr/lib/lanlord/lanlord-svc.exe lanlord-svc.c -L. -lkernel32 -ladvapi32; \
@@ -104,7 +105,8 @@ RUN set -eux; \
     dlls=$(echo "$dump" | grep 'DLL Name' | sed 's/.*DLL Name: //' | sort | tr '\n' ' '); \
     test "$dlls" = "ADVAPI32.dll KERNEL32.dll "; \
     dis=$(llvm-objdump -d "$exe"); \
-    if echo "$dis" | grep -Eq '%(x|y|z)?mm[0-9]|\bcmov|\bf(u)?comip?\b'; then echo "lanlord-svc.exe uses instructions nt4 or a 486 cannot run" >&2; exit 1; fi
+    if echo "$dis" | grep -Eq '%(x|y|z)?mm[0-9]|\bcmov|\bf(u)?comip?\b'; then \
+      echo "lanlord-svc.exe uses instructions nt4 or a 486 cannot run" >&2; exit 1; fi
 
 FROM ${ALPINE_IMAGE}
 ARG SAMBA_VERSION=4.22.11
