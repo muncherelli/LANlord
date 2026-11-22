@@ -27,7 +27,9 @@
 # argument, never in the environment and never printed.
 # nt4 has no smb extended security, so every smbclient and net call turns spnego off ("client use
 # spnego=no"); otherwise the session setup is refused before any credential is sent. ntlmv2 stays
-# on, and lanman and plaintext logins are never enabled.
+# on, and lanman and plaintext logins are never enabled. nt4 sp6a computes a bad signing key after an
+# ntlmv2 login, so the rpc calls on ipc$ must not require signing ("client ipc signing=if_required");
+# "client signing" keeps its default.
 set -u
 umask 077
 
@@ -39,7 +41,7 @@ LOG=${LANLORD_EXEC_LOG:-/var/lib/samba/private/exec.log}
 LOCK_TRIES=${LANLORD_EXEC_LOCK_TRIES:-50}
 LOG_MAX=${LANLORD_EXEC_LOG_MAX:-1048576}
 CHUNK=1048576
-SMB_OPT=(--option='client min protocol=NT1' --option='client use spnego=no')
+SMB_OPT=(--option='client min protocol=NT1' --option='client use spnego=no' --option='client ipc signing=if_required')
 
 work=
 addr=
@@ -341,7 +343,12 @@ smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.ba
 made_service=1
 rpc create "LANlordExec$run_id" "LANlord exec" \
   "%SystemRoot%\\system32\\cmd.exe /Q /c %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
-  fail "could not create the service on $machine: $(excerpt "$work/create.log")"
+  {
+    if grep -q 'IO_TIMEOUT' "$work/create.log"; then
+      fail "the service manager on $machine is busy (a previous run may still be starting); try again in a minute"
+    fi
+    fail "could not create the service on $machine: $(excerpt "$work/create.log")"
+  }
 
 # the service never answers the service manager, so the start ends in error 1053 after a while while
 # the command keeps running; it is started in the background and watched through the .rc file
@@ -386,7 +393,7 @@ while :; do
   emit_new err "$work/err" off_err
   [[ -n $rc ]] && break
   if [[ -f $work/start.rc ]] && [[ $(cat "$work/start.rc") != 0 ]] &&
-    ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond' "$work/start.log"; then
+    ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond|IO_TIMEOUT|Query status request failed' "$work/start.log"; then
     fail "could not start the service on $machine: $(excerpt "$work/start.log")"
   fi
   if ((SECONDS >= timeout)); then
