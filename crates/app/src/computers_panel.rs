@@ -398,10 +398,9 @@ impl ComputersPanel {
     }
 
     pub fn view(&mut self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
-        if let Some(host) = host {
-            if self.remote.wants_load(host, false) {
-                self.reload(services, host);
-            }
+        let stale = host.filter(|h| self.remote.wants_load(h, false));
+        if let Some(host) = stale {
+            self.reload(services, host);
         }
         self.preview(services, host)
     }
@@ -409,9 +408,7 @@ impl ComputersPanel {
     /// the page as it is, without asking the server for anything.
     pub fn preview(&self, services: &Services, host: Option<&str>) -> Vec<Node<Msg>> {
         let Some(host) = host else {
-            return vec![Node::Text(
-                "No host yet. Add one in the Hosts window first.".into(),
-            )];
+            return crate::view::no_host();
         };
         let gates = self.gates(services, host);
         let rows = self.names().iter().map(|n| vec![n.clone()]).collect();

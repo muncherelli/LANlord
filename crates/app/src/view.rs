@@ -367,6 +367,13 @@ pub fn field_errors<M>(errors: &[ValidationError], path: &str) -> Vec<Node<M>> {
         .collect()
 }
 
+/// what a tab shows while there is no host to ask.
+pub fn no_host<M>() -> Vec<Node<M>> {
+    vec![Node::Text(
+        "No host yet. Add one in the Hosts window first.".into(),
+    )]
+}
+
 /// a number that changes when what `nodes` show changes in a way that can change their size: the
 /// text, the rows and the parts, not what is typed, ticked or picked. a window that sizes itself
 /// to its pages measures them again when it changes.
