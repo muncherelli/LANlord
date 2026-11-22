@@ -33,6 +33,26 @@ fn ask_to_purge(desktop: &mut Desktop, ctx: &egui::Context) {
     frames(desktop, ctx, 2);
 }
 
+/// check a call log where `first` leads, `last` (if any) ends, and the calls in
+/// between were started concurrently, so only their set is compared.
+fn assert_calls(calls: Vec<String>, first: &str, middle: &[&str], last: Option<&str>) {
+    let (head, rest) = calls.split_first().expect("no calls recorded");
+    assert_eq!(head, first, "the first call");
+    let rest = match last {
+        Some(last) => {
+            let (tail, rest) = rest.split_last().expect("no closing call recorded");
+            assert_eq!(tail, last, "the last call");
+            rest
+        }
+        None => rest,
+    };
+    let mut got: Vec<&str> = rest.iter().map(String::as_str).collect();
+    let mut want = middle.to_vec();
+    got.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(got, want, "the concurrent calls");
+}
+
 #[test]
 fn the_icons_come_first_and_the_menu_lists_them() {
     let (desktop, _ctx, _fake) = desktop();
@@ -47,9 +67,11 @@ fn the_icons_come_first_and_the_menu_lists_them() {
 #[test]
 fn general_reads_what_the_server_is() {
     let (desktop, _ctx, fake) = server();
-    assert_eq!(
+    assert_calls(
         fake.calls(),
-        ["load me@gw", "facts me@gw", "ssh-auth me@gw"]
+        "load me@gw",
+        &["facts me@gw", "ssh-auth me@gw"],
+        None,
     );
     let facts = desktop.my_server.facts().data.clone().unwrap();
     assert_eq!(facts.hostname, "demo");
@@ -70,14 +92,12 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Remove"), Some(false), "a wrong name");
     // only the preview has run so far
-    assert_eq!(
+    // the exact set is compared, so a real "purge" call would fail this
+    assert_calls(
         fake.calls(),
-        [
-            "load me@gw",
-            "facts me@gw",
-            "ssh-auth me@gw",
-            "purge-preview me@gw admins=false"
-        ]
+        "load me@gw",
+        &["facts me@gw", "ssh-auth me@gw"],
+        Some("purge-preview me@gw admins=false"),
     );
     desktop.my_server.update(
         my_server::Msg::Typed("me@gw".into()),
