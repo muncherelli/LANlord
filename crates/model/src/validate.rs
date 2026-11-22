@@ -1220,6 +1220,27 @@ fn check_machine(machine: &str) -> Result<(), Invalid> {
         .map_err(|reason| invalid("machine", reason))
 }
 
+/// a plain `exit N` ends the outer cmd.exe, so the exit code is never written and the run would
+/// show as timed out; nt4 has no `exit /b`. refuse one at the start or after `&`, `&&` or `||`.
+fn check_no_exit(command: &str) -> Result<(), Invalid> {
+    let lower = command.to_ascii_lowercase();
+    let after_operator = lower
+        .match_indices(['&', '|'])
+        .any(|(at, _)| starts_with_exit(&lower[at + 1..]));
+    flag(
+        !starts_with_exit(&lower) && !after_operator,
+        "must not use exit: on nt4 it ends the shell and the run shows as timed out",
+    )
+    .map_err(|reason| invalid("command", reason))
+}
+
+/// does `text`, past leading blanks and operator characters, begin with the word `exit`?
+fn starts_with_exit(text: &str) -> bool {
+    let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '&' || c == '|');
+    text.strip_prefix("exit")
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+}
+
 fn check_timeout(secs: u32) -> Result<(), Invalid> {
     flag((1..=900).contains(&secs), "must be 1 to 900 seconds")
         .map_err(|reason| invalid("timeout_secs", reason))
@@ -1345,6 +1366,7 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         } => {
             check_machine(machine)?;
             crate::nt4_exec::check_command(command).map_err(|reason| invalid("command", reason))?;
+            check_no_exit(command)?;
             check_timeout(*timeout_secs)
         }
         Operation::MachinePreset {
@@ -2389,5 +2411,37 @@ web-proxy:
         assert!(remove(line).validate().is_err());
         assert!(remove("ssh-ed25519 AAAA*").validate().is_err());
         assert!(remove("").validate().is_err());
+    }
+
+    #[test]
+    fn a_machine_run_refuses_a_command_that_exits_the_shell() {
+        let run = |command: &str| Operation::MachineRun {
+            machine: "ws1".into(),
+            command: command.into(),
+            timeout_secs: 30,
+        };
+        for bad in [
+            "exit 3",
+            "  EXIT",
+            "exit/b 1",
+            "dir & exit 1",
+            "dir && exit",
+            "dir || exit 2",
+            "dir &exit 1",
+            "dir &&   Exit 1",
+        ] {
+            let error = run(bad).validate().unwrap_err().to_string();
+            assert!(error.contains("exit"), "{bad}: {error}");
+        }
+        for fine in [
+            "ver",
+            "cmd /c exit 3",
+            "echo exited",
+            "dir exit.txt",
+            "echo a && echo exit_code",
+            "type c:\\exit.log",
+        ] {
+            assert_eq!(run(fine).validate(), Ok(()), "{fine}");
+        }
     }
 }
