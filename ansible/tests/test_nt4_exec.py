@@ -300,7 +300,7 @@ class LanlordExecTest(unittest.TestCase):
         out = self.run_exec()
         error = self.events(out)[-1]["error"]
         self.assertEqual(out.returncode, 1)
-        self.assertIn("service manager on nt4srv01 is busy", error)
+        self.assertIn("service manager on NT4SRV01 is busy", error)
         self.assertIn("try again in a minute", error)
         self.assertNotIn("could not create", error)
         self.assertEqual(self.calls().count("net rpc service create"), 1)
