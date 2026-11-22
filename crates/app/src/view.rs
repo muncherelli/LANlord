@@ -253,6 +253,8 @@ pub struct Table<M> {
     /// rows with a problem, drawn red.
     pub bad: Vec<bool>,
     pub height: f32,
+    /// keeps its height when the window has room to spare, which goes to what comes after.
+    pub steady: bool,
     pub select: fn(usize) -> M,
 }
 
@@ -365,6 +367,13 @@ pub fn field_errors<M>(errors: &[ValidationError], path: &str) -> Vec<Node<M>> {
         .collect()
 }
 
+/// what a tab shows while there is no host to ask.
+pub fn no_host<M>() -> Vec<Node<M>> {
+    vec![Node::Text(
+        "No host yet. Add one in the Hosts window first.".into(),
+    )]
+}
+
 /// a number that changes when what `nodes` show changes in a way that can change their size: the
 /// text, the rows and the parts, not what is typed, ticked or picked. a window that sizes itself
 /// to its pages measures them again when it changes.
@@ -435,6 +444,7 @@ fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
                 t.headings.hash(h);
                 t.rows.hash(h);
                 t.height.to_bits().hash(h);
+                t.steady.hash(h);
             }
             Node::Buttons(b) | Node::Toolbar(b) => b.iter().for_each(|b| b.label.hash(h)),
             Node::Button(b) => (&b.label, b.width.map(f32::to_bits)).hash(h),

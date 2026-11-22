@@ -528,6 +528,7 @@ impl Desktop {
                     self.nt4.tab = match tab {
                         "1" => crate::nt4_window::Tab::Logins,
                         "2" => crate::nt4_window::Tab::Logon,
+                        "3" => crate::nt4_window::Tab::Computers,
                         _ => crate::nt4_window::Tab::Settings,
                     };
                 }
@@ -1701,7 +1702,11 @@ impl Desktop {
         view::show::<()>(ui, &module_window::header(module));
         let host = self.host();
         match module.id {
-            "nt4-domain" => self.nt4.show(ui, &self.services, host.as_deref()),
+            "nt4-domain" => {
+                let may = lanlord_app::computers_panel::may_run(&self.grants());
+                self.nt4.computers.set_can_run(may);
+                self.nt4.show(ui, &self.services, host.as_deref());
+            }
             "dns" | "dhcp" => self.dns.show(ui, &self.services, host.as_deref()),
             "remote-commands" => {
                 let machines = self.nt4.settings.machines();
@@ -2059,6 +2064,8 @@ mod tests {
         assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Logon);
         desktop.open_spec("nt4-domain@1");
         assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Logins);
+        desktop.open_spec("nt4-domain@3");
+        assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Computers);
         desktop.open_spec("nt4-domain");
         assert_eq!(desktop.nt4.tab, crate::nt4_window::Tab::Settings);
         desktop.start_open = false;

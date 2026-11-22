@@ -6,7 +6,7 @@
 │ settings give it (the gateway's address unless it is given its own): an      │
 │ NT4-style domain controller or a plain workgroup.                            │
 │ ──────────────────────────────────────────────────────────────────────────── │
-│ [ Settings ][ Logins ][ Logon scripts ]                                      │
+│ [ Settings ][ Logins ][ Logon scripts ][ Computers ]                         │
 │ ┌──────────────────────────────────────────────────────────────────────────┐ │
 │ │┌ Domain ────────────────────────────────────────────────────────────────┐│ │
 │ ││ Domain name    RETRONET                                                ││ │

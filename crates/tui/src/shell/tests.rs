@@ -503,6 +503,51 @@ pub(super) fn module(id: &str) -> Target {
     Target::Module(MODULES.iter().position(|m| m.id == id).unwrap())
 }
 
+/// draw until `text` shows, for what a background task brings.
+fn frame_until(shell: &mut Shell, text: &str) -> String {
+    let start = Instant::now();
+    loop {
+        let shown = frame(shell);
+        if shown.contains(text) {
+            return shown;
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "{text}:\n{shown}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn the_computers_tab_lists_machines_and_runs_a_command_after_asking() {
+    use lanlord_app::computers_panel::{BoxMsg, Msg};
+    let mut shell = demo();
+    frame(&mut shell);
+    let nt4 = module("nt4-domain");
+    shell.open(nt4);
+    shell.nt4_tab = 3;
+    let text = frame_until(&mut shell, "ws1");
+    assert!(
+        text.contains("Run command...") && text.contains("IIS..."),
+        "{text}"
+    );
+    let host = shell.host().unwrap();
+    shell.computers.select("ws1");
+    shell.computers.update(Msg::Run, &shell.services, &host);
+    let text = frame_until(&mut shell, "Command");
+    assert!(text.contains("Timeout in seconds"), "{text}");
+    for msg in [BoxMsg::Command("ver".into()), BoxMsg::Ok] {
+        shell
+            .computers
+            .update_dialog(msg, &shell.services, Some(&host));
+    }
+    let text = frame_until(&mut shell, "Run this on ws1?");
+    assert!(text.contains("ver"), "{text}");
+    shell
+        .computers
+        .update_dialog(BoxMsg::Ok, &shell.services, Some(&host));
+    let text = frame_until(&mut shell, "exit code 0");
+    assert!(text.contains("ok"), "{text}");
+}
+
 #[test]
 fn the_nt4_window_switches_tabs_and_dns_and_commands_draw_from_their_trees() {
     let mut shell = demo();

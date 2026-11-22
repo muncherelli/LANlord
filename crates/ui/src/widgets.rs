@@ -19,13 +19,19 @@ pub struct Table<'a> {
     pub selected: Option<usize>,
     pub bad: &'a [bool],
     pub height: f32,
+    /// takes none of the window's spare room.
+    pub steady: bool,
 }
 
 impl Table<'_> {
     /// draw the table; returns the row clicked.
     pub fn show(&self, ui: &mut Ui) -> Option<usize> {
         let mut clicked = None;
-        let height = controls::grow(ui, self.height);
+        let height = if self.steady {
+            self.height
+        } else {
+            controls::grow(ui, self.height)
+        };
         // the columns are at least as wide as their widest text, so no cell is clipped
         let widths = fitted(ui, self.headings, self.rows, self.widths);
         theme::sunken(ui, WHITE, |ui| {

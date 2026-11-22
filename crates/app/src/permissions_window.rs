@@ -97,6 +97,7 @@ impl PermissionsWindow {
             bad: Vec::new(),
             height: 90.0,
             select: Msg::PickUser,
+            steady: false,
         })];
         if let Some(user) = self.user.and_then(|i| self.users().get(i).cloned()) {
             let mine = self.draft.roles_of(&user, false);

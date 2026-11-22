@@ -1,6 +1,8 @@
 //! the LANlord desktop, drawn with egui so it looks the same in a native window on every
 //! platform and in a browser.
 
+#[macro_use]
+mod panel_glue;
 mod admin_setup;
 #[cfg(test)]
 mod artwork;
@@ -8,6 +10,7 @@ mod clock_panel;
 mod command_panel;
 mod compat_alert;
 mod components_window;
+mod computers_panel;
 mod console;
 mod controls;
 mod desktop;

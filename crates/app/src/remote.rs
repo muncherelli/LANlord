@@ -44,6 +44,11 @@ impl<T> Remote<T> {
         self.source.as_deref() == Some(host)
     }
 
+    /// the host `data` came from.
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
+    }
+
     /// pretend `data` came from `host`, for tests that skip the load job.
     #[cfg(test)]
     pub fn set_source(&mut self, host: &str) {

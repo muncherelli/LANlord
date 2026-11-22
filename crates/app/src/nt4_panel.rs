@@ -307,6 +307,7 @@ impl Nt4Panel {
                         ),
                         height: 80.0,
                         select: Msg::Pick,
+                        steady: false,
                     }),
                     Node::Toolbar(vec![
                         Button::new("Add machine...", gates.add_machine, Msg::AddMachine),

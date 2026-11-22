@@ -15,6 +15,7 @@ pub mod clock_window;
 pub mod command_panel;
 pub mod compat;
 pub mod components;
+pub mod computers_panel;
 pub mod console;
 pub mod demo_clock;
 pub mod demo_monitor;
