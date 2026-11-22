@@ -8,6 +8,7 @@ mod clock_panel;
 mod command_panel;
 mod compat_alert;
 mod components_window;
+mod computers_panel;
 mod console;
 mod controls;
 mod desktop;

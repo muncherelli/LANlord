@@ -1,7 +1,8 @@
-//! the nt4 domain window: its settings, its logins and what it is.
+//! the nt4 domain window: its settings, its logins, its logon scripts and its computers.
 
 use eframe::egui::{self, Ui};
 
+use crate::computers_panel::ComputersPanel;
 use crate::controls;
 use crate::logon_panel::LogonPanel;
 use crate::nt4_panel::Nt4Panel;
@@ -14,6 +15,7 @@ pub enum Tab {
     Settings,
     Logins,
     Logon,
+    Computers,
 }
 
 #[derive(Default)]
@@ -22,6 +24,7 @@ pub struct Nt4Window {
     pub settings: Nt4Panel,
     pub users: UsersPanel,
     pub logon: LogonPanel,
+    pub computers: ComputersPanel,
 }
 
 impl Nt4Window {
@@ -29,6 +32,7 @@ impl Nt4Window {
         self.settings.poll();
         self.users.poll();
         self.logon.poll();
+        self.computers.poll();
     }
 
     /// draw the tab strip and the open tab.
@@ -37,24 +41,27 @@ impl Nt4Window {
             Tab::Settings => 0,
             Tab::Logins => 1,
             Tab::Logon => 2,
+            Tab::Computers => 3,
         };
         // the pages are measured again when what any of them shows changes
         let key = [
             self.settings.key(services, host),
             self.users.key(services, host),
             self.logon.key(services, host),
+            self.computers.key(services, host),
         ]
         .iter()
         .fold(0u64, |k, n| k.rotate_left(21) ^ n);
         controls::tabs(
             ui,
-            &["Settings", "Logins", "Logon scripts"],
+            &["Settings", "Logins", "Logon scripts", "Computers"],
             key,
             &mut chosen,
             |ui, open| match chosen_tab(open) {
                 Tab::Settings => self.settings.show(ui, services, host),
                 Tab::Logins => self.users.show(ui, services, host),
                 Tab::Logon => self.logon.show(ui, services, host),
+                Tab::Computers => self.computers.show(ui, services, host),
             },
         );
         self.tab = chosen_tab(chosen);
@@ -64,6 +71,7 @@ impl Nt4Window {
         self.settings.dialog(ctx, services, host);
         self.users.dialog(ctx, services, host);
         self.logon.dialog(ctx);
+        self.computers.dialog(ctx, services, host);
     }
 }
 
@@ -71,6 +79,7 @@ fn chosen_tab(index: usize) -> Tab {
     match index {
         1 => Tab::Logins,
         2 => Tab::Logon,
+        3 => Tab::Computers,
         _ => Tab::Settings,
     }
 }

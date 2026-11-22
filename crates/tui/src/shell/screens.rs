@@ -225,7 +225,7 @@ fn scenes() -> Vec<Scene> {
         }));
     }
     all.extend(window_boxes());
-    for tab in 1..3 {
+    for tab in 1..4 {
         all.push(scene(format!("nt4-domain-tab{tab}"), move |size| {
             let mut shell = window(size, module("nt4-domain"));
             shell.nt4_tab = tab;

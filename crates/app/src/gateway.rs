@@ -44,6 +44,17 @@ fn unexpected(operation: &str, reply: Reply) -> anyhow::Error {
 /// the settings of the made-up demo server: two networks, each with its own zone and dhcp.
 pub const DEMO_SETTINGS: &str = "networks:\n  - {name: retronet, interface: eth1, address: 192.0.2.1/24, zone: retronet, records: [{name: ntsrv1, address: 192.0.2.10}], dhcp: {range: [192.0.2.100, 192.0.2.200], lease: 7d}, ssh_allow: [{mac: \"02:00:00:00:00:03\", name: nt4pc}]}\n  - {name: lab, interface: eth2, address: 198.51.100.1/24, zone: lab, dhcp: {range: [198.51.100.100, 198.51.100.200], lease: 12h}}\ncomponents:\n  gateway: {}\n  docker: {}\n  nt4-domain:\n    attach:\n      - {network: retronet, address: 192.0.2.5}\n    subcomponents: [domain-controller, wins]\n  dns:\n    attach:\n      - {network: retronet}\n      - {network: lab}\n    subcomponents: [dns, dhcp]\n";
 
+/// what a command on a domain machine did, as `Reply::MachineRun` has it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunOutput {
+    /// `None` when the run timed out.
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+    pub truncated: bool,
+}
+
 pub trait Gateway: Send + Sync {
     /// run `operation` on `host`, asking for the sudo password through `ask` when the server needs
     /// it.
@@ -142,6 +153,34 @@ pub trait Gateway: Send + Sync {
             name: name.to_string(),
         };
         done(self.call(host, operation, ask)?, "reset_machine")
+    }
+
+    /// the names of the domain's machines, without the trailing `$`.
+    fn machines(&self, host: &str, ask: AskPassword) -> Result<Vec<String>> {
+        match self.call(host, Operation::Machines, ask)? {
+            Reply::Machines(names) => Ok(names),
+            other => Err(unexpected("machines", other)),
+        }
+    }
+
+    /// run a `MachineRun` or `MachinePreset` operation and give back what the machine printed.
+    fn machine_run(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<RunOutput> {
+        match self.call(host, operation, ask)? {
+            Reply::MachineRun {
+                exit_code,
+                stdout,
+                stderr,
+                timed_out,
+                truncated,
+            } => Ok(RunOutput {
+                exit_code,
+                stdout,
+                stderr,
+                timed_out,
+                truncated,
+            }),
+            other => Err(unexpected("machine_run", other)),
+        }
     }
 
     /// switch internet access on or off for a network, or allow or deny one computer, and apply
@@ -882,6 +921,10 @@ mod fake {
         pub root_ssh: Mutex<RootSshInfo>,
         /// ssh passwords and the administrators' keys, changed by the ssh auth operations.
         pub ssh_auth: Mutex<SshAuthInfo>,
+        /// the domain machines `Machines` lists.
+        pub machines: Mutex<Vec<String>>,
+        /// what a machine run prints; `ok` when not set.
+        pub machine_out: Mutex<Option<String>>,
     }
 
     impl Default for Fake {
@@ -896,6 +939,12 @@ mod fake {
             let fake = Self::new();
             *fake.local.lock().unwrap() = true;
             *fake.stored.lock().unwrap() = super::DEMO_SETTINGS.into();
+            *fake.machines.lock().unwrap() = ["NT4DEV01", "NT4DEV02", "NT4WS01", "NT4WS02"]
+                .map(String::from)
+                .into();
+            *fake.machine_out.lock().unwrap() = Some(
+                "Microsoft(R) Windows NT(TM)\r\n(C) Copyright 1985-1996 Microsoft Corp.\r\n".into(),
+            );
             // the person at the demo desktop is the nt4pc of the retronet network, which may use
             // ssh on its own: taking that away would cut them off
             *fake.spot.lock().unwrap() = Some(lanlord_model::lockout::Spot {
@@ -984,6 +1033,8 @@ mod fake {
                     root_keys: 0,
                     keys_unknown: false,
                 }),
+                machines: Mutex::new(vec!["ws1".into()]),
+                machine_out: Mutex::new(None),
                 probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
                     [
@@ -1249,19 +1300,19 @@ mod fake {
                 }
                 Operation::Machines => {
                     self.enter(format!("machines {host}"), ask)?;
-                    Reply::Machines(vec!["ws1".into()])
+                    Reply::Machines(self.machines.lock().unwrap().clone())
                 }
                 Operation::MachineRun {
                     machine, command, ..
                 } => {
                     self.enter(format!("machine-run {host} {machine} {command}"), ask)?;
-                    fake_run()
+                    self.fake_run()
                 }
                 Operation::MachinePreset {
                     machine, preset, ..
                 } => {
                     self.enter(format!("machine-preset {host} {machine} {preset}"), ask)?;
-                    fake_run()
+                    self.fake_run()
                 }
             })
         }
@@ -1279,10 +1330,17 @@ mod fake {
         }
     }
 
-    fn fake_run() -> Reply {
+    impl Fake {
+        fn fake_run(&self) -> Reply {
+            let stdout = self.machine_out.lock().unwrap().clone();
+            fake_reply(stdout.unwrap_or_else(|| "ok\r\n".into()))
+        }
+    }
+
+    fn fake_reply(stdout: String) -> Reply {
         Reply::MachineRun {
             exit_code: Some(0),
-            stdout: "ok\r\n".into(),
+            stdout,
             stderr: String::new(),
             timed_out: false,
             truncated: false,

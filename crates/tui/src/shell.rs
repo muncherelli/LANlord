@@ -11,6 +11,7 @@ use lanlord_app::admin_setup::{self, AdminSetup};
 use lanlord_app::clock_window::{ClockFeed, ClockPanel};
 use lanlord_app::command_panel::CommandPanel;
 use lanlord_app::components::{Components, Selection};
+use lanlord_app::computers_panel::ComputersPanel;
 use lanlord_app::console::Console;
 use lanlord_app::desktop::{self, Target};
 use lanlord_app::dns_panel::DnsPanel;
@@ -272,9 +273,10 @@ pub struct Shell {
     permissions: PermissionsWindow,
     nt4: Nt4Panel,
     logon: LogonPanel,
+    computers: ComputersPanel,
     dns: DnsPanel,
     commands: CommandPanel,
-    /// the open tab of the NT4 Server window: Settings, Logins or Logon scripts.
+    /// the open tab of the NT4 Server window: Settings, Logins, Logon scripts or Computers.
     nt4_tab: usize,
     /// the Date/Time Properties window, and the server's time shown in the taskbar.
     clock_panel: ClockPanel,
@@ -383,6 +385,7 @@ impl Shell {
             permissions: PermissionsWindow::default(),
             nt4: Nt4Panel::default(),
             logon: LogonPanel::default(),
+            computers: ComputersPanel::default(),
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             nt4_tab: 0,
@@ -507,6 +510,7 @@ impl Shell {
         self.nt4 = Nt4Panel::default();
         self.nt4_tab = 0;
         self.logon = LogonPanel::default();
+        self.computers = ComputersPanel::default();
         self.dns = DnsPanel::default();
         self.commands = CommandPanel::default();
         self.clock_panel = ClockPanel::default();
@@ -872,6 +876,7 @@ impl Shell {
         self.permissions.poll();
         self.nt4.poll();
         self.logon.poll();
+        self.computers.poll();
         self.dns.poll();
         self.commands.poll();
         self.poll_clock();
@@ -1190,7 +1195,12 @@ impl Shell {
         let host = self.host();
         let mut top: Vec<Node<usize>> = module_window::header(module);
         top.push(Node::Tabs {
-            titles: lanlord_app::view::titles(&["Settings", "Logins", "Logon scripts"]),
+            titles: lanlord_app::view::titles(&[
+                "Settings",
+                "Logins",
+                "Logon scripts",
+                "Computers",
+            ]),
             key: 0,
             current: self.nt4_tab,
             pick: |tab| tab,
@@ -1309,6 +1319,16 @@ impl Shell {
                 }
                 answer
             }
+            3 => {
+                self.computers
+                    .set_can_run(lanlord_app::computers_panel::may_run(&self.grants()));
+                let nodes = self.computers.view(&self.services, host);
+                let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
+                if let (Some(msg), Some(host)) = (msg, host) {
+                    self.computers.update(msg, &self.services, host);
+                }
+                answer
+            }
             _ => {
                 let nodes = self.logon.view(&self.services, host);
                 let (answer, msg) = drive_at(&nodes, pass, state, palette, prefix);
@@ -1361,6 +1381,9 @@ impl Shell {
             return Some(dialog.id);
         }
         if let Some(dialog) = self.logon.dialog() {
+            return Some(dialog.id);
+        }
+        if let Some(dialog) = self.computers.dialog() {
             return Some(dialog.id);
         }
         if let Some(dialog) = self.dns.dialog() {
@@ -1467,6 +1490,15 @@ impl Shell {
             let title = dialog.title.clone();
             if let Some(msg) = msg {
                 self.logon.update_dialog(msg);
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.computers.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                let host = self.host();
+                self.computers
+                    .update_dialog(msg, &self.services, host.as_deref());
             }
             (title, answer)
         } else if let Some(dialog) = self.dns.dialog() {
