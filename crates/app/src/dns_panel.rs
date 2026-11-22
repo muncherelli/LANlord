@@ -433,6 +433,7 @@ impl DnsPanel {
             selected: self.lease_row,
             height: 190.0,
             select: Msg::PickLease,
+            steady: false,
         })];
         nodes.extend(problems(errors, "dns.dhcp.hosts"));
         nodes.push(Node::Toolbar(vec![
@@ -465,6 +466,7 @@ impl DnsPanel {
             selected: self.record_row,
             height: 190.0,
             select: Msg::PickRecord,
+            steady: false,
         })];
         nodes.extend(problems(errors, "dns.records"));
         nodes.push(Node::Toolbar(vec![
@@ -510,6 +512,7 @@ impl DnsPanel {
             bad: Vec::new(),
             height: 190.0,
             select: Msg::PickCurrent,
+            steady: false,
         }));
         nodes.push(Node::Button(Button::new(
             "Make static",

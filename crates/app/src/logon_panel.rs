@@ -191,6 +191,7 @@ impl LogonPanel {
                         bad: Vec::new(),
                         height: 80.0,
                         select: Msg::Pick,
+                        steady: false,
                     }),
                     Node::Gap(4.0),
                     Node::Toolbar(vec![

@@ -253,6 +253,8 @@ pub struct Table<M> {
     /// rows with a problem, drawn red.
     pub bad: Vec<bool>,
     pub height: f32,
+    /// keeps its height when the window has room to spare, which goes to what comes after.
+    pub steady: bool,
     pub select: fn(usize) -> M,
 }
 
@@ -435,6 +437,7 @@ fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
                 t.headings.hash(h);
                 t.rows.hash(h);
                 t.height.to_bits().hash(h);
+                t.steady.hash(h);
             }
             Node::Buttons(b) | Node::Toolbar(b) => b.iter().for_each(|b| b.label.hash(h)),
             Node::Button(b) => (&b.label, b.width.map(f32::to_bits)).hash(h),

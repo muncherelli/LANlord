@@ -422,6 +422,7 @@ impl MyServer {
                 .collect(),
             height: COMPAT_ROWS,
             select: Msg::Check,
+            steady: false,
         }));
         let (title, mut detail, fix) = match report.checks.get(picked) {
             Some(c) => (
@@ -468,6 +469,7 @@ impl MyServer {
                 bad: Vec::new(),
                 height: COMPAT_ROWS,
                 select: Msg::Check,
+                steady: false,
             })
         });
         vec![

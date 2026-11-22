@@ -237,6 +237,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
             selected: table.selected,
             bad: &table.bad,
             height: table.height,
+            steady: table.steady,
         }
         .show(ui)
         .map(table.select),

@@ -158,6 +158,7 @@ impl AccountWindow {
                     bad: Vec::new(),
                     height: 64.0,
                     select: Msg::SelectKey,
+                    steady: false,
                 }),
                 Node::TextArea {
                     id: "account-key-draft",
@@ -262,6 +263,7 @@ impl AccountWindow {
                     bad: Vec::new(),
                     height: 64.0,
                     select: |_| Msg::Reload,
+                    steady: false,
                 })],
             },
             Node::Gap(4.0),

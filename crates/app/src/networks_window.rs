@@ -1444,6 +1444,7 @@ fn connection_dialog(status: &InterfaceStatus, time: &dyn Fn(i64) -> String) -> 
                 bad: Vec::new(),
                 height: 220.0,
                 select: |_| Msg::Ignore,
+                steady: false,
             }),
             Node::Gap(6.0),
             Node::Buttons(vec![Button::new("Close", true, Msg::CloseConnection)]),
@@ -1555,6 +1556,7 @@ fn activity(status: &InterfaceStatus) -> Node<Msg> {
             bad: Vec::new(),
             height: 44.0,
             select: |_| Msg::Ignore,
+            steady: false,
         })],
     }
 }

@@ -2182,6 +2182,7 @@ mod tests {
             bad: Vec::new(),
             height: 80.0,
             select: Msg::Pick,
+            steady: false,
         })];
         let (buf, _) = paint(&nodes, &ViewState::default());
         for status in all {
@@ -2210,6 +2211,7 @@ mod tests {
             bad: Vec::new(),
             height: 64.0,
             select: Msg::Pick,
+            steady: false,
         })];
         let (buf, regions) = paint(&nodes, &ViewState::default());
         let text = lines(&buf).join("\n");

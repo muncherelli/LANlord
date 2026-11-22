@@ -159,6 +159,7 @@ impl UsersPanel {
             bad: Vec::new(),
             height: 200.0,
             select: Msg::Pick,
+            steady: false,
         })];
         if empty {
             nodes.push(Node::Text("No logins yet.".into()));

@@ -157,7 +157,8 @@ impl RunBox {
     /// what the machine will run, as the confirmation shows it.
     fn shown(&self) -> String {
         match self.the_preset() {
-            Some(preset) => nt4_exec::render(preset.id, &self.args).unwrap_or_default(),
+            Some(preset) => nt4_exec::render(preset.id, &self.args)
+                .unwrap_or_else(|reason| format!("cannot show the command: {reason}")),
             None => self.command.trim().to_string(),
         }
     }
@@ -266,6 +267,8 @@ impl RunBox {
 struct Running {
     job: Job<RunOutput>,
     started: Instant,
+    /// the host the run was started on.
+    host: String,
     machine: String,
     what: String,
 }
@@ -284,6 +287,8 @@ struct LastRun {
 pub struct ComputersPanel {
     remote: Remote<Vec<String>>,
     selected: Option<usize>,
+    /// the host `selected` and `last` belong to.
+    shown_host: Option<String>,
     can_run: bool,
     ask: Option<RunBox>,
     running: Option<Running>,
@@ -334,6 +339,13 @@ impl ComputersPanel {
         if self.remote.poll() {
             let count = self.remote.data.as_ref().map_or(0, Vec::len);
             self.selected = self.selected.filter(|i| *i < count);
+            // another host's machines are not this host's: nothing carries over
+            let source = self.remote.source().map(str::to_string);
+            if source != self.shown_host {
+                self.selected = None;
+                self.last = None;
+                self.shown_host = source;
+            }
         }
         let Some(running) = self.running.take() else {
             return;
@@ -341,8 +353,11 @@ impl ComputersPanel {
         match running.job.poll() {
             None => self.running = Some(running),
             Some(result) => {
-                let secs = running.started.elapsed().as_secs_f32();
-                self.last = Some(finish(running.machine, running.what, result, secs));
+                // a run started on another host than the one shown is not shown under it
+                if self.remote.belongs_to(&running.host) {
+                    let secs = running.started.elapsed().as_secs_f32();
+                    self.last = Some(finish(running.machine, running.what, result, secs));
+                }
             }
         }
     }
@@ -415,6 +430,7 @@ impl ComputersPanel {
                         bad: Vec::new(),
                         height: 90.0,
                         select: Msg::Pick,
+                        steady: true,
                     }),
                     Node::Gap(4.0),
                     Node::Toolbar(vec![
@@ -527,10 +543,14 @@ impl ComputersPanel {
                         if run.needs_confirmation() && !run.confirming {
                             run.confirming = true;
                         } else {
-                            if let Some(host) = host {
-                                self.start(services, host, &run, operation);
+                            let started = match host {
+                                Some(host) => self.start(services, host, &run, operation),
+                                None => Err("there is no host to run on".to_string()),
+                            };
+                            match started {
+                                Ok(()) => return,
+                                Err(error) => run.error = Some(error),
                             }
-                            return;
                         }
                     }
                 }
@@ -539,7 +559,14 @@ impl ComputersPanel {
         self.ask = Some(run);
     }
 
-    fn start(&mut self, services: &Services, host: &str, run: &RunBox, operation: Operation) {
+    /// start the run; the error is for the box, which stays open with what was typed.
+    fn start(
+        &mut self,
+        services: &Services,
+        host: &str,
+        run: &RunBox,
+        operation: Operation,
+    ) -> Result<(), String> {
         let target = host.to_string();
         let job = services.spawn(host, move |gateway, ask| {
             gateway.machine_run(&target, operation.clone(), ask)
@@ -549,11 +576,13 @@ impl ComputersPanel {
                 self.running = Some(Running {
                     job,
                     started: Instant::now(),
+                    host: host.to_string(),
                     machine: run.machine.clone(),
                     what: run.shown(),
                 });
+                Ok(())
             }
-            None => self.remote.say(true, "the gateway is busy"),
+            None => Err("the gateway is busy, try again in a moment".to_string()),
         }
     }
 
@@ -816,6 +845,78 @@ mod tests {
         let lines = output_lines(&output(&text));
         assert_eq!(lines.len(), SHOWN_LINES + 1);
         assert_eq!(lines.last().unwrap(), "[5 more lines not shown]");
+    }
+
+    #[test]
+    fn ok_with_no_host_or_a_busy_gateway_keeps_the_box_open_with_the_error() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+        // a free command asks first, then runs
+        panel.update_dialog(BoxMsg::Ok, &services, None);
+        panel.update_dialog(BoxMsg::Ok, &services, None);
+        let open = panel.ask.as_ref().unwrap();
+        assert!(open.error.as_ref().unwrap().contains("no host"));
+        assert_eq!(open.command, "ver");
+        // another job holds the gateway
+        let hold = services.spawn("a@b", |_, _| {
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        });
+        assert!(hold.is_some());
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        let open = panel.ask.as_ref().unwrap();
+        assert!(open.error.as_ref().unwrap().contains("busy"));
+        assert_eq!(open.command, "ver");
+        assert!(!panel.running());
+    }
+
+    #[test]
+    fn another_hosts_machines_clear_the_pick_and_the_last_run() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        wait(&mut panel);
+        assert!(panel.last_summary().is_some());
+        // the same host again keeps both
+        panel.reload(&services, "a@b");
+        wait(&mut panel);
+        assert!(panel.current().is_some() && panel.last_summary().is_some());
+        panel.reload(&services, "c@d");
+        wait(&mut panel);
+        assert!(panel.current().is_none() && panel.last_summary().is_none());
+    }
+
+    #[test]
+    fn a_run_that_ends_after_the_host_changed_is_not_shown() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        assert!(panel.running());
+        panel.reload(&services, "c@d");
+        wait(&mut panel);
+        assert!(panel.last_summary().is_none());
+    }
+
+    #[test]
+    fn the_machines_table_keeps_its_height_so_the_output_takes_the_room() {
+        let (panel, services, _) = panel();
+        let nodes = panel.preview(&services, Some("a@b"));
+        let steady = nodes.iter().any(|n| match n {
+            Node::Group { body, .. } => body
+                .iter()
+                .any(|b| matches!(b, Node::Table(table) if table.steady)),
+            _ => false,
+        });
+        assert!(steady);
     }
 
     #[test]
