@@ -1224,8 +1224,10 @@ fn check_machine(machine: &str) -> Result<(), Invalid> {
 /// show as timed out; nt4 has no `exit /b`. a command is refused when any part of it, split at
 /// `&`, `&&`, `||` and parentheses, starts with `exit` once a leading `@`, `if ...`, `do` and
 /// the like are taken off. a single `|` does not split: the right side of a pipe runs in a child
-/// cmd, where exit only ends that child. `"` and `^` quote what follows. the parse is
-/// conservative: when in doubt the command is allowed, as a missed exit only costs a timeout.
+/// cmd, where exit only ends that child. `"` and `^` quote what follows. a `(` splits only where
+/// a command starts, so `echo (exit)` and a for set pass. the parse is conservative: when in
+/// doubt the command is allowed, as a missed exit only costs a timeout. `else exit` and
+/// `if a == b exit` pass by design for that reason.
 fn check_no_exit(command: &str) -> Result<(), Invalid> {
     flag(
         !command_parts(command)
@@ -1241,6 +1243,7 @@ fn command_parts(command: &str) -> Vec<String> {
     let mut parts = vec![];
     let mut current = String::new();
     let mut quoted = false;
+    let mut depth = 0;
     let lower = command.to_ascii_lowercase();
     let mut chars = lower.chars().peekable();
     while let Some(c) = chars.next() {
@@ -1253,7 +1256,18 @@ fn command_parts(command: &str) -> Vec<String> {
                 current.push(c);
                 current.extend(chars.next());
             }
-            '&' | '(' | ')' if !quoted => parts.push(std::mem::take(&mut current)),
+            '&' if !quoted => parts.push(std::mem::take(&mut current)),
+            // a group opens only where a command starts
+            '(' if !quoted
+                && strip_prefixes(&current).is_some_and(|rest| rest.trim().is_empty()) =>
+            {
+                depth += 1;
+                parts.push(std::mem::take(&mut current));
+            }
+            ')' if !quoted && depth > 0 => {
+                depth -= 1;
+                parts.push(std::mem::take(&mut current));
+            }
             '|' if !quoted && chars.peek() == Some(&'|') => {
                 chars.next();
                 parts.push(std::mem::take(&mut current));
@@ -1272,23 +1286,35 @@ fn first_word(text: &str) -> (&str, &str) {
     text.split_at(end)
 }
 
-/// does `part` run the internal `exit`? a leading `@`, `do` and an `if` condition are skipped.
-/// `exit.bat` counts: nt4 cmd takes `.` as a delimiter, so it parses as `exit`.
-fn starts_with_exit(part: &str) -> bool {
-    let mut rest = part.trim_start_matches(|c: char| c.is_whitespace() || c == '@');
+fn skip_blanks(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_whitespace() || c == '@')
+}
+
+/// `part` without a leading `@`, `do`, `if` condition or `for ... do`; `None` when an `if` or a
+/// `for` cannot be read.
+fn strip_prefixes(part: &str) -> Option<&str> {
+    let mut rest = skip_blanks(part);
     loop {
         let (word, after) = first_word(rest);
         match word {
-            "do" => rest = after.trim_start_matches(|c: char| c.is_whitespace() || c == '@'),
-            "if" => match skip_condition(after) {
-                Some(next) => {
-                    rest = next.trim_start_matches(|c: char| c.is_whitespace() || c == '@')
-                }
-                None => return false,
-            },
-            _ => break,
+            "do" => rest = skip_blanks(after),
+            "if" => rest = skip_blanks(skip_condition(after)?),
+            "for" => {
+                let spaced = format!("{after} ");
+                let at = spaced.find(" do ")?;
+                rest = skip_blanks(after.get(at + 3..).unwrap_or(""));
+            }
+            _ => return Some(rest),
         }
     }
+}
+
+/// does `part` run the internal `exit`? `exit.bat` counts: nt4 cmd takes `.` as a delimiter, so
+/// it parses as `exit`.
+fn starts_with_exit(part: &str) -> bool {
+    let Some(rest) = strip_prefixes(part) else {
+        return false;
+    };
     rest.strip_prefix("exit").is_some_and(|after| {
         after.is_empty()
             || after.starts_with(|c: char| c.is_whitespace() || ",;=/.\t<>".contains(c))
@@ -2521,6 +2547,9 @@ web-proxy:
             "type exit.txt",
             "echo exited",
             "dir exit-code.log",
+            "echo (exit)",
+            "for %i in (exit) do echo %i",
+            "echo a & else exit",
             "echo a && echo exit_code",
         ] {
             assert_eq!(run(fine).validate(), Ok(()), "{fine}");
