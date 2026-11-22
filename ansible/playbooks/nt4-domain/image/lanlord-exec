@@ -20,9 +20,12 @@
 #   5. right before the service is created the root, the folder and the uploaded files are verified
 #      again (the files' owner must be Administrators, SYSTEM or the login's own sid)
 # any smbcacls or rpcclient error, or an acl that is not as expected, refuses the run (fail closed).
-# a tiny window remains: after the last verification and before the service has opened the helper,
+# two small windows remain. on the first creation on a machine the new folder inherits the drive root's
+# acl (Everyone: change) until the lock is set, which is the very next call after the mkdir; a user who
+# opens the folder in between keeps that handle until reboot. later runs verify the folder but cannot
+# detect held handles. and after the last verification and before the service has opened the helper,
 # an account that can already write there (an administrator, or whoever changes the drive root acl in
-# that moment) could still swap a file. nothing a plain local user can reach.
+# that moment) could still swap a file.
 #   lanlord-exec run --machine NAME [--address ADDR] --timeout N [--hash-command]
 #                             stdin: {"user":"...","password":"...","command":"...","caller":"..."}
 #                             caller is optional (letters, digits and ._@- only; "cli" when absent)
@@ -158,9 +161,9 @@ excerpt() {
 
 smb() { smbclient "//$addr/ADMIN\$" -A "$work/auth" "${SMB_OPT[@]}" "$@"; }
 # the drive share (C$ and so on) and the acl calls. the acl calls use sddl, which sets owner and dacl in
-# one call. the domain sid is given so smbcacls
-# does not look it up over ipc$ (nt4 refuses that); the builtin sids used here need none. the
-# read-back is numeric for the same reason: no name lookup, so the output is plain sids
+# one call. the domain sid is given so smbcacls does not look it up over ipc$ (nt4 refuses that); the
+# builtin sids used here need none. the read-back is numeric for the same reason: no name lookup, so
+# the output is plain sids
 smbd() { smbclient "//$addr/$DRIVE\$" -A "$work/auth" "${SMB_OPT[@]}" "$@"; }
 # acl SHARE PATH args
 acl() {
@@ -402,26 +405,40 @@ make_dir() {
   fi
 }
 
+# the lock: owner and dacl, set in one call, and checked from the output
+lock_dir() {
+  acl "$DRIVE\$" "$REMOTE_DIR" --sddl --set "$DIR_SDDL" >"$work/acl.log" 2>&1 ||
+    fail "could not lock $WIN_DIR on $machine to administrators: $(excerpt "$work/acl.log")"
+  grep -q -e 'NT_STATUS_' -e 'ERROR' "$work/acl.log" &&
+    fail "could not lock $WIN_DIR on $machine to administrators: $(excerpt "$work/acl.log")"
+}
+
+# a target that is not a folder (a file of that name) is refused
+check_folder() {
+  smbd -c "cd $REMOTE_DIR" >"$work/cd.log" 2>&1
+  if grep -q 'NT_STATUS_' "$work/cd.log"; then
+    fail "$WIN_DIR on $machine is not a folder; delete it on $machine and retry"
+  fi
+}
+
 # makes the work folder and locks it to Administrators and SYSTEM; fails closed: nothing is uploaded
 # unless the acl read back is exactly that. the owner is set too: an owner keeps WRITE_DAC, so a user
 # who made the folder first could otherwise open it again; for that reason a folder that already exists
 # and is owned by anyone else is refused instead of taken over
 prepare_dir() {
   make_dir
-  smbd -c "cd $REMOTE_DIR" >"$work/cd.log" 2>&1
-  if grep -q 'NT_STATUS_' "$work/cd.log"; then
-    fail "$WIN_DIR on $machine is not a folder; delete it on $machine and retry"
-  fi
   if ((DIR_EXISTED)); then
     read_acl "$DRIVE\$" "$REMOTE_DIR" "$WIN_DIR"
     is_admin_sid "$ACL_OWNER" ||
       fail "$WIN_DIR on $machine already exists and is owned by ${ACL_OWNER:-unknown}, not" \
         "administrators; delete $WIN_DIR on $machine and retry"
+    check_folder
+    lock_dir
+  else
+    # a new folder inherits the drive root's acl: lock it at once, nothing in between
+    lock_dir
+    check_folder
   fi
-  acl "$DRIVE\$" "$REMOTE_DIR" --sddl --set "$DIR_SDDL" >"$work/acl.log" 2>&1 ||
-    fail "could not lock $WIN_DIR on $machine to administrators: $(excerpt "$work/acl.log")"
-  grep -q -e 'NT_STATUS_' -e 'ERROR' "$work/acl.log" &&
-    fail "could not lock $WIN_DIR on $machine to administrators: $(excerpt "$work/acl.log")"
   read_acl "$DRIVE\$" "$REMOTE_DIR" "$WIN_DIR"
   check_private "$WIN_DIR" 0
 }

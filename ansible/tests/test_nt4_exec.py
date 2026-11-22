@@ -603,6 +603,31 @@ class LanlordExecTest(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(self.stubs, "cdrive", "lanlord")))
         self.assertNotIn("mkdir Temp", self.calls())
 
+    def test_a_new_folder_is_locked_by_the_very_next_call_after_the_mkdir(self):
+        shutil.rmtree(os.path.join(self.stubs, "cdrive", "lanlord"))
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        lines = self.lines()
+        mk = self.index(lines, "mkdir lanlord")
+        self.assertIn("smbcacls", lines[mk + 1])
+        self.assertIn("--set", lines[mk + 1])
+        # the folder check comes after the lock, and before any put
+        check = next(i for i, c in enumerate(lines) if c.endswith("-c cd lanlord"))
+        self.assertLess(mk + 1, check)
+        self.assertLess(check, self.index(lines, " put "))
+
+    def test_an_existing_folder_is_checked_before_the_lock_and_before_any_put(self):
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        lines = self.lines()
+        mk = self.index(lines, "mkdir lanlord")
+        owner = self.index(lines[mk:], "smbcacls", "C$ lanlord ", "--numeric") + mk
+        check = next(i for i, c in enumerate(lines) if i > mk and c.endswith("-c cd lanlord"))
+        setacl = self.index(lines, "--set")
+        self.assertLess(owner, check)
+        self.assertLess(check, setacl)
+        self.assertLess(setacl, self.index(lines, " put "))
+
     def test_an_existing_folder_is_not_an_error(self):
         out = self.run_exec()
         self.assertEqual(out.returncode, 0, out.stderr)
