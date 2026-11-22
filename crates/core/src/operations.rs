@@ -563,14 +563,14 @@ fn dispatch(
             machine,
             preset,
             args,
+            timeout_secs,
         } => {
             let command = nt4_exec::render(preset, args).map_err(|reason| anyhow!("{reason}"))?;
-            let timeout = DEFAULT_TIMEOUT_SECS;
             machine_run(
                 session,
                 &key()?,
                 ask,
-                (machine, &command, timeout, &who.caller.user),
+                (machine, &command, *timeout_secs, &who.caller.user),
             )?
         }
     })
@@ -1073,6 +1073,7 @@ esac"#,
             machine: "ws1".into(),
             preset: "net-start".into(),
             args: vec![],
+            timeout_secs: 5,
         };
         assert_eq!(on_machines(&session, &preset).unwrap(), expected);
         let sent = std::fs::read_to_string(record.path()).unwrap();
@@ -1081,6 +1082,7 @@ esac"#,
             machine: "ws1".into(),
             preset: "nope".into(),
             args: vec![],
+            timeout_secs: 5,
         };
         assert!(on_machines(&session, &unknown).is_err());
     }
