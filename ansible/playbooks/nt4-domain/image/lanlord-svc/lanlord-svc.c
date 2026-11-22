@@ -5,7 +5,72 @@
  * of the batch file as the service specific exit code. a stop request kills the child.
  * built for nt4 sp6a x86: no c runtime, only kernel32 and advapi32 calls that exist on nt4.
  * it never reads, prints or handles credentials. */
-#include <windows.h>
+/* the few win32 declarations needed, written out so the build needs no windows headers (and so it
+ * runs on any build host architecture); every function is stdcall and exists on nt4 */
+typedef unsigned long DWORD;
+typedef int BOOL;
+typedef void *HANDLE;
+typedef char *LPSTR;
+typedef const char *LPCSTR;
+#define WINAPI __attribute__((stdcall))
+#define DECL(type) __declspec(dllimport) type WINAPI
+#define NULL ((void *)0)
+#define TRUE 1
+#define FALSE 0
+#define INFINITE 0xFFFFFFFFUL
+#define MAX_PATH 260
+#define SERVICE_WIN32_OWN_PROCESS 0x10
+#define SERVICE_STOPPED 1
+#define SERVICE_STOP_PENDING 3
+#define SERVICE_RUNNING 4
+#define SERVICE_ACCEPT_STOP 1
+#define SERVICE_CONTROL_STOP 1
+#define ERROR_SERVICE_SPECIFIC_ERROR 1066
+
+typedef struct {
+    DWORD dwServiceType, dwCurrentState, dwControlsAccepted, dwWin32ExitCode;
+    DWORD dwServiceSpecificExitCode, dwCheckPoint, dwWaitHint;
+} SERVICE_STATUS;
+typedef void *SERVICE_STATUS_HANDLE;
+typedef void(WINAPI *LPHANDLER_FUNCTION)(DWORD);
+typedef void(WINAPI *LPSERVICE_MAIN_FUNCTIONA)(DWORD, LPSTR *);
+typedef struct {
+    LPCSTR lpServiceName;
+    LPSERVICE_MAIN_FUNCTIONA lpServiceProc;
+} SERVICE_TABLE_ENTRYA;
+typedef struct {
+    DWORD cb;
+    LPSTR lpReserved, lpDesktop, lpTitle;
+    DWORD dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    unsigned short wShowWindow, cbReserved2;
+    unsigned char *lpReserved2;
+    HANDLE hStdInput, hStdOutput, hStdError;
+} STARTUPINFOA;
+typedef struct {
+    HANDLE hProcess, hThread;
+    DWORD dwProcessId, dwThreadId;
+} PROCESS_INFORMATION;
+/* the real structure is 24 bytes on x86 */
+typedef struct {
+    void *reserved[6];
+} CRITICAL_SECTION;
+
+DECL(BOOL) StartServiceCtrlDispatcherA(const SERVICE_TABLE_ENTRYA *);
+DECL(SERVICE_STATUS_HANDLE) RegisterServiceCtrlHandlerA(LPCSTR, LPHANDLER_FUNCTION);
+DECL(BOOL) SetServiceStatus(SERVICE_STATUS_HANDLE, SERVICE_STATUS *);
+DECL(void) ExitProcess(unsigned int);
+DECL(DWORD) ExpandEnvironmentStringsA(LPCSTR, LPSTR, DWORD);
+DECL(LPSTR) GetCommandLineA(void);
+DECL(unsigned int) GetSystemDirectoryA(LPSTR, unsigned int);
+DECL(BOOL) CreateProcessA(LPCSTR, LPSTR, void *, void *, BOOL, DWORD, void *, LPCSTR, STARTUPINFOA *,
+                          PROCESS_INFORMATION *);
+DECL(BOOL) CloseHandle(HANDLE);
+DECL(DWORD) WaitForSingleObject(HANDLE, DWORD);
+DECL(BOOL) GetExitCodeProcess(HANDLE, DWORD *);
+DECL(BOOL) TerminateProcess(HANDLE, unsigned int);
+DECL(void) InitializeCriticalSection(CRITICAL_SECTION *);
+DECL(void) EnterCriticalSection(CRITICAL_SECTION *);
+DECL(void) LeaveCriticalSection(CRITICAL_SECTION *);
 
 static SERVICE_STATUS_HANDLE status_handle;
 static SERVICE_STATUS status;
