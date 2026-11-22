@@ -215,14 +215,14 @@ pub fn find(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|preset| preset.id == id)
 }
 
-/// an argument: 1 to 64 characters of `[A-Za-z0-9_./:\-]`, not starting with `-` (that would be
-/// an option) and without `,` (that would add a name,path pair).
+/// an argument: 1 to 64 characters of `[A-Za-z0-9_./:\-]`, not starting with `-` or `/` (that
+/// would be an option, as `//S` is to cscript) and without `,` (that would add a name,path pair).
 pub fn check_arg(arg: &str) -> Result<(), &'static str> {
     if arg.is_empty() || arg.len() > MAX_ARG_BYTES {
         return Err("must be 1 to 64 characters");
     }
-    if arg.starts_with('-') {
-        return Err("must not start with -");
+    if arg.starts_with(['-', '/']) {
+        return Err("must not start with - or /");
     }
     if !arg
         .bytes()
@@ -362,6 +362,8 @@ mod tests {
             "a,b",
             "-c",
             "--computer",
+            "//S",
+            "/x",
             "a\"b",
             "%PATH%",
             "1\n2",

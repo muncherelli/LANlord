@@ -86,6 +86,9 @@ pub fn machine_preset(
     args: &[String],
     timeout_secs: u32,
 ) -> Result<Operation> {
+    if !(1..=900).contains(&timeout_secs) {
+        bail!("the timeout must be 1 to 900 seconds");
+    }
     lanlord_model::nt4_exec::render(id, args)
         .map_err(|reason| anyhow::anyhow!("preset {id} {reason}"))?;
     Ok(Operation::MachinePreset {
@@ -97,15 +100,19 @@ pub fn machine_preset(
 }
 
 /// ask before a preset that changes the machine runs: `yes` skips the question, a read-only
-/// preset never asks. `confirm` gets the question and answers whether to go on.
+/// preset never asks. without `yes` the question needs a terminal, so a script cannot answer it.
+/// `confirm` gets the question and answers whether to go on.
 pub fn confirm_preset(
     id: &str,
     machine: &str,
-    yes: bool,
+    (yes, interactive): (bool, bool),
     confirm: &mut dyn FnMut(&str) -> Result<bool>,
 ) -> Result<()> {
     if yes || !lanlord_model::nt4_exec::needs_confirmation(Some(id)) {
         return Ok(());
+    }
+    if !interactive {
+        bail!("needs --yes when not run at a terminal");
     }
     if confirm(&format!(
         "preset {id} changes {machine}; run it? type yes: "
@@ -188,7 +195,20 @@ mod tests {
         let unknown = machine_preset("ws1", "nope", &[], 30).unwrap_err();
         assert!(unknown.to_string().contains("not a known preset"));
         assert!(machine_preset("ws1", "startweb", &[], 30).is_err());
-        for bad in ["1 & del *", "1|x", "%PATH%", "a\"b", "'a'", "-c", "a,b", ""] {
+        assert!(machine_preset("ws1", "ver", &[], 0).is_err());
+        assert!(machine_preset("ws1", "ver", &[], 901).is_err());
+        for bad in [
+            "1 & del *",
+            "1|x",
+            "%PATH%",
+            "a\"b",
+            "'a'",
+            "-c",
+            "//S",
+            "/x",
+            "a,b",
+            "",
+        ] {
             assert!(
                 machine_preset("ws1", "startweb", &words(&[bad]), 30).is_err(),
                 "{bad:?}"
@@ -203,18 +223,24 @@ mod tests {
             asked.borrow_mut().push(q.to_string());
             Ok(true)
         };
-        confirm_preset("ver", "ws1", false, &mut agree).unwrap();
+        confirm_preset("ver", "ws1", (false, true), &mut agree).unwrap();
         assert!(asked.borrow().is_empty());
-        confirm_preset("startweb", "ws1", true, &mut agree).unwrap();
+        confirm_preset("startweb", "ws1", (true, true), &mut agree).unwrap();
         assert!(asked.borrow().is_empty());
-        confirm_preset("startweb", "ws1", false, &mut agree).unwrap();
+        confirm_preset("startweb", "ws1", (false, true), &mut agree).unwrap();
         assert_eq!(asked.borrow().len(), 1);
         assert!(asked.borrow()[0].contains("startweb") && asked.borrow()[0].contains("ws1"));
         let mut refuse = |_: &str| -> Result<bool> { Ok(false) };
-        assert!(confirm_preset("startweb", "ws1", false, &mut refuse).is_err());
-        assert!(confirm_preset("startweb", "ws1", true, &mut refuse).is_ok());
+        assert!(confirm_preset("startweb", "ws1", (false, true), &mut refuse).is_err());
+        assert!(confirm_preset("startweb", "ws1", (true, true), &mut refuse).is_ok());
+        // no terminal and no --yes: refused without asking
+        let error = confirm_preset("startweb", "ws1", (false, false), &mut agree).unwrap_err();
+        assert!(error.to_string().contains("--yes"));
+        assert_eq!(asked.borrow().len(), 1);
+        confirm_preset("startweb", "ws1", (true, false), &mut agree).unwrap();
+        confirm_preset("ver", "ws1", (false, false), &mut agree).unwrap();
         // an unknown preset counts as mutating
-        assert!(confirm_preset("nope", "ws1", false, &mut refuse).is_err());
+        assert!(confirm_preset("nope", "ws1", (false, true), &mut refuse).is_err());
     }
 
     #[test]

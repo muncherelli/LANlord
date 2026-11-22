@@ -639,28 +639,29 @@ enum Command {
         #[command(subcommand)]
         action: Option<MachinesCommand>,
     },
-    /// run an iis 4 preset on a domain machine through the gateway, or list the presets with
+    /// run an IIS 4 preset on a domain machine through the gateway, or list the presets with
     /// --list; the exit code is the one the machine returned
     Iis {
         /// the gateway
-        #[arg(required_unless_present = "list")]
+        #[arg(required_unless_present = "list", conflicts_with = "list")]
         host: Option<String>,
         /// the domain machine
-        #[arg(required_unless_present = "list")]
+        #[arg(required_unless_present = "list", conflicts_with = "list")]
         name: Option<String>,
         /// the preset to run (see --list)
-        #[arg(required_unless_present = "list")]
+        #[arg(required_unless_present = "list", conflicts_with = "list")]
         preset: Option<String>,
         /// the preset's arguments, in order
+        #[arg(conflicts_with = "list")]
         args: Vec<String>,
         /// list the presets, with a description and whether each changes the machine
         #[arg(long)]
         list: bool,
         /// seconds to wait for the preset, 1 to 900
-        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS)]
+        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS, value_parser = clap::value_parser!(u32).range(1..=900))]
         timeout: u32,
         /// run a preset that changes the machine without asking
-        #[arg(long)]
+        #[arg(long, conflicts_with = "list")]
         yes: bool,
     },
     /// manage the secrets lanlord generates itself
@@ -896,7 +897,8 @@ fn iis(
     (timeout, yes): (u32, bool),
 ) -> Result<()> {
     let operation = lanlord_core::exec::machine_preset(name, preset, args, timeout)?;
-    lanlord_core::exec::confirm_preset(preset, name, yes, &mut |question| {
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    lanlord_core::exec::confirm_preset(preset, name, (yes, interactive), &mut |question| {
         Ok(ask_line(question)?.eq_ignore_ascii_case("yes"))
     })?;
     let reply = execute(host, &operation, &mut ask)?;
@@ -3117,10 +3119,6 @@ mod tests {
         assert!(!yes);
         assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
         assert!(matches!(
-            parse(&["iis", "gw", "ws1", "--list"]),
-            Command::Iis { list: true, .. }
-        ));
-        assert!(matches!(
             parse(&["iis", "--list"]),
             Command::Iis {
                 list: true,
@@ -3129,6 +3127,13 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1", "ver", "--list"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1", "--list"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "iis", "--list", "--yes"]).is_err());
+        for bad in ["0", "901"] {
+            let args = ["lanlord", "iis", "gw", "ws1", "ver", "--timeout", bad];
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]
