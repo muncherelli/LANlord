@@ -52,6 +52,7 @@ const FILES: &[(&str, &str)] = &[
     playbook!("nt4-domain/image/Dockerfile"),
     playbook!("nt4-domain/image/entrypoint.sh"),
     playbook!("nt4-domain/image/lanlord-user"),
+    playbook!("nt4-domain/image/lanlord-exec"),
     playbook!("nt4-domain/image/patches/samba-4.22-bare-ntlm-session-key.patch"),
     playbook!("nt4-domain/image/patches/samba-4.22-mask-account-script-names.patch"),
     playbook!("nt4-domain/image/samba-pubkey.asc"),

@@ -44,6 +44,8 @@ const ENTRYPOINT: &str =
     include_str!("../../../../../ansible/playbooks/nt4-domain/image/entrypoint.sh");
 const LANLORD_USER: &str =
     include_str!("../../../../../ansible/playbooks/nt4-domain/image/lanlord-user");
+const LANLORD_EXEC: &str =
+    include_str!("../../../../../ansible/playbooks/nt4-domain/image/lanlord-exec");
 const SMB_CONF: &str = include_str!("../../../../../ansible/playbooks/nt4-domain/smb.conf.j2");
 
 /// what an apply says when no password is recorded as set.
@@ -370,11 +372,12 @@ fn network_address(doc: &Value, wanted: &str) -> Option<String> {
     text(found.get("address"))
 }
 
-/// the version of the scripts: the first 12 hex digits of the sha256 of both, one after the other.
+/// the version of the scripts: the first 12 hex digits of the sha256 of all three, one after the other.
 pub fn scripts_hash() -> String {
     let mut sha = Sha256::new();
     sha.update(ENTRYPOINT.as_bytes());
     sha.update(LANLORD_USER.as_bytes());
+    sha.update(LANLORD_EXEC.as_bytes());
     hex(&sha.finalize())[..12].to_string()
 }
 
@@ -495,6 +498,11 @@ fn resources_of(
             "/usr/local/bin/lanlord-user",
             ":ro",
         ),
+        (
+            format!("{ROOT}/bin/lanlord-exec"),
+            "/usr/local/bin/lanlord-exec",
+            ":ro",
+        ),
         (format!("{}/lib", server.dir), "/var/lib/samba", ""),
         (conf_path, "/etc/samba/smb.conf", ":ro"),
     ] {
@@ -579,6 +587,11 @@ fn prepare(host: &dyn Host, doc: &Value) -> Result<Option<Prepared>> {
         Box::new(File::new(
             &format!("{ROOT}/bin/lanlord-user"),
             LANLORD_USER,
+            0o755,
+        )),
+        Box::new(File::new(
+            &format!("{ROOT}/bin/lanlord-exec"),
+            LANLORD_EXEC,
             0o755,
         )),
     ];
@@ -1391,6 +1404,11 @@ mod tests {
             LANLORD_USER.as_bytes(),
             0o755,
         );
+        host.put(
+            &format!("{STATE}/bin/lanlord-exec"),
+            LANLORD_EXEC.as_bytes(),
+            0o755,
+        );
         for dir in [STATE.to_string(), format!("{STATE}/bin")] {
             host.mkdir(&dir, 0o750).unwrap();
         }
@@ -1471,12 +1489,13 @@ mod tests {
 
     #[test]
     fn the_scripts_hash_is_what_the_playbook_computes() {
-        // `cat entrypoint.sh lanlord-user | sha256sum | cut -c1-12`
+        // `cat entrypoint.sh lanlord-user lanlord-exec | sha256sum | cut -c1-12`
         let mut sha = Sha256::new();
         sha.update(
             std::fs::read("../../ansible/playbooks/nt4-domain/image/entrypoint.sh").unwrap(),
         );
         sha.update(std::fs::read("../../ansible/playbooks/nt4-domain/image/lanlord-user").unwrap());
+        sha.update(std::fs::read("../../ansible/playbooks/nt4-domain/image/lanlord-exec").unwrap());
         assert_eq!(scripts_hash(), hex(&sha.finalize())[..12]);
     }
 
@@ -1726,6 +1745,9 @@ mod tests {
         );
         assert!(run.contains(&format!(
             "-v {STATE}/bin/lanlord-user:/usr/local/bin/lanlord-user:ro"
+        )));
+        assert!(run.contains(&format!(
+            "-v {STATE}/bin/lanlord-exec:/usr/local/bin/lanlord-exec:ro"
         )));
         assert!(run.contains(&format!(
             "-v {STATE}/lab/config/smb.conf:/etc/samba/smb.conf:ro"

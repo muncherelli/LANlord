@@ -25,6 +25,7 @@
           --label lanlord.scripts={{ scripts_hash.stdout }}
           -v {{ nt4_root }}/bin/entrypoint.sh:/usr/local/bin/entrypoint.sh:ro
           -v {{ nt4_root }}/bin/lanlord-user:/usr/local/bin/lanlord-user:ro
+          -v {{ nt4_root }}/bin/lanlord-exec:/usr/local/bin/lanlord-exec:ro
           -v {{ state_dir }}/lib:/var/lib/samba
           -v {{ state_dir }}/config/smb.conf:/etc/samba/smb.conf:ro
           {{ image }}
