@@ -78,6 +78,44 @@ pub fn machine_run(machine: &str, command: &[String], timeout_secs: u32) -> Resu
     })
 }
 
+/// the operation that runs the preset `id` on `machine`; the arguments are checked here, so an
+/// unknown preset or an argument that is not plain text never leaves the caller.
+pub fn machine_preset(
+    machine: &str,
+    id: &str,
+    args: &[String],
+    timeout_secs: u32,
+) -> Result<Operation> {
+    lanlord_model::nt4_exec::render(id, args)
+        .map_err(|reason| anyhow::anyhow!("preset {id} {reason}"))?;
+    Ok(Operation::MachinePreset {
+        machine: machine.to_string(),
+        preset: id.to_string(),
+        args: args.to_vec(),
+        timeout_secs,
+    })
+}
+
+/// ask before a preset that changes the machine runs: `yes` skips the question, a read-only
+/// preset never asks. `confirm` gets the question and answers whether to go on.
+pub fn confirm_preset(
+    id: &str,
+    machine: &str,
+    yes: bool,
+    confirm: &mut dyn FnMut(&str) -> Result<bool>,
+) -> Result<()> {
+    if yes || !lanlord_model::nt4_exec::needs_confirmation(Some(id)) {
+        return Ok(());
+    }
+    if confirm(&format!(
+        "preset {id} changes {machine}; run it? type yes: "
+    ))? {
+        Ok(())
+    } else {
+        bail!("not confirmed; nothing was run")
+    }
+}
+
 fn on_machine(gateway: &str, name: &str, command: &[String], ask: AskPassword) -> Result<i32> {
     let operation = machine_run(name, command, DEFAULT_TIMEOUT_SECS)?;
     show_run(&execute(gateway, &operation, ask)?)
@@ -130,6 +168,53 @@ mod tests {
             }
         );
         assert!(machine_run("ws1", &[], 30).is_err());
+    }
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn a_preset_operation_is_built_from_a_known_preset_and_plain_arguments() {
+        assert_eq!(
+            machine_preset("ws1", "startweb", &words(&["1"]), 30).unwrap(),
+            Operation::MachinePreset {
+                machine: "ws1".into(),
+                preset: "startweb".into(),
+                args: words(&["1"]),
+                timeout_secs: 30
+            }
+        );
+        let unknown = machine_preset("ws1", "nope", &[], 30).unwrap_err();
+        assert!(unknown.to_string().contains("not a known preset"));
+        assert!(machine_preset("ws1", "startweb", &[], 30).is_err());
+        for bad in ["1 & del *", "1|x", "%PATH%", "a\"b", "'a'", "-c", "a,b", ""] {
+            assert!(
+                machine_preset("ws1", "startweb", &words(&[bad]), 30).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_mutating_preset_asks_and_yes_skips_the_question() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let mut agree = |q: &str| -> Result<bool> {
+            asked.borrow_mut().push(q.to_string());
+            Ok(true)
+        };
+        confirm_preset("ver", "ws1", false, &mut agree).unwrap();
+        assert!(asked.borrow().is_empty());
+        confirm_preset("startweb", "ws1", true, &mut agree).unwrap();
+        assert!(asked.borrow().is_empty());
+        confirm_preset("startweb", "ws1", false, &mut agree).unwrap();
+        assert_eq!(asked.borrow().len(), 1);
+        assert!(asked.borrow()[0].contains("startweb") && asked.borrow()[0].contains("ws1"));
+        let mut refuse = |_: &str| -> Result<bool> { Ok(false) };
+        assert!(confirm_preset("startweb", "ws1", false, &mut refuse).is_err());
+        assert!(confirm_preset("startweb", "ws1", true, &mut refuse).is_ok());
+        // an unknown preset counts as mutating
+        assert!(confirm_preset("nope", "ws1", false, &mut refuse).is_err());
     }
 
     #[test]

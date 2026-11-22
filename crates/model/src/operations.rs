@@ -184,11 +184,14 @@ pub enum Operation {
         timeout_secs: u32,
     },
     /// run a preset from [`crate::nt4_exec`] on a domain machine; `args` fill its placeholders.
+    /// `timeout_secs` is as for `MachineRun`.
     MachinePreset {
         machine: String,
         preset: String,
         #[serde(default)]
         args: Vec<String>,
+        #[serde(default = "default_timeout_secs")]
+        timeout_secs: u32,
     },
 }
 
@@ -665,6 +668,7 @@ mod tests {
                 machine: "NT4SRV01".into(),
                 preset: "startweb".into(),
                 args: vec!["1".into()],
+                timeout_secs: 30,
             },
             Operation::ChangeInternet {
                 change: InternetChange::Network {

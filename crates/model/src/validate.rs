@@ -1473,10 +1473,11 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             machine,
             preset,
             args,
+            timeout_secs,
         } => {
             check_machine(machine)?;
             crate::nt4_exec::render(preset, args).map_err(|reason| invalid("preset", reason))?;
-            Ok(())
+            check_timeout(*timeout_secs)
         }
         Operation::ClockZoneNow { zone } => named("zone", time_zone, zone),
         Operation::ClockApply { change } => check_clock(change),

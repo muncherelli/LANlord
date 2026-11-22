@@ -639,6 +639,30 @@ enum Command {
         #[command(subcommand)]
         action: Option<MachinesCommand>,
     },
+    /// run an iis 4 preset on a domain machine through the gateway, or list the presets with
+    /// --list; the exit code is the one the machine returned
+    Iis {
+        /// the gateway
+        #[arg(required_unless_present = "list")]
+        host: Option<String>,
+        /// the domain machine
+        #[arg(required_unless_present = "list")]
+        name: Option<String>,
+        /// the preset to run (see --list)
+        #[arg(required_unless_present = "list")]
+        preset: Option<String>,
+        /// the preset's arguments, in order
+        args: Vec<String>,
+        /// list the presets, with a description and whether each changes the machine
+        #[arg(long)]
+        list: bool,
+        /// seconds to wait for the preset, 1 to 900
+        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS)]
+        timeout: u32,
+        /// run a preset that changes the machine without asking
+        #[arg(long)]
+        yes: bool,
+    },
     /// manage the secrets lanlord generates itself
     Secrets {
         host: String,
@@ -851,6 +875,32 @@ fn secrets(host: &str, action: SecretsCommand) -> Result<()> {
         }
         _ => bail!("unexpected answer"),
     }
+}
+
+/// the preset table, one line each: id and arguments, whether it changes the machine, label.
+fn preset_lines() -> Vec<String> {
+    lanlord_model::nt4_exec::PRESETS
+        .iter()
+        .map(|p| {
+            let args: String = p.args.iter().map(|a| format!(" <{a}>")).collect();
+            let kind = if p.mutating { "mutating" } else { "read-only" };
+            format!("{}{args}\t{kind}\t{}", p.id, p.label)
+        })
+        .collect()
+}
+
+fn iis(
+    host: &str,
+    name: &str,
+    (preset, args): (&str, &[String]),
+    (timeout, yes): (u32, bool),
+) -> Result<()> {
+    let operation = lanlord_core::exec::machine_preset(name, preset, args, timeout)?;
+    lanlord_core::exec::confirm_preset(preset, name, yes, &mut |question| {
+        Ok(ask_line(question)?.eq_ignore_ascii_case("yes"))
+    })?;
+    let reply = execute(host, &operation, &mut ask)?;
+    std::process::exit(lanlord_core::exec::show_run(&reply)?);
 }
 
 fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
@@ -2290,6 +2340,22 @@ fn main() -> Result<()> {
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
+        Some(Command::Iis { list: true, .. }) => {
+            for line in preset_lines() {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Some(Command::Iis {
+            host: Some(host),
+            name: Some(name),
+            preset: Some(preset),
+            args,
+            timeout,
+            yes,
+            ..
+        }) => iis(&host, &name, (&preset, &args), (timeout, yes)),
+        Some(Command::Iis { .. }) => unreachable!("clap requires the host, name and preset"),
         Some(Command::Secrets { host, action }) => secrets(&host, action),
         Some(Command::Networks { host, action }) => networks(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
@@ -3014,6 +3080,73 @@ mod tests {
         };
         assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
         assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "run", "ws1"]).is_err());
+    }
+
+    #[test]
+    fn iis_runs_a_preset_with_arguments_or_lists_them() {
+        let Command::Iis {
+            host,
+            name,
+            preset,
+            args,
+            list,
+            timeout,
+            yes,
+        } = parse(&[
+            "iis",
+            "gw",
+            "ws1",
+            "startweb",
+            "1",
+            "--timeout",
+            "30",
+            "--yes",
+        ])
+        else {
+            panic!("not iis");
+        };
+        assert_eq!(host.as_deref(), Some("gw"));
+        assert_eq!(name.as_deref(), Some("ws1"));
+        assert_eq!(preset.as_deref(), Some("startweb"));
+        assert_eq!(args, ["1"]);
+        assert!(!list && yes);
+        assert_eq!(timeout, 30);
+        let Command::Iis { yes, timeout, .. } = parse(&["iis", "gw", "ws1", "ver"]) else {
+            panic!("not iis");
+        };
+        assert!(!yes);
+        assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
+        assert!(matches!(
+            parse(&["iis", "gw", "ws1", "--list"]),
+            Command::Iis { list: true, .. }
+        ));
+        assert!(matches!(
+            parse(&["iis", "--list"]),
+            Command::Iis {
+                list: true,
+                host: None,
+                ..
+            }
+        ));
+        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1"]).is_err());
+    }
+
+    #[test]
+    fn the_preset_list_names_every_preset_and_marks_the_mutating_ones() {
+        let lines = preset_lines();
+        assert_eq!(lines.len(), lanlord_model::nt4_exec::PRESETS.len());
+        assert!(lines.contains(&"ver\tread-only\tWindows version".to_string()));
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("startweb <site>\tmutating\t")));
+    }
+
+    #[test]
+    fn a_refused_preset_stops_before_the_gateway_is_asked() {
+        let bad = vec!["1 & x".to_string()];
+        let unknown = iis("gw", "ws1", ("nope", &[]), (30, true)).unwrap_err();
+        assert!(unknown.to_string().contains("not a known preset"));
+        assert!(iis("gw", "ws1", ("startweb", &bad), (30, true)).is_err());
     }
 
     #[test]
