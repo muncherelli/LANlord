@@ -991,6 +991,107 @@ esac"#,
         }
     }
 
+    /// a gateway with the exec account's secret sealed to the test key, whose machine `ws1`
+    /// answers `events` to any run.
+    fn machine_gateway(record: &std::path::Path, events: &str) -> Session {
+        use crate::nt4_exec::tests as fixtures;
+        let identity = key().unwrap().unwrap();
+        let sealed = fixtures::sealed(&identity, fixtures::PASSWORD);
+        fixtures::gateway(
+            record,
+            &fixtures::Fake {
+                sealed: &sealed,
+                lease: "",
+                first: events,
+                second: "",
+            },
+        )
+    }
+
+    fn on_machines(session: &Session, operation: &Operation) -> Result<Reply> {
+        let everything = Grants::all(Level::Manage);
+        let admin = Caller {
+            user: "admin".into(),
+            admin: true,
+        };
+        let who = Who {
+            caller: &admin,
+            grants: &everything,
+        };
+        dispatch(session, "gw", &who, operation, &mut no_password, key)
+    }
+
+    #[test]
+    fn the_machines_of_the_domain_are_listed() {
+        let record = tempfile::NamedTempFile::new().unwrap();
+        let session = machine_gateway(record.path(), "");
+        assert_eq!(
+            on_machines(&session, &Operation::Machines).unwrap(),
+            Reply::Machines(vec!["ws1".into()])
+        );
+    }
+
+    #[test]
+    fn a_machine_run_and_a_preset_answer_with_decoded_output() {
+        use crate::nt4_exec::tests::event;
+        let events = format!(
+            "{}\n{}\n{}",
+            event(r#"{"stream":"out","data":"gQ=="}"#),
+            event(r#"{"stream":"err","data":"ZQ=="}"#),
+            event(r#"{"exit":3}"#)
+        );
+        let record = tempfile::NamedTempFile::new().unwrap();
+        let session = machine_gateway(record.path(), &events);
+        let expected = Reply::MachineRun {
+            exit_code: Some(3),
+            stdout: "\u{fc}".into(),
+            stderr: "e".into(),
+            timed_out: false,
+            truncated: false,
+        };
+        let run = Operation::MachineRun {
+            machine: "WS1".into(),
+            command: "ver".into(),
+            timeout_secs: 5,
+        };
+        assert_eq!(on_machines(&session, &run).unwrap(), expected);
+        let preset = Operation::MachinePreset {
+            machine: "ws1".into(),
+            preset: "net-start".into(),
+            args: vec![],
+        };
+        assert_eq!(on_machines(&session, &preset).unwrap(), expected);
+        let sent = std::fs::read_to_string(record.path()).unwrap();
+        assert!(sent.contains(r#""command":"net start""#), "{sent}");
+        let unknown = Operation::MachinePreset {
+            machine: "ws1".into(),
+            preset: "nope".into(),
+            args: vec![],
+        };
+        assert!(on_machines(&session, &unknown).is_err());
+    }
+
+    #[test]
+    fn a_timed_out_machine_run_has_no_exit_code() {
+        let events = crate::nt4_exec::tests::event(r#"{"timed_out":true}"#);
+        let record = tempfile::NamedTempFile::new().unwrap();
+        let session = machine_gateway(record.path(), &events);
+        let run = Operation::MachineRun {
+            machine: "ws1".into(),
+            command: "ping -t x".into(),
+            timeout_secs: 1,
+        };
+        let Reply::MachineRun {
+            exit_code,
+            timed_out,
+            ..
+        } = on_machines(&session, &run).unwrap()
+        else {
+            panic!("not a run");
+        };
+        assert!(timed_out && exit_code.is_none());
+    }
+
     #[test]
     fn only_an_administrator_creates_administrators_and_applies_every_area() {
         let gw = Gateway::new("operations-create-admin");

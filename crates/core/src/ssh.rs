@@ -84,6 +84,35 @@ fn shell_quote(arg: &str) -> String {
     }
 }
 
+/// the longest line kept whole; a longer one is cut there and the rest of it is dropped, so a
+/// remote that never prints a newline cannot use up our memory.
+const MAX_LINE: usize = 8 * 1024 * 1024;
+
+/// the next line without its newline, `None` at the end of the stream.
+fn read_line_capped(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let read =
+        std::io::Read::take(&mut *reader, MAX_LINE as u64 + 1).read_until(b'\n', &mut line)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+    } else if line.len() > MAX_LINE {
+        line.truncate(MAX_LINE);
+        // drop the rest of the line
+        let mut rest = Vec::new();
+        loop {
+            rest.clear();
+            let more = std::io::Read::take(&mut *reader, 64 * 1024).read_until(b'\n', &mut rest)?;
+            if more == 0 || rest.last() == Some(&b'\n') {
+                break;
+            }
+        }
+    }
+    Ok(Some(line))
+}
+
 /// read `stream` line by line on a thread, sending each line (and whether it came from stderr).
 fn read_lines(
     stream: impl std::io::Read + Send + 'static,
@@ -91,9 +120,11 @@ fn read_lines(
     tx: mpsc::Sender<(bool, String)>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(stream).split(b'\n') {
-            let line = match line {
-                Ok(line) => line,
+        let mut reader = BufReader::new(stream);
+        loop {
+            let line = match read_line_capped(&mut reader) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
                 Err(err) => {
                     emit(
                         Kind::Err,
@@ -243,6 +274,24 @@ impl Session {
         input: &[u8],
         on_line: &mut dyn FnMut(&str),
     ) -> Result<i32> {
+        self.spawn_with(
+            remote,
+            Input::Bytes(input),
+            Some(&mut |line| {
+                on_line(line);
+                true
+            }),
+        )
+    }
+
+    /// like `run_with_stdin_lines`, but `on_line` says whether the line goes to the debug log
+    /// too (false for output that is only dropped, such as past a cap).
+    pub fn run_with_stdin_filtered(
+        &self,
+        remote: &[String],
+        input: &[u8],
+        on_line: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<i32> {
         self.spawn_with(remote, Input::Bytes(input), Some(on_line))
     }
 
@@ -254,7 +303,7 @@ impl Session {
         &self,
         remote: &[String],
         input: Input,
-        mut sink: Option<&mut dyn FnMut(&str)>,
+        mut sink: Option<&mut dyn FnMut(&str) -> bool>,
     ) -> Result<i32> {
         emit(
             Kind::Debug,
@@ -298,8 +347,9 @@ impl Session {
             // a sink shows the line itself, so the log only keeps it as a debug line
             match (sink.as_mut(), is_err) {
                 (Some(sink), _) => {
-                    emit(Kind::Debug, line.as_str());
-                    sink(&line);
+                    if sink(&line) {
+                        emit(Kind::Debug, line.as_str());
+                    }
                 }
                 (None, true) => emit(Kind::Err, line.as_str()),
                 (None, false) => emit(Kind::Out, line.as_str()),
@@ -397,6 +447,18 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_longer_than_the_cap_is_cut_and_the_next_one_is_intact() {
+        let mut text = vec![b'a'; MAX_LINE + 1000];
+        text.extend_from_slice(b"\nnext\nlast");
+        let mut reader = std::io::Cursor::new(text);
+        let first = read_line_capped(&mut reader).unwrap().unwrap();
+        assert_eq!(first.len(), MAX_LINE);
+        assert_eq!(read_line_capped(&mut reader).unwrap().unwrap(), b"next");
+        assert_eq!(read_line_capped(&mut reader).unwrap().unwrap(), b"last");
+        assert_eq!(read_line_capped(&mut reader).unwrap(), None);
+    }
 
     #[cfg(unix)]
     #[test]

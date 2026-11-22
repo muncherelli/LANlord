@@ -100,7 +100,8 @@ enum ClockCommand {
 
 #[derive(Subcommand)]
 enum MachinesCommand {
-    /// list the machine accounts in your settings
+    /// list the machines in your settings (accounts prepared to join); `machines HOST` with no
+    /// action lists the accounts that exist in the domain now
     List,
     /// create an account in advance so the machine can join without creating one
     Add { name: String },
@@ -620,8 +621,8 @@ enum Command {
         #[command(subcommand)]
         action: NetworksCommand,
     },
-    /// manage the machine accounts of the nt4-domain module; with no action, list the machines
-    /// of the domain
+    /// manage the machine accounts of the nt4-domain module; with no action, list the accounts
+    /// that exist in the domain now, read live from the gateway
     Machines {
         host: String,
         #[command(subcommand)]
@@ -834,13 +835,9 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
         command,
     } = action
     {
-        let operation = Operation::MachineRun {
-            machine: name,
-            command: command.join(" "),
-            timeout_secs: timeout,
-        };
+        let operation = lanlord_core::exec::machine_run(&name, &command, timeout)?;
         let reply = execute(host, &operation, &mut ask)?;
-        std::process::exit(print_run(&reply)?);
+        std::process::exit(lanlord_core::exec::show_run(&reply)?);
     }
 
     use lanlord_core::nt4::{edit_machines, valid_machine, MachineChange, Nt4Settings};
@@ -873,29 +870,6 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
         |plain| edit_machines(plain, &change),
         &mut ask,
     )
-}
-
-/// show what a machine run did; returns the exit code (124 for a timeout, as `timeout(1)` does).
-fn print_run(reply: &Reply) -> Result<i32> {
-    let Reply::MachineRun {
-        exit_code,
-        stdout,
-        stderr,
-        timed_out,
-        truncated,
-    } = reply
-    else {
-        bail!("the server answered something other than a run");
-    };
-    print!("{stdout}");
-    eprint!("{stderr}");
-    if *truncated {
-        eprintln!("(output cut at 1 MiB)");
-    }
-    if *timed_out {
-        eprintln!("timed out; the command may still be running");
-    }
-    Ok(exit_code.unwrap_or(124))
 }
 
 fn networks(host: &str, action: NetworksCommand) -> Result<()> {
@@ -2945,6 +2919,54 @@ mod tests {
             networks_action(&["status", "--json"]),
             NetworksCommand::Status { json: true }
         ));
+    }
+
+    #[test]
+    fn machines_lists_with_no_action_and_runs_a_command() {
+        assert!(matches!(
+            parse(&["machines", "gw"]),
+            Command::Machines { host, action: None } if host == "gw"
+        ));
+        assert!(matches!(
+            parse(&["machines", "gw", "list"]),
+            Command::Machines {
+                action: Some(MachinesCommand::List),
+                ..
+            }
+        ));
+        let Command::Machines {
+            action:
+                Some(MachinesCommand::Run {
+                    name,
+                    timeout,
+                    command,
+                }),
+            ..
+        } = parse(&[
+            "machines",
+            "gw",
+            "run",
+            "ws1",
+            "--timeout",
+            "30",
+            "--",
+            "dir",
+            "/w",
+        ])
+        else {
+            panic!("not a run");
+        };
+        assert_eq!((name.as_str(), timeout), ("ws1", 30));
+        assert_eq!(command, ["dir", "/w"]);
+        let Command::Machines {
+            action: Some(MachinesCommand::Run { timeout, .. }),
+            ..
+        } = parse(&["machines", "gw", "run", "ws1", "--", "ver"])
+        else {
+            panic!("not a run");
+        };
+        assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
+        assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "run", "ws1"]).is_err());
     }
 
     #[test]
