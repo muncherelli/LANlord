@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout keeps running on the machine, as NT4 has no way to kill it from outside, and its output files are removed by the next run
+- the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout has its `cmd.exe` ended, but programs it started may keep running (NT4 has no way to end them); output files they hold open are removed by the next run
 - Operations to list domain machines and run commands or IIS 4 presets on them
 - `lanlord machines HOST` lists the domain machines and `lanlord machines HOST run NAME [--timeout N] -- COMMAND` runs a command on one; `lanlord run NAME --via HOST -- COMMAND` does the same and returns the exit code. The commands run through `lanlord-exec` as the `lanlord-exec` account, whose password is the secret `nt4-domain.exec_password`
 - `lanlord iis HOST NAME PRESET [ARGS...] [--timeout N] [--yes]` runs an IIS 4 preset on a domain machine and returns its exit code; `lanlord iis --list` shows the presets and which ones change the machine. A preset that changes the machine asks first, unless `--yes` is given. `Operation::MachinePreset` now takes a `timeout_secs` (120 when left out). Starting and stopping the IIS services still goes through `cmd` (`net start|stop`)
@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- running commands on NT4 machines works: `lanlord-exec` starts commands through a small NT4 service helper (`lanlord-svc.exe`, built into the NT4 server image) instead of `cmd.exe`, which NT4 never let start as a service. A command that outlives its timeout, or a run that is cut short, now has the service stopped before it is deleted, which ends the helper's `cmd.exe`; programs it started may keep running
 - `lanlord-exec` against NT4 SP6a: the rpc calls no longer require SMB signing on IPC$ (NT4 computes a bad key after an NTLMv2 login), a start that ends in `NT_STATUS_IO_TIMEOUT` is watched for the exit code like any other start timeout, and a busy service manager gives a clear "try again in a minute" error
 - Windows NT 4.0 machines now run the logon script at sign-in, so the `S:` software drive is mapped (Samba refused to let NT start a script that had no execute bit), and installers on `S:` can be started from the share. Existing gateways get this on their next apply
 - `lanlord-exec` logins to NT4 machines work again: NT4 has no SMB extended security, so smbclient and net now run with `client use spnego=no` (NTLMv2 stays on). A failed copy, create or start now reports the last real error lines instead of samba's deprecation warnings, and audit lines are written now (the image's BusyBox `flock` has no `-w`, so none was ever written) and before the cleanup, so a run that is cut short during cleanup is still logged

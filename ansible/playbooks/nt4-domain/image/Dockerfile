@@ -72,6 +72,36 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
  && find /out -type f \( -perm -u+x -o -name '*.so*' \) \
       -exec sh -c 'strip --strip-unneeded "$1" 2>/dev/null || true' _ {} \;
 
+# the service helper lanlord-exec copies to an nt4 machine: a plain win32 exe with no c runtime. it is
+# cross compiled with clang and lld (they exist for every build host architecture, unlike a mingw gcc)
+# against import libraries made from the few kernel32 and advapi32 functions it calls; the build
+# fails unless the result is an i386 pe with subsystem 4.0 that imports only those two dlls
+FROM ${ALPINE_IMAGE} AS svc
+RUN apk add --no-cache clang lld llvm
+COPY lanlord-svc/lanlord-svc.c /src/lanlord-svc.c
+WORKDIR /src
+RUN set -eux; \
+    printf 'LIBRARY KERNEL32.dll\nEXPORTS\nCloseHandle@4\nCreateProcessA@40\nEnterCriticalSection@4\nExitProcess@4\nExpandEnvironmentStringsA@12\nGetCommandLineA@0\nGetExitCodeProcess@8\nGetSystemDirectoryA@8\nInitializeCriticalSection@4\nLeaveCriticalSection@4\nTerminateProcess@8\nWaitForSingleObject@8\n' > kernel32.def; \
+    printf 'LIBRARY ADVAPI32.dll\nEXPORTS\nRegisterServiceCtrlHandlerA@8\nSetServiceStatus@8\nStartServiceCtrlDispatcherA@4\n' > advapi32.def; \
+    llvm-dlltool -m i386 -k -d kernel32.def -l libkernel32.a; \
+    llvm-dlltool -m i386 -k -d advapi32.def -l libadvapi32.a; \
+    mkdir -p /out/usr/lib/lanlord; \
+    clang --target=i686-w64-windows-gnu -Os -Wall -Wextra -ffreestanding -fno-stack-protector -nostdlib \
+      -fuse-ld=lld -Wl,-e,_svc_entry -Wl,--subsystem,console:4.0 -Wl,--major-os-version,4 \
+      -Wl,--minor-os-version,0 -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 -Wl,-s \
+      -o /out/usr/lib/lanlord/lanlord-svc.exe lanlord-svc.c -L. -lkernel32 -ladvapi32; \
+    exe=/out/usr/lib/lanlord/lanlord-svc.exe; \
+    dump=$(llvm-objdump -p "$exe"); \
+    llvm-readobj --file-headers "$exe" | grep -E 'Format|Machine|Subsystem|OperatingSystemVersion|SubsystemVersion'; \
+    llvm-readobj --file-headers "$exe" | grep -q 'Format: COFF-i386'; \
+    llvm-readobj --file-headers "$exe" | grep -q 'Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI'; \
+    echo "$dump" | grep -Eq '^MajorOSystemVersion[[:space:]]+4$'; \
+    echo "$dump" | grep -Eq '^MinorOSystemVersion[[:space:]]+0$'; \
+    echo "$dump" | grep -Eq '^MajorSubsystemVersion[[:space:]]+4$'; \
+    echo "$dump" | grep -Eq '^MinorSubsystemVersion[[:space:]]+0$'; \
+    dlls=$(echo "$dump" | grep 'DLL Name' | sed 's/.*DLL Name: //' | sort | tr '\n' ' '); \
+    test "$dlls" = "ADVAPI32.dll KERNEL32.dll "
+
 FROM ${ALPINE_IMAGE}
 ARG SAMBA_VERSION=4.22.11
 ARG IMAGE_VERSION=dev
@@ -88,6 +118,7 @@ LABEL org.opencontainers.image.title="lanlord-nt4-server-components" \
 # only what smbd and nmbd link against, plus bash and shadow for the mounted scripts
 RUN apk add --no-cache acl-libs bash gettext-libs gnutls libarchive libcap libtirpc lmdb readline shadow
 COPY --from=build /out/usr/ /usr/
+COPY --from=svc /out/usr/lib/lanlord/lanlord-svc.exe /usr/lib/lanlord/lanlord-svc.exe
 # samba's own libraries live in /usr/lib/samba; musl finds them through this path file
 RUN echo /usr/lib/samba:/lib:/usr/local/lib:/usr/lib > /etc/ld-musl-$(uname -m).path \
  && cd /usr/bin && rm -f cifsdd dbwrap_tool gentest ldb* locktest masktest mdsearch mvxattr ndrdump oLschema2ldif \
