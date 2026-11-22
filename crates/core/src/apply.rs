@@ -119,6 +119,12 @@ pub(crate) fn apply_lines(
     }
     let admin = session.capture(&["id".into(), "-un".into()])?;
     let admin = admin.trim();
+    // the exec account's password is made before the playbooks need it
+    if let Some(identity) = identity {
+        if tags.is_empty() || tags.contains(&crate::nt4_exec::MODULE) {
+            crate::nt4_exec::ensure_password(session, host, identity, ask_password)?;
+        }
+    }
     let settings = settings::merged_with(session, identity, ask_password)?;
     dispatch(session, admin, &tags, settings, ask_password, on_line)
 }
@@ -809,6 +815,31 @@ esac"#,
         let plain = String::from_utf8(plain).unwrap();
         assert_eq!(plain, "gateway:\n  motd: !unsafe hello\n");
         let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn apply_makes_the_exec_password_first_for_a_domain_and_not_for_other_modules() {
+        use crate::testgw::Gateway;
+        let id = identity("execpw");
+        let gw = Gateway::new("execpw");
+        gw.seed_plain("nt4-servers:\n  - {name: a, role: pdc, domain: LAB, netbios_name: ONE, network: lab}\ndomains:\n  LAB: {}\n");
+        apply_with(
+            &gw.session,
+            "gw",
+            Some(&id),
+            &["dns".into()],
+            &mut no_password,
+        )
+        .unwrap();
+        assert!(
+            gw.sealed(&id).is_none(),
+            "a dns apply leaves the account alone"
+        );
+        apply_with(&gw.session, "gw", Some(&id), &[], &mut no_password).unwrap();
+        let sealed = gw.sealed(&id).unwrap();
+        assert!(sealed.contains("exec_password"));
+        apply_with(&gw.session, "gw", Some(&id), &[], &mut no_password).unwrap();
+        assert_eq!(gw.sealed(&id).unwrap(), sealed, "the password is kept");
     }
 
     #[test]

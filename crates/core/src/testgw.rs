@@ -58,6 +58,7 @@ case "$last" in
   "id -nG "*) echo "users" ;;
   "sudo -n true") exit 0 ;;
   "sh -c "*"getent passwd lanlord"*) echo @INSTALLED@ ;;
+  *"lanlord-user exec") printf '%s\n' "$last" >> "$D/argv"; cat > "$D/stdin" ;;
   "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;
   *)
 input=$(cat)
@@ -100,6 +101,18 @@ esac"##
     pub fn sealed_raw(&self, id: &age::x25519::Identity) -> Option<String> {
         let bytes = std::fs::read(self.dir.join("age")).ok()?;
         Some(String::from_utf8(crypto::decrypt(id, &bytes).unwrap()).unwrap())
+    }
+
+    /// the plain settings, written as a user would.
+    pub fn seed_plain(&self, text: &str) {
+        std::fs::write(self.dir.join("yml"), text).unwrap();
+    }
+
+    /// the arguments of each `lanlord-user exec` call the gateway saw, and the stdin of the last.
+    pub fn exec_calls(&self) -> (Vec<String>, Vec<u8>) {
+        let argv = std::fs::read_to_string(self.dir.join("argv")).unwrap_or_default();
+        let stdin = std::fs::read(self.dir.join("stdin")).unwrap_or_default();
+        (argv.lines().map(String::from).collect(), stdin)
     }
 
     pub fn seed_sealed(&self, id: &age::x25519::Identity, text: &str) {

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operations to list domain machines and run commands or IIS 4 presets on them
 - `lanlord machines HOST` lists the domain machines and `lanlord machines HOST run NAME [--timeout N] -- COMMAND` runs a command on one; `lanlord run NAME --via HOST -- COMMAND` does the same and returns the exit code. The commands run through `lanlord-exec` as the `lanlord-exec` account, whose password is the secret `nt4-domain.exec_password`
 - Every `lanlord-exec` run is appended to `/var/lib/samba/private/exec.log` in the NT4 container (caller, machine, address, command or its hash, result, duration; never the password), and its output now comes in chunks of at most 1 MiB. A free-form command with a plain `exit N` is refused, as it ends the shell on the machine and the run would show as timed out
+- the `lanlord-exec` domain admin account is created on a domain controller, with a generated 24-character password sealed as `nt4-domain.exec_password`; it has no logon script and is not listed as a user. `lanlord secrets HOST rotate nt4-domain.exec_password` makes and sets a new one. The name `lanlord-exec` is reserved: settings that list a user of that name are refused, and an account of that name that already exists on the server is taken over on apply (its password is set and it is made a Domain Admin)
 
 ### Fixed
 

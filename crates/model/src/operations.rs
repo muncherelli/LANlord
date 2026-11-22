@@ -52,6 +52,9 @@ pub enum Operation {
     /// them. `key` is that client's old key file; it is used for this one request and dropped,
     /// and the client stops using it afterwards.
     MoveSecrets { key: Secret },
+    /// make a new password for the exec account (`nt4-domain.exec_password`), seal it and set it on
+    /// the server's account. nothing else is applied.
+    RotateExecPassword,
     /// bring the stored settings files up to the format this lanlord writes (an upgrade does
     /// this once). each file that changes is first copied beside itself under `stamp`, the
     /// gateway's time as `20260101T120000Z`. the answer says what was done.
@@ -204,9 +207,9 @@ impl Operation {
             Operation::Bootstrap | Operation::MigrateStored { .. } => Need::manage(Area::Updates),
             Operation::Apply { .. } | Operation::PlanApply { .. } => Need::manage(Area::Services),
             Operation::LoadDocument => Need::view(Area::Services),
-            Operation::SaveDocument { .. } | Operation::MoveSecrets { .. } => {
-                Need::manage(Area::Services)
-            }
+            Operation::SaveDocument { .. }
+            | Operation::MoveSecrets { .. }
+            | Operation::RotateExecPassword => Need::manage(Area::Services),
             Operation::Probe => Need::view(Area::Network),
             Operation::ChangeUsers { .. } => Need::manage(Area::Domain),
             Operation::ResetMachine { .. } => Need::manage(Area::Domain),
@@ -303,6 +306,7 @@ impl Operation {
                 | Operation::LoadDocument
                 | Operation::SaveDocument { .. }
                 | Operation::MoveSecrets { .. }
+                | Operation::RotateExecPassword
                 | Operation::ChangeInternet { .. }
                 | Operation::ChangeSshAccess { .. }
                 | Operation::MigrateStored { .. }
@@ -526,6 +530,7 @@ mod tests {
             Operation::MoveSecrets {
                 key: Secret::new("AGE-SECRET-KEY-s3cret"),
             },
+            Operation::RotateExecPassword,
             Operation::MigrateStored {
                 stamp: "20260101T120000Z".into(),
             },
@@ -734,6 +739,7 @@ mod tests {
             Operation::Machines => 48,
             Operation::MachineRun { .. } => 49,
             Operation::MachinePreset { .. } => 50,
+            Operation::RotateExecPassword => 51,
         }
     }
 
@@ -745,7 +751,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 51;
+    const VARIANTS: usize = 52;
 
     #[test]
     fn every_operation_says_what_it_needs() {

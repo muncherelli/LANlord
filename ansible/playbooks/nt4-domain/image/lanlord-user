@@ -10,6 +10,8 @@
 #   lanlord-user restore      recreate the unix groups, memberships and primary groups from the state
 #                             files (entrypoint.sh runs it when the container starts)
 #   lanlord-user admin        set the password of the domain administrator
+#   lanlord-user exec         make the lanlord-exec account (the one lanlord-exec runs as) a domain admin
+#                             and set its password; it has no logon script and no home folder
 #   lanlord-user delete NAME  remove the account
 #   lanlord-user machine NAME create a machine account so an nt4 computer can join without creating it
 #   lanlord-user machine NAME reset  set an existing machine account back to its first password, so a
@@ -37,6 +39,8 @@ private=${LANLORD_PRIVATE:-/var/lib/samba/private}
 netlogon=${LANLORD_NETLOGON:-/var/lib/samba/netlogon}
 smbconf=${LANLORD_SMB_CONF:-/etc/samba/smb.conf}
 # the groups lanlord makes itself; they cannot be deleted from windows
+# the account lanlord runs commands as: a domain admin that never logs on
+exec_user=lanlord-exec
 fixed_groups=" admins domusers domguests machines softadmins "
 mkdir -p "$private"
 # one writer at a time: hooks, apply and start all edit the same files. the wait is bounded so a
@@ -130,7 +134,7 @@ forget_user() {
 ensure_logon() {
   grep -q '^[[:space:]]*domain logons = yes' "$smbconf" 2>/dev/null || return 0
   local name=$1 wrapper_only=${2:-} server script current
-  [[ $name == *'$' ]] && return 0
+  [[ $name == *'$' || $name == "$exec_user" ]] && return 0
   server=$(testparm -s --parameter-name='netbios name' 2>/dev/null || true)
   [[ -n $server ]] || server=$(hostname | cut -c1-15 | tr a-z A-Z)
   install -d -o root -g admins -m 2775 "$netlogon/users"
@@ -351,6 +355,16 @@ case "$cmd" in
     printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a root >/dev/null
     echo "set the administrator password"
     ;;
+  exec)
+    read_password
+    new=1
+    pdbedit -L -u "$exec_user" >/dev/null 2>&1 && new=
+    id "$exec_user" >/dev/null 2>&1 || useradd -M -g domusers -s /usr/sbin/nologin "$exec_user"
+    printf '%s\n%s\n' "$password" "$password" | smbpasswd -s -a "$exec_user" >/dev/null
+    # unlike a login, it is always a domain admin: lanlord owns it, windows does not
+    set_role "$exec_user" admin
+    if [[ -n $new ]]; then echo "created $exec_user"; else echo "updated $exec_user"; fi
+    ;;
   machine)
     valid "$name"
     action=${3:-}
@@ -399,7 +413,7 @@ case "$cmd" in
     pdbedit -L
     ;;
   *)
-    echo "usage: lanlord-user add NAME | ensure NAME... | admin | machine NAME [reset] | delete NAME | sync | restore | list | hook ACTION ..." >&2
+    echo "usage: lanlord-user add NAME | ensure NAME... | admin | exec | machine NAME [reset] | delete NAME | sync | restore | list | hook ACTION ..." >&2
     exit 2
     ;;
 esac

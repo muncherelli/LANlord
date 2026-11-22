@@ -54,6 +54,12 @@ pub enum Change {
     },
 }
 
+/// whether `name` is an account lanlord keeps for itself (the exec account): it is not a login
+/// to list, add or change.
+pub fn is_system(name: &str) -> bool {
+    name == crate::nt4_exec::USER
+}
+
 /// names the container accepts: lowercase, starting with a letter.
 pub fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -98,6 +104,7 @@ pub fn list(settings: &[u8]) -> Result<Vec<User>> {
     Ok(users(module)?
         .iter()
         .filter(|u| !is_absent(u))
+        .filter(|u| !name_of(u).is_some_and(is_system))
         .filter_map(|u| {
             Some(User {
                 name: name_of(u)?.into(),
@@ -121,6 +128,9 @@ pub fn edit(settings: &[u8], change: &Change) -> Result<Vec<u8>> {
         | Change::SetSoftwareAdmin { name, .. }
         | Change::Remove { name } => name,
     };
+    if is_system(name) {
+        bail!("{name} is an account lanlord keeps for itself");
+    }
     if !valid_name(name) {
         bail!("user names are lowercase letters, digits, _ . - and start with a letter: {name:?}");
     }
@@ -235,4 +245,33 @@ pub fn edit_split(plain: &[u8], changes: &[Change]) -> Result<Edited> {
         secrets,
         removed,
     })
+}
+
+#[cfg(test)]
+mod system_account_tests {
+    use super::*;
+
+    #[test]
+    fn the_exec_account_is_not_listed_and_cannot_be_changed() {
+        let text = b"nt4-domain:\n  users:\n    - name: dana\n    - name: lanlord-exec\n";
+        let names: Vec<String> = list(text).unwrap().into_iter().map(|u| u.name).collect();
+        assert_eq!(names, ["dana"]);
+        assert!(is_system("lanlord-exec") && !is_system("dana"));
+        for change in [
+            Change::SetAdmin {
+                name: "lanlord-exec".into(),
+                admin: false,
+            },
+            Change::Remove {
+                name: "lanlord-exec".into(),
+            },
+            Change::SetPassword {
+                name: "lanlord-exec".into(),
+                password: "x".into(),
+            },
+        ] {
+            let error = edit(text, &change).unwrap_err().to_string();
+            assert!(error.contains("keeps for itself"), "{error}");
+        }
+    }
 }
