@@ -96,6 +96,8 @@ impl Server {
 struct Config {
     servers: Vec<Server>,
     admin: Option<Secret>,
+    /// the password of the account lanlord runs commands as (`lanlord-user exec`)
+    exec: Option<Secret>,
     users: Vec<User>,
     absent: Vec<String>,
 }
@@ -105,6 +107,7 @@ impl Config {
         self.admin
             .iter()
             .cloned()
+            .chain(self.exec.iter().cloned())
             .chain(self.users.iter().map(|u| u.password.clone()))
             .collect()
     }
@@ -340,6 +343,9 @@ fn config(host: &dyn Host, doc: &Value) -> Result<Option<Config>> {
         Some(_) => return Err(unsupported("the nt4-domain settings are not a mapping")),
     };
     let (admin, users, absent) = logins(&section)?;
+    let exec = text(section.get("exec_password"))
+        .filter(|s| !s.is_empty())
+        .map(Secret::new);
     let mut servers: Vec<Server> = Vec::new();
     for item in items {
         let one = server(host, doc, &section, item)?;
@@ -354,6 +360,7 @@ fn config(host: &dyn Host, doc: &Value) -> Result<Option<Config>> {
     Ok(Some(Config {
         servers,
         admin,
+        exec,
         users,
         absent,
     }))
@@ -626,6 +633,8 @@ fn accounts(host: &dyn Host, server: &Server) -> Result<BTreeSet<String>> {
 #[derive(Default)]
 struct Needs {
     admin: bool,
+    /// the exec account's password is to be set
+    exec: bool,
     /// the computers to make an account for (a plan shows those that are missing)
     machines: Vec<String>,
     /// indexes into `Config::users` whose password is to be set
@@ -650,6 +659,9 @@ fn needs(
     if server.domain() {
         if let Some(admin) = &config.admin {
             needs.admin = !have.contains("root") || !current("admin", admin);
+        }
+        if let Some(exec) = &config.exec {
+            needs.exec = !have.contains(crate::nt4_exec::USER) || !current("exec", exec);
         }
         needs.machines = server
             .machines
@@ -792,6 +804,19 @@ fn plan_accounts(
             &at("account Administrator".into()),
             Action::Update,
             "the domain administrator's password will be set".into(),
+            true,
+        ));
+    }
+    if needs.exec {
+        let (action, what) = if have.contains(crate::nt4_exec::USER) {
+            (Action::Update, "its password will be set")
+        } else {
+            (Action::Create, "it will be created as a domain admin")
+        };
+        out.push(view(
+            &at(format!("account {}", crate::nt4_exec::USER)),
+            action,
+            what.into(),
             true,
         ));
     }
@@ -1123,12 +1148,16 @@ impl Job<'_, '_> {
         let todo = needs(self.config, server, &have, &self.state, true);
         // the steps below: each account change, the ensure, the sync of a domain, and the listing
         let changes = u32::from(todo.admin)
+            + u32::from(todo.exec)
             + (todo.machines.len() + todo.users.len() + todo.deletes.len()) as u32;
         (self.events)(ApplyEvent::Total {
             n: changes + u32::from(!todo.ensure.is_empty()) + u32::from(server.domain()) + 1,
         });
         if todo.admin {
             self.set_admin_password(server)?;
+        }
+        if todo.exec {
+            self.set_exec_password(server)?;
         }
         for machine in &todo.machines {
             self.add_machine(server, machine)?;
@@ -1171,6 +1200,38 @@ impl Job<'_, '_> {
                 }
                 state.remember(host, &server.key("admin"), password)?;
                 Ok((true, String::new()))
+            },
+        )
+    }
+
+    /// the account lanlord runs commands as: a domain admin, with the password from the sealed
+    /// secret. the password goes on stdin, never in the arguments.
+    fn set_exec_password(&mut self, server: &Server) -> Result<()> {
+        let host = self.host;
+        let Some(password) = &self.config.exec else {
+            return Ok(());
+        };
+        let state = &mut self.state;
+        engine::task(
+            &mut *self.events,
+            &mut self.tally,
+            &self.secrets,
+            &format!("set up the exec account ({})", server.id),
+            |_| {
+                let argv = [
+                    "docker",
+                    "exec",
+                    "-i",
+                    &server.container,
+                    "lanlord-user",
+                    "exec",
+                ];
+                let out = host.run(&argv, Some(format!("{}\n", password.expose()).as_bytes()))?;
+                if !out.success() {
+                    anyhow::bail!("lanlord-user exec failed: {}", out.stderr.trim());
+                }
+                state.remember(host, &server.key("exec"), password)?;
+                Ok((out.stdout.contains("created"), String::new()))
             },
         )
     }
@@ -1932,6 +1993,117 @@ mod tests {
             vec![Output::failed(1, "down")],
         );
         assert!(record(&host, &doc(SETTINGS), "/s").is_err());
+    }
+
+    const EXEC_PASSWORD: &str = "ExecPw24CharsXyz34567890";
+
+    fn with_exec() -> String {
+        SETTINGS.replace(
+            "  admin_password: s3cretadmin\n",
+            &format!("  admin_password: s3cretadmin\n  exec_password: {EXEC_PASSWORD}\n"),
+        )
+    }
+
+    fn exec_inputs(host: &FakeHost) -> Vec<(String, Vec<u8>)> {
+        host.inputs
+            .borrow()
+            .iter()
+            .filter(|(argv, _)| argv.contains("lanlord-user exec"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn the_exec_account_gets_its_password_on_stdin_once_and_never_in_argv() {
+        let host = settled_host();
+        let mut events = Vec::new();
+        apply(&host, &doc(&with_exec()), "/s", "r1", &mut |e| {
+            events.push(e)
+        })
+        .unwrap();
+        let sent = exec_inputs(&host);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0]
+            .0
+            .contains("docker exec -i lanlord-nt4 lanlord-user exec"));
+        assert_eq!(sent[0].1, format!("{EXEC_PASSWORD}\n").into_bytes());
+        for line in host.log() {
+            assert!(!line.contains(EXEC_PASSWORD), "argv: {line}");
+        }
+        assert!(!format!("{events:?}").contains(EXEC_PASSWORD));
+        assert!(!host.text("/s/state.json").unwrap().contains(EXEC_PASSWORD));
+        // the account exists now and the password is the one that was set: nothing is sent again
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user list",
+            vec![Output::ok(
+                "root:0:Administrator\ndana:1000:\nlanlord-exec:1002:\nws1$:1001:\n",
+            )],
+        );
+        apply(&host, &doc(&with_exec()), "/s", "r2", &mut |e| {
+            events.push(e)
+        })
+        .unwrap();
+        assert_eq!(exec_inputs(&host).len(), 1);
+        // a rotated password is set again, and only that
+        let rotated = with_exec().replace(EXEC_PASSWORD, "Rotated24CharsXyz3456789");
+        apply(&host, &doc(&rotated), "/s", "r3", &mut |e| events.push(e)).unwrap();
+        let sent = exec_inputs(&host);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].1, b"Rotated24CharsXyz3456789\n");
+    }
+
+    #[test]
+    fn a_failing_exec_step_names_no_password() {
+        let host = settled_host();
+        host.when(
+            "docker exec -i lanlord-nt4 lanlord-user exec",
+            vec![Output::failed(1, "bad ExecPw24CharsXyz34567890")],
+        );
+        let mut events = Vec::new();
+        let error = apply(&host, &doc(&with_exec()), "/s", "r1", &mut |e| {
+            events.push(e)
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("lanlord-user exec failed"), "{error}");
+        assert!(
+            !error.contains(EXEC_PASSWORD) && !format!("{events:?}").contains(EXEC_PASSWORD),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_workgroup_server_makes_no_exec_account() {
+        let text = format!(
+            "nt4-servers:\n  - name: nt4-domain\n    role: workgroup\n    workgroup: home\n    netbios_name: labbox\n    address: 198.51.100.1/24\nnt4-domain:\n  exec_password: {EXEC_PASSWORD}\n"
+        );
+        let host = FakeHost::new();
+        healthy(&host);
+        settle(&host, &text);
+        let mut events = Vec::new();
+        apply(&host, &doc(&text), "/s", "r1", &mut |e| events.push(e)).unwrap();
+        assert!(exec_inputs(&host).is_empty());
+        let planned = plan(&host, &doc(&text), "/s", false).unwrap();
+        assert!(!format!("{planned:?}").contains("lanlord-exec"));
+    }
+
+    #[test]
+    fn a_plan_lists_the_exec_account_without_its_password() {
+        let host = settled_host();
+        let planned = plan(&host, &doc(&with_exec()), "/s", false).unwrap();
+        let shown = format!("{planned:?}");
+        assert!(shown.contains("account lanlord-exec"), "{shown}");
+        assert!(shown.contains("created as a domain admin"), "{shown}");
+        assert!(!shown.contains(EXEC_PASSWORD));
+        // after the playbook, with the account there, a plan has nothing to say about it
+        host.when(
+            "docker exec lanlord-nt4 lanlord-user list",
+            vec![Output::ok(
+                "root:0:Administrator\ndana:1000:\nlanlord-exec:1002:\nws1$:1001:\n",
+            )],
+        );
+        let after = plan(&host, &doc(&with_exec()), "/s", true).unwrap();
+        assert!(!format!("{after:?}").contains("lanlord-exec"), "{after:?}");
     }
 
     #[test]

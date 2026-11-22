@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout keeps running on the machine, as NT4 has no way to kill it from outside, and its output files are removed by the next run
 - Operations to list domain machines and run commands or IIS 4 presets on them
 - `lanlord machines HOST` lists the domain machines and `lanlord machines HOST run NAME [--timeout N] -- COMMAND` runs a command on one; `lanlord run NAME --via HOST -- COMMAND` does the same and returns the exit code. The commands run through `lanlord-exec` as the `lanlord-exec` account, whose password is the secret `nt4-domain.exec_password`
+- the `lanlord-exec` domain admin account is created on a domain controller, with a generated 24-character password sealed as `nt4-domain.exec_password`; it has no logon script and is not listed as a user. `lanlord secrets HOST rotate nt4-domain.exec_password` makes and sets a new one
 
 ### Fixed
 

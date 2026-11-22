@@ -5,6 +5,34 @@
 //! runner must not double the percent signs of a rendered preset the way it does for a free-form
 //! command.
 
+/// the account the commands run as; apply creates it as a domain admin.
+pub const USER: &str = "lanlord-exec";
+
+/// the characters of its generated password.
+pub const PASSWORD_LEN: usize = 24;
+
+/// whether the settings have a domain controller, so apply makes the exec account. a workgroup
+/// or plain file server has none. the list `nt4-servers` decides when there is one; settings
+/// from before it count as a domain unless `mode` says workgroup.
+pub fn wants_account(settings: &serde_yaml_ng::Value) -> bool {
+    use serde_yaml_ng::Value;
+    match settings.get("nt4-servers") {
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .any(|item| item.get("role").and_then(Value::as_str) == Some("pdc")),
+        _ => match settings.get("nt4-domain") {
+            Some(Value::Mapping(section)) => {
+                section
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("domain")
+                    == "domain"
+            }
+            _ => false,
+        },
+    }
+}
+
 /// the most bytes a command may have.
 pub const MAX_COMMAND_BYTES: usize = 2000;
 
@@ -262,6 +290,23 @@ pub fn decode_cp437(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_domain_controller_wants_the_account() {
+        let want = |text: &str| super::wants_account(&serde_yaml_ng::from_str(text).unwrap());
+        assert!(want("nt4-servers:\n  - {name: a, role: pdc}\n"));
+        assert!(want(
+            "nt4-servers:\n  - {name: f, role: workgroup}\n  - {name: a, role: pdc}\n"
+        ));
+        assert!(!want("nt4-servers:\n  - {name: f, role: workgroup}\n"));
+        assert!(!want("nt4-servers: []\n"));
+        // settings from before the list: a domain unless the mode says otherwise
+        assert!(want("nt4-domain:\n  admin_password: x\n"));
+        assert!(want("nt4-domain:\n  mode: domain\n"));
+        assert!(!want("nt4-domain:\n  mode: workgroup\n"));
+        assert!(!want("dns: {}\n"));
+        assert!(!want("{}\n"));
+    }
+
     use super::*;
 
     const ADMIN: &str = r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples";
