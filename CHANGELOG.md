@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Windows NT 4.0 machines now run the logon script at sign-in, so the `S:` software drive is mapped (Samba refused to let NT start a script that had no execute bit), and installers on `S:` can be started from the share. Existing gateways get this on their next apply
+- `lanlord-exec` logins to NT4 machines work again: NT4 has no SMB extended security, so smbclient and net now run with `client use spnego=no` (NTLMv2 stays on). A failed copy, create or start now reports the last real error lines instead of samba's deprecation warnings, and the audit line is written before the cleanup, so a run that is cut short during cleanup is still logged
 
 ## [0.1.5] - 2026-11-21
 
