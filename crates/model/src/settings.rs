@@ -161,7 +161,14 @@ fn is_stamp_key(key: &Value) -> bool {
 
 /// the key names whose values are secrets: they live encrypted on the
 /// gateway and never in the plain settings.
-pub const SECRET_KEYS: &[&str] = &["password", "admin_password", "token", "api_token", "secret"];
+pub const SECRET_KEYS: &[&str] = &[
+    "password",
+    "admin_password",
+    "exec_password",
+    "token",
+    "api_token",
+    "secret",
+];
 
 pub fn is_secret_key(name: &str) -> bool {
     SECRET_KEYS.contains(&name)
@@ -1282,6 +1289,27 @@ web-proxy:
         assert_eq!(
             secrets["nt4-domain"]["users"][0]["name"],
             Value::String("dana".into())
+        );
+    }
+
+    #[test]
+    fn the_exec_password_is_sealed_and_a_secret_path() {
+        let full = yaml("nt4-domain:\n  name: lab\n  exec_password: pw\n");
+        let (plain, secrets) = split(&full);
+        assert_eq!(secret_paths(&secrets), ["nt4-domain.exec_password"]);
+        assert!(secret_paths(&plain).is_empty());
+        assert!(plain["nt4-domain"].get("exec_password").is_none());
+        assert_eq!(plain["nt4-domain"]["name"], Value::String("lab".into()));
+        assert!(parse_path("nt4-domain.exec_password").is_ok());
+        assert_eq!(
+            secret_section("nt4-domain.exec_password").unwrap(),
+            "nt4-domain"
+        );
+        let mut sealed = yaml("{}\n");
+        set_secret(&mut sealed, "nt4-domain.exec_password", "pw").unwrap();
+        assert_eq!(
+            sealed["nt4-domain"]["exec_password"],
+            Value::String("pw".into())
         );
     }
 

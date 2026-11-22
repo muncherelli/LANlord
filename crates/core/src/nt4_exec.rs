@@ -118,7 +118,12 @@ impl Collector {
             self.outcome.truncated = true;
             return None;
         }
-        match parse_event(line)? {
+        let Some(event) = parse_event(line) else {
+            // an event that cannot be read (cut short, say) may have held output
+            self.outcome.truncated = true;
+            return None;
+        };
+        match event {
             Event::Output { err, data } => {
                 let kept = if err {
                     &mut self.outcome.stderr
@@ -438,6 +443,19 @@ pub(crate) mod tests {
         assert_eq!(outcome.stdout_text(), "\u{fc}");
         assert_eq!(outcome.stderr_text(), "e");
         assert!(!outcome.timed_out && !outcome.truncated);
+    }
+
+    #[test]
+    fn an_event_that_cannot_be_read_marks_the_output_as_cut() {
+        let mut collector = Collector::default();
+        assert_eq!(collector.feed("noise"), None);
+        collector.feed(&event(r#"{"exit":0}"#));
+        assert!(!collector.finish(0).unwrap().truncated);
+        let mut collector = Collector::default();
+        // cut in the middle of its json
+        assert_eq!(collector.feed(r#"LANLORD_EVENT {"stream":"out","da"#), None);
+        collector.feed(&event(r#"{"exit":0}"#));
+        assert!(collector.finish(0).unwrap().truncated);
     }
 
     #[test]

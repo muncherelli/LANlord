@@ -86,7 +86,10 @@ fn shell_quote(arg: &str) -> String {
 
 /// the longest line kept whole; a longer one is cut there and the rest of it is dropped, so a
 /// remote that never prints a newline cannot use up our memory.
-const MAX_LINE: usize = 8 * 1024 * 1024;
+///
+/// a reply travels as one line through `sudo lanlord operate`, and the service socket allows an
+/// answer of 16 MiB, which a json escape can double on its way; 32 MiB keeps every real reply whole.
+const MAX_LINE: usize = 32 * 1024 * 1024;
 
 /// the next line without its newline, `None` at the end of the stream.
 fn read_line_capped(reader: &mut impl BufRead) -> std::io::Result<Option<Vec<u8>>> {
