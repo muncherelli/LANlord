@@ -1215,6 +1215,16 @@ fn check_save(plain: &str, updates: &[crate::operations::SecretUpdate]) -> Resul
     Ok(())
 }
 
+fn check_machine(machine: &str) -> Result<(), Invalid> {
+    flag(crate::nt4::valid_machine(machine), "is not a machine name")
+        .map_err(|reason| invalid("machine", reason))
+}
+
+fn check_timeout(secs: u32) -> Result<(), Invalid> {
+    flag((1..=900).contains(&secs), "must be 1 to 900 seconds")
+        .map_err(|reason| invalid("timeout_secs", reason))
+}
+
 fn check_command(command: &[String]) -> Result<(), Invalid> {
     let valid = !command.is_empty()
         && command.len() <= 256
@@ -1328,6 +1338,24 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
                 .map_err(|reason| invalid("text", reason))
         }
         Operation::Run { command } => check_command(command),
+        Operation::MachineRun {
+            machine,
+            command,
+            timeout_secs,
+        } => {
+            check_machine(machine)?;
+            crate::nt4_exec::check_command(command).map_err(|reason| invalid("command", reason))?;
+            check_timeout(*timeout_secs)
+        }
+        Operation::MachinePreset {
+            machine,
+            preset,
+            args,
+        } => {
+            check_machine(machine)?;
+            crate::nt4_exec::render(preset, args).map_err(|reason| invalid("preset", reason))?;
+            Ok(())
+        }
         Operation::ClockZoneNow { zone } => named("zone", time_zone, zone),
         Operation::ClockApply { change } => check_clock(change),
         Operation::ChangePassword { old, new } => {

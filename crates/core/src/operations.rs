@@ -544,6 +544,9 @@ fn dispatch(
         Operation::Subscribe { .. } => {
             bail!("live streams are served by the web ui, not run as an operation")
         }
+        Operation::Machines | Operation::MachineRun { .. } | Operation::MachinePreset { .. } => {
+            bail!("running commands on machines is not implemented yet")
+        }
     })
 }
 

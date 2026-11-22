@@ -169,6 +169,30 @@ pub enum Operation {
     /// keep sending the events of `topic` (see [`topic`]). the web ui serves it as a stream on
     /// its own route, not as a reply; the other backends refuse it.
     Subscribe { topic: String },
+    /// the machine names of the domain; they are low sensitivity, so a view of the domain is enough.
+    Machines,
+    /// run a command on a domain machine; the reply is its output and exit code. `timeout_secs`
+    /// is 1 to 900 and 120 when left out.
+    MachineRun {
+        machine: String,
+        command: String,
+        #[serde(default = "default_timeout_secs")]
+        timeout_secs: u32,
+    },
+    /// run a preset from [`crate::nt4_exec`] on a domain machine; `args` fill its placeholders.
+    MachinePreset {
+        machine: String,
+        preset: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+}
+
+/// how long a machine command may run when the caller says nothing.
+pub const DEFAULT_TIMEOUT_SECS: u32 = 120;
+
+fn default_timeout_secs() -> u32 {
+    DEFAULT_TIMEOUT_SECS
 }
 
 impl Operation {
@@ -204,6 +228,10 @@ impl Operation {
             | Operation::ReadGeneratedLogon => Need::view(Area::Shares),
             Operation::WriteLogon { .. } => Need::manage(Area::Shares),
             Operation::Run { .. } => Need::manage(Area::Commands),
+            Operation::Machines => Need::view(Area::Domain),
+            Operation::MachineRun { .. } | Operation::MachinePreset { .. } => {
+                Need::manage(Area::Commands)
+            }
             Operation::Power { .. } => Need::manage(Area::Status),
             Operation::ServerFacts | Operation::Doctor => Need::view(Area::Status),
             Operation::NetworkStatus => Need::view(Area::Network),
@@ -225,6 +253,10 @@ impl Operation {
             Operation::LoadAccess => Need::view(Area::Users),
             // apply progress carries the output of the tasks, so it needs what applying shows
             Operation::Subscribe { topic } if topic == topic::APPLY => Need::view(Area::Services),
+            // command output can hold anything, so it needs what running the command needs
+            Operation::Subscribe { topic } if topic::machine_run_id(topic).is_some() => {
+                Need::manage(Area::Commands)
+            }
             Operation::Subscribe { .. } => Need::view(Area::Status),
         }
     }
@@ -238,6 +270,19 @@ pub mod topic {
     pub const PROCS: &str = "monitor:procs";
     /// the events of an apply, as `lanlord_model::apply::ApplyEvent` json.
     pub const APPLY: &str = "apply";
+    /// the start of a machine run's topic, `machine-run:<id>`.
+    pub const MACHINE_RUN: &str = "machine-run:";
+
+    /// the topic of the machine run with this id (8 hex digits).
+    pub fn machine_run(id: &str) -> String {
+        format!("{MACHINE_RUN}{id}")
+    }
+
+    /// the run id of a `machine-run:<id>` topic; `None` for any other topic or a bad id.
+    pub fn machine_run_id(topic: &str) -> Option<&str> {
+        let id = topic.strip_prefix(MACHINE_RUN)?;
+        (id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
+    }
 }
 
 impl Operation {
@@ -263,6 +308,8 @@ impl Operation {
                 | Operation::ChangeNetworks { .. }
                 | Operation::ChangeUsers { .. }
                 | Operation::ClockApply { .. }
+                | Operation::MachineRun { .. }
+                | Operation::MachinePreset { .. }
         )
     }
 
@@ -365,6 +412,17 @@ pub enum Reply {
     /// a text that may not exist yet, such as a logon script.
     Text(Option<String>),
     ExitCode(i32),
+    /// the machine names of the domain, without the trailing `$`, as `MachineRun` takes them.
+    Machines(Vec<String>),
+    /// what a command on a machine did. the output is decoded text, capped at 1 MiB per stream
+    /// (`truncated` says it was cut). `exit_code` is `None` when the run timed out.
+    MachineRun {
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+        timed_out: bool,
+        truncated: bool,
+    },
     Outcome(Outcome),
     Facts(Box<ServerFacts>),
     Interfaces(Vec<InterfaceStatus>),
@@ -591,6 +649,17 @@ mod tests {
             Operation::Subscribe {
                 topic: "clock".into(),
             },
+            Operation::Machines,
+            Operation::MachineRun {
+                machine: "NT4SRV01".into(),
+                command: "ver".into(),
+                timeout_secs: 30,
+            },
+            Operation::MachinePreset {
+                machine: "NT4SRV01".into(),
+                preset: "startweb".into(),
+                args: vec!["1".into()],
+            },
             Operation::ChangeInternet {
                 change: InternetChange::Network {
                     network: "lab".into(),
@@ -661,6 +730,9 @@ mod tests {
             Operation::AddAdminKey { .. } => 45,
             Operation::RemoveAdminKey { .. } => 46,
             Operation::PlanApply { .. } => 47,
+            Operation::Machines => 48,
+            Operation::MachineRun { .. } => 49,
+            Operation::MachinePreset { .. } => 50,
         }
     }
 
@@ -672,7 +744,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 48;
+    const VARIANTS: usize = 51;
 
     #[test]
     fn every_operation_says_what_it_needs() {
@@ -718,6 +790,28 @@ mod tests {
         assert_eq!(subscription(topic::MONITOR), Need::view(Area::Status));
         assert_eq!(subscription(topic::PROCS), Need::view(Area::Status));
         assert_eq!(subscription(topic::APPLY), Need::view(Area::Services));
+        assert_eq!(
+            subscription(&topic::machine_run("0a1b2c3d")),
+            Need::manage(Area::Commands)
+        );
+        assert_eq!(topic::machine_run_id("machine-run:0a1b2c3"), None);
+        assert_eq!(Operation::Machines.requires(), Need::view(Area::Domain));
+        assert!(Operation::MachineRun {
+            machine: "NT4SRV01".into(),
+            command: "ver".into(),
+            timeout_secs: 1
+        }
+        .needs_gateway_key());
+        let old: Operation =
+            serde_json::from_str(r#"{"op":"machine_run","machine":"NT4SRV01","command":"ver"}"#)
+                .unwrap();
+        assert!(matches!(
+            old,
+            Operation::MachineRun {
+                timeout_secs: 120,
+                ..
+            }
+        ));
         // no operation needs `Hidden`, which every account has
         for operation in every_operation() {
             assert!(
@@ -733,6 +827,8 @@ mod tests {
                     | Operation::PlanApply { .. }
                     | Operation::Power { .. }
                     | Operation::Run { .. }
+                    | Operation::MachineRun { .. }
+                    | Operation::MachinePreset { .. }
             ) {
                 assert!(
                     matches!(operation.requires(), Need::Area(_, Level::Manage)),
@@ -828,6 +924,21 @@ mod tests {
             Reply::Text(None),
             Reply::Text(Some("echo hi".into())),
             Reply::ExitCode(3),
+            Reply::Machines(vec!["NT4SRV01".into()]),
+            Reply::MachineRun {
+                exit_code: Some(3),
+                stdout: "out".into(),
+                stderr: String::new(),
+                timed_out: false,
+                truncated: false,
+            },
+            Reply::MachineRun {
+                exit_code: None,
+                stdout: String::new(),
+                stderr: String::new(),
+                timed_out: true,
+                truncated: true,
+            },
             Reply::Outcome(Outcome::Dropped),
             Reply::Facts(Box::new(facts)),
             Reply::Interfaces(crate::netstatus::demo()),
