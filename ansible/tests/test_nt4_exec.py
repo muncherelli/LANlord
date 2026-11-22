@@ -54,10 +54,13 @@ case $name in
     verb=$3
     case $verb in
       list) cat "$STUBS/services" ;;
-      create) echo "$4" >> "$STUBS/services" ;;
+      create)
+        [[ -e $STUBS/create_io_timeout ]] && { echo "Create service request failed. [NT_STATUS_IO_TIMEOUT]"; exit 2; }
+        echo "$4" >> "$STUBS/services" ;;
       delete) sed -i "/^$4\$/d" "$STUBS/services" ;;
       start)
-        [[ -e $STUBS/start_error ]] && { echo "WERR_ACCESS_DENIED"; exit 1; }
+        [[ -e $STUBS/start_error ]] && { echo "Query status request failed. [WERR_ACCESS_DENIED]"; exit 1; }
+        [[ -e $STUBS/start_io_timeout ]] && io_timeout=1
         [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; touch "$STUBS/ready"; wait; }
         [[ -e $STUBS/hang ]] || {
           [[ -e $STUBS/out ]] && cp "$STUBS/out" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
@@ -69,6 +72,7 @@ case $name in
             cp "$STUBS/rc" "$remote/$rcname"
           fi
         }
+        [[ -n ${io_timeout:-} ]] && { echo "Query status request failed. [NT_STATUS_IO_TIMEOUT]"; exit 2; }
         echo "WERR_SERVICE_REQUEST_TIMEOUT"; exit 1 ;;
     esac ;;
 esac
@@ -275,6 +279,31 @@ class LanlordExecTest(unittest.TestCase):
             self.assertIn("client use spnego=no", c)
             self.assertNotIn("lanman", c)
             self.assertNotIn("plaintext", c)
+
+    def test_every_tool_call_does_not_require_ipc_signing(self):
+        self.run_exec()
+        calls = [c for c in self.calls().splitlines() if c.startswith(("smbclient", "net "))]
+        self.assertTrue(calls)
+        for c in calls:
+            self.assertIn("client ipc signing=if_required", c)
+            self.assertNotIn("client signing", c)
+
+    def test_a_start_that_ends_in_io_timeout_still_waits_for_the_rc(self):
+        self.flag("start_io_timeout")
+        self.flag("late")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assert_clean()
+
+    def test_a_busy_service_manager_is_an_actionable_error(self):
+        self.flag("create_io_timeout")
+        out = self.run_exec()
+        error = self.events(out)[-1]["error"]
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("service manager on NT4SRV01 is busy", error)
+        self.assertIn("try again in a minute", error)
+        self.assertNotIn("could not create", error)
+        self.assertEqual(self.calls().count("net rpc service create"), 1)
 
     def test_a_copy_error_shows_the_real_line_not_the_warnings(self):
         warnings = "".join(

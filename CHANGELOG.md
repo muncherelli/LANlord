@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `lanlord-exec` against NT4 SP6a: the rpc calls no longer require SMB signing on IPC$ (NT4 computes a bad key after an NTLMv2 login), a start that ends in `NT_STATUS_IO_TIMEOUT` is watched for the exit code like any other start timeout, and a busy service manager gives a clear "try again in a minute" error
 - Windows NT 4.0 machines now run the logon script at sign-in, so the `S:` software drive is mapped (Samba refused to let NT start a script that had no execute bit), and installers on `S:` can be started from the share. Existing gateways get this on their next apply
 - `lanlord-exec` logins to NT4 machines work again: NT4 has no SMB extended security, so smbclient and net now run with `client use spnego=no` (NTLMv2 stays on). A failed copy, create or start now reports the last real error lines instead of samba's deprecation warnings, and audit lines are written now (the image's BusyBox `flock` has no `-w`, so none was ever written) and before the cleanup, so a run that is cut short during cleanup is still logged
 
