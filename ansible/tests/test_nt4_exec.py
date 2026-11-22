@@ -100,7 +100,9 @@ class LanlordExecTest(unittest.TestCase):
             LANLORD_EXEC_DIR=self.locks,
             LANLORD_EXEC_TMP=self.scratch,
             LANLORD_EXEC_POLL="0.1",
+            LANLORD_EXEC_LOG=os.path.join(self.tmp, "exec.log"),
         )
+        self.log = self.env["LANLORD_EXEC_LOG"]
         self.scenario(rc="0\r\n")
 
     def scenario(self, **files):
@@ -157,6 +159,10 @@ class LanlordExecTest(unittest.TestCase):
         self.assertNotIn(SECRET, self.calls())
         self.assertNotIn(SECRET, out.stdout)
         self.assertNotIn(SECRET, out.stderr)
+
+    def log_lines(self):
+        with open(self.log) as f:
+            return [line.rstrip("\n").split("\t") for line in f]
 
     def test_script_parses(self):
         subprocess.run(["bash", "-n", EXEC], check=True)
@@ -415,6 +421,140 @@ class LanlordExecTest(unittest.TestCase):
         # another machine is not held up
         other = self.run_exec(args=("--machine", "nt4srv02", "--timeout", "5"))
         self.assertEqual(self.events(other)[-1], {"exit": 0})
+
+
+    def test_a_run_appends_one_audit_line(self):
+        self.scenario(rc="3 \r\n")
+        out = self.run_exec(command="dir C:\\", caller="ann.lee@demo-1")
+        self.assertEqual(self.events(out)[-1], {"exit": 3})
+        lines = self.log_lines()
+        self.assertEqual(len(lines), 1)
+        when, caller, machine, address, command, result, duration = lines[0]
+        self.assertRegex(when, r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(
+            (caller, machine, address, command, result),
+            ("ann.lee@demo-1", "NT4SRV01", "192.0.2.20", "dir C:\\", "3"),
+        )
+        self.assertRegex(duration, r"^\d+\.\d{3}$")
+        self.assertEqual(os.stat(self.log).st_mode & 0o777, 0o600)
+
+    def test_the_caller_defaults_to_cli_and_must_be_plain(self):
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.log_lines()[0][1], "cli")
+        for bad in ("ann lee", "a/b", "x" * 65):
+            out = self.run_exec(caller=bad)
+            self.assertEqual(out.returncode, 1, bad)
+            self.assertIn("caller is not valid", self.events(out)[-1]["error"])
+        self.assertEqual(len(self.log_lines()), 1)
+
+    def test_the_password_never_reaches_the_log(self):
+        out = self.run_exec(command="echo hi", caller="ann")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        for name in os.listdir(self.tmp):
+            path = os.path.join(self.tmp, name)
+            if name.startswith("exec.log") and os.path.isfile(path):
+                with open(path) as f:
+                    self.assertNotIn(SECRET, f.read())
+
+    def test_a_command_can_be_logged_as_its_hash(self):
+        import hashlib
+
+        out = self.run_exec(
+            command="net user",
+            args=("--machine", "nt4srv01", "--timeout", "5", "--hash-command"),
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        digest = hashlib.sha256(b"net user").hexdigest()
+        self.assertEqual(self.log_lines()[0][4], "sha256:" + digest)
+
+    def test_failures_and_timeouts_are_logged(self):
+        self.flag("put_error")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertEqual(self.log_lines()[-1][5], "error")
+        os.remove(os.path.join(self.stubs, "put_error"))
+        self.flag("hang")
+        out = self.run_exec(args=("--machine", "nt4srv01", "--timeout", "1"))
+        self.assertEqual(self.events(out)[-1], {"timed_out": True})
+        self.assertEqual(self.log_lines()[-1][5], "timed_out")
+
+    def test_the_log_rotates_and_keeps_one_old_file(self):
+        self.env["LANLORD_EXEC_LOG_MAX"] = "300"
+        for n in range(8):
+            out = self.run_exec(command="echo run%d" % n)
+            self.assertEqual(out.returncode, 0, out.stderr)
+        old = self.log + ".1"
+        self.assertTrue(os.path.exists(old))
+        self.assertFalse(os.path.exists(self.log + ".2"))
+        self.assertEqual(os.stat(old).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(self.log).st_mode & 0o777, 0o600)
+        self.assertEqual(self.log_lines()[-1][4], "echo run7")
+        self.assertLess(os.path.getsize(self.log), 300 + 200)
+
+    def test_an_unwritable_log_does_not_fail_the_run(self):
+        # the log's parent is a regular file, so it cannot be created even by root
+        blocker = os.path.join(self.tmp, "blocker")
+        open(blocker, "w").close()
+        self.env["LANLORD_EXEC_LOG"] = os.path.join(blocker, "exec.log")
+        self.scenario(out="hello\r\n", rc="0\r\n")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0)
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assertIn("warning: could not write the audit log", out.stderr)
+        self.assertNotIn(SECRET, out.stderr)
+        self.assert_clean()
+
+    def test_large_output_comes_in_chunks_of_at_most_1_mib(self):
+        mib = 1024 * 1024
+        data = os.urandom(2 * mib + 12345)
+        with open(os.path.join(self.stubs, "out"), "wb") as f:
+            f.write(data)
+        self.scenario(rc="0\r\n")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr[:200])
+        events = self.events(out)
+        chunks = [base64.b64decode(e["data"]) for e in events if e.get("stream") == "out"]
+        self.assertGreaterEqual(len(chunks), 3)
+        self.assertTrue(all(0 < len(c) <= mib for c in chunks))
+        self.assertEqual(b"".join(chunks), data)
+        self.assertEqual(events[-1], {"exit": 0})
+
+
+    def test_a_refused_command_is_audited_as_refused(self):
+        out = self.run_exec(command="ver\r\ndel x", caller="ann")
+        self.assertEqual(out.returncode, 1)
+        line = self.log_lines()[-1]
+        self.assertEqual((line[1], line[2], line[5]), ("ann", "NT4SRV01", "refused"))
+        self.assertEqual(self.calls(), "")
+
+    def test_a_killed_run_is_audited_as_killed_and_cleans_up(self):
+        import signal
+
+        self.flag("hang")
+        self.flag("slow")
+        request = {"user": "DEMO\\Administrator", "password": SECRET, "command": "ver"}
+        proc = subprocess.Popen(
+            ["bash", EXEC, "run", "--machine", "nt4srv01", "--timeout", "60"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.env,
+        )
+        proc.stdin.write(json.dumps(request))
+        proc.stdin.close()
+        # the start stub touches "ready" once it is running, so the kill comes after the service exists
+        ready = os.path.join(self.stubs, "ready")
+        deadline = time.time() + 30
+        while not os.path.exists(ready):
+            self.assertLess(time.time(), deadline, "the start never began")
+            self.assertIsNone(proc.poll())
+            time.sleep(0.02)
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertEqual(self.log_lines()[-1][5], "killed")
+        self.assert_clean()
 
 
 if __name__ == "__main__":

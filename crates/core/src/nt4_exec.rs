@@ -215,17 +215,39 @@ pub fn argv(machine: &str, address: Option<&str>, timeout_secs: u32) -> Vec<Stri
     argv
 }
 
+/// the caller's name as the script takes it: other characters become `_`, at most 64 are kept,
+/// and an empty name is `cli`.
+fn audit_name(caller: &str) -> String {
+    let name: String = caller
+        .chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._@-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.is_empty() {
+        "cli".into()
+    } else {
+        name
+    }
+}
+
 /// the json request for stdin. it is written straight into one buffer that is big enough for
 /// the worst case, so no copy of the password is left behind by a regrowing buffer.
-fn request(password: &str, command: &str) -> Vec<u8> {
+fn request(password: &str, command: &str, caller: &str) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct Request<'a> {
         user: &'a str,
         password: &'a str,
         command: &'a str,
+        caller: &'a str,
     }
     // an escaped character takes at most six bytes
-    let mut body = Vec::with_capacity(64 + 6 * (password.len() + command.len()));
+    let mut body = Vec::with_capacity(64 + 6 * (password.len() + command.len() + caller.len()));
     // writing to a vec cannot fail
     let _ = serde_json::to_writer(
         &mut body,
@@ -233,6 +255,7 @@ fn request(password: &str, command: &str) -> Vec<u8> {
             user: USER,
             password,
             command,
+            caller,
         },
     );
     body
@@ -406,8 +429,9 @@ fn wipe(value: &mut serde_yaml_ng::Value) {
     }
 }
 
-/// what to run: the machine, the command line and the timeout in seconds.
-pub type Job<'a> = (&'a str, &'a str, u32);
+/// what to run: the machine, the command line, the timeout in seconds and the caller's name for
+/// the audit log (`cli` when there is none).
+pub type Job<'a> = (&'a str, &'a str, u32, &'a str);
 
 /// run a job, handing the output to `on_chunk` (true for stderr) as it comes. the machine must
 /// be an account of the domain. a name that does not resolve is tried again at the address of
@@ -416,7 +440,7 @@ pub fn run(
     session: &Session,
     identity: &age::x25519::Identity,
     ask: AskPassword,
-    (machine, command, timeout_secs): Job,
+    (machine, command, timeout_secs, caller): Job,
     on_chunk: &mut dyn FnMut(bool, &[u8]),
 ) -> Result<Outcome> {
     let mut ask = cached(ask);
@@ -425,7 +449,7 @@ pub fn run(
         bail!("{machine} is not a machine of the domain");
     };
     let mut secret = password(session, identity, &mut ask)?;
-    let mut body = request(&secret, command);
+    let mut body = request(&secret, command, &audit_name(caller));
     secret.zeroize();
     let run = |address: Option<&str>, ask: AskPassword, on_chunk: &mut dyn FnMut(bool, &[u8])| {
         run_request(
@@ -631,8 +655,17 @@ pub(crate) mod tests {
             );
             assert_eq!(argv[argv.len() - 2..], ["--timeout", "30"]);
         }
-        let body = String::from_utf8(request(secret, "ver")).unwrap();
+        let body = String::from_utf8(request(secret, "ver", "ann")).unwrap();
         assert!(body.contains(secret) && body.contains(USER));
+        assert!(body.contains(r#""caller":"ann""#), "{body}");
+    }
+
+    #[test]
+    fn the_audit_name_is_made_plain() {
+        assert_eq!(audit_name("ann.lee@demo-1"), "ann.lee@demo-1");
+        assert_eq!(audit_name(""), "cli");
+        assert_eq!(audit_name("a b\"c\nd"), "a_b_c_d");
+        assert_eq!(audit_name(&"a".repeat(80)), "a".repeat(64));
     }
 
     const DOMAIN: &str =
@@ -851,7 +884,7 @@ esac"#;
     }
 
     fn job() -> Job<'static> {
-        ("ws1", "ver", 5)
+        ("ws1", "ver", 5, "cli")
     }
 
     #[test]
@@ -889,7 +922,7 @@ esac"#;
             &session,
             &age::x25519::Identity::generate(),
             &mut no_password,
-            ("other", "ver", 5),
+            ("other", "ver", 5, "cli"),
             &mut |_, _| {},
         )
         .unwrap_err();
@@ -918,7 +951,7 @@ esac"#;
             &session,
             &identity,
             &mut no_password,
-            ("WS1", "ver", 9),
+            ("WS1", "ver", 9, "cli"),
             &mut |err, bytes| seen.push((err, bytes.to_vec())),
         )
         .unwrap();

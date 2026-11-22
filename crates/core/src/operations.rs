@@ -553,7 +553,12 @@ fn dispatch(
             machine,
             command,
             timeout_secs,
-        } => machine_run(session, &key()?, ask, (machine, command, *timeout_secs))?,
+        } => machine_run(
+            session,
+            &key()?,
+            ask,
+            (machine, command, *timeout_secs, &who.caller.user),
+        )?,
         Operation::MachinePreset {
             machine,
             preset,
@@ -561,7 +566,12 @@ fn dispatch(
         } => {
             let command = nt4_exec::render(preset, args).map_err(|reason| anyhow!("{reason}"))?;
             let timeout = DEFAULT_TIMEOUT_SECS;
-            machine_run(session, &key()?, ask, (machine, &command, timeout))?
+            machine_run(
+                session,
+                &key()?,
+                ask,
+                (machine, &command, timeout, &who.caller.user),
+            )?
         }
     })
 }

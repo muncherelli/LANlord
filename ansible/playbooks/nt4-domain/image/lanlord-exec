@@ -1,14 +1,26 @@
 #!/bin/bash
 # runs one command on a domain member over smb1, psexec style: nothing is installed on the machine.
 # a .bat goes into ADMIN$\Temp, a service runs it with cmd.exe, and the output is streamed back.
-#   lanlord-exec run --machine NAME [--address ADDR] --timeout N
-#                             stdin: {"user":"...","password":"...","command":"..."}
+#   lanlord-exec run --machine NAME [--address ADDR] --timeout N [--hash-command]
+#                             stdin: {"user":"...","password":"...","command":"...","caller":"..."}
+#                             caller is optional (letters, digits and ._@- only; "cli" when absent)
 #   lanlord-exec sweep --machine NAME [--address ADDR]
 #                             stdin: {"user":"...","password":"..."}
 #                             remove services and files that an earlier run left behind
 # stdout is one json object per line after the LANLORD_EVENT marker:
 #   {"stream":"out"|"err","data":"<base64>"}   new bytes of the command's output
 #   {"exit":N} | {"timed_out":true} | {"error":"..."}   the last line of a run
+# {"stream":...} lines carry at most 1 MiB of raw bytes each; more output comes as several lines.
+# every run appends one tab separated line to the audit log (LANLORD_EXEC_LOG, default
+# /var/lib/samba/private/exec.log, 0600): time, caller, machine, address, the command (or
+# sha256:<hex> with --hash-command), the exit code or timed_out, error, killed (a signal) or refused (a bad command), and the duration. the
+# password is never written. the log rotates at 1 MiB and keeps one .1; when it cannot be written
+# the run still completes and stderr gets a warning.
+# a free-form command must not use a plain "exit N": it ends the outer cmd.exe, so the exit code
+# is never written and the run shows as timed_out. nt4 has no "exit /b"; use "cmd /c exit N" to
+# set a code. core refuses a command in which any part, split at &, && || and parentheses and
+# after a leading @, if ... or do, starts with exit; a single | does not split, as the right side of
+# a pipe runs in a child cmd.
 # a command that outlives its timeout cannot be killed (nt4 has no taskkill): it keeps running on the
 # machine and holds its .out and .err open, so those files stay until the next run's sweep retries.
 # the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
@@ -20,6 +32,9 @@ LOCK_DIR=${LANLORD_EXEC_DIR:-/var/lib/samba/private/exec}
 TMP_DIR=${LANLORD_EXEC_TMP:-/dev/shm}
 POLL=${LANLORD_EXEC_POLL:-1}
 MAX_COMMAND=2000
+LOG=${LANLORD_EXEC_LOG:-/var/lib/samba/private/exec.log}
+LOG_MAX=${LANLORD_EXEC_LOG_MAX:-1048576}
+CHUNK=1048576
 SMB_OPT='client min protocol=NT1'
 
 work=
@@ -30,6 +45,11 @@ made_bat=0
 made_service=0
 start_pid=
 final_sent=0
+caller=cli
+hash_command=0
+audit=0
+audit_result=error
+started_ms=0
 
 event() { printf 'LANLORD_EVENT %s\n' "$1"; }
 
@@ -40,6 +60,39 @@ json_quote() {
   s=${s//\"/\\\"}
   s=${s//[[:cntrl:]]/ }
   printf '%s' "$s"
+}
+
+now_ms() {
+  local t=${EPOCHREALTIME:-0.000000}
+  t=${t/[.,]/}
+  echo $((10#$t / 1000))
+}
+
+# appends the audit line (never the password); a log that cannot be written is only a warning
+write_audit() {
+  local ts shown ms line
+  TZ=UTC printf -v ts '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+  shown=${command:0:$MAX_COMMAND}
+  shown=${shown//[[:cntrl:]]/ }
+  if ((hash_command)); then
+    shown="sha256:$(printf '%s' "$command" | sha256sum | cut -d' ' -f1)"
+  fi
+  ms=$(($(now_ms) - started_ms))
+  printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%d.%03d' "$ts" "$caller" "$machine" "${addr:--}" "$shown" "$audit_result" $((ms / 1000)) $((ms % 1000))
+  (
+    flock -w 5 7 || exit 1
+    if [[ -f $LOG ]] && (($(stat -c %s "$LOG") >= LOG_MAX)); then
+      mv -f "$LOG" "$LOG.1" || exit 1
+    fi
+    printf '%s\n' "$line" >>"$LOG" || exit 1
+    chmod 600 "$LOG"
+  ) 7>"$LOG.lock" 2>/dev/null || echo "lanlord-exec: warning: could not write the audit log $LOG" >&2
+}
+
+# a request that is turned away; it is still audited
+refuse() {
+  audit_result=refused
+  fail "$1"
 }
 
 fail() {
@@ -74,9 +127,12 @@ cleanup() {
     fi
   fi
   [[ -n $work ]] && rm -rf "$work"
+  # last, so a slow or stuck log never holds up the cleanup of the machine
+  ((audit)) && write_audit
+  return 0
 }
 trap cleanup EXIT
-trap 'exit 1' INT TERM HUP
+trap '((final_sent)) || audit_result=killed; exit 1' INT TERM HUP
 
 # reads a flat json object of strings from $1 into the J array; nothing may follow the object
 declare -A J=()
@@ -145,8 +201,8 @@ parse_json() {
   done
 }
 
-# base64 on one line of the bytes in file $1 from byte offset $2
-b64_from() { tail -c +"$(($2 + 1))" "$1" | base64 | tr -d '\n'; }
+# base64 on one line of $3 bytes of file $1 from byte offset $2
+b64_from() { tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d '\n'; }
 
 # service names left by earlier runs, and their files, are removed
 sweep_stale() {
@@ -169,6 +225,7 @@ while (($#)); do
     --machine) machine=${2:-}; shift 2 || fail "--machine needs a value" ;;
     --address) addr=${2:-}; shift 2 || fail "--address needs a value" ;;
     --timeout) timeout=${2:-}; shift 2 || fail "--timeout needs a value" ;;
+    --hash-command) hash_command=1; shift ;;
     *) fail "unknown argument $1" ;;
   esac
 done
@@ -199,15 +256,19 @@ rm -f "$work/in"
 user=${J[user]:-}
 password=${J[password]:-}
 command=${J[command]:-}
+caller=${J[caller]:-cli}
 unset 'J[password]'
 [[ -n $user && -n $password ]] || fail "user and password are needed"
 if [[ $user == *[$'\r\n']* || $password == *[$'\r\n']* ]]; then
   fail "the credentials hold a line break"
 fi
+[[ $caller =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || fail "the caller is not valid"
 if [[ $mode == run ]]; then
-  [[ -n $command ]] || fail "the command is empty"
-  [[ $command != *[$'\r\n']* ]] || fail "the command holds a line break"
-  ((${#command} <= MAX_COMMAND)) || fail "the command is longer than $MAX_COMMAND characters"
+  started_ms=$(now_ms)
+  audit=1
+  [[ -n $command ]] || refuse "the command is empty"
+  [[ $command != *[$'\r\n']* ]] || refuse "the command holds a line break"
+  ((${#command} <= MAX_COMMAND)) || refuse "the command is longer than $MAX_COMMAND characters"
 fi
 
 # the password file; a DOMAIN\user name is split the way smbclient wants it
@@ -273,14 +334,19 @@ setsid bash -c 'log=$1 rcfile=$2; shift 2; "$@" >"$log" 2>&1; echo $? >"$rcfile"
 start_pid=$!
 
 emit_new() {
-  local stream=$1 file=$2 var=$3 size data
+  local stream=$1 file=$2 var=$3 size data off n
   [[ -f $file ]] || return 0
   size=$(wc -c <"$file")
-  if ((size > ${!var})); then
-    data=$(b64_from "$file" "${!var}")
-    printf -v "$var" '%s' "$size"
+  off=${!var}
+  # at most CHUNK raw bytes to a line
+  while ((size > off)); do
+    n=$((size - off))
+    ((n <= CHUNK)) || n=$CHUNK
+    data=$(b64_from "$file" "$off" "$n")
+    off=$((off + n))
+    printf -v "$var" '%s' "$off"
     event "{\"stream\":\"$stream\",\"data\":\"$data\"}"
-  fi
+  done
 }
 
 off_out=0
@@ -308,11 +374,13 @@ while :; do
   fi
   if ((SECONDS >= timeout)); then
     final_sent=1
+    audit_result=timed_out
     event '{"timed_out":true}'
     exit 0
   fi
   sleep "$POLL"
 done
 final_sent=1
+audit_result=$rc
 event "{\"exit\":$rc}"
 exit 0

@@ -1224,6 +1224,123 @@ fn check_machine(machine: &str) -> Result<(), Invalid> {
         .map_err(|reason| invalid("machine", reason))
 }
 
+/// a plain `exit N` ends the outer cmd.exe, so the exit code is never written and the run would
+/// show as timed out; nt4 has no `exit /b`. a command is refused when any part of it, split at
+/// `&`, `&&`, `||` and parentheses, starts with `exit` once a leading `@`, `if ...`, `do` and
+/// the like are taken off. a single `|` does not split: the right side of a pipe runs in a child
+/// cmd, where exit only ends that child. `"` and `^` quote what follows. a `(` splits only where
+/// a command starts, so `echo (exit)` and a for set pass. the parse is conservative: when in
+/// doubt the command is allowed, as a missed exit only costs a timeout. `else exit` and
+/// `if a == b exit` pass by design for that reason.
+fn check_no_exit(command: &str) -> Result<(), Invalid> {
+    flag(
+        !command_parts(command)
+            .iter()
+            .any(|part| starts_with_exit(part)),
+        "must not use exit: on nt4 it ends the shell and the run shows as timed out",
+    )
+    .map_err(|reason| invalid("command", reason))
+}
+
+/// the parts of a command line between unquoted `&`, `||`, `(` and `)`, in lower case.
+fn command_parts(command: &str) -> Vec<String> {
+    let mut parts = vec![];
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut depth = 0;
+    let lower = command.to_ascii_lowercase();
+    let mut chars = lower.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            '^' if !quoted => {
+                current.push(c);
+                current.extend(chars.next());
+            }
+            '&' if !quoted => parts.push(std::mem::take(&mut current)),
+            // a group opens only where a command starts
+            '(' if !quoted
+                && strip_prefixes(&current).is_some_and(|rest| rest.trim().is_empty()) =>
+            {
+                depth += 1;
+                parts.push(std::mem::take(&mut current));
+            }
+            ')' if !quoted && depth > 0 => {
+                depth -= 1;
+                parts.push(std::mem::take(&mut current));
+            }
+            '|' if !quoted && chars.peek() == Some(&'|') => {
+                chars.next();
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+/// the first word of `text` and what follows it.
+fn first_word(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    text.split_at(end)
+}
+
+fn skip_blanks(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_whitespace() || c == '@')
+}
+
+/// `part` without a leading `@`, `do`, `if` condition or `for ... do`; `None` when an `if` or a
+/// `for` cannot be read.
+fn strip_prefixes(part: &str) -> Option<&str> {
+    let mut rest = skip_blanks(part);
+    loop {
+        let (word, after) = first_word(rest);
+        match word {
+            "do" => rest = skip_blanks(after),
+            "if" => rest = skip_blanks(skip_condition(after)?),
+            "for" => {
+                let spaced = format!("{after} ");
+                let at = spaced.find(" do ")?;
+                rest = skip_blanks(after.get(at + 3..).unwrap_or(""));
+            }
+            _ => return Some(rest),
+        }
+    }
+}
+
+/// does `part` run the internal `exit`? `exit.bat` counts: nt4 cmd takes `.` as a delimiter, so
+/// it parses as `exit`.
+fn starts_with_exit(part: &str) -> bool {
+    let Some(rest) = strip_prefixes(part) else {
+        return false;
+    };
+    rest.strip_prefix("exit").is_some_and(|after| {
+        after.is_empty()
+            || after.starts_with(|c: char| c.is_whitespace() || ",;=/.\t<>".contains(c))
+    })
+}
+
+/// what follows the condition of an `if`, or `None` when it is not one of the plain forms.
+fn skip_condition(text: &str) -> Option<&str> {
+    let (mut word, mut rest) = first_word(text);
+    if word == "/i" {
+        (word, rest) = first_word(rest);
+    }
+    if word == "not" {
+        (word, rest) = first_word(rest);
+    }
+    match word {
+        "errorlevel" | "exist" | "defined" => Some(first_word(rest).1),
+        _ if word.contains("==") => Some(rest),
+        _ => None,
+    }
+}
+
 fn check_timeout(secs: u32) -> Result<(), Invalid> {
     flag((1..=900).contains(&secs), "must be 1 to 900 seconds")
         .map_err(|reason| invalid("timeout_secs", reason))
@@ -1349,6 +1466,7 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
         } => {
             check_machine(machine)?;
             crate::nt4_exec::check_command(command).map_err(|reason| invalid("command", reason))?;
+            check_no_exit(command)?;
             check_timeout(*timeout_secs)
         }
         Operation::MachinePreset {
@@ -2404,5 +2522,52 @@ web-proxy:
         assert!(remove(line).validate().is_err());
         assert!(remove("ssh-ed25519 AAAA*").validate().is_err());
         assert!(remove("").validate().is_err());
+    }
+
+    #[test]
+    fn a_machine_run_refuses_a_command_that_exits_the_shell() {
+        let run = |command: &str| Operation::MachineRun {
+            machine: "ws1".into(),
+            command: command.into(),
+            timeout_secs: 30,
+        };
+        for bad in [
+            "exit",
+            "exit 3",
+            "  EXIT",
+            "exit/b 1",
+            "(exit 3)",
+            "@exit",
+            "a & exit",
+            "dir && exit",
+            "dir &exit 1",
+            "a && EXIT 1",
+            "a || exit",
+            "if errorlevel 1 exit",
+            "if not exist x exit 2",
+            "for %i in (a) do exit",
+            // nt4 cmd takes `.` as a delimiter, so this parses as the internal exit
+            "exit.bat",
+        ] {
+            let error = run(bad).validate().unwrap_err().to_string();
+            assert!(error.contains("exit"), "{bad}: {error}");
+        }
+        for fine in [
+            "ver",
+            "echo \"a & exit\"",
+            "echo a ^& exit",
+            "dir | exit",
+            "cmd /c exit 3",
+            "echo exit",
+            "type exit.txt",
+            "echo exited",
+            "dir exit-code.log",
+            "echo (exit)",
+            "for %i in (exit) do echo %i",
+            "echo a & else exit",
+            "echo a && echo exit_code",
+        ] {
+            assert_eq!(run(fine).validate(), Ok(()), "{fine}");
+        }
     }
 }
