@@ -14,7 +14,7 @@ fn server() -> (Desktop, egui::Context, Arc<Fake>) {
     desktop.open(Target::MyServer);
     with_host(&mut desktop, &ctx);
     until(&mut desktop, &ctx, |d| {
-        d.my_server.facts().belongs_to("me@gw")
+        d.my_server.facts().belongs_to("me@gw") && d.my_server.ssh_auth().belongs_to("me@gw")
     });
     frames(&mut desktop, &ctx, 2);
     (desktop, ctx, fake)
@@ -92,7 +92,7 @@ fn nothing_is_purged_before_the_host_name_is_typed() {
     frames(&mut desktop, &ctx, 2);
     assert_eq!(enabled(&ctx, "Remove"), Some(false), "a wrong name");
     // only the preview has run so far
-    // the exact set is compared, so a real "purge" call would fail this
+    // the exact multiset is compared, so a real "purge" call would fail this
     assert_calls(
         fake.calls(),
         "load me@gw",
