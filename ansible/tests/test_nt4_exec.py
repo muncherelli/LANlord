@@ -15,7 +15,9 @@ SECRET = "S3cret-pw!x"
 
 # smbclient, net and nmblookup are stubs that record their arguments. the "machine" is a folder:
 # put and get move files in and out of it, and starting the service plays the .bat's part by
-# writing .out, .err and .rc from the scenario files (out, err, rc, hang, start_error, put_error)
+# writing .out, .err and .rc from the scenario files (out, err, rc, hang, start_error, put_error);
+# remote/ is the root of ADMIN$ and remote/Temp its Temp (setUp makes it; mkdir makes it otherwise).
+# a cd to a missing Temp prints the error and carries on in the root, as smbclient does
 STUB = r"""#!/bin/bash
 name=$(basename "$0")
 echo "$name $*" >> "$STUBS/calls"
@@ -35,18 +37,24 @@ case $name in
   smbclient)
     [[ -e $STUBS/put_error ]] && [[ $* == *put* ]] && { if [[ -s $STUBS/put_error ]]; then cat "$STUBS/put_error"; else printf 'NT_STATUS_ACCESS_DENIED \001 "x" \\ \a\n'; fi; exit 1; }
     cmds=
+    cur=$remote
     for ((k = 0; k < ${#args[@]}; k++)); do [[ ${args[k]} == -c ]] && cmds=${args[k+1]}; done
     IFS=';' read -ra list <<< "$cmds"
     for c in "${list[@]}"; do
       read -ra w <<< "$c"
       case ${w[0]:-} in
-        put) cp "${w[1]}" "$remote/${w[2]}"; cp "${w[1]}" "$STUBS/bats/${w[2]}" ;;
+        mkdir)
+          if [[ -d $remote/Temp ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_OBJECT_NAME_COLLISION"; exit 1; }
+          elif [[ -e $STUBS/mkdir_error ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_ACCESS_DENIED"; exit 1; }
+          else mkdir "$remote/Temp"; fi ;;
+        cd) if [[ -d $remote/Temp ]]; then cur=$remote/Temp; else echo "cd \\Temp\\: NT_STATUS_OBJECT_NAME_NOT_FOUND"; fi ;;
+        put) cp "${w[1]}" "$cur/${w[2]}"; cp "${w[1]}" "$STUBS/bats/${w[2]}" ;;
         get)
           # in the slow scenario the poll waits until the start stub has written its pids, so the kill
           # on timeout can never come first
           if [[ -e $STUBS/slow ]]; then n=0; while [[ ! -e $STUBS/ready ]] && ((n++ < 200)); do sleep 0.05; done; fi
-          [[ -f $remote/${w[1]} ]] && cp "$remote/${w[1]}" "${w[2]}" ;;
-        del) [[ -e $STUBS/del_hang && ${w[1]} != *\** ]] && sleep 30; rm -f $remote/${w[1]} ;;
+          [[ -f $cur/${w[1]} ]] && cp "$cur/${w[1]}" "${w[2]}" ;;
+        del) [[ -e $STUBS/del_hang && ${w[1]} != *[*?]* ]] && sleep 30; (cd "$cur" && rm -f ${w[1]}) ;;
       esac
     done
     exit 0 ;;
@@ -64,13 +72,13 @@ case $name in
         [[ -e $STUBS/start_io_timeout ]] && io_timeout=1
         [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; touch "$STUBS/ready"; wait; }
         [[ -e $STUBS/hang ]] || {
-          [[ -e $STUBS/out ]] && cp "$STUBS/out" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
-          [[ -e $STUBS/err ]] && cp "$STUBS/err" "$remote/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
+          [[ -e $STUBS/out ]] && cp "$STUBS/out" "$remote/Temp/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
+          [[ -e $STUBS/err ]] && cp "$STUBS/err" "$remote/Temp/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
           rcname=$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.rc/')
           if [[ -e $STUBS/late ]]; then
-            ( sleep 1.5; cp "$STUBS/rc" "$remote/$rcname" ) >/dev/null 2>&1 &
+            ( sleep 1.5; cp "$STUBS/rc" "$remote/Temp/$rcname" ) >/dev/null 2>&1 &
           else
-            cp "$STUBS/rc" "$remote/$rcname"
+            cp "$STUBS/rc" "$remote/Temp/$rcname"
           fi
         }
         [[ -n ${io_timeout:-} ]] && { echo "Query status request failed. [NT_STATUS_IO_TIMEOUT]"; exit 2; }
@@ -112,6 +120,7 @@ class LanlordExecTest(unittest.TestCase):
             LANLORD_EXEC_LOG=os.path.join(self.tmp, "exec.log"),
         )
         self.log = self.env["LANLORD_EXEC_LOG"]
+        os.makedirs(os.path.join(self.stubs, "remote", "Temp"))
         self.scenario(rc="0\r\n")
 
     def scenario(self, **files):
@@ -153,7 +162,10 @@ class LanlordExecTest(unittest.TestCase):
             return f.read().decode()
 
     def remote(self):
-        return os.listdir(os.path.join(self.stubs, "remote"))
+        return os.listdir(os.path.join(self.stubs, "remote", "Temp"))
+
+    def root_files(self):
+        return [n for n in os.listdir(os.path.join(self.stubs, "remote")) if n != "Temp"]
 
     def services(self):
         with open(os.path.join(self.stubs, "services")) as f:
@@ -480,7 +492,7 @@ class LanlordExecTest(unittest.TestCase):
     def test_stale_services_are_swept_at_the_start_of_a_run(self):
         self.scenario(services="LANlordExecdeadbeef\nOtherService\n")
         for name in ("ll-deadbeef.bat", "ll-deadbeef.exe"):
-            with open(os.path.join(self.stubs, "remote", name), "w") as f:
+            with open(os.path.join(self.stubs, "remote", "Temp", name), "w") as f:
                 f.write("x")
         out = self.run_exec()
         self.assertEqual(self.events(out)[-1], {"exit": 0})
@@ -500,10 +512,86 @@ class LanlordExecTest(unittest.TestCase):
         )
         self.assertNotIn("stop Spooler", calls)
 
+    def test_temp_is_made_before_the_put_when_it_is_missing(self):
+        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        calls = [c for c in self.calls().splitlines() if c.startswith("smbclient")]
+        mk = next(i for i, c in enumerate(calls) if "mkdir Temp" in c)
+        put = next(i for i, c in enumerate(calls) if "put " in c)
+        self.assertLess(mk, put)
+        self.assertTrue(os.path.isdir(os.path.join(self.stubs, "remote", "Temp")))
+
+    def test_an_existing_temp_is_not_an_error(self):
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("mkdir Temp", self.calls())
+
+    def test_a_temp_that_cannot_be_made_is_a_clear_error(self):
+        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+        self.flag("mkdir_error")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        error = self.events(out)[-1]["error"]
+        self.assertIn("could not create", error)
+        self.assertNotIn("could not connect", error)
+        self.assertIn("NT_STATUS_ACCESS_DENIED", error)
+        self.assertNotIn(" put ", self.calls())
+
+    def test_a_put_that_cannot_enter_temp_fails_instead_of_using_the_root(self):
+        # mkdir is a no-op here (temp vanishes between the calls), so the cd error shows up in the put
+        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+        path = os.path.join(self.stubs, "bin", "smbclient")
+        with open(path) as f:
+            body = f.read()
+        with open(path, "w") as f:
+            f.write(body.replace('else mkdir "$remote/Temp"; fi', "fi"))
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        error = self.events(out)[-1]["error"]
+        self.assertIn("Temp is not usable", error)
+        self.assertNotIn("service create", self.calls())
+
+    def test_the_run_files_land_in_temp_not_the_root(self):
+        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.root_files(), [])
+        self.assertTrue(any(n.endswith(".cmd.bat") for n in os.listdir(os.path.join(self.stubs, "bats"))))
+
+    def test_a_sign_in_failure_is_not_reported_as_a_temp_problem(self):
+        path = os.path.join(self.stubs, "bin", "smbclient")
+        with open(path) as f:
+            body = f.read()
+        with open(path, "w") as f:
+            f.write(body.replace("    cmds=\n", "    echo 'session setup failed: NT_STATUS_LOGON_FAILURE'; exit 1\n    cmds=\n", 1))
+        out = self.run_exec()
+        error = self.events(out)[-1]["error"]
+        self.assertIn("could not connect", error)
+        self.assertNotIn("could not create", error)
+
+    def test_sweep_without_temp_leaves_other_root_files_alone(self):
+        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+        root = os.path.join(self.stubs, "remote")
+        for name in ("ll-system.exe", "ll-0123abcd.exe", "ll-0123abcd.cmd.bat"):
+            with open(os.path.join(root, name), "w") as f:
+                f.write("x")
+        out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.root_files(), ["ll-system.exe"])
+
+    def test_sweep_also_removes_leftovers_in_the_root(self):
+        out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        sweep = next(c for c in self.calls().splitlines() if c.startswith("smbclient") and "del " in c)
+        self.assertIn("del ll-????????.cmd.bat", sweep)
+        self.assertLess(sweep.index("del ll-????????.exe"), sweep.index("cd Temp"))
+        self.assertNotIn("del ll-*;", sweep.split("cd Temp")[0])
+
     def test_sweep_removes_what_a_dead_run_left(self):
         self.scenario(services="LANlordExec0123abcd\nLANlordExecffffffff\nSpooler\n")
         for name in ("ll-0123abcd.out", "ll-0123abcd.exe"):
-            with open(os.path.join(self.stubs, "remote", name), "w") as f:
+            with open(os.path.join(self.stubs, "remote", "Temp", name), "w") as f:
                 f.write("x")
         out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
         self.assertEqual(out.returncode, 0, out.stderr)
