@@ -352,11 +352,11 @@ bat=ll-$run_id
 made_bat=1
 # a default nt4 has no %SystemRoot%\Temp: make it, an existing one is fine. smbclient exits 0 even when a
 # cd fails and then works in the root, so the output is checked for both. its exit code follows the last
-# command, so an existing Temp (a collision) may exit non-zero and is not a connect failure
+# command, so a mkdir that failed (a collision or a denial) may exit non-zero and is not a connect failure
 mkdir_rc=0
 smb -c "mkdir Temp" >"$work/mkdir.log" 2>&1 || mkdir_rc=$?
 if grep -q -e 'session setup failed' -e 'tree connect failed' -e 'Connection to .* failed' -e 'NT_STATUS_LOGON_FAILURE' -e 'NT_STATUS_IO_TIMEOUT' -e 'NT_STATUS_HOST_UNREACHABLE' -e 'NT_STATUS_CONNECTION' -e 'NT_STATUS_BAD_NETWORK_NAME' "$work/mkdir.log" ||
-  { ((mkdir_rc)) && ! grep -q 'NT_STATUS_OBJECT_NAME_COLLISION' "$work/mkdir.log"; }; then
+  { ((mkdir_rc)) && ! grep -q 'mkdir failed' "$work/mkdir.log"; }; then
   fail "could not connect to $machine: $(excerpt "$work/mkdir.log")"
 elif grep -q 'NT_STATUS_' "$work/mkdir.log" && ! grep -q 'NT_STATUS_OBJECT_NAME_COLLISION' "$work/mkdir.log"; then
   fail "could not create %SystemRoot%\\Temp on $machine: $(excerpt "$work/mkdir.log")"

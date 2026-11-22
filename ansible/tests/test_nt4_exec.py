@@ -45,7 +45,7 @@ case $name in
       case ${w[0]:-} in
         mkdir)
           if [[ -d $remote/Temp ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_OBJECT_NAME_COLLISION"; exit 1; }
-          elif [[ -e $STUBS/mkdir_error ]]; then echo "mkdir failed on directory Temp: NT_STATUS_ACCESS_DENIED"
+          elif [[ -e $STUBS/mkdir_error ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_ACCESS_DENIED"; exit 1; }
           else mkdir "$remote/Temp"; fi ;;
         cd) if [[ -d $remote/Temp ]]; then cur=$remote/Temp; else echo "cd \\Temp\\: NT_STATUS_OBJECT_NAME_NOT_FOUND"; fi ;;
         put) cp "${w[1]}" "$cur/${w[2]}"; cp "${w[1]}" "$STUBS/bats/${w[2]}" ;;
@@ -534,6 +534,7 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(out.returncode, 1)
         error = self.events(out)[-1]["error"]
         self.assertIn("could not create", error)
+        self.assertNotIn("could not connect", error)
         self.assertIn("NT_STATUS_ACCESS_DENIED", error)
         self.assertNotIn(" put ", self.calls())
 
