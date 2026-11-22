@@ -89,8 +89,53 @@ impl Server {
 
     /// the name a fingerprint of this server's `what` is kept under.
     fn key(&self, what: &str) -> String {
-        format!("{}/{what}", self.id)
+        fingerprint_key(&self.id, what)
     }
+}
+
+/// the container of the server called `id`: the first server keeps the name from before the list.
+fn container_name(id: &str) -> String {
+    if id == LEGACY {
+        "lanlord-nt4".into()
+    } else {
+        format!("lanlord-nt4-{id}")
+    }
+}
+
+/// the name a fingerprint of server `id`'s `what` is kept under.
+fn fingerprint_key(id: &str, what: &str) -> String {
+    format!("{id}/{what}")
+}
+
+/// a domain controller of the settings: its container, and the key its exec password is
+/// remembered under.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExecTarget {
+    pub container: String,
+    pub key: String,
+}
+
+/// the domain controllers of the list, and only those: a workgroup or file server has no exec
+/// account.
+pub fn exec_targets(doc: &Value) -> Vec<ExecTarget> {
+    let Some(items) = doc.get("nt4-servers").and_then(Value::as_sequence) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter(|item| text(item.get("role")).as_deref() == Some("pdc"))
+        .map(|item| text(item.get("name")).unwrap_or_default())
+        .map(|id| ExecTarget {
+            container: container_name(&id),
+            key: fingerprint_key(&id, "exec"),
+        })
+        .collect()
+}
+
+/// remember `password` as the one set on the exec account under `key`, so a later plan or apply
+/// does not send it again.
+pub fn remember_exec(host: &dyn Host, state_dir: &str, key: &str, password: &str) -> Result<()> {
+    State::load(host, state_dir, true)?.remember(host, key, &Secret::new(password))
 }
 
 struct Config {
@@ -303,11 +348,7 @@ fn server(host: &dyn Host, doc: &Value, section: &Mapping, item: &Value) -> Resu
     put(&mut merged, "software", Value::Bool(software));
     let legacy = id == LEGACY;
     Ok(Server {
-        container: if legacy {
-            "lanlord-nt4".into()
-        } else {
-            format!("lanlord-nt4-{id}")
-        },
+        container: container_name(&id),
         dir: if legacy {
             ROOT.into()
         } else {

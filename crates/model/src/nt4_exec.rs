@@ -12,24 +12,15 @@ pub const USER: &str = "lanlord-exec";
 pub const PASSWORD_LEN: usize = 24;
 
 /// whether the settings have a domain controller, so apply makes the exec account. a workgroup
-/// or plain file server has none. the list `nt4-servers` decides when there is one; settings
-/// from before it count as a domain unless `mode` says workgroup.
+/// or plain file server has none. only the list `nt4-servers` counts: the module does nothing
+/// without it, and an empty or null list has no controller.
 pub fn wants_account(settings: &serde_yaml_ng::Value) -> bool {
     use serde_yaml_ng::Value;
     match settings.get("nt4-servers") {
         Some(Value::Sequence(items)) => items
             .iter()
             .any(|item| item.get("role").and_then(Value::as_str) == Some("pdc")),
-        _ => match settings.get("nt4-domain") {
-            Some(Value::Mapping(section)) => {
-                section
-                    .get("mode")
-                    .and_then(Value::as_str)
-                    .unwrap_or("domain")
-                    == "domain"
-            }
-            _ => false,
-        },
+        _ => false,
     }
 }
 
@@ -299,10 +290,12 @@ mod tests {
         ));
         assert!(!want("nt4-servers:\n  - {name: f, role: workgroup}\n"));
         assert!(!want("nt4-servers: []\n"));
-        // settings from before the list: a domain unless the mode says otherwise
-        assert!(want("nt4-domain:\n  admin_password: x\n"));
-        assert!(want("nt4-domain:\n  mode: domain\n"));
-        assert!(!want("nt4-domain:\n  mode: workgroup\n"));
+        // the module does nothing without the list, so none, null and empty want no account
+        assert!(!want("nt4-domain:\n  admin_password: x\n"));
+        assert!(!want("nt4-domain:\n  mode: domain\n"));
+        assert!(!want("nt4-servers:\n"));
+        assert!(!want("nt4-servers: null\n"));
+        assert!(!want("nt4-servers: ~\n"));
         assert!(!want("dns: {}\n"));
         assert!(!want("{}\n"));
     }
