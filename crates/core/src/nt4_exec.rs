@@ -211,17 +211,24 @@ pub fn argv(machine: &str, address: Option<&str>, timeout_secs: u32) -> Vec<Stri
     argv
 }
 
-/// the caller's name as the script takes it: plain characters only, else `cli`.
-fn audit_name(caller: &str) -> &str {
-    let plain = !caller.is_empty()
-        && caller.len() <= 64
-        && caller
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._@-".contains(&b));
-    if plain {
-        caller
+/// the caller's name as the script takes it: other characters become `_`, at most 64 are kept,
+/// and an empty name is `cli`.
+fn audit_name(caller: &str) -> String {
+    let name: String = caller
+        .chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._@-".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if name.is_empty() {
+        "cli".into()
     } else {
-        "cli"
+        name
     }
 }
 
@@ -328,7 +335,7 @@ pub fn run(
         bail!("{machine} is not a machine of the domain");
     };
     let mut secret = password(session, identity, &mut ask)?;
-    let mut body = request(&secret, command, audit_name(caller));
+    let mut body = request(&secret, command, &audit_name(caller));
     secret.zeroize();
     let run = |address: Option<&str>, ask: AskPassword, on_chunk: &mut dyn FnMut(bool, &[u8])| {
         run_request(
@@ -540,11 +547,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_audit_name_is_plain_or_cli() {
+    fn the_audit_name_is_made_plain() {
         assert_eq!(audit_name("ann.lee@demo-1"), "ann.lee@demo-1");
-        for bad in ["", "a b", "a\"b", "x\ny", &"a".repeat(65)] {
-            assert_eq!(audit_name(bad), "cli", "{bad:?}");
-        }
+        assert_eq!(audit_name(""), "cli");
+        assert_eq!(audit_name("a b\"c\nd"), "a_b_c_d");
+        assert_eq!(audit_name(&"a".repeat(80)), "a".repeat(64));
     }
 
     #[test]

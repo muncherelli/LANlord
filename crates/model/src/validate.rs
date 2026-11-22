@@ -1221,24 +1221,94 @@ fn check_machine(machine: &str) -> Result<(), Invalid> {
 }
 
 /// a plain `exit N` ends the outer cmd.exe, so the exit code is never written and the run would
-/// show as timed out; nt4 has no `exit /b`. refuse one at the start or after `&`, `&&` or `||`.
+/// show as timed out; nt4 has no `exit /b`. a command is refused when any part of it, split at
+/// `&`, `&&`, `||` and parentheses, starts with `exit` once a leading `@`, `if ...`, `do` and
+/// the like are taken off. a single `|` does not split: the right side of a pipe runs in a child
+/// cmd, where exit only ends that child. `"` and `^` quote what follows. the parse is
+/// conservative: when in doubt the command is allowed, as a missed exit only costs a timeout.
 fn check_no_exit(command: &str) -> Result<(), Invalid> {
-    let lower = command.to_ascii_lowercase();
-    let after_operator = lower
-        .match_indices(['&', '|'])
-        .any(|(at, _)| starts_with_exit(&lower[at + 1..]));
     flag(
-        !starts_with_exit(&lower) && !after_operator,
+        !command_parts(command)
+            .iter()
+            .any(|part| starts_with_exit(part)),
         "must not use exit: on nt4 it ends the shell and the run shows as timed out",
     )
     .map_err(|reason| invalid("command", reason))
 }
 
-/// does `text`, past leading blanks and operator characters, begin with the word `exit`?
-fn starts_with_exit(text: &str) -> bool {
-    let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '&' || c == '|');
-    text.strip_prefix("exit")
-        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+/// the parts of a command line between unquoted `&`, `||`, `(` and `)`, in lower case.
+fn command_parts(command: &str) -> Vec<String> {
+    let mut parts = vec![];
+    let mut current = String::new();
+    let mut quoted = false;
+    let lower = command.to_ascii_lowercase();
+    let mut chars = lower.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            '^' if !quoted => {
+                current.push(c);
+                current.extend(chars.next());
+            }
+            '&' | '(' | ')' if !quoted => parts.push(std::mem::take(&mut current)),
+            '|' if !quoted && chars.peek() == Some(&'|') => {
+                chars.next();
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(c),
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+/// the first word of `text` and what follows it.
+fn first_word(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    text.split_at(end)
+}
+
+/// does `part` run the internal `exit`? a leading `@`, `do` and an `if` condition are skipped.
+/// `exit.bat` counts: nt4 cmd takes `.` as a delimiter, so it parses as `exit`.
+fn starts_with_exit(part: &str) -> bool {
+    let mut rest = part.trim_start_matches(|c: char| c.is_whitespace() || c == '@');
+    loop {
+        let (word, after) = first_word(rest);
+        match word {
+            "do" => rest = after.trim_start_matches(|c: char| c.is_whitespace() || c == '@'),
+            "if" => match skip_condition(after) {
+                Some(next) => {
+                    rest = next.trim_start_matches(|c: char| c.is_whitespace() || c == '@')
+                }
+                None => return false,
+            },
+            _ => break,
+        }
+    }
+    rest.strip_prefix("exit").is_some_and(|after| {
+        after.is_empty()
+            || after.starts_with(|c: char| c.is_whitespace() || ",;=/.\t<>".contains(c))
+    })
+}
+
+/// what follows the condition of an `if`, or `None` when it is not one of the plain forms.
+fn skip_condition(text: &str) -> Option<&str> {
+    let (mut word, mut rest) = first_word(text);
+    if word == "/i" {
+        (word, rest) = first_word(rest);
+    }
+    if word == "not" {
+        (word, rest) = first_word(rest);
+    }
+    match word {
+        "errorlevel" | "exist" | "defined" => Some(first_word(rest).1),
+        _ if word.contains("==") => Some(rest),
+        _ => None,
+    }
 }
 
 fn check_timeout(secs: u32) -> Result<(), Invalid> {
@@ -2421,25 +2491,37 @@ web-proxy:
             timeout_secs: 30,
         };
         for bad in [
+            "exit",
             "exit 3",
             "  EXIT",
             "exit/b 1",
-            "dir & exit 1",
+            "(exit 3)",
+            "@exit",
+            "a & exit",
             "dir && exit",
-            "dir || exit 2",
             "dir &exit 1",
-            "dir &&   Exit 1",
+            "a && EXIT 1",
+            "a || exit",
+            "if errorlevel 1 exit",
+            "if not exist x exit 2",
+            "for %i in (a) do exit",
+            // nt4 cmd takes `.` as a delimiter, so this parses as the internal exit
+            "exit.bat",
         ] {
             let error = run(bad).validate().unwrap_err().to_string();
             assert!(error.contains("exit"), "{bad}: {error}");
         }
         for fine in [
             "ver",
+            "echo \"a & exit\"",
+            "echo a ^& exit",
+            "dir | exit",
             "cmd /c exit 3",
+            "echo exit",
+            "type exit.txt",
             "echo exited",
-            "dir exit.txt",
+            "dir exit-code.log",
             "echo a && echo exit_code",
-            "type c:\\exit.log",
         ] {
             assert_eq!(run(fine).validate(), Ok(()), "{fine}");
         }

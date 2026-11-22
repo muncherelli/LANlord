@@ -521,5 +521,41 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(events[-1], {"exit": 0})
 
 
+    def test_a_refused_command_is_audited_as_refused(self):
+        out = self.run_exec(command="ver\r\ndel x", caller="ann")
+        self.assertEqual(out.returncode, 1)
+        line = self.log_lines()[-1]
+        self.assertEqual((line[1], line[2], line[5]), ("ann", "NT4SRV01", "refused"))
+        self.assertEqual(self.calls(), "")
+
+    def test_a_killed_run_is_audited_as_killed_and_cleans_up(self):
+        import signal
+
+        self.flag("hang")
+        self.flag("slow")
+        request = {"user": "DEMO\\Administrator", "password": SECRET, "command": "ver"}
+        proc = subprocess.Popen(
+            ["bash", EXEC, "run", "--machine", "nt4srv01", "--timeout", "60"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.env,
+        )
+        proc.stdin.write(json.dumps(request))
+        proc.stdin.close()
+        # the start stub touches "ready" once it is running, so the kill comes after the service exists
+        ready = os.path.join(self.stubs, "ready")
+        deadline = time.time() + 30
+        while not os.path.exists(ready):
+            self.assertLess(time.time(), deadline, "the start never began")
+            self.assertIsNone(proc.poll())
+            time.sleep(0.02)
+        proc.send_signal(signal.SIGTERM)
+        proc.communicate(timeout=30)
+        self.assertEqual(self.log_lines()[-1][5], "killed")
+        self.assert_clean()
+
+
 if __name__ == "__main__":
     unittest.main()

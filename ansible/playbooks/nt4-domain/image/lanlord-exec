@@ -78,7 +78,7 @@ write_audit() {
   ms=$(($(now_ms) - started_ms))
   printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%d.%03d' "$ts" "$caller" "$machine" "${addr:--}" "$shown" "$audit_result" $((ms / 1000)) $((ms % 1000))
   (
-    flock 7 || exit 1
+    flock -w 5 7 || exit 1
     if [[ -f $LOG ]] && (($(stat -c %s "$LOG") >= LOG_MAX)); then
       mv -f "$LOG" "$LOG.1" || exit 1
     fi
@@ -87,8 +87,13 @@ write_audit() {
   ) 7>"$LOG.lock" 2>/dev/null || echo "lanlord-exec: warning: could not write the audit log $LOG" >&2
 }
 
+# a request that is turned away; it is still audited
+refuse() {
+  audit_result=refused
+  fail "$1"
+}
+
 fail() {
-  audit_result=error
   if ((final_sent == 0)); then
     final_sent=1
     event "{\"error\":\"$(json_quote "$1")\"}"
@@ -106,7 +111,6 @@ rpc() {
 # delete the service and the temp files; runs on every way out
 cleanup() {
   trap - EXIT INT TERM HUP
-  ((audit)) && write_audit
   if [[ -n $start_pid ]]; then
     # the start runs in a session of its own, so the whole group goes
     kill -TERM -- "-$start_pid" 2>/dev/null || kill "$start_pid" 2>/dev/null
@@ -121,9 +125,12 @@ cleanup() {
     fi
   fi
   [[ -n $work ]] && rm -rf "$work"
+  # last, so a slow or stuck log never holds up the cleanup of the machine
+  ((audit)) && write_audit
+  return 0
 }
 trap cleanup EXIT
-trap 'exit 1' INT TERM HUP
+trap '((final_sent)) || audit_result=killed; exit 1' INT TERM HUP
 
 # reads a flat json object of strings from $1 into the J array; nothing may follow the object
 declare -A J=()
@@ -255,9 +262,11 @@ if [[ $user == *[$'\r\n']* || $password == *[$'\r\n']* ]]; then
 fi
 [[ $caller =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || fail "the caller is not valid"
 if [[ $mode == run ]]; then
-  [[ -n $command ]] || fail "the command is empty"
-  [[ $command != *[$'\r\n']* ]] || fail "the command holds a line break"
-  ((${#command} <= MAX_COMMAND)) || fail "the command is longer than $MAX_COMMAND characters"
+  started_ms=$(now_ms)
+  audit=1
+  [[ -n $command ]] || refuse "the command is empty"
+  [[ $command != *[$'\r\n']* ]] || refuse "the command holds a line break"
+  ((${#command} <= MAX_COMMAND)) || refuse "the command is longer than $MAX_COMMAND characters"
 fi
 
 # the password file; a DOMAIN\user name is split the way smbclient wants it
@@ -273,10 +282,6 @@ fi
 chmod 600 "$work/auth"
 password=
 user=
-if [[ $mode == run ]]; then
-  started_ms=$(now_ms)
-  audit=1
-fi
 
 # one run per machine
 mkdir -p "$LOCK_DIR" || fail "no lock folder"
