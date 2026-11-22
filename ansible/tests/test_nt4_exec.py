@@ -59,7 +59,7 @@ case $name in
         echo "$4" >> "$STUBS/services" ;;
       delete) sed -i "/^$4\$/d" "$STUBS/services" ;;
       start)
-        [[ -e $STUBS/start_error ]] && { echo "WERR_ACCESS_DENIED"; exit 1; }
+        [[ -e $STUBS/start_error ]] && { echo "Query status request failed. [WERR_ACCESS_DENIED]"; exit 1; }
         [[ -e $STUBS/start_io_timeout ]] && io_timeout=1
         [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; touch "$STUBS/ready"; wait; }
         [[ -e $STUBS/hang ]] || {

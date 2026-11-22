@@ -344,7 +344,7 @@ made_service=1
 rpc create "LANlordExec$run_id" "LANlord exec" \
   "%SystemRoot%\\system32\\cmd.exe /Q /c %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
   {
-    if grep -q 'IO_TIMEOUT' "$work/create.log"; then
+    if grep -q 'NT_STATUS_IO_TIMEOUT' "$work/create.log"; then
       fail "the service manager on $machine is busy (a previous run may still be starting); try again in a minute"
     fi
     fail "could not create the service on $machine: $(excerpt "$work/create.log")"
@@ -393,7 +393,7 @@ while :; do
   emit_new err "$work/err" off_err
   [[ -n $rc ]] && break
   if [[ -f $work/start.rc ]] && [[ $(cat "$work/start.rc") != 0 ]] &&
-    ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond|IO_TIMEOUT|Query status request failed' "$work/start.log"; then
+    ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond|NT_STATUS_IO_TIMEOUT' "$work/start.log"; then
     fail "could not start the service on $machine: $(excerpt "$work/start.log")"
   fi
   if ((SECONDS >= timeout)); then
