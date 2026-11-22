@@ -44,7 +44,7 @@ case $name in
       read -ra w <<< "$c"
       case ${w[0]:-} in
         mkdir)
-          if [[ -d $remote/Temp ]]; then echo "mkdir failed on directory Temp: NT_STATUS_OBJECT_NAME_COLLISION"
+          if [[ -d $remote/Temp ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_OBJECT_NAME_COLLISION"; exit 1; }
           elif [[ -e $STUBS/mkdir_error ]]; then echo "mkdir failed on directory Temp: NT_STATUS_ACCESS_DENIED"
           else mkdir "$remote/Temp"; fi ;;
         cd) if [[ -d $remote/Temp ]]; then cur=$remote/Temp; else echo "cd \\Temp\\: NT_STATUS_OBJECT_NAME_NOT_FOUND"; fi ;;
