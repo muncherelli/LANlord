@@ -1175,40 +1175,29 @@ impl Job<'_, '_> {
     }
 
     fn set_admin_password(&mut self, server: &Server) -> Result<()> {
-        let host = self.host;
-        let Some(password) = &self.config.admin else {
-            return Ok(());
-        };
-        let state = &mut self.state;
-        engine::task(
-            &mut *self.events,
-            &mut self.tally,
-            &self.secrets,
-            &format!("set the domain administrator's password ({})", server.id),
-            |_| {
-                let argv = [
-                    "docker",
-                    "exec",
-                    "-i",
-                    &server.container,
-                    "lanlord-user",
-                    "admin",
-                ];
-                let out = host.run(&argv, Some(format!("{}\n", password.expose()).as_bytes()))?;
-                if !out.success() {
-                    anyhow::bail!("lanlord-user admin failed: {}", out.stderr.trim());
-                }
-                state.remember(host, &server.key("admin"), password)?;
-                Ok((true, String::new()))
-            },
-        )
+        let password = self.config.admin.clone();
+        let title = format!("set the domain administrator's password ({})", server.id);
+        self.set_password(server, "admin", password, &title)
     }
 
     /// the account lanlord runs commands as: a domain admin, with the password from the sealed
     /// secret. the password goes on stdin, never in the arguments.
     fn set_exec_password(&mut self, server: &Server) -> Result<()> {
+        let password = self.config.exec.clone();
+        let title = format!("set up the exec account ({})", server.id);
+        self.set_password(server, "exec", password, &title)
+    }
+
+    /// `lanlord-user <account>` with the password on stdin, then the password is remembered.
+    fn set_password(
+        &mut self,
+        server: &Server,
+        account: &str,
+        password: Option<Secret>,
+        title: &str,
+    ) -> Result<()> {
         let host = self.host;
-        let Some(password) = &self.config.exec else {
+        let Some(password) = password else {
             return Ok(());
         };
         let state = &mut self.state;
@@ -1216,7 +1205,7 @@ impl Job<'_, '_> {
             &mut *self.events,
             &mut self.tally,
             &self.secrets,
-            &format!("set up the exec account ({})", server.id),
+            title,
             |_| {
                 let argv = [
                     "docker",
@@ -1224,14 +1213,17 @@ impl Job<'_, '_> {
                     "-i",
                     &server.container,
                     "lanlord-user",
-                    "exec",
+                    account,
                 ];
                 let out = host.run(&argv, Some(format!("{}\n", password.expose()).as_bytes()))?;
                 if !out.success() {
-                    anyhow::bail!("lanlord-user exec failed: {}", out.stderr.trim());
+                    anyhow::bail!("lanlord-user {account} failed: {}", out.stderr.trim());
                 }
-                state.remember(host, &server.key("exec"), password)?;
-                Ok((out.stdout.contains("created"), String::new()))
+                state.remember(host, &server.key(account), &password)?;
+                Ok((
+                    account == "admin" || out.stdout.contains("created"),
+                    String::new(),
+                ))
             },
         )
     }
