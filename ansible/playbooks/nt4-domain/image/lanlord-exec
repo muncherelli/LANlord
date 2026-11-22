@@ -25,6 +25,9 @@
 # machine and holds its .out and .err open, so those files stay until the next run's sweep retries.
 # the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
 # argument, never in the environment and never printed.
+# nt4 has no smb extended security, so every smbclient and net call turns spnego off ("client use
+# spnego=no"); otherwise the session setup is refused before any credential is sent. ntlmv2 stays
+# on, and lanman and plaintext logins are never enabled.
 set -u
 umask 077
 
@@ -33,9 +36,10 @@ TMP_DIR=${LANLORD_EXEC_TMP:-/dev/shm}
 POLL=${LANLORD_EXEC_POLL:-1}
 MAX_COMMAND=2000
 LOG=${LANLORD_EXEC_LOG:-/var/lib/samba/private/exec.log}
+LOCK_TRIES=${LANLORD_EXEC_LOCK_TRIES:-50}
 LOG_MAX=${LANLORD_EXEC_LOG_MAX:-1048576}
 CHUNK=1048576
-SMB_OPT='client min protocol=NT1'
+SMB_OPT=(--option='client min protocol=NT1' --option='client use spnego=no')
 
 work=
 addr=
@@ -80,7 +84,12 @@ write_audit() {
   ms=$(($(now_ms) - started_ms))
   printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%d.%03d' "$ts" "$caller" "$machine" "${addr:--}" "$shown" "$audit_result" $((ms / 1000)) $((ms % 1000))
   (
-    flock -w 5 7 || exit 1
+    # busybox flock has no -w: wait by retrying -n, up to about 5 s
+    for ((try = 0; try < LOCK_TRIES; try++)); do
+      flock -n 7 && break
+      sleep 0.1
+    done
+    ((try < LOCK_TRIES)) || exit 1
     if [[ -f $LOG ]] && (($(stat -c %s "$LOG") >= LOG_MAX)); then
       mv -f "$LOG" "$LOG.1" || exit 1
     fi
@@ -103,16 +112,26 @@ fail() {
   exit 1
 }
 
-smb() { smbclient "//$addr/ADMIN\$" -A "$work/auth" --option="$SMB_OPT" "$@"; }
+# the last meaningful lines of a tool's output: samba's deprecation warnings, the extended security
+# notice and blank lines are dropped so the real error is not cut off
+excerpt() {
+  grep -v -e 'lpcfg_do_global_parameter: WARNING' -e 'does not support EXTENDED_SECURITY' "$1" 2>/dev/null |
+    grep -v '^[[:space:]]*$' | tail -n 3 | tr '\n' ' ' | head -c 300
+}
+
+smb() { smbclient "//$addr/ADMIN\$" -A "$work/auth" "${SMB_OPT[@]}" "$@"; }
 rpc() {
   local verb=$1
   shift
-  net rpc service "$verb" "$@" -S "$addr" -A "$work/auth" --option="$SMB_OPT"
+  net rpc service "$verb" "$@" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}"
 }
 
 # delete the service and the temp files; runs on every way out
 cleanup() {
   trap - EXIT INT TERM HUP
+  # the audit line goes first: the cleanup talks to the machine, can take long when it does not
+  # answer, and a run that is killed meanwhile must not lose its line
+  ((audit)) && write_audit
   if [[ -n $start_pid ]]; then
     # the start runs in a session of its own, so the whole group goes
     kill -TERM -- "-$start_pid" 2>/dev/null || kill "$start_pid" 2>/dev/null
@@ -127,8 +146,6 @@ cleanup() {
     fi
   fi
   [[ -n $work ]] && rm -rf "$work"
-  # last, so a slow or stuck log never holds up the cleanup of the machine
-  ((audit)) && write_audit
   return 0
 }
 trap cleanup EXIT
@@ -319,18 +336,18 @@ bat=ll-$run_id
   printf 'echo %%ERRORLEVEL%% > %%SystemRoot%%\\Temp\\%s.rc\r\n' "$bat"
 } >"$work/$bat.bat"
 made_bat=1
-smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(head -c 200 "$work/put.log")"
+smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
 
 made_service=1
 rpc create "LANlordExec$run_id" "LANlord exec" \
   "%SystemRoot%\\system32\\cmd.exe /Q /c %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
-  fail "could not create the service on $machine: $(head -c 200 "$work/create.log")"
+  fail "could not create the service on $machine: $(excerpt "$work/create.log")"
 
 # the service never answers the service manager, so the start ends in error 1053 after a while while
 # the command keeps running; it is started in the background and watched through the .rc file
 setsid bash -c 'log=$1 rcfile=$2; shift 2; "$@" >"$log" 2>&1; echo $? >"$rcfile"' _ \
   "$work/start.log" "$work/start.rc" \
-  net rpc service start "LANlordExec$run_id" -S "$addr" -A "$work/auth" --option="$SMB_OPT" >/dev/null 2>&1 &
+  net rpc service start "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1 &
 start_pid=$!
 
 emit_new() {
@@ -370,7 +387,7 @@ while :; do
   [[ -n $rc ]] && break
   if [[ -f $work/start.rc ]] && [[ $(cat "$work/start.rc") != 0 ]] &&
     ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond' "$work/start.log"; then
-    fail "could not start the service on $machine: $(head -c 200 "$work/start.log")"
+    fail "could not start the service on $machine: $(excerpt "$work/start.log")"
   fi
   if ((SECONDS >= timeout)); then
     final_sent=1

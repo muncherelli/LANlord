@@ -33,7 +33,7 @@ case $name in
     echo "querying $1 on 192.0.2.255"
     echo "192.0.2.20 $1<00>" ;;
   smbclient)
-    [[ -e $STUBS/put_error ]] && [[ $* == *put* ]] && { printf 'NT_STATUS_ACCESS_DENIED \001 "x" \\ \a\n'; exit 1; }
+    [[ -e $STUBS/put_error ]] && [[ $* == *put* ]] && { if [[ -s $STUBS/put_error ]]; then cat "$STUBS/put_error"; else printf 'NT_STATUS_ACCESS_DENIED \001 "x" \\ \a\n'; fi; exit 1; }
     cmds=
     for ((k = 0; k < ${#args[@]}; k++)); do [[ ${args[k]} == -c ]] && cmds=${args[k+1]}; done
     IFS=';' read -ra list <<< "$cmds"
@@ -46,7 +46,7 @@ case $name in
           # on timeout can never come first
           if [[ -e $STUBS/slow ]]; then n=0; while [[ ! -e $STUBS/ready ]] && ((n++ < 200)); do sleep 0.05; done; fi
           [[ -f $remote/${w[1]} ]] && cp "$remote/${w[1]}" "${w[2]}" ;;
-        del) rm -f $remote/${w[1]} ;;
+        del) [[ -e $STUBS/del_hang && ${w[1]} != *\** ]] && sleep 30; rm -f $remote/${w[1]} ;;
       esac
     done
     exit 0 ;;
@@ -265,6 +265,53 @@ class LanlordExecTest(unittest.TestCase):
         self.assert_clean()
         self.assertIn("net rpc service delete LANlordExec", self.calls())
         self.assert_no_secret(out)
+
+    def test_every_tool_call_turns_spnego_off_and_keeps_ntlmv2(self):
+        self.run_exec()
+        calls = [c for c in self.calls().splitlines() if c.startswith(("smbclient", "net "))]
+        self.assertTrue(any(c.startswith("smbclient") for c in calls))
+        self.assertTrue(any(c.startswith("net rpc service start") for c in calls))
+        for c in calls:
+            self.assertIn("client use spnego=no", c)
+            self.assertNotIn("lanman", c)
+            self.assertNotIn("plaintext", c)
+
+    def test_a_copy_error_shows_the_real_line_not_the_warnings(self):
+        warnings = "".join(
+            'lpcfg_do_global_parameter: WARNING: The "x%d" option is deprecated\n' % i for i in range(12)
+        )
+        self.scenario(
+            put_error=warnings
+            + "\nServer does not support EXTENDED_SECURITY but 'client use spnego = yes' is set\n"
+            + "session setup failed: NT_STATUS_LOGON_FAILURE\n"
+        )
+        out = self.run_exec()
+        error = self.events(out)[-1]["error"]
+        self.assertIn("could not copy", error)
+        self.assertIn("NT_STATUS_LOGON_FAILURE", error)
+        self.assertNotIn("lpcfg_do_global_parameter", error)
+
+    def test_a_copy_failure_is_audited_even_when_the_cleanup_is_cut_short(self):
+        # the cleanup's delete hangs and the run is terminated meanwhile: the line must already be there
+        self.flag("put_error")
+        self.flag("del_hang")
+        proc = subprocess.Popen(
+            ["bash", EXEC, "run", "--machine", "nt4srv01", "--timeout", "5"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=self.env,
+        )
+        proc.stdin.write(json.dumps({"user": "DEMO\\Administrator", "password": SECRET, "command": "ver"}))
+        proc.stdin.close()
+        for _ in range(100):
+            if os.path.exists(self.log):
+                break
+            time.sleep(0.1)
+        proc.terminate()
+        proc.wait(timeout=10)
+        self.assertEqual(self.log_lines()[-1][5], "error")
 
     def test_a_failed_copy_cleans_up(self):
         self.flag("put_error")
@@ -491,6 +538,36 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(os.stat(self.log).st_mode & 0o777, 0o600)
         self.assertEqual(self.log_lines()[-1][4], "echo run7")
         self.assertLess(os.path.getsize(self.log), 300 + 200)
+
+    def stub_flock_without_w(self):
+        # busybox flock: no -w, any other use goes to the real one
+        real = shutil.which("flock")
+        path = os.path.join(self.stubs, "bin", "flock")
+        with open(path, "w") as f:
+            f.write(
+                '#!/bin/bash\nfor a in "$@"; do [[ $a == -w ]] && { echo "flock: unrecognized option: w" >&2; exit 1; }; done\nexec %s "$@"\n'
+                % real
+            )
+        os.chmod(path, 0o755)
+
+    def test_the_audit_line_is_written_with_a_flock_that_has_no_w(self):
+        self.stub_flock_without_w()
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("could not write the audit log", out.stderr)
+        self.assertEqual(len(self.log_lines()), 1)
+
+    def test_a_held_audit_lock_gives_up_with_a_warning(self):
+        import fcntl
+
+        self.stub_flock_without_w()
+        self.env["LANLORD_EXEC_LOCK_TRIES"] = "3"
+        with open(self.log + ".lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            out = self.run_exec()
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("warning: could not write the audit log", out.stderr)
+        self.assertFalse(os.path.exists(self.log))
 
     def test_an_unwritable_log_does_not_fail_the_run(self):
         # the log's parent is a regular file, so it cannot be created even by root
