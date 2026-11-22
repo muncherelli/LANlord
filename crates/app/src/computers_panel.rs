@@ -342,12 +342,11 @@ impl ComputersPanel {
         if self.remote.poll() {
             let count = self.remote.data.as_ref().map_or(0, Vec::len);
             self.selected = self.selected.filter(|i| *i < count);
-            // another host's machines are not this host's: nothing carries over
-            let source = self.remote.source().map(str::to_string);
-            if source != self.shown_host {
+            // another host's machines are not this host's: nothing carries over. only `view`
+            // says which host is on screen, so this clears and never sets `shown_host`
+            if self.remote.source() != self.shown_host.as_deref() {
                 self.selected = None;
                 self.last = None;
-                self.shown_host = source;
             }
         }
         let Some(running) = self.running.take() else {
@@ -357,7 +356,8 @@ impl ComputersPanel {
             None => self.running = Some(running),
             Some(result) => {
                 // a run started on another host than the one shown is not shown under it
-                if self.remote.belongs_to(&running.host) {
+                let shown = self.shown_host.as_deref() == Some(running.host.as_str());
+                if shown && self.remote.belongs_to(&running.host) {
                     let secs = running.started.elapsed().as_secs_f32();
                     self.last = Some(finish(running.machine, running.what, result, secs));
                 }
@@ -405,6 +405,8 @@ impl ComputersPanel {
         if host != self.shown_host.as_deref() {
             self.selected = None;
             self.last = None;
+            // a box opened on the old host would show its machine under the new one
+            self.ask = None;
             self.shown_host = host.map(str::to_string);
         }
         let stale = host.filter(|h| self.remote.wants_load(h, false));
@@ -664,6 +666,7 @@ mod tests {
         let services = Services::new(fake.clone(), Wake::none());
         let mut panel = ComputersPanel::default();
         panel.set_can_run(true);
+        panel.shown_host = Some("a@b".into());
         panel.reload(&services, "a@b");
         wait(&mut panel);
         (panel, services, fake)
@@ -898,7 +901,7 @@ mod tests {
         panel.reload(&services, "a@b");
         wait(&mut panel);
         assert!(panel.current().is_some() && panel.last_summary().is_some());
-        panel.reload(&services, "c@d");
+        panel.view(&services, Some("c@d"));
         wait(&mut panel);
         assert!(panel.current().is_none() && panel.last_summary().is_none());
     }
@@ -960,9 +963,44 @@ mod tests {
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         assert!(panel.running());
-        panel.reload(&services, "c@d");
+        panel.view(&services, Some("c@d"));
         wait(&mut panel);
         assert!(panel.last_summary().is_none());
+    }
+
+    #[test]
+    fn a_run_from_the_old_host_never_shows_under_the_new_one() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
+        assert!(panel.running());
+        // the new host is on screen while the old run is still going
+        panel.view(&services, Some("c@d"));
+        let start = std::time::Instant::now();
+        while panel.running() {
+            panel.poll();
+            assert!(start.elapsed() < Duration::from_secs(5), "never finished");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(panel.last_summary().is_none());
+        wait(&mut panel);
+        assert!(panel.last_summary().is_none());
+        assert_eq!(panel.shown_host.as_deref(), Some("c@d"));
+    }
+
+    #[test]
+    fn a_host_change_closes_a_box_opened_on_the_old_host() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        assert!(panel.box_open());
+        panel.view(&services, Some("a@b"));
+        assert!(panel.box_open());
+        panel.view(&services, Some("c@d"));
+        assert!(!panel.box_open());
     }
 
     #[test]
