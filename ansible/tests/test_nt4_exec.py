@@ -810,5 +810,19 @@ class LanlordExecTest(unittest.TestCase):
         )
 
 
+class SvcDockerfileTest(unittest.TestCase):
+    # nt4 never enables sse or mmx, so the helper must be built without them and the build must check it
+    def setUp(self):
+        with open(os.path.join(IMAGE, "Dockerfile")) as f:
+            self.text = f.read()
+
+    def test_helper_built_without_sse_or_mmx(self):
+        for flag in ("-march=i686", "-mno-mmx", "-mno-sse", "-mno-sse2"):
+            self.assertIn(flag, self.text)
+
+    def test_build_fails_on_simd_registers(self):
+        self.assertIn("! llvm-objdump -d \"$exe\" | grep -Eq '%(x|y)?mm[0-9]'", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
