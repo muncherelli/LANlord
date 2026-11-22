@@ -92,11 +92,11 @@
         dest: "{{ nt4_root }}/bin/{{ item }}"
         remote_src: true
         mode: "0755"
-      loop: [entrypoint.sh, lanlord-user]
+      loop: [entrypoint.sh, lanlord-user, lanlord-exec]
       when: nt4_listed
 
     - name: work out the version of the scripts
-      ansible.builtin.shell: cat entrypoint.sh lanlord-user | sha256sum | cut -c1-12
+      ansible.builtin.shell: cat entrypoint.sh lanlord-user lanlord-exec | sha256sum | cut -c1-12
       args:
         chdir: "{{ nt4_root }}/bin"
       register: scripts_hash

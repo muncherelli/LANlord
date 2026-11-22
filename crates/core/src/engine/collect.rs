@@ -112,7 +112,7 @@ pub fn nt4_domain(host: &dyn Host, doc: &serde_yaml_ng::Value, state_dir: &str) 
         }
     }
     let mut shared = Map::new();
-    for name in ["bin/entrypoint.sh", "bin/lanlord-user"] {
+    for name in ["bin/entrypoint.sh", "bin/lanlord-user", "bin/lanlord-exec"] {
         shared.insert(name.into(), file(host, &format!("{STATE}/{name}"))?);
     }
     Ok(json!({
