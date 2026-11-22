@@ -23,8 +23,8 @@
 # after a leading @, if ... or do, starts with exit; a single | does not split, as the right side of
 # a pipe runs in a child cmd.
 # a command that outlives its timeout is killed: the service is stopped first, and the helper ends
-# its cmd.exe. a child of that cmd.exe (nt4 has no taskkill) may live on and hold the .out and .err
-# open, so those files then stay until the next run's sweep retries.
+# its cmd.exe. programs that cmd.exe started (nt4 has no job objects or taskkill) may keep running
+# and hold the .out and .err open, so those files then stay until the next run's sweep retries.
 # the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
 # argument, never in the environment and never printed.
 # nt4 has no smb extended security, so every smbclient and net call turns spnego off ("client use
@@ -52,7 +52,6 @@ machine=
 run_id=
 made_bat=0
 made_service=0
-timed_out=0
 start_pid=
 final_sent=0
 caller=cli
@@ -145,8 +144,9 @@ cleanup() {
   fi
   if [[ -n $work && -n $addr && -f $work/auth ]]; then
     if ((made_service)); then
-      # a timed out command is still running: stopping the service makes the helper kill it
-      ((timed_out)) && timeout 30 net rpc service stop "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1
+      # a command that has not finished (timeout, signal, error) is still running: stopping the
+      # service makes the helper end its cmd.exe; stopping a stopped service does no harm
+      [[ -n ${rc:-} ]] || timeout 30 net rpc service stop "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1
       rpc delete "LANlordExec$run_id" >/dev/null 2>&1
     fi
     if ((made_bat)); then
@@ -234,6 +234,7 @@ sweep_stale() {
   local names svc n=0
   names=$(rpc list 2>/dev/null | grep -o 'LANlordExec[0-9a-f]\{8\}' | sort -u)
   for svc in $names; do
+    timeout 30 net rpc service stop "$svc" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1
     rpc delete "$svc" >/dev/null 2>&1
     n=$((n + 1))
   done
@@ -349,7 +350,7 @@ smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.ba
 
 made_service=1
 rpc create "LANlordExec$run_id" "LANlord exec" \
-  "%SystemRoot%\\Temp\\$bat.exe %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
+  "\"%SystemRoot%\\Temp\\$bat.exe\" %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
   {
     if grep -q 'NT_STATUS_IO_TIMEOUT' "$work/create.log"; then
       fail "the service manager on $machine is busy (a previous run may still be starting); try again in a minute"
@@ -407,7 +408,6 @@ while :; do
   if ((SECONDS >= timeout)); then
     final_sent=1
     audit_result=timed_out
-    timed_out=1
     event '{"timed_out":true}'
     exit 0
   fi

@@ -86,9 +86,11 @@ RUN set -eux; \
       -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 \
       -o /out/usr/lib/lanlord/lanlord-svc.exe /src/lanlord-svc.c -lkernel32 -ladvapi32; \
     dump=$(i686-w64-mingw32-objdump -p /out/usr/lib/lanlord/lanlord-svc.exe); \
-    echo "$dump" | grep -E 'file format|Subsystem|MajorOperatingSystemVersion|MinorOperatingSystemVersion|MajorSubsystemVersion|MinorSubsystemVersion|DLL Name'; \
+    echo "$dump" | grep -E 'file format|Subsystem|MajorOSystemVersion|MinorOSystemVersion|MajorSubsystemVersion|MinorSubsystemVersion|DLL Name'; \
     echo "$dump" | grep -q 'file format pei-i386'; \
     echo "$dump" | grep -Eq '^Subsystem[[:space:]]+0*3[[:space:]]'; \
+    echo "$dump" | grep -Eq '^MajorOSystemVersion[[:space:]]+4$'; \
+    echo "$dump" | grep -Eq '^MinorOSystemVersion[[:space:]]+0$'; \
     echo "$dump" | grep -Eq '^MajorSubsystemVersion[[:space:]]+4$'; \
     echo "$dump" | grep -Eq '^MinorSubsystemVersion[[:space:]]+0$'
 

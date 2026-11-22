@@ -205,7 +205,7 @@ class LanlordExecTest(unittest.TestCase):
         self.assertRegex(calls, r"put %s ll-%s\.exe" % (re.escape(self.svc), run_id))
         self.assertIn(
             "net rpc service create LANlordExec%s LANlord exec "
-            "%%SystemRoot%%\\Temp\\ll-%s.exe %%SystemRoot%%\\Temp\\ll-%s.bat -S " % (run_id, run_id, run_id),
+            '"%%SystemRoot%%\\Temp\\ll-%s.exe" %%SystemRoot%%\\Temp\\ll-%s.bat -S ' % (run_id, run_id, run_id),
             calls,
         )
         self.assertIn("del ll-%s.exe" % run_id, calls)
@@ -489,6 +489,17 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(self.services(), ["OtherService"])
         self.assertEqual(self.remote(), [])
 
+    def test_the_sweep_stops_leftover_services_before_deleting_them(self):
+        self.scenario(services="LANlordExec0123abcd\nSpooler\n")
+        out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
+        self.assertEqual(self.events(out), [{"swept": 1}])
+        calls = self.calls()
+        self.assertLess(
+            calls.index("net rpc service stop LANlordExec0123abcd"),
+            calls.index("net rpc service delete LANlordExec0123abcd"),
+        )
+        self.assertNotIn("stop Spooler", calls)
+
     def test_sweep_removes_what_a_dead_run_left(self):
         self.scenario(services="LANlordExec0123abcd\nLANlordExecffffffff\nSpooler\n")
         for name in ("ll-0123abcd.out", "ll-0123abcd.exe"):
@@ -704,6 +715,11 @@ class LanlordExecTest(unittest.TestCase):
         proc.communicate(timeout=30)
         self.assertEqual(self.log_lines()[-1][5], "killed")
         self.assert_clean()
+        calls = self.calls()
+        self.assertLess(
+            calls.index("net rpc service stop LANlordExec"),
+            calls.index("net rpc service delete LANlordExec"),
+        )
 
 
 if __name__ == "__main__":

@@ -9,11 +9,14 @@
 
 static SERVICE_STATUS_HANDLE status_handle;
 static SERVICE_STATUS status;
-static HANDLE volatile child;
-static volatile LONG stopping;
+static HANDLE child;
+static int stopping;
+/* guards status, child and stopping: the control handler runs on another thread than service_main */
+static CRITICAL_SECTION lock;
 
 static void report(DWORD state, DWORD win32, DWORD specific)
 {
+    EnterCriticalSection(&lock);
     status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     status.dwCurrentState = state;
     status.dwControlsAccepted = state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP : 0;
@@ -22,21 +25,23 @@ static void report(DWORD state, DWORD win32, DWORD specific)
     status.dwCheckPoint = 0;
     status.dwWaitHint = 0;
     SetServiceStatus(status_handle, &status);
+    LeaveCriticalSection(&lock);
 }
 
 static void WINAPI handler(DWORD control)
 {
-    if (control == SERVICE_CONTROL_STOP) {
-        HANDLE h;
-        InterlockedExchange((LONG *)&stopping, 1);
-        h = child;
-        if (h)
-            TerminateProcess(h, 1);
+    EnterCriticalSection(&lock);
+    /* stop pending is only reported while running, so it can never follow stopped */
+    if (control == SERVICE_CONTROL_STOP && status.dwCurrentState == SERVICE_RUNNING) {
+        stopping = 1;
+        if (child)
+            TerminateProcess(child, 1);
         status.dwCurrentState = SERVICE_STOP_PENDING;
         status.dwControlsAccepted = 0;
         status.dwWaitHint = 10000;
     }
     SetServiceStatus(status_handle, &status);
+    LeaveCriticalSection(&lock);
 }
 
 /* everything after the program name in the command line */
@@ -110,14 +115,19 @@ static void WINAPI service_main(DWORD argc, LPSTR *argv)
         return;
     }
     CloseHandle(pi.hThread);
+    EnterCriticalSection(&lock);
     child = pi.hProcess;
     if (stopping)
-        TerminateProcess(pi.hProcess, 1);
+        TerminateProcess(child, 1);
+    LeaveCriticalSection(&lock);
     WaitForSingleObject(pi.hProcess, INFINITE);
     if (!GetExitCodeProcess(pi.hProcess, &code))
         code = 1;
+    /* the handle is closed under the lock, so the handler never uses a closed one */
+    EnterCriticalSection(&lock);
     child = NULL;
     CloseHandle(pi.hProcess);
+    LeaveCriticalSection(&lock);
     if (code)
         report(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, code);
     else
@@ -127,6 +137,7 @@ static void WINAPI service_main(DWORD argc, LPSTR *argv)
 void svc_entry(void)
 {
     SERVICE_TABLE_ENTRYA table[2];
+    InitializeCriticalSection(&lock);
     table[0].lpServiceName = "";
     table[0].lpServiceProc = service_main;
     table[1].lpServiceName = NULL;
