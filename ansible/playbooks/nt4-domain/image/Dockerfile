@@ -92,7 +92,6 @@ RUN set -eux; \
       -o /out/usr/lib/lanlord/lanlord-svc.exe lanlord-svc.c -L. -lkernel32 -ladvapi32; \
     exe=/out/usr/lib/lanlord/lanlord-svc.exe; \
     dump=$(llvm-objdump -p "$exe"); \
-    echo "$dump"; \
     llvm-readobj --file-headers "$exe" | grep -E 'Format|Machine|Subsystem|OperatingSystemVersion|SubsystemVersion'; \
     llvm-readobj --file-headers "$exe" | grep -q 'Format: COFF-i386'; \
     llvm-readobj --file-headers "$exe" | grep -q 'Subsystem: IMAGE_SUBSYSTEM_WINDOWS_CUI'; \

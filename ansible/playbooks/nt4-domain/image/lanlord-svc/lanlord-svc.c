@@ -28,8 +28,13 @@ typedef const char *LPCSTR;
 #define ERROR_SERVICE_SPECIFIC_ERROR 1066
 
 typedef struct {
-    DWORD dwServiceType, dwCurrentState, dwControlsAccepted, dwWin32ExitCode;
-    DWORD dwServiceSpecificExitCode, dwCheckPoint, dwWaitHint;
+    DWORD dwServiceType;
+    DWORD dwCurrentState;
+    DWORD dwControlsAccepted;
+    DWORD dwWin32ExitCode;
+    DWORD dwServiceSpecificExitCode;
+    DWORD dwCheckPoint;
+    DWORD dwWaitHint;
 } SERVICE_STATUS;
 typedef void *SERVICE_STATUS_HANDLE;
 typedef void(WINAPI *LPHANDLER_FUNCTION)(DWORD);
@@ -40,15 +45,29 @@ typedef struct {
 } SERVICE_TABLE_ENTRYA;
 typedef struct {
     DWORD cb;
-    LPSTR lpReserved, lpDesktop, lpTitle;
-    DWORD dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
-    unsigned short wShowWindow, cbReserved2;
+    LPSTR lpReserved;
+    LPSTR lpDesktop;
+    LPSTR lpTitle;
+    DWORD dwX;
+    DWORD dwY;
+    DWORD dwXSize;
+    DWORD dwYSize;
+    DWORD dwXCountChars;
+    DWORD dwYCountChars;
+    DWORD dwFillAttribute;
+    DWORD dwFlags;
+    unsigned short wShowWindow;
+    unsigned short cbReserved2;
     unsigned char *lpReserved2;
-    HANDLE hStdInput, hStdOutput, hStdError;
+    HANDLE hStdInput;
+    HANDLE hStdOutput;
+    HANDLE hStdError;
 } STARTUPINFOA;
 typedef struct {
-    HANDLE hProcess, hThread;
-    DWORD dwProcessId, dwThreadId;
+    HANDLE hProcess;
+    HANDLE hThread;
+    DWORD dwProcessId;
+    DWORD dwThreadId;
 } PROCESS_INFORMATION;
 /* the real structure is 24 bytes on x86 */
 typedef struct {
@@ -143,10 +162,15 @@ static void zero(void *mem, DWORD size)
 
 static void WINAPI service_main(DWORD argc, LPSTR *argv)
 {
-    char bat[MAX_PATH + 1], sysdir[MAX_PATH + 1], app[MAX_PATH + 16], cmd[2 * MAX_PATH + 32];
+    char bat[MAX_PATH + 1];
+    char sysdir[MAX_PATH + 1];
+    char app[MAX_PATH + 16];
+    char cmd[2 * MAX_PATH + 32];
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
-    DWORD len, code = 1, n;
+    DWORD len;
+    DWORD code = 1;
+    DWORD n;
     (void)argc;
     (void)argv;
 

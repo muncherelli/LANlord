@@ -146,7 +146,7 @@ cleanup() {
     if ((made_service)); then
       # a command that has not finished (timeout, signal, error) is still running: stopping the
       # service makes the helper end its cmd.exe; stopping a stopped service does no harm
-      [[ -n ${rc:-} ]] || timeout 30 net rpc service stop "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1
+      [[ -n ${final_rc:-} ]] || timeout 30 net rpc service stop "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1
       rpc delete "LANlordExec$run_id" >/dev/null 2>&1
     fi
     if ((made_bat)); then
@@ -384,15 +384,15 @@ emit_new() {
 
 off_out=0
 off_err=0
-rc=
+final_rc=
 bad_rc=0
 SECONDS=0
 while :; do
   rm -f "$work/rc" "$work/out" "$work/err"
   smb -c "cd Temp; get $bat.rc $work/rc; get $bat.out $work/out; get $bat.err $work/err" >/dev/null 2>&1
   if [[ -s $work/rc ]]; then
-    rc=$(tr -dc '0-9' <"$work/rc")
-    if [[ -z $rc ]]; then
+    final_rc=$(tr -dc '0-9' <"$work/rc")
+    if [[ -z $final_rc ]]; then
       # read it once more before giving up: it may have been caught half written
       bad_rc=$((bad_rc + 1))
       ((bad_rc < 2)) || fail "the exit code file on $machine holds no number"
@@ -400,7 +400,7 @@ while :; do
   fi
   emit_new out "$work/out" off_out
   emit_new err "$work/err" off_err
-  [[ -n $rc ]] && break
+  [[ -n $final_rc ]] && break
   if [[ -f $work/start.rc ]] && [[ $(cat "$work/start.rc") != 0 ]] &&
     ! grep -qiE '1053|REQUEST_TIMEOUT|did not respond|NT_STATUS_IO_TIMEOUT' "$work/start.log"; then
     fail "could not start the service on $machine: $(excerpt "$work/start.log")"
@@ -414,6 +414,6 @@ while :; do
   sleep "$POLL"
 done
 final_sent=1
-audit_result=$rc
-event "{\"exit\":$rc}"
+audit_result=$final_rc
+event "{\"exit\":$final_rc}"
 exit 0
