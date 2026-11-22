@@ -1245,10 +1245,21 @@ mod fake {
                 Operation::Subscribe { .. } => {
                     anyhow::bail!("live streams are served by the web ui, not run as an operation")
                 }
-                Operation::Machines
-                | Operation::MachineRun { .. }
-                | Operation::MachinePreset { .. } => {
-                    anyhow::bail!("running commands on machines is not implemented yet")
+                Operation::Machines => {
+                    self.enter(format!("machines {host}"), ask)?;
+                    Reply::Machines(vec!["ws1".into()])
+                }
+                Operation::MachineRun {
+                    machine, command, ..
+                } => {
+                    self.enter(format!("machine-run {host} {machine} {command}"), ask)?;
+                    fake_run()
+                }
+                Operation::MachinePreset {
+                    machine, preset, ..
+                } => {
+                    self.enter(format!("machine-preset {host} {machine} {preset}"), ask)?;
+                    fake_run()
                 }
             })
         }
@@ -1263,6 +1274,16 @@ mod fake {
 
         fn session_restored(&self) {
             self.ended.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn fake_run() -> Reply {
+        Reply::MachineRun {
+            exit_code: Some(0),
+            stdout: "ok\r\n".into(),
+            stderr: String::new(),
+            timed_out: false,
+            truncated: false,
         }
     }
 

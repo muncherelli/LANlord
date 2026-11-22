@@ -37,6 +37,7 @@ pub mod operate;
 pub use lanlord_model::networks;
 pub mod install;
 pub mod nt4;
+pub mod nt4_exec;
 pub mod operations;
 pub mod passwords;
 pub mod paths;

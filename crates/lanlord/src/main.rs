@@ -100,7 +100,8 @@ enum ClockCommand {
 
 #[derive(Subcommand)]
 enum MachinesCommand {
-    /// list the machine accounts in your settings
+    /// list the machines in your settings (accounts prepared to join); `machines HOST` with no
+    /// action lists the accounts that exist in the domain now
     List,
     /// create an account in advance so the machine can join without creating one
     Add { name: String },
@@ -108,6 +109,15 @@ enum MachinesCommand {
     Remove { name: String },
     /// set a machine's account back to its first password, so it can join the domain again
     Reset { name: String },
+    /// run a command on a domain machine through the gateway and show its output
+    Run {
+        name: String,
+        /// seconds to wait for the command, 1 to 900
+        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS)]
+        timeout: u32,
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -611,11 +621,12 @@ enum Command {
         #[command(subcommand)]
         action: NetworksCommand,
     },
-    /// manage the machine accounts of the nt4-domain module
+    /// manage the machine accounts of the nt4-domain module; with no action, list the accounts
+    /// that exist in the domain now, read live from the gateway
     Machines {
         host: String,
         #[command(subcommand)]
-        action: MachinesCommand,
+        action: Option<MachinesCommand>,
     },
     /// edit the logon scripts every domain logon runs
     Logon {
@@ -808,9 +819,28 @@ fn users(host: &str, action: UsersCommand) -> Result<()> {
     lanlord_core::remote::change_users(host, &[change], &mut ask).map(|_| ())
 }
 
-fn machines(host: &str, action: MachinesCommand) -> Result<()> {
+fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
+    let Some(action) = action else {
+        let Reply::Machines(names) = execute(host, &Operation::Machines, &mut ask)? else {
+            bail!("the server answered something other than machines");
+        };
+        for name in names {
+            println!("{name}");
+        }
+        return Ok(());
+    };
+    if let MachinesCommand::Run {
+        name,
+        timeout,
+        command,
+    } = action
+    {
+        let operation = lanlord_core::exec::machine_run(&name, &command, timeout)?;
+        let reply = execute(host, &operation, &mut ask)?;
+        std::process::exit(lanlord_core::exec::show_run(&reply)?);
+    }
+
     use lanlord_core::nt4::{edit_machines, valid_machine, MachineChange, Nt4Settings};
-    use lanlord_core::operations::{execute, Operation, Reply};
     let change = match action {
         MachinesCommand::List => {
             let document = lanlord_core::remote::document(host, &mut ask)?;
@@ -820,6 +850,7 @@ fn machines(host: &str, action: MachinesCommand) -> Result<()> {
             }
             return Ok(());
         }
+        MachinesCommand::Run { .. } => unreachable!("run is handled above"),
         MachinesCommand::Add { name } => MachineChange::Add(name),
         MachinesCommand::Remove { name } => MachineChange::Remove(name),
         MachinesCommand::Reset { name } => {
@@ -2319,7 +2350,7 @@ fn main() -> Result<()> {
                 },
                 None => Target::Gateway { host: target },
             };
-            std::process::exit(exec(&target, &command)?);
+            std::process::exit(exec(&target, &command, &mut ask)?);
         }
         Some(Command::InstallLauncher { dry_run, force }) => launcher::install(dry_run, force),
         Some(Command::UninstallLauncher { dry_run }) => launcher::uninstall(dry_run),
@@ -2888,6 +2919,54 @@ mod tests {
             networks_action(&["status", "--json"]),
             NetworksCommand::Status { json: true }
         ));
+    }
+
+    #[test]
+    fn machines_lists_with_no_action_and_runs_a_command() {
+        assert!(matches!(
+            parse(&["machines", "gw"]),
+            Command::Machines { host, action: None } if host == "gw"
+        ));
+        assert!(matches!(
+            parse(&["machines", "gw", "list"]),
+            Command::Machines {
+                action: Some(MachinesCommand::List),
+                ..
+            }
+        ));
+        let Command::Machines {
+            action:
+                Some(MachinesCommand::Run {
+                    name,
+                    timeout,
+                    command,
+                }),
+            ..
+        } = parse(&[
+            "machines",
+            "gw",
+            "run",
+            "ws1",
+            "--timeout",
+            "30",
+            "--",
+            "dir",
+            "/w",
+        ])
+        else {
+            panic!("not a run");
+        };
+        assert_eq!((name.as_str(), timeout), ("ws1", 30));
+        assert_eq!(command, ["dir", "/w"]);
+        let Command::Machines {
+            action: Some(MachinesCommand::Run { timeout, .. }),
+            ..
+        } = parse(&["machines", "gw", "run", "ws1", "--", "ver"])
+        else {
+            panic!("not a run");
+        };
+        assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
+        assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "run", "ws1"]).is_err());
     }
 
     #[test]
