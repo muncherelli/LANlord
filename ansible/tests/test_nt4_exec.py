@@ -13,11 +13,16 @@ IMAGE = os.path.join(os.path.dirname(__file__), "..", "playbooks", "nt4-domain",
 EXEC = os.path.join(IMAGE, "lanlord-exec")
 SECRET = "S3cret-pw!x"
 
-# smbclient, net and nmblookup are stubs that record their arguments. the "machine" is a folder:
+# smbclient, smbcacls, rpcclient, net and nmblookup are stubs that record their arguments. the "machine" is a folder:
 # put and get move files in and out of it, and starting the service plays the .bat's part by
 # writing .out, .err and .rc from the scenario files (out, err, rc, hang, start_error, put_error);
-# remote/ is the root of ADMIN$ and remote/Temp its Temp (setUp makes it; mkdir makes it otherwise).
-# a cd to a missing Temp prints the error and carries on in the root, as smbclient does
+# remote/ is the root of ADMIN$ (with a Temp) and cdrive/ the root of the drive share (C$ or D$), where the private
+# work folder cdrive/lanlord lives (setUp makes it; mkdir makes it otherwise). a cd to a missing folder
+# prints the error and carries on, as smbclient does. smbcacls keeps nothing: a read prints the file
+# acl_parent (the drive root), acl_file (an uploaded file) or acl (the folder) of the scenario, with good
+# defaults when absent, and acl_set_error, acl_set_noise or acl_read_error make the set or the read fail.
+# rpcclient answers netsharegetinfo with the path in adminpath (default C:\WINNT) and lookupnames with
+# the sid in usersid (no_share makes the share lookup fail)
 STUB = r"""#!/bin/bash
 name=$(basename "$0")
 echo "$name $*" >> "$STUBS/calls"
@@ -29,6 +34,7 @@ for ((k = 0; k < ${#args[@]}; k++)); do
   fi
 done
 remote="$STUBS/remote"
+[[ $1 == //*/[A-Z]\$ ]] && remote="$STUBS/cdrive"
 case $name in
   nmblookup)
     [[ -e $STUBS/no_wins ]] && { echo "name_query failed"; exit 1; }
@@ -44,10 +50,14 @@ case $name in
       read -ra w <<< "$c"
       case ${w[0]:-} in
         mkdir)
-          if [[ -d $remote/Temp ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_OBJECT_NAME_COLLISION"; exit 1; }
-          elif [[ -e $STUBS/mkdir_error ]]; then { echo "mkdir failed on directory Temp: NT_STATUS_ACCESS_DENIED"; exit 1; }
-          else mkdir "$remote/Temp"; fi ;;
-        cd) if [[ -d $remote/Temp ]]; then cur=$remote/Temp; else echo "cd \\Temp\\: NT_STATUS_OBJECT_NAME_NOT_FOUND"; fi ;;
+          p=${w[1]//\\//}
+          if [[ -e $remote/$p ]]; then { echo "mkdir failed on directory $p: NT_STATUS_OBJECT_NAME_COLLISION"; exit 1; }
+          elif [[ -e $STUBS/mkdir_error ]]; then { echo "mkdir failed on directory $p: NT_STATUS_ACCESS_DENIED"; exit 1; }
+          elif [[ $p == */* && ! -d $remote/${p%/*} ]]; then { echo "mkdir failed on directory $p: NT_STATUS_OBJECT_PATH_NOT_FOUND"; exit 1; }
+          else mkdir "$remote/$p"; fi ;;
+        cd)
+          p=${w[1]//\\//}
+          if [[ -d $cur/$p ]]; then cur=$cur/$p; else echo "cd \\$p\\: NT_STATUS_OBJECT_NAME_NOT_FOUND"; fi ;;
         put) cp "${w[1]}" "$cur/${w[2]}"; cp "${w[1]}" "$STUBS/bats/${w[2]}" ;;
         get)
           # in the slow scenario the poll waits until the start stub has written its pids, so the kill
@@ -57,6 +67,48 @@ case $name in
         del) [[ -e $STUBS/del_hang && ${w[1]} != *[*?]* ]] && sleep 30; (cd "$cur" && rm -f ${w[1]}) ;;
       esac
     done
+    exit 0 ;;
+  smbcacls)
+    # //addr/SHARE path -A file ... [--sddl --set SDDL | --numeric]
+    path=${2//\\//}
+    if [[ $path != / ]]; then
+      [[ -e $remote/$path ]] || { echo "Failed to open $2: NT_STATUS_OBJECT_NAME_NOT_FOUND"; exit 1; }
+    fi
+    if [[ $* == *--set* ]]; then
+      msg="ERROR: security descriptor set failed: NT_STATUS_ACCESS_DENIED"
+      [[ -e $STUBS/acl_set_error ]] && { echo "$msg"; exit 1; }
+      [[ -e $STUBS/acl_set_noise ]] && echo "$msg"
+      exit 0
+    fi
+    [[ -e $STUBS/acl_read_error ]] && { echo "NT_STATUS_ACCESS_DENIED"; exit 1; }
+    case $path in
+      /) f=acl_parent ;;
+      lanlord/ll-*) f=acl_file ;;
+      *) f=acl ;;
+    esac
+    if [[ -e $STUBS/$f ]]; then cat "$STUBS/$f"; exit 0; fi
+    printf 'REVISION:1\nCONTROL:0x8004\nOWNER:S-1-5-32-544\nGROUP:S-1-5-21-1-2-3-513\n'
+    if [[ $f == acl_parent ]]; then
+      printf 'ACL:S-1-5-32-544:0/0x0/0x001f01ff\nACL:S-1-1-0:0/0x3/0x001301bf\n'
+      printf 'ACL:S-1-3-0:0/0x3/0x001f01ff\nACL:S-1-5-18:0/0x0/0x001f01ff\n'
+    else
+      printf 'ACL:S-1-5-32-544:0/0x3/0x001f01ff\nACL:S-1-5-18:0/0x3/0x001f01ff\n'
+    fi
+    exit 0 ;;
+  rpcclient)
+    # rpcclient HOST -A file ... -c CMD
+    cmd=${args[${#args[@]}-1]}
+    case $cmd in
+      netsharegetinfo*)
+        [[ -e $STUBS/no_share ]] && { echo "result was NT_STATUS_ACCESS_DENIED"; exit 1; }
+        adminpath=C:\\WINNT
+        [[ -e $STUBS/adminpath ]] && adminpath=$(cat "$STUBS/adminpath")
+        printf 'netname: ADMIN$\r\n\tremark:\tRemote Admin\r\n\tpath:\t%s\r\n\tpassword:\t\r\n' "$adminpath" ;;
+      lookupnames*)
+        sid=S-1-5-21-1-2-3-1105
+        [[ -e $STUBS/usersid ]] && sid=$(cat "$STUBS/usersid")
+        echo "${cmd#lookupnames } $sid (User: 1)" ;;
+    esac
     exit 0 ;;
   net)
     verb=$3
@@ -72,13 +124,13 @@ case $name in
         [[ -e $STUBS/start_io_timeout ]] && io_timeout=1
         [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; touch "$STUBS/ready"; wait; }
         [[ -e $STUBS/hang ]] || {
-          [[ -e $STUBS/out ]] && cp "$STUBS/out" "$remote/Temp/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
-          [[ -e $STUBS/err ]] && cp "$STUBS/err" "$remote/Temp/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
+          [[ -e $STUBS/out ]] && cp "$STUBS/out" "$STUBS/cdrive/lanlord/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
+          [[ -e $STUBS/err ]] && cp "$STUBS/err" "$STUBS/cdrive/lanlord/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
           rcname=$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.rc/')
           if [[ -e $STUBS/late ]]; then
-            ( sleep 1.5; cp "$STUBS/rc" "$remote/Temp/$rcname" ) >/dev/null 2>&1 &
+            ( sleep 1.5; cp "$STUBS/rc" "$STUBS/cdrive/lanlord/$rcname" ) >/dev/null 2>&1 &
           else
-            cp "$STUBS/rc" "$remote/Temp/$rcname"
+            cp "$STUBS/rc" "$STUBS/cdrive/lanlord/$rcname"
           fi
         }
         [[ -n ${io_timeout:-} ]] && { echo "Query status request failed. [NT_STATUS_IO_TIMEOUT]"; exit 2; }
@@ -101,7 +153,7 @@ class LanlordExecTest(unittest.TestCase):
         os.makedirs(self.scratch)
         for name in ("calls", "services", "auth-seen"):
             open(os.path.join(self.stubs, name), "w").close()
-        for command in ("smbclient", "net", "nmblookup"):
+        for command in ("smbclient", "smbcacls", "rpcclient", "net", "nmblookup"):
             path = os.path.join(self.stubs, "bin", command)
             with open(path, "w") as f:
                 f.write(STUB)
@@ -121,6 +173,7 @@ class LanlordExecTest(unittest.TestCase):
         )
         self.log = self.env["LANLORD_EXEC_LOG"]
         os.makedirs(os.path.join(self.stubs, "remote", "Temp"))
+        os.makedirs(os.path.join(self.stubs, "cdrive", "lanlord"))
         self.scenario(rc="0\r\n")
 
     def scenario(self, **files):
@@ -162,7 +215,9 @@ class LanlordExecTest(unittest.TestCase):
             return f.read().decode()
 
     def remote(self):
-        return os.listdir(os.path.join(self.stubs, "remote", "Temp"))
+        # files left in Temp (an old place) and in the work folder
+        temp = os.path.join(self.stubs, "remote", "Temp")
+        return os.listdir(temp) + os.listdir(os.path.join(self.stubs, "cdrive", "lanlord"))
 
     def root_files(self):
         return [n for n in os.listdir(os.path.join(self.stubs, "remote")) if n != "Temp"]
@@ -217,7 +272,7 @@ class LanlordExecTest(unittest.TestCase):
         self.assertRegex(calls, r"put %s ll-%s\.exe" % (re.escape(self.svc), run_id))
         self.assertIn(
             "net rpc service create LANlordExec%s LANlord exec "
-            '"%%SystemRoot%%\\Temp\\ll-%s.exe" %%SystemRoot%%\\Temp\\ll-%s.bat -S ' % (run_id, run_id, run_id),
+            '"C:\\lanlord\\ll-%s.exe" C:\\lanlord\\ll-%s.bat -S ' % (run_id, run_id, run_id),
             calls,
         )
         self.assertIn("del ll-%s.exe" % run_id, calls)
@@ -258,14 +313,15 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(self.events(out)[-1], {"exit": 0})
         outer = self.bat()
         inner = self.bat(".cmd.bat")
+        d = "C:\\lanlord\\"
         run_id = re.search(r"ll-([0-9a-f]{8})\.cmd\.bat", outer).group(1)
         self.assertEqual(inner, "@echo off\r\ndir %SystemRoot%\\system32 & for %%i in (a b) do echo %%i\r\n")
         self.assertEqual(
             outer,
             "@echo off\r\n"
-            "call %SystemRoot%\\Temp\\ll-" + run_id + ".cmd.bat > %SystemRoot%\\Temp\\ll-" + run_id + ".out"
-            " 2> %SystemRoot%\\Temp\\ll-" + run_id + ".err\r\n"
-            "echo %ERRORLEVEL% > %SystemRoot%\\Temp\\ll-" + run_id + ".rc\r\n",
+            "call " + d + "ll-" + run_id + ".cmd.bat > " + d + "ll-" + run_id + ".out"
+            " 2> " + d + "ll-" + run_id + ".err\r\n"
+            "echo %ERRORLEVEL% > " + d + "ll-" + run_id + ".rc\r\n",
         )
         self.assert_clean()
 
@@ -512,66 +568,376 @@ class LanlordExecTest(unittest.TestCase):
         )
         self.assertNotIn("stop Spooler", calls)
 
-    def test_temp_is_made_before_the_put_when_it_is_missing(self):
-        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+    def lines(self):
+        names = ("smbclient", "smbcacls", "rpcclient", "net")
+        return [c for c in self.calls().splitlines() if c.split(" ")[0] in names]
+
+    def index(self, lines, *parts):
+        return next(i for i, c in enumerate(lines) if all(p in c for p in parts))
+
+    def acl_calls(self):
+        return [c for c in self.calls().splitlines() if c.startswith("smbcacls")]
+
+    def assert_nothing_sent(self, out):
+        self.assertEqual(out.returncode, 1)
+        calls = self.calls()
+        self.assertNotIn(" put ", calls)
+        self.assertNotIn("service create", calls)
+        self.assertEqual(self.remote(), [])
+        self.assertEqual(os.listdir(os.path.join(self.stubs, "bats")), [])
+
+    def error(self, out):
+        return self.events(out)[-1]["error"]
+
+    def head(self, owner="S-1-5-32-544"):
+        return "REVISION:1\nCONTROL:0x8004\nOWNER:%s\nGROUP:S-1-5-21-1-2-3-513\n" % owner
+
+    GOOD = "ACL:S-1-5-32-544:0/0x3/0x001f01ff\nACL:S-1-5-18:0/0x3/0x001f01ff\n"
+
+    def test_the_folder_is_made_on_the_system_drive_when_it_is_missing(self):
+        shutil.rmtree(os.path.join(self.stubs, "cdrive", "lanlord"))
         out = self.run_exec()
         self.assertEqual(out.returncode, 0, out.stderr)
-        calls = [c for c in self.calls().splitlines() if c.startswith("smbclient")]
-        mk = next(i for i, c in enumerate(calls) if "mkdir Temp" in c)
-        put = next(i for i, c in enumerate(calls) if "put " in c)
-        self.assertLess(mk, put)
-        self.assertTrue(os.path.isdir(os.path.join(self.stubs, "remote", "Temp")))
+        lines = self.lines()
+        self.assertLess(self.index(lines, "//192.0.2.20/C$", "mkdir lanlord"), self.index(lines, " put "))
+        self.assertTrue(os.path.isdir(os.path.join(self.stubs, "cdrive", "lanlord")))
+        self.assertNotIn("mkdir Temp", self.calls())
 
-    def test_an_existing_temp_is_not_an_error(self):
+    def test_a_new_folder_is_locked_by_the_very_next_call_after_the_mkdir(self):
+        shutil.rmtree(os.path.join(self.stubs, "cdrive", "lanlord"))
         out = self.run_exec()
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("mkdir Temp", self.calls())
+        lines = self.lines()
+        mk = self.index(lines, "mkdir lanlord")
+        self.assertIn("smbcacls", lines[mk + 1])
+        self.assertIn("--set", lines[mk + 1])
+        # the folder check comes after the lock, and before any put
+        check = next(i for i, c in enumerate(lines) if c.endswith("-c cd lanlord"))
+        self.assertLess(mk + 1, check)
+        self.assertLess(check, self.index(lines, " put "))
 
-    def test_a_temp_that_cannot_be_made_is_a_clear_error(self):
-        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+    def test_an_existing_folder_is_checked_before_the_lock_and_before_any_put(self):
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        lines = self.lines()
+        mk = self.index(lines, "mkdir lanlord")
+        owner = self.index(lines[mk:], "smbcacls", "C$ lanlord ", "--numeric") + mk
+        check = next(i for i, c in enumerate(lines) if i > mk and c.endswith("-c cd lanlord"))
+        setacl = self.index(lines, "--set")
+        self.assertLess(owner, check)
+        self.assertLess(check, setacl)
+        self.assertLess(setacl, self.index(lines, " put "))
+
+    def test_an_existing_folder_is_not_an_error(self):
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("mkdir lanlord", self.calls())
+
+    def test_a_folder_that_cannot_be_made_is_a_clear_error(self):
+        shutil.rmtree(os.path.join(self.stubs, "cdrive", "lanlord"))
         self.flag("mkdir_error")
         out = self.run_exec()
         self.assertEqual(out.returncode, 1)
-        error = self.events(out)[-1]["error"]
-        self.assertIn("could not create", error)
-        self.assertNotIn("could not connect", error)
-        self.assertIn("NT_STATUS_ACCESS_DENIED", error)
+        self.assertIn("could not create", self.error(out))
+        self.assertNotIn("could not connect", self.error(out))
+        self.assertIn("NT_STATUS_ACCESS_DENIED", self.error(out))
         self.assertNotIn(" put ", self.calls())
 
-    def test_a_put_that_cannot_enter_temp_fails_instead_of_using_the_root(self):
-        # mkdir is a no-op here (temp vanishes between the calls), so the cd error shows up in the put
-        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+    def test_a_put_that_cannot_enter_the_folder_fails_instead_of_using_the_root(self):
+        # the folder is there for mkdir and smbcacls but every cd fails, so the error shows up in the put
         path = os.path.join(self.stubs, "bin", "smbclient")
         with open(path) as f:
             body = f.read()
         with open(path, "w") as f:
-            f.write(body.replace('else mkdir "$remote/Temp"; fi', "fi"))
+            f.write(body.replace('if [[ -d $cur/$p ]]; then cur=$cur/$p; else', "if false; then :; else"))
         out = self.run_exec()
         self.assertEqual(out.returncode, 1)
-        error = self.events(out)[-1]["error"]
-        self.assertIn("Temp is not usable", error)
+        self.assertIn("not a folder", self.error(out))
         self.assertNotIn("service create", self.calls())
 
-    def test_the_run_files_land_in_temp_not_the_root(self):
-        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+    def test_the_run_files_land_in_the_folder_not_the_root(self):
         out = self.run_exec()
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(self.root_files(), [])
         self.assertTrue(any(n.endswith(".cmd.bat") for n in os.listdir(os.path.join(self.stubs, "bats"))))
 
-    def test_a_sign_in_failure_is_not_reported_as_a_temp_problem(self):
+    def test_the_drive_comes_from_netsharegetinfo(self):
+        self.scenario(adminpath="D:\\WINNT40\r\n")
+        shutil.rmtree(os.path.join(self.stubs, "cdrive"))
+        os.makedirs(os.path.join(self.stubs, "cdrive", "lanlord"))
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        calls = self.calls()
+        self.assertIn("rpcclient 192.0.2.20", calls)
+        self.assertIn("netsharegetinfo ADMIN$", calls)
+        self.assertIn("//192.0.2.20/D$", calls)
+        self.assertNotIn("//192.0.2.20/C$", calls)
+        self.assertIn('"D:\\lanlord\\ll-', calls)
+        self.assertIn("call D:\\lanlord\\ll-", self.bat())
+
+    def test_no_drive_means_no_run(self):
+        for scenario in ({"no_share": ""}, {"adminpath": "\\\\odd\\path\r\n"}):
+            self.scenario(**scenario)
+            out = self.run_exec()
+            self.assert_nothing_sent(out)
+            self.assertIn("system drive", self.error(out))
+            self.assertNotIn("C$", self.calls().replace("netsharegetinfo ADMIN$", ""))
+            os.remove(os.path.join(self.stubs, "calls"))
+            open(os.path.join(self.stubs, "calls"), "w").close()
+            for name in ("no_share", "adminpath"):
+                if os.path.exists(os.path.join(self.stubs, name)):
+                    os.remove(os.path.join(self.stubs, name))
+
+    def test_the_password_never_reaches_rpcclient_argv(self):
+        self.run_exec()
+        rpc = [c for c in self.calls().splitlines() if c.startswith("rpcclient")]
+        self.assertTrue(rpc)
+        for c in rpc:
+            self.assertNotIn(SECRET, c)
+            self.assertIn("client use spnego=no", c)
+            self.assertIn("client ipc signing=if_required", c)
+
+    def test_a_sign_in_failure_is_not_reported_as_a_folder_problem(self):
         path = os.path.join(self.stubs, "bin", "smbclient")
         with open(path) as f:
             body = f.read()
         with open(path, "w") as f:
             f.write(body.replace("    cmds=\n", "    echo 'session setup failed: NT_STATUS_LOGON_FAILURE'; exit 1\n    cmds=\n", 1))
         out = self.run_exec()
-        error = self.events(out)[-1]["error"]
-        self.assertIn("could not connect", error)
-        self.assertNotIn("could not create", error)
+        self.assertIn("could not connect", self.error(out))
+        self.assertNotIn("could not create", self.error(out))
+
+    def test_the_order_is_sweep_parent_set_read_put_verify_create(self):
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        lines = self.lines()
+        sweep = self.index(lines, "del ll-????????")
+        parent = self.index(lines, "smbcacls", "C$ \\ ")
+        setacl = self.index(lines, "smbcacls", "--set")
+        read = self.index(lines[setacl:], "smbcacls", "C$ lanlord ", "--numeric") + setacl
+        put = self.index(lines, " put ")
+        verify = self.index(lines[put:], "smbcacls", "lanlord\\ll-") + put
+        create = self.index(lines, "service create")
+        self.assertLess(sweep, parent)
+        self.assertLess(parent, setacl)
+        self.assertLess(setacl, read)
+        self.assertLess(read, put)
+        self.assertLess(put, verify)
+        self.assertLess(verify, create)
+        # the folder and the three files are read again, and the root too
+        again = [c for c in lines[put:create] if c.startswith("smbcacls")]
+        self.assertEqual(len(again), 5)
+        # the root, the existing folder, the set, the read-back, then the five reads before the create
+        self.assertEqual(len(self.acl_calls()), 1 + 1 + 1 + 1 + 5)
+
+    def test_the_acl_sets_owner_and_a_plain_admin_system_dacl_without_p(self):
+        self.run_exec()
+        setcall = next(c for c in self.acl_calls() if "--set" in c)
+        self.assertIn("--sddl", setcall)
+        self.assertIn("O:BAD:(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", setcall)
+        self.assertNotIn("D:P", setcall)
+        self.assertIn("//192.0.2.20/C$ lanlord", setcall)
+        self.assertEqual(len([c for c in self.acl_calls() if "--set" in c]), 1)
+        for c in self.acl_calls():
+            self.assertIn("client min protocol=NT1", c)
+            self.assertIn("client use spnego=no", c)
+            self.assertIn("-A ", c)
+
+    def test_the_password_never_reaches_smbcacls_argv(self):
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assertTrue(self.acl_calls())
+        for c in self.acl_calls():
+            self.assertNotIn(SECRET, c)
+        with open(os.path.join(self.stubs, "auth-seen")) as f:
+            self.assertIn(SECRET, f.read())
+
+    def test_a_folder_acl_that_lets_everyone_in_is_refused(self):
+        self.scenario(acl=self.head() + "ACL:S-1-5-32-544:0/0x3/0x001f01ff\nACL:S-1-1-0:0/0x3/0x001f01ff\n")
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("not private", self.error(out))
+        self.assert_no_secret(out)
+
+    def test_a_folder_acl_with_a_deny_or_an_empty_dacl_is_refused(self):
+        for acl in (self.head() + "ACL:S-1-5-18:1/0x3/0x001f01ff\n", self.head()):
+            self.scenario(acl=acl)
+            out = self.run_exec()
+            self.assert_nothing_sent(out)
+            self.assertIn("not private", self.error(out))
+
+    def test_a_folder_owner_that_is_not_an_administrator_is_refused(self):
+        self.scenario(acl=self.head("S-1-5-21-1-2-3-1105") + self.GOOD)
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("already exists and is owned by S-1-5-21-1-2-3-1105", self.error(out))
+        self.assertIn("delete C:\\lanlord", self.error(out))
+        self.assertFalse([c for c in self.acl_calls() if "--set" in c])
+
+    def test_a_fresh_folder_owned_by_the_login_is_taken_over_by_the_set(self):
+        shutil.rmtree(os.path.join(self.stubs, "cdrive", "lanlord"))
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(len([c for c in self.acl_calls() if "--set" in c]), 1)
+
+    def test_system_as_owner_is_accepted(self):
+        self.scenario(acl=self.head("S-1-5-18") + self.GOOD)
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+
+    def test_a_target_that_is_a_file_means_no_run(self):
+        shutil.rmtree(os.path.join(self.stubs, "cdrive", "lanlord"))
+        with open(os.path.join(self.stubs, "cdrive", "lanlord"), "w") as f:
+            f.write("x")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertNotIn(" put ", self.calls())
+        self.assertNotIn("service create", self.calls())
+        self.assertIn("not a folder", self.error(out))
+        self.assertFalse([c for c in self.acl_calls() if "--set" in c])
+
+    def test_an_acl_that_cannot_be_set_means_no_run(self):
+        self.flag("acl_set_error")
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("could not lock", self.error(out))
+
+    def test_a_set_that_exits_0_but_prints_an_error_means_no_run(self):
+        self.flag("acl_set_noise")
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("could not lock", self.error(out))
+        self.assertEqual(len([c for c in self.acl_calls() if "--set" in c]), 1)
+        self.assertFalse([c for c in self.acl_calls() if "--numeric" in c][2:])
+
+    def test_an_acl_that_cannot_be_read_means_no_run(self):
+        self.flag("acl_read_error")
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("could not read the acl", self.error(out))
+
+    def test_a_root_that_grants_everyone_full_control_means_no_run(self):
+        self.scenario(acl_parent=self.head() + "ACL:S-1-1-0:0/0x3/0x001f01ff\nACL:S-1-5-32-544:0/0x3/0x001f01ff\n")
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("too open", self.error(out))
+        self.assertIn("S-1-1-0", self.error(out))
+        self.assertIn("tighten", self.error(out))
+        self.assertFalse([c for c in self.acl_calls() if "--set" in c])
+
+    def test_a_root_that_grants_delete_child_write_dac_or_write_owner_means_no_run(self):
+        for mask in ("0x00000040", "0x00040000", "0x00080000", "0x10000000", "0x40000000", "0x001301ff"):
+            self.scenario(acl_parent=self.head() + "ACL:S-1-1-0:0/0x0/%s\nACL:S-1-5-18:0/0x0/0x001f01ff\n" % mask)
+            out = self.run_exec()
+            self.assert_nothing_sent(out)
+            self.assertIn("too open", self.error(out), mask)
+
+    def test_a_root_where_only_an_inherit_only_ace_is_wide_open_passes(self):
+        self.scenario(acl_parent=self.head() + "ACL:S-1-1-0:0/0xb/0x001f01ff\nACL:S-1-5-32-544:0/0x0/0x001f01ff\n")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+
+    def test_a_root_with_an_unknown_owner_an_odd_ace_or_no_aces_means_no_run(self):
+        for acl in (
+            self.head("S-1-5-21-1-2-3-1105") + "ACL:S-1-5-18:0/0x0/0x001f01ff\n",
+            self.head() + "ACL:S-1-5-18:0/0x0/0x001f01ff\nACL:garbage\n",
+            self.head() + "ACL:S-1-1-0:5/0x0/0x00000001\nACL:S-1-5-18:0/0x0/0x001f01ff\n",
+            self.head(),
+        ):
+            self.scenario(acl_parent=acl)
+            out = self.run_exec()
+            self.assert_nothing_sent(out)
+            self.assertIn("too open", self.error(out))
+
+    def test_a_denied_ace_on_the_root_is_not_a_grant(self):
+        self.scenario(acl_parent=self.head() + "ACL:S-1-1-0:1/0x0/0x001f01ff\nACL:S-1-5-18:0/0x0/0x001f01ff\n")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+
+    def test_the_root_like_the_one_on_a_real_server_passes(self):
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+
+    def test_a_refused_root_is_swept_first_but_nothing_is_locked_or_used(self):
+        self.scenario(services="LANlordExecdeadbeef\n", acl_parent=self.head() + "ACL:S-1-1-0:0/0x0/0x001f01ff\n")
+        out = self.run_exec()
+        self.assert_nothing_sent(out)
+        self.assertIn("service delete", self.calls())
+
+    def test_a_file_that_is_not_private_at_the_end_means_no_create(self):
+        self.scenario(acl_file=self.head() + "ACL:S-1-1-0:0/0x0/0x001f01ff\nACL:S-1-5-18:0/0x0/0x001f01ff\n")
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn(" put ", self.calls())
+        self.assertNotIn("service create", self.calls())
+        self.assertIn("not private", self.error(out))
+        self.assertIn("ll-", self.error(out))
+        self.assert_clean()
+
+    def test_a_file_owned_by_the_login_is_accepted_and_a_stranger_is_not(self):
+        self.scenario(usersid="S-1-5-21-1-2-3-1105\n", acl_file=self.head("S-1-5-21-1-2-3-1105") + self.GOOD)
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assertIn("lookupnames DEMO\\Administrator", self.calls())
+        self.scenario(acl_file=self.head("S-1-5-21-1-2-3-1999") + self.GOOD)
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertNotIn("service create", self.calls().split("lookupnames")[-1])
+
+    def test_the_folder_changing_after_the_put_means_no_create(self):
+        # the folder reads are good at first and bad from the fourth smbcacls read on
+        path = os.path.join(self.stubs, "bin", "smbcacls")
+        with open(path) as f:
+            body = f.read()
+        flip = (
+            'n=$(cat "$STUBS/reads" 2>/dev/null || echo 0); echo $((n+1)) > "$STUBS/reads"\n'
+            '    if ((n >= 4)) && [[ $f == acl ]]; then '
+            "printf 'REVISION:1\\nOWNER:S-1-5-32-544\\nACL:S-1-1-0:0/0x3/0x001f01ff\\n'; exit 0; fi\n"
+        )
+        with open(path, "w") as f:
+            f.write(body.replace("    if [[ -e $STUBS/$f ]]; then", flip + "    if [[ -e $STUBS/$f ]]; then", 1))
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertNotIn("service create", self.calls())
+
+    def test_every_run_path_is_in_the_private_folder(self):
+        self.scenario(out="x\r\n")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        calls = self.calls()
+        self.assertEqual(len(re.findall(r"cd lanlord; put ", calls)), 1)
+        self.assertRegex(calls, r"cd lanlord; get ll-[0-9a-f]{8}\.rc")
+        self.assertRegex(calls, r"cd lanlord; del ll-[0-9a-f]{8}\.exe")
+        self.assertNotRegex(calls, r"cd Temp; (put|get)")
+        self.assertNotIn("%SystemRoot%\\Temp\\ll-", calls)
+        self.assertNotIn("%SystemRoot%", self.bat())
+        self.assert_clean()
+
+    def test_stale_files_in_the_old_and_new_places_are_swept(self):
+        with open(os.path.join(self.stubs, "cdrive", "lanlord", "ll-deadbeef.out"), "w") as f:
+            f.write("x")
+        with open(os.path.join(self.stubs, "remote", "Temp", "ll-deadbeef.out"), "w") as f:
+            f.write("x")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assert_clean()
+
+    def test_sweep_without_a_drive_still_cleans_the_old_places(self):
+        self.flag("no_share")
+        with open(os.path.join(self.stubs, "remote", "Temp", "ll-deadbeef.out"), "w") as f:
+            f.write("x")
+        out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(os.listdir(os.path.join(self.stubs, "remote", "Temp")), [])
+
+    def test_sweep_does_not_lock_or_make_anything(self):
+        out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("smbcacls", self.calls())
+        self.assertNotIn("mkdir", self.calls())
 
     def test_sweep_without_temp_leaves_other_root_files_alone(self):
-        os.rmdir(os.path.join(self.stubs, "remote", "Temp"))
+        shutil.rmtree(os.path.join(self.stubs, "remote", "Temp"))
         root = os.path.join(self.stubs, "remote")
         for name in ("ll-system.exe", "ll-0123abcd.exe", "ll-0123abcd.cmd.bat"):
             with open(os.path.join(root, name), "w") as f:
