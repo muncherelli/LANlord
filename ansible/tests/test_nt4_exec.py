@@ -57,6 +57,7 @@ case $name in
       create)
         [[ -e $STUBS/create_io_timeout ]] && { echo "Create service request failed. [NT_STATUS_IO_TIMEOUT]"; exit 2; }
         echo "$4" >> "$STUBS/services" ;;
+      stop) echo "stopped $4" >> "$STUBS/stopped" ;;
       delete) sed -i "/^$4\$/d" "$STUBS/services" ;;
       start)
         [[ -e $STUBS/start_error ]] && { echo "Query status request failed. [WERR_ACCESS_DENIED]"; exit 1; }
@@ -97,6 +98,9 @@ class LanlordExecTest(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(STUB)
             os.chmod(path, 0o755)
+        self.svc = os.path.join(self.tmp, "lanlord-svc.exe")
+        with open(self.svc, "wb") as f:
+            f.write(b"MZ dummy helper")
         self.env = dict(
             os.environ,
             PATH=os.path.join(self.stubs, "bin") + ":" + os.environ["PATH"],
@@ -104,6 +108,7 @@ class LanlordExecTest(unittest.TestCase):
             LANLORD_EXEC_DIR=self.locks,
             LANLORD_EXEC_TMP=self.scratch,
             LANLORD_EXEC_POLL="0.1",
+            LANLORD_EXEC_SVC=self.svc,
             LANLORD_EXEC_LOG=os.path.join(self.tmp, "exec.log"),
         )
         self.log = self.env["LANLORD_EXEC_LOG"]
@@ -190,7 +195,43 @@ class LanlordExecTest(unittest.TestCase):
         self.assertIn("//192.0.2.20/ADMIN$", calls)
         self.assertIn("client min protocol=NT1", calls)
         self.assertRegex(calls, r"net rpc service create LANlordExec[0-9a-f]{8} LANlord exec")
-        self.assertIn("cmd.exe /Q /c %SystemRoot%\\Temp\\ll-", calls)
+        self.assertNotIn("cmd.exe", calls)
+
+    def test_the_helper_is_put_and_the_service_runs_it_with_the_bat(self):
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        calls = self.calls()
+        run_id = re.search(r"put \S+/ll-([0-9a-f]{8})\.bat ll-", calls).group(1)
+        self.assertRegex(calls, r"put %s ll-%s\.exe" % (re.escape(self.svc), run_id))
+        self.assertIn(
+            "net rpc service create LANlordExec%s LANlord exec "
+            "%%SystemRoot%%\\Temp\\ll-%s.exe %%SystemRoot%%\\Temp\\ll-%s.bat -S " % (run_id, run_id, run_id),
+            calls,
+        )
+        self.assertIn("del ll-%s.exe" % run_id, calls)
+        self.assertEqual(self.remote(), [])
+
+    def test_a_missing_helper_is_a_clear_error_before_anything_is_sent(self):
+        os.remove(self.svc)
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("service helper", self.events(out)[-1]["error"])
+        self.assertIn("missing", self.events(out)[-1]["error"])
+        self.assertNotIn("service create", self.calls())
+        self.assert_clean()
+
+    def test_a_timeout_stops_the_service_before_it_is_deleted(self):
+        self.flag("hang")
+        out = self.run_exec(args=("--machine", "nt4srv01", "--timeout", "1"))
+        self.assertEqual(self.events(out)[-1], {"timed_out": True})
+        calls = self.calls()
+        stop = calls.index("net rpc service stop LANlordExec")
+        self.assertLess(stop, calls.index("net rpc service delete LANlordExec"))
+        self.assert_clean()
+
+    def test_a_normal_run_does_not_stop_the_service(self):
+        self.run_exec()
+        self.assertNotIn("service stop", self.calls())
 
     def test_output_is_streamed_as_it_grows(self):
         self.scenario(out="line one\r\n", rc="0\r\n")
@@ -438,8 +479,9 @@ class LanlordExecTest(unittest.TestCase):
 
     def test_stale_services_are_swept_at_the_start_of_a_run(self):
         self.scenario(services="LANlordExecdeadbeef\nOtherService\n")
-        with open(os.path.join(self.stubs, "remote", "ll-deadbeef.bat"), "w") as f:
-            f.write("x")
+        for name in ("ll-deadbeef.bat", "ll-deadbeef.exe"):
+            with open(os.path.join(self.stubs, "remote", name), "w") as f:
+                f.write("x")
         out = self.run_exec()
         self.assertEqual(self.events(out)[-1], {"exit": 0})
         self.assertIn("net rpc service delete LANlordExecdeadbeef", self.calls())
@@ -449,8 +491,9 @@ class LanlordExecTest(unittest.TestCase):
 
     def test_sweep_removes_what_a_dead_run_left(self):
         self.scenario(services="LANlordExec0123abcd\nLANlordExecffffffff\nSpooler\n")
-        with open(os.path.join(self.stubs, "remote", "ll-0123abcd.out"), "w") as f:
-            f.write("x")
+        for name in ("ll-0123abcd.out", "ll-0123abcd.exe"):
+            with open(os.path.join(self.stubs, "remote", name), "w") as f:
+                f.write("x")
         out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(self.events(out), [{"swept": 2}])

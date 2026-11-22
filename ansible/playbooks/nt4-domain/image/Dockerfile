@@ -72,6 +72,26 @@ RUN LDFLAGS=-lintl ./configure --prefix=/usr --sysconfdir=/etc/samba --localstat
  && find /out -type f \( -perm -u+x -o -name '*.so*' \) \
       -exec sh -c 'strip --strip-unneeded "$1" 2>/dev/null || true' _ {} \;
 
+# the service helper lanlord-exec copies to an nt4 machine: a plain win32 exe with no c runtime, built
+# with an i686 mingw cross compiler; the build fails unless it is an i386 pe with subsystem 4.0
+FROM ${ALPINE_IMAGE} AS svc
+RUN apk add --no-cache i686-mingw-w64-gcc
+COPY lanlord-svc/lanlord-svc.c /src/lanlord-svc.c
+RUN set -eux; \
+    mkdir -p /out/usr/lib/lanlord; \
+    i686-w64-mingw32-gcc -Os -Wall -Wextra -ffreestanding -fno-stack-protector \
+      -fno-tree-loop-distribute-patterns -nostdlib -s \
+      -Wl,-e,_svc_entry -Wl,--subsystem,console:4.0 \
+      -Wl,--major-os-version,4 -Wl,--minor-os-version,0 \
+      -Wl,--major-subsystem-version,4 -Wl,--minor-subsystem-version,0 \
+      -o /out/usr/lib/lanlord/lanlord-svc.exe /src/lanlord-svc.c -lkernel32 -ladvapi32; \
+    dump=$(i686-w64-mingw32-objdump -p /out/usr/lib/lanlord/lanlord-svc.exe); \
+    echo "$dump" | grep -E 'file format|Subsystem|MajorOperatingSystemVersion|MinorOperatingSystemVersion|MajorSubsystemVersion|MinorSubsystemVersion|DLL Name'; \
+    echo "$dump" | grep -q 'file format pei-i386'; \
+    echo "$dump" | grep -Eq '^Subsystem[[:space:]]+0*3[[:space:]]'; \
+    echo "$dump" | grep -Eq '^MajorSubsystemVersion[[:space:]]+4$'; \
+    echo "$dump" | grep -Eq '^MinorSubsystemVersion[[:space:]]+0$'
+
 FROM ${ALPINE_IMAGE}
 ARG SAMBA_VERSION=4.22.11
 ARG IMAGE_VERSION=dev
@@ -88,6 +108,7 @@ LABEL org.opencontainers.image.title="lanlord-nt4-server-components" \
 # only what smbd and nmbd link against, plus bash and shadow for the mounted scripts
 RUN apk add --no-cache acl-libs bash gettext-libs gnutls libarchive libcap libtirpc lmdb readline shadow
 COPY --from=build /out/usr/ /usr/
+COPY --from=svc /out/usr/lib/lanlord/lanlord-svc.exe /usr/lib/lanlord/lanlord-svc.exe
 # samba's own libraries live in /usr/lib/samba; musl finds them through this path file
 RUN echo /usr/lib/samba:/lib:/usr/local/lib:/usr/lib > /etc/ld-musl-$(uname -m).path \
  && cd /usr/bin && rm -f cifsdd dbwrap_tool gentest ldb* locktest masktest mdsearch mvxattr ndrdump oLschema2ldif \

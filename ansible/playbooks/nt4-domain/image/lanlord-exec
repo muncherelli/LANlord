@@ -1,6 +1,7 @@
 #!/bin/bash
 # runs one command on a domain member over smb1, psexec style: nothing is installed on the machine.
-# a .bat goes into ADMIN$\Temp, a service runs it with cmd.exe, and the output is streamed back.
+# a .bat and a small service helper (lanlord-svc.exe, built into the image) go into ADMIN$\Temp, a
+# service started from the helper runs the .bat with cmd.exe, and the output is streamed back.
 #   lanlord-exec run --machine NAME [--address ADDR] --timeout N [--hash-command]
 #                             stdin: {"user":"...","password":"...","command":"...","caller":"..."}
 #                             caller is optional (letters, digits and ._@- only; "cli" when absent)
@@ -21,8 +22,9 @@
 # set a code. core refuses a command in which any part, split at &, && || and parentheses and
 # after a leading @, if ... or do, starts with exit; a single | does not split, as the right side of
 # a pipe runs in a child cmd.
-# a command that outlives its timeout cannot be killed (nt4 has no taskkill): it keeps running on the
-# machine and holds its .out and .err open, so those files stay until the next run's sweep retries.
+# a command that outlives its timeout is killed: the service is stopped first, and the helper ends
+# its cmd.exe. a child of that cmd.exe (nt4 has no taskkill) may live on and hold the .out and .err
+# open, so those files then stay until the next run's sweep retries.
 # the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
 # argument, never in the environment and never printed.
 # nt4 has no smb extended security, so every smbclient and net call turns spnego off ("client use
@@ -40,6 +42,7 @@ MAX_COMMAND=2000
 LOG=${LANLORD_EXEC_LOG:-/var/lib/samba/private/exec.log}
 LOCK_TRIES=${LANLORD_EXEC_LOCK_TRIES:-50}
 LOG_MAX=${LANLORD_EXEC_LOG_MAX:-1048576}
+SVC_EXE=${LANLORD_EXEC_SVC:-/usr/lib/lanlord/lanlord-svc.exe}
 CHUNK=1048576
 SMB_OPT=(--option='client min protocol=NT1' --option='client use spnego=no' --option='client ipc signing=if_required')
 
@@ -49,6 +52,7 @@ machine=
 run_id=
 made_bat=0
 made_service=0
+timed_out=0
 start_pid=
 final_sent=0
 caller=cli
@@ -141,10 +145,12 @@ cleanup() {
   fi
   if [[ -n $work && -n $addr && -f $work/auth ]]; then
     if ((made_service)); then
+      # a timed out command is still running: stopping the service makes the helper kill it
+      ((timed_out)) && timeout 30 net rpc service stop "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1
       rpc delete "LANlordExec$run_id" >/dev/null 2>&1
     fi
     if ((made_bat)); then
-      smb -c "cd Temp; del ll-$run_id.bat; del ll-$run_id.cmd.bat; del ll-$run_id.out; del ll-$run_id.err; del ll-$run_id.rc" >/dev/null 2>&1
+      smb -c "cd Temp; del ll-$run_id.exe; del ll-$run_id.bat; del ll-$run_id.cmd.bat; del ll-$run_id.out; del ll-$run_id.err; del ll-$run_id.rc" >/dev/null 2>&1
     fi
   fi
   [[ -n $work ]] && rm -rf "$work"
@@ -231,7 +237,7 @@ sweep_stale() {
     rpc delete "$svc" >/dev/null 2>&1
     n=$((n + 1))
   done
-  smb -c 'cd Temp; del ll-*.bat; del ll-*.out; del ll-*.err; del ll-*.rc' >/dev/null 2>&1
+  smb -c 'cd Temp; del ll-*.exe; del ll-*.bat; del ll-*.out; del ll-*.err; del ll-*.rc' >/dev/null 2>&1
   SWEPT=$n
 }
 
@@ -288,6 +294,7 @@ if [[ $mode == run ]]; then
   [[ -n $command ]] || refuse "the command is empty"
   [[ $command != *[$'\r\n']* ]] || refuse "the command holds a line break"
   ((${#command} <= MAX_COMMAND)) || refuse "the command is longer than $MAX_COMMAND characters"
+  [[ -f $SVC_EXE ]] || fail "the service helper $SVC_EXE is missing from the image; update the nt4-domain image"
 fi
 
 # the password file; a DOMAIN\user name is split the way smbclient wants it
@@ -338,11 +345,11 @@ bat=ll-$run_id
   printf 'echo %%ERRORLEVEL%% > %%SystemRoot%%\\Temp\\%s.rc\r\n' "$bat"
 } >"$work/$bat.bat"
 made_bat=1
-smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
+smb -c "cd Temp; put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat; put $SVC_EXE $bat.exe" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
 
 made_service=1
 rpc create "LANlordExec$run_id" "LANlord exec" \
-  "%SystemRoot%\\system32\\cmd.exe /Q /c %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
+  "%SystemRoot%\\Temp\\$bat.exe %SystemRoot%\\Temp\\$bat.bat" >"$work/create.log" 2>&1 ||
   {
     if grep -q 'NT_STATUS_IO_TIMEOUT' "$work/create.log"; then
       fail "the service manager on $machine is busy (a previous run may still be starting); try again in a minute"
@@ -350,8 +357,9 @@ rpc create "LANlordExec$run_id" "LANlord exec" \
     fail "could not create the service on $machine: $(excerpt "$work/create.log")"
   }
 
-# the service never answers the service manager, so the start ends in error 1053 after a while while
-# the command keeps running; it is started in the background and watched through the .rc file
+# the helper answers the service manager at once, so the start returns quickly; an older failure mode
+# (error 1053 after a while, the command still running) is tolerated: the start is in the background
+# and the run is watched through the .rc file
 setsid bash -c 'log=$1 rcfile=$2; shift 2; "$@" >"$log" 2>&1; echo $? >"$rcfile"' _ \
   "$work/start.log" "$work/start.rc" \
   net rpc service start "LANlordExec$run_id" -S "$addr" -A "$work/auth" "${SMB_OPT[@]}" >/dev/null 2>&1 &
@@ -399,6 +407,7 @@ while :; do
   if ((SECONDS >= timeout)); then
     final_sent=1
     audit_result=timed_out
+    timed_out=1
     event '{"timed_out":true}'
     exit 0
   fi
