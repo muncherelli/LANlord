@@ -7,20 +7,24 @@ use zeroize::Zeroize;
 
 use crate::bootstrap::{root_argv, AskPassword};
 use crate::config;
+use crate::engine::host::Host;
+use crate::engine::modules::nt4::{exec_targets, remember_exec};
 use crate::leases;
+use crate::settings;
 use crate::ssh::Session;
 use crate::users::cached;
 
 pub use lanlord_model::nt4_exec::*;
 
-/// the account the commands run as; apply creates it as a domain admin.
-pub const USER: &str = "lanlord-exec";
 /// the sealed secret holding its password: `exec_password` in the `nt4-domain` section.
 pub const SECRET: &str = "nt4-domain.exec_password";
 /// each stream of a run keeps this many bytes; the rest is dropped and `truncated` says so.
 pub const OUTPUT_CAP: usize = 1024 * 1024;
 /// the message when the account has no password yet.
 pub const NOT_SET_UP: &str = "the exec account is not set up yet; run apply";
+
+/// the module whose apply makes the account.
+pub const MODULE: &str = "nt4-domain";
 
 const MARKER: &str = "LANLORD_EVENT ";
 const CONTAINER: &str = "lanlord-nt4";
@@ -232,6 +236,116 @@ fn request(password: &str, command: &str) -> Vec<u8> {
         },
     );
     body
+}
+
+/// a new random password for the account: 24 characters of the alphabet that is easy to type
+/// and that NT4 and its tools take as they are (no quotes, percent signs, backslashes or
+/// spaces), from the operating system's random source.
+pub fn new_password() -> String {
+    crate::passwords::generate(PASSWORD_LEN)
+}
+
+/// the arguments that set the account's password in `container`; the password goes on stdin.
+pub fn account_argv(container: &str) -> Vec<String> {
+    ["docker", "exec", "-i", container, "lanlord-user", "exec"]
+        .map(String::from)
+        .into()
+}
+
+/// make the account's password in the sealed secrets when the settings have a domain and none is
+/// there yet. it is stored before the apply that uses it. returns whether one was made.
+pub(crate) fn ensure_password(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+) -> Result<bool> {
+    let mut ask = cached(ask);
+    let Some(mut whole) = settings::whole_with(session, identity, &mut ask)? else {
+        return Ok(false);
+    };
+    let wanted = wants_account(&whole);
+    let set = whole
+        .get("nt4-domain")
+        .and_then(|section| section.get("exec_password"))
+        .and_then(|text| text.as_str())
+        .is_some_and(|text| !text.is_empty());
+    wipe(&mut whole);
+    if !wanted || set {
+        return Ok(false);
+    }
+    let mut password = new_password();
+    let sealed = settings::seal_secret(session, host, identity, SECRET, &password, &mut ask);
+    password.zeroize();
+    sealed?;
+    Ok(true)
+}
+
+/// make a new password, seal it and set it on the account, and do nothing else. it is sealed
+/// first, so a failed set leaves the secret ahead of the account and the next apply (or another
+/// rotate) brings the account to it, never a password nobody has.
+///
+/// it sets the account on each domain controller of the list and no other server. on the
+/// gateway the engine's record of the password is updated too, so the next plan or apply does not
+/// send it again.
+pub(crate) fn rotate(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+) -> Result<()> {
+    let engine = crate::engine::host::RealHost;
+    let state = session
+        .is_local()
+        .then_some((&engine as &dyn Host, crate::engine::STATE_DIR));
+    rotate_with(session, host, identity, ask, state)
+}
+
+fn rotate_with(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+    state: Option<(&dyn Host, &str)>,
+) -> Result<()> {
+    let mut ask = cached(ask);
+    let Some(mut whole) = settings::whole_with(session, identity, &mut ask)? else {
+        bail!("no settings on {host}; run lanlord config push first");
+    };
+    let targets = exec_targets(&whole);
+    wipe(&mut whole);
+    if targets.is_empty() {
+        bail!("{host} has no domain controller, so there is no exec account to rotate");
+    }
+    let mut password = new_password();
+    let done = settings::seal_secret(session, host, identity, SECRET, &password, &mut ask)
+        .and_then(|()| {
+            targets.iter().try_for_each(|target| {
+                set_account(session, &mut ask, &target.container, &password)?;
+                match state {
+                    Some((engine, dir)) => remember_exec(engine, dir, &target.key, &password),
+                    None => Ok(()),
+                }
+            })
+        });
+    password.zeroize();
+    done
+}
+
+/// set the account's password in `container`, over stdin.
+fn set_account(session: &Session, ask: AskPassword, container: &str, password: &str) -> Result<()> {
+    let admin = config::admin(session)?;
+    let command = account_argv(container);
+    let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+    let (remote, first) = root_argv(session, &admin, &refs, ask)?;
+    let mut input = first.into_bytes();
+    input.extend_from_slice(password.as_bytes());
+    input.push(b'\n');
+    let result = session.capture_with_stdin(&remote, &input);
+    input.zeroize();
+    result
+        .map(|_| ())
+        .map_err(|_| anyhow!("could not set the exec account's password"))
 }
 
 /// the names of the domain's machine accounts, without the `$`.
@@ -519,6 +633,164 @@ pub(crate) mod tests {
         }
         let body = String::from_utf8(request(secret, "ver")).unwrap();
         assert!(body.contains(secret) && body.contains(USER));
+    }
+
+    const DOMAIN: &str =
+        "nt4-servers:\n  - {name: a, role: pdc, domain: LAB, netbios_name: ONE, network: lab}\ndomains:\n  LAB: {}\n";
+    const WORKGROUP: &str =
+        "nt4-servers:\n  - {name: a, role: workgroup, workgroup: WG, netbios_name: ONE, network: lab}\n";
+
+    fn sealed_password(gw: &crate::testgw::Gateway, id: &age::x25519::Identity) -> Option<String> {
+        let sealed = gw.sealed(id)?;
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&sealed).unwrap();
+        value["nt4-domain"]["exec_password"]
+            .as_str()
+            .map(String::from)
+    }
+
+    #[test]
+    fn a_new_password_is_24_characters_nt4_takes_and_never_repeats() {
+        let seen: std::collections::HashSet<String> = (0..50).map(|_| new_password()).collect();
+        assert_eq!(seen.len(), 50);
+        for password in &seen {
+            assert_eq!(password.len(), 24);
+            assert!(password
+                .chars()
+                .all(|c| crate::passwords::ALPHABET.contains(c)));
+            for bad in ['"', '%', '\\', ' ', '\'', '$', '^', '&', '|', '<', '>'] {
+                assert!(!password.contains(bad), "{password}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_account_argv_never_holds_a_password() {
+        let argv = account_argv(CONTAINER);
+        assert_eq!(argv.last().map(String::as_str), Some("exec"));
+        assert!(argv.iter().all(|a| !a.contains(&new_password())));
+        assert!(argv.contains(&"-i".to_string()));
+    }
+
+    #[test]
+    fn a_domain_without_a_password_gets_one_sealed_and_not_in_the_plain_settings() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-ensure"), identity("exec-ensure"));
+        gw.seed_plain(DOMAIN);
+        assert!(ensure_password(&gw.session, "gw", &id, &mut no_password).unwrap());
+        let password = sealed_password(&gw, &id).expect("sealed");
+        assert_eq!(password.len(), 24);
+        assert!(!gw.plain().unwrap().contains(&password));
+        assert!(!gw.plain().unwrap().contains("exec_password"));
+        // it is the same one on the next apply: nothing is made twice
+        assert!(!ensure_password(&gw.session, "gw", &id, &mut no_password).unwrap());
+        assert_eq!(
+            sealed_password(&gw, &id).as_deref(),
+            Some(password.as_str())
+        );
+    }
+
+    #[test]
+    fn other_sealed_secrets_survive_the_new_one() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-keep"), identity("exec-keep"));
+        gw.seed_plain(DOMAIN);
+        gw.seed_sealed(&id, "nt4-domain:\n  admin_password: s3cretadmin\n");
+        assert!(ensure_password(&gw.session, "gw", &id, &mut no_password).unwrap());
+        let sealed = gw.sealed(&id).unwrap();
+        assert!(sealed.contains("s3cretadmin") && sealed.contains("exec_password"));
+    }
+
+    #[test]
+    fn a_workgroup_or_empty_gateway_makes_no_account() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-wg"), identity("exec-wg"));
+        assert!(!ensure_password(&gw.session, "gw", &id, &mut no_password).unwrap());
+        gw.seed_plain(WORKGROUP);
+        assert!(!ensure_password(&gw.session, "gw", &id, &mut no_password).unwrap());
+        assert!(gw.sealed(&id).is_none());
+        let error = rotate(&gw.session, "gw", &id, &mut no_password)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no domain controller"), "{error}");
+        assert!(gw.exec_calls().0.is_empty());
+    }
+
+    #[test]
+    fn rotate_seals_a_new_password_and_sets_only_the_account() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-rotate"), identity("exec-rotate"));
+        gw.seed_plain(DOMAIN);
+        ensure_password(&gw.session, "gw", &id, &mut no_password).unwrap();
+        let old = sealed_password(&gw, &id).unwrap();
+        rotate(&gw.session, "gw", &id, &mut no_password).unwrap();
+        let new = sealed_password(&gw, &id).unwrap();
+        assert_ne!(old, new);
+        assert_eq!(new.len(), 24);
+        let (argv, stdin) = gw.exec_calls();
+        assert_eq!(argv.len(), 1, "{argv:?}");
+        assert!(argv[0].contains("lanlord-user exec"));
+        assert!(!argv[0].contains(&new) && !argv[0].contains(&old));
+        assert_eq!(stdin, format!("{new}\n").into_bytes());
+        // the plain settings were not touched
+        assert_eq!(gw.plain().as_deref(), Some(DOMAIN));
+    }
+
+    const MIXED: &str = "nt4-servers:\n  - {name: nt4-domain, role: workgroup, workgroup: WG, netbios_name: ONE, network: lab}\n  - {name: lab, role: pdc, domain: LAB, netbios_name: TWO, network: lab}\n  - {name: files, role: fileserver, workgroup: WG, netbios_name: THREE, network: lab}\ndomains:\n  LAB: {}\n";
+
+    #[test]
+    fn rotate_sets_the_account_on_each_controller_and_remembers_it_for_the_engine() {
+        use crate::engine::host::FakeHost;
+        use crate::engine::{state::State, Secret};
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-mixed"), identity("exec-mixed"));
+        gw.seed_plain(MIXED);
+        let engine = FakeHost::new();
+        rotate_with(
+            &gw.session,
+            "gw",
+            &id,
+            &mut no_password,
+            Some((&engine, "/s")),
+        )
+        .unwrap();
+        let new = sealed_password(&gw, &id).unwrap();
+        // only the controller's container, named by its id; nothing for the workgroup server
+        // that holds the legacy id or the file server
+        let (argv, _) = gw.exec_calls();
+        assert_eq!(argv.len(), 1, "{argv:?}");
+        assert!(argv[0].contains("docker exec -i lanlord-nt4-lab lanlord-user exec"));
+        assert!(!argv[0].contains("lanlord-nt4 ") && !argv[0].contains("files"));
+        // the engine knows this password is set, and no other
+        let state = State::load(&engine, "/s", false).unwrap();
+        assert!(state.is_current("lab/exec", &Secret::new(&new)));
+        assert!(!state.is_current("lab/exec", &Secret::new("another")));
+        assert!(!state.is_current("nt4-domain/exec", &Secret::new(&new)));
+        assert!(!engine.text("/s/state.json").unwrap().contains(&new));
+    }
+
+    #[test]
+    fn rotate_without_settings_says_so() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-none"), identity("exec-none"));
+        let error = rotate(&gw.session, "gw", &id, &mut no_password)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no settings"), "{error}");
+    }
+
+    #[test]
+    fn a_failed_set_names_no_password() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let _ = (Gateway::new("exec-fail"), identity("exec-fail"));
+        let session = Session::fake(
+            "for a; do last=$a; done\ncase \"$last\" in\n  \"id -un\") echo tester ;;\n  \"sudo -n true\") exit 0 ;;\n  *\"lanlord-user exec\") cat >/dev/null; echo boom >&2; exit 1 ;;\nesac",
+        );
+        let password = new_password();
+        let error = set_account(&session, &mut no_password, CONTAINER, &password)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains(&password), "{error}");
+        assert!(error.contains("could not set"), "{error}");
     }
 
     #[test]

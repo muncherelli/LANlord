@@ -46,6 +46,20 @@
   changed_when: false
   when: nt4_mode == 'domain'
 
+# the account lanlord runs commands as (lanlord-exec): a domain admin whose password is the sealed
+# secret nt4-domain.exec_password, which core makes before this runs. it is set on every apply, so
+# a rotated secret reaches the account; a workgroup server has none
+- name: create or update the exec account
+  ansible.builtin.command: "docker exec -i {{ container }} lanlord-user exec"
+  args:
+    stdin: "{{ nt4.exec_password }}"
+  register: exec_result
+  changed_when: "'created' in exec_result.stdout"
+  no_log: true
+  when:
+    - nt4_mode == 'domain'
+    - nt4.exec_password | default('') | length > 0
+
 - name: create machine accounts in advance
   ansible.builtin.command: "docker exec {{ container }} lanlord-user machine {{ item | lower }}"
   loop: "{{ nt4.machines | default([]) }}"

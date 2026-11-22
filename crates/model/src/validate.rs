@@ -303,6 +303,9 @@ pub fn login_name(text: &str) -> Check {
 
 /// a name in the nt4 domain: a user, as the container accepts it.
 pub fn domain_user(text: &str) -> Check {
+    if crate::users::is_system(text) {
+        return flag(false, "is an account lanlord keeps for itself");
+    }
     flag(
         text.len() <= 32 && crate::users::valid_name(text),
         "must start with a lowercase letter and hold lowercase letters, digits and _ . -",
@@ -619,6 +622,7 @@ const SECTIONS: &[(&str, Kind)] = &[
             ("network", NAME),
             ("address", Kind::Text(ipv4_cidr)),
             ("admin_password", PASSWORD),
+            ("exec_password", PASSWORD),
             ("roaming_profiles", Kind::Flag),
             ("software", Kind::Flag),
             ("lanman_auth", Kind::Flag),
@@ -1754,6 +1758,17 @@ mod tests {
             refused(text)
         );
         assert!(settings_document("domains:\n  RETRODOM: {}\n  OTHER: {}\n").is_ok());
+    }
+
+    #[test]
+    fn the_exec_password_is_a_setting_and_its_account_is_not_a_login() {
+        assert!(settings_document("nt4-domain:\n  exec_password: abc\n").is_ok());
+        let error = refused("nt4-domain:\n  users:\n    - name: lanlord-exec\n      password: x\n");
+        assert!(error.contains("keeps for itself"), "{error}");
+        assert!(
+            settings_document("nt4-domain:\n  users:\n    - name: dana\n      password: x\n")
+                .is_ok()
+        );
     }
 
     #[test]

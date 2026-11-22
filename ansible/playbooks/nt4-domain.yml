@@ -27,6 +27,7 @@
 #
 # nt4-domain:
 #   admin_password: change-me    # domain mode: the "Administrator" that joins machines
+#   exec_password: (made and sealed by lanlord)  # the lanlord-exec account; rotate with `lanlord secrets HOST rotate nt4-domain.exec_password`
 #   users:
 #     - name: dana
 #       password: change-me

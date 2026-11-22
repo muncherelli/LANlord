@@ -105,6 +105,50 @@ class LanlordUserTest(unittest.TestCase):
         )
         self.assertIn("pdbedit -u dana -S users\\dana.bat", self.calls())
 
+    def test_the_exec_account_is_a_domain_admin_without_a_logon_script_or_home(self):
+        out = self.run_user("exec", stdin="Pw24xyz\n")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("created lanlord-exec", out.stdout)
+        self.assertEqual(self.state("admins"), ["lanlord-exec"])
+        calls = self.calls()
+        self.assertIn("smbpasswd -s -a lanlord-exec", calls)
+        self.assertIn("usermod -aG admins lanlord-exec", calls)
+        # no wrapper, no logon script on the account, no home folder
+        self.assertFalse(os.path.exists(os.path.join(self.netlogon, "users", "lanlord-exec.bat")))
+        self.assertNotIn("pdbedit -u lanlord-exec -S", calls)
+        self.assertNotIn("/var/lib/samba/homes/lanlord-exec", calls)
+        # the password was on stdin, never an argument
+        self.assertNotIn("Pw24xyz", calls)
+
+    def test_the_exec_account_is_idempotent_and_keeps_its_membership(self):
+        self.run_user("exec", stdin="one\n")
+        again = self.run_user("exec", stdin="two\n")
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertIn("updated lanlord-exec", again.stdout)
+        self.assertEqual(self.state("admins"), ["lanlord-exec"])
+        # an account made by hand without the role is brought back to domain admin
+        self.run_user("hook", "delmember", "admins", "lanlord-exec")
+        self.assertEqual(self.state("admins"), [])
+        self.run_user("exec", stdin="three\n")
+        self.assertEqual(self.state("admins"), ["lanlord-exec"])
+        self.assertNotIn("one", self.calls().replace("lanlord-exec", ""))
+
+    def test_the_exec_account_needs_a_password_on_stdin(self):
+        out = self.run_user("exec", stdin="")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("the password is empty", out.stderr)
+        self.assertIsNone(self.state("admins"))
+
+    def test_sync_and_ensure_give_the_exec_account_no_logon_wrapper(self):
+        self.run_user("exec", stdin="pw\n")
+        self.run_user("add", "dana", stdin="pw\n")
+        out = self.run_user("sync")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.netlogon, "users", "dana.bat")))
+        self.assertFalse(os.path.exists(os.path.join(self.netlogon, "users", "lanlord-exec.bat")))
+        self.run_user("ensure", "lanlord-exec")
+        self.assertFalse(os.path.exists(os.path.join(self.netlogon, "users", "lanlord-exec.bat")))
+
     def test_settings_never_change_the_membership_of_an_existing_account(self):
         self.run_user("add", "dana", "admin", stdin="pw\n")
         # dana is demoted from user manager for domains
@@ -259,6 +303,21 @@ class PlaybookTest(unittest.TestCase):
                     "delete group script", "add user to group script", "delete user from group script",
                     "set primary group script", "add machine script"):
             self.assertIn(f"   {key} = /usr/local/bin/lanlord-user hook ", self.conf)
+
+    def test_the_exec_account_task_passes_the_password_on_stdin_for_domains_only(self):
+        task = self.text.split("- name: create or update the exec account")[1].split("\n- name:")[0]
+        self.assertIn("lanlord-user exec", task)
+        self.assertIn('stdin: "{{ nt4.exec_password }}"', task)
+        self.assertIn("no_log: true", task)
+        self.assertIn("nt4_mode == 'domain'", task)
+        # the password is only ever the stdin, not part of the command line
+        command = [line for line in task.splitlines() if "ansible.builtin.command" in line][0]
+        self.assertNotIn("exec_password", command)
+        # it runs before the users, so a user list that fails cannot keep the account from existing
+        self.assertLess(
+            self.text.index("create or update the exec account"),
+            self.text.index("create or update the users"),
+        )
 
     def test_logon_script_is_the_per_user_wrapper(self):
         self.assertIn("logon script = users\\%U.bat", self.conf)

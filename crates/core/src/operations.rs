@@ -359,6 +359,10 @@ fn dispatch(
             moved?;
             Reply::Done
         }
+        Operation::RotateExecPassword => {
+            nt4_exec::rotate(session, host, &key()?, ask)?;
+            Reply::Done
+        }
         Operation::MigrateStored { stamp } => {
             Reply::Lines(stored::migrate_with(session, host, &key()?, stamp, ask)?)
         }

@@ -142,6 +142,60 @@ pub(crate) fn save_document_with(
     save_changes_with(session, host, identity, plain_text, updates, &[], ask)
 }
 
+/// the decrypted secrets file, without its version stamp (the push stamps it again).
+fn stored_secrets(
+    session: &Session,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+) -> Result<Option<Value>> {
+    Ok(config::pull_with(session, identity, ask)?
+        .map(|bytes| parse_value(&bytes))
+        .transpose()?
+        .map(|mut value| {
+            if let Value::Mapping(map) = &mut value {
+                map.remove(lanlord_model::format::FORMAT_KEY);
+                map.remove(lanlord_model::format::WRITTEN_BY_KEY);
+            }
+            value
+        }))
+}
+
+/// the settings as the playbooks see them (plain and secrets laid together), for deciding
+/// what apply has to make. `None` when the gateway has no settings.
+pub(crate) fn whole_with(
+    session: &Session,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+) -> Result<Option<Value>> {
+    let mut ask = cached(ask);
+    let plain = config::pull_plain_with(session, &mut ask)?;
+    let sealed = stored_secrets(session, identity, &mut ask)?;
+    Ok(match (plain, sealed) {
+        (Some(plain), Some(sealed)) => Some(merge(&parse_value(&plain)?, &sealed)),
+        (Some(plain), None) => Some(parse_value(&plain)?),
+        (None, sealed) => sealed,
+    })
+}
+
+/// seal `value` at the secret `path`, keeping every other sealed secret as it is.
+pub(crate) fn seal_secret(
+    session: &Session,
+    host: &str,
+    identity: &age::x25519::Identity,
+    path: &str,
+    value: &str,
+    ask: AskPassword,
+) -> Result<()> {
+    let mut ask = cached(ask);
+    let mut secrets = stored_secrets(session, identity, &mut ask)?
+        .unwrap_or_else(|| Value::Mapping(Mapping::new()));
+    set_secret(&mut secrets, path, value)?;
+    let mut text = dump(&secrets)?;
+    let pushed = config::push_with(session, host, identity, text.as_bytes(), &mut ask);
+    zeroize::Zeroize::zeroize(&mut text);
+    pushed
+}
+
 /// like `save_document_with`, and the secrets at the `removed` paths are forgotten.
 pub(crate) fn save_changes_with(
     session: &Session,
@@ -161,17 +215,7 @@ pub(crate) fn save_changes_with(
         );
     }
     let mut ask = cached(ask);
-    let stored = config::pull_with(session, identity, &mut ask)?
-        .map(|bytes| parse_value(&bytes))
-        .transpose()?
-        .map(|mut value| {
-            // the version stamp is not a secret; the push stamps the file again
-            if let Value::Mapping(map) = &mut value {
-                map.remove(lanlord_model::format::FORMAT_KEY);
-                map.remove(lanlord_model::format::WRITTEN_BY_KEY);
-            }
-            value
-        });
+    let stored = stored_secrets(session, identity, &mut ask)?;
     let mut secrets = stored
         .as_ref()
         .map_or_else(|| Value::Mapping(Mapping::new()), |v| split(v).1);
