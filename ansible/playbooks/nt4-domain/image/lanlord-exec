@@ -1,15 +1,28 @@
 #!/bin/bash
 # runs one command on a domain member over smb1, psexec style: nothing is installed on the machine.
-# a .bat and a small service helper (lanlord-svc.exe, built into the image) go into
-# %SystemRoot%\Temp\lanlord (ADMIN$\Temp\lanlord), a service started from the helper runs the .bat
-# with cmd.exe, and the output is streamed back.
-# %SystemRoot%\Temp is writable by Everyone on nt4, so a local user could swap the helper or the .bat
-# before the service starts and get LocalSystem, or read other runs' output. every run therefore first
-# makes Temp and Temp\lanlord (an existing one is fine), sets the owner of Temp\lanlord to
-# Administrators and its dacl to Administrators and SYSTEM only (smbcacls, sddl, inherited by files
-# and subfolders), reads the acl back and refuses to run, uploading nothing, unless the owner is
-# Administrators or SYSTEM and every ace is an allow ace for one of them. any smbcacls error is a
-# refusal too. only then are stale files and services swept and the run's files uploaded.
+# a .bat and a small service helper (lanlord-svc.exe, built into the image) go into <drive>:\lanlord
+# (the <drive>$ admin share, the system drive found from the path of ADMIN$), a service started from the
+# helper runs the .bat with cmd.exe, and the output is streamed back.
+# %SystemRoot%\Temp is writable by Everyone on nt4, and Everyone also holds delete-child there (and in
+# %SystemRoot%), so no folder under them can be protected: a local user could swap the helper or the
+# .bat before the service starts and get LocalSystem, or read other runs' output. the work folder is
+# at the root of the system drive instead, and every run goes through these steps, in this order:
+#   1. stale services and files are swept (also in the old places: the root, Temp and Temp\lanlord)
+#   2. the acl of the drive root is read (smbcacls) and the run is refused unless no account other than
+#      Administrators, SYSTEM and Creator Owner can delete children, change permissions, take
+#      ownership or has full or generic write access there (that is what lets a user rename the folder
+#      away and put their own in its place), and the root is owned by Administrators or SYSTEM
+#   3. <drive>:\lanlord is made (an existing one is fine, but it must be a folder, and when it already
+#      exists its owner must be Administrators or SYSTEM: ownership is never taken, as a handle that
+#      was opened with WRITE_DAC would survive it); owner and dacl are set (Administrators and SYSTEM
+#      full, inherited by files and subfolders), the acl is read back and verified
+#   4. the files are uploaded
+#   5. right before the service is created the root, the folder and the uploaded files are verified
+#      again (the files' owner must be Administrators, SYSTEM or the login's own sid)
+# any smbcacls or rpcclient error, or an acl that is not as expected, refuses the run (fail closed).
+# a tiny window remains: after the last verification and before the service has opened the helper,
+# an account that can already write there (an administrator, or whoever changes the drive root acl in
+# that moment) could still swap a file. nothing a plain local user can reach.
 #   lanlord-exec run --machine NAME [--address ADDR] --timeout N [--hash-command]
 #                             stdin: {"user":"...","password":"...","command":"...","caller":"..."}
 #                             caller is optional (letters, digits and ._@- only; "cli" when absent)
@@ -35,7 +48,7 @@
 # and hold the .out and .err open, so those files then stay until the next run's sweep retries.
 # the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
 # argument, never in the environment and never printed.
-# nt4 has no smb extended security, so every smbclient, smbcacls and net call turns spnego off ("client use
+# nt4 has no smb extended security, so every smbclient, smbcacls, rpcclient and net call turns spnego off ("client use
 # spnego=no"); otherwise the session setup is refused before any credential is sent. ntlmv2 stays
 # on, and lanman and plaintext logins are never enabled. nt4 sp6a computes a bad signing key after an
 # ntlmv2 login, so the rpc calls on ipc$ must not require signing ("client ipc signing=if_required");
@@ -52,11 +65,17 @@ LOCK_TRIES=${LANLORD_EXEC_LOCK_TRIES:-50}
 LOG_MAX=${LANLORD_EXEC_LOG_MAX:-1048576}
 SVC_EXE=${LANLORD_EXEC_SVC:-/usr/lib/lanlord/lanlord-svc.exe}
 CHUNK=1048576
-# the private work folder: ADMIN$ path, windows path, and the acl (owner Administrators, protected dacl
-# with full control for Administrators and SYSTEM only, inherited by files and subfolders)
-REMOTE_DIR='Temp\lanlord'
-WIN_DIR='%SystemRoot%\Temp\lanlord'
-DIR_SDDL='O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)'
+# the private work folder at the root of the system drive (found at run time): its name on the drive
+# share, its windows path, and the acl (owner Administrators; full control for Administrators and SYSTEM
+# only, inherited by files and subfolders). no P flag: nt4 predates it. --set replaces the whole dacl,
+# so nothing inherited from the drive root stays
+REMOTE_DIR=lanlord
+WIN_DIR=
+DRIVE=
+LOGIN=
+LOGIN_SID=
+DIR_EXISTED=0
+DIR_SDDL='O:BAD:(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)'
 SMB_OPT=(--option='client min protocol=NT1' --option='client use spnego=no' --option='client ipc signing=if_required')
 
 work=
@@ -125,7 +144,7 @@ refuse() {
 fail() {
   if ((final_sent == 0)); then
     final_sent=1
-    event "{\"error\":\"$(json_quote "$1")\"}"
+    event "{\"error\":\"$(json_quote "$*")\"}"
   fi
   exit 1
 }
@@ -138,10 +157,18 @@ excerpt() {
 }
 
 smb() { smbclient "//$addr/ADMIN\$" -A "$work/auth" "${SMB_OPT[@]}" "$@"; }
-# the acl calls use sddl, which sets owner and dacl in one call. the domain sid is given so smbcacls
+# the drive share (C$ and so on) and the acl calls. the acl calls use sddl, which sets owner and dacl in
+# one call. the domain sid is given so smbcacls
 # does not look it up over ipc$ (nt4 refuses that); the builtin sids used here need none. the
 # read-back is numeric for the same reason: no name lookup, so the output is plain sids
-acl() { smbcacls "//$addr/ADMIN\$" "$REMOTE_DIR" -A "$work/auth" "${SMB_OPT[@]}" --domain-sid=S-1-5-21-1-2-3 "$@"; }
+smbd() { smbclient "//$addr/$DRIVE\$" -A "$work/auth" "${SMB_OPT[@]}" "$@"; }
+# acl SHARE PATH args
+acl() {
+  local share=$1 path=$2
+  shift 2
+  smbcacls "//$addr/$share" "$path" -A "$work/auth" "${SMB_OPT[@]}" --domain-sid=S-1-5-21-1-2-3 "$@"
+}
+rpcc() { rpcclient "$addr" -A "$work/auth" "${SMB_OPT[@]}" -c "$1"; }
 rpc() {
   local verb=$1
   shift
@@ -169,7 +196,7 @@ cleanup() {
     if ((made_bat)); then
       local f=ll-$run_id
       local dels="del $f.exe; del $f.bat; del $f.cmd.bat; del $f.out; del $f.err; del $f.rc"
-      smb -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
+      smbd -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
     fi
   fi
   [[ -n $work ]] && rm -rf "$work"
@@ -248,48 +275,167 @@ parse_json() {
 # base64 on one line of $3 bytes of file $1 from byte offset $2
 b64_from() { tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d '\n'; }
 
-# makes one folder on ADMIN$ ($1; $2 is its windows name for messages). smbclient exits 0 even when a
-# cd fails and then works in the root, so the output is checked for both. its exit code follows the last
-# command, so a mkdir that failed (a collision or a denial) may exit non-zero and is not a connect failure
+# the system drive letter, from the path of the ADMIN$ share (C:\WINNT gives C). the output is
+# "netname: ADMIN$", "remark: ...", "path: C:\WINNT" and so on, one field a line
+find_drive() {
+  local line re='^[[:space:]]*path:[[:space:]]*([A-Za-z]):\\'
+  DRIVE=
+  rpcc 'netsharegetinfo ADMIN$' >"$work/share.log" 2>&1
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    if [[ $line =~ $re ]]; then
+      DRIVE=${BASH_REMATCH[1]^^}
+      break
+    fi
+  done <"$work/share.log"
+  [[ -n $DRIVE ]] || return 1
+  WIN_DIR="$DRIVE:\\lanlord"
+}
+
+is_admin_sid() { [[ $1 == S-1-5-32-544 || $1 == S-1-5-18 ]]; }
+
+# the sid of the login, looked up once; only for a plain account name (it goes into an rpcclient command)
+login_sid() {
+  [[ -n $LOGIN_SID ]] && return 0
+  [[ $LOGIN =~ ^[A-Za-z0-9._\\-]{1,64}$ ]] || return 1
+  LOGIN_SID=$(rpcc "lookupnames $LOGIN" 2>/dev/null | grep -m1 -oE 'S-1-5-21(-[0-9]+)+')
+  [[ -n $LOGIN_SID ]]
+}
+
+# reads an acl: $1 share, $2 path, $3 its windows name. the output is numeric (no name lookup): a line
+# OWNER:<sid>, and one ACL:<sid>:<type>/0x<flags>/0x<mask> line per ace (type 0 allowed, 1 denied),
+# which go into ACL_OWNER and ACL_ACES. an smbcacls error is no acl: fail closed
+ACL_OWNER=
+ACL_ACES=()
+read_acl() {
+  local line
+  acl "$1" "$2" --numeric >"$work/acl.out" 2>"$work/acl.err" ||
+    fail "could not read the acl of $3 on $machine: $(excerpt "$work/acl.err") $(excerpt "$work/acl.out")"
+  grep -q 'NT_STATUS_' "$work/acl.out" &&
+    fail "could not read the acl of $3 on $machine: $(excerpt "$work/acl.out")"
+  ACL_OWNER=
+  ACL_ACES=()
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    case $line in
+      OWNER:*) ACL_OWNER=${line#OWNER:} ;;
+      ACL:*) ACL_ACES+=("${line#ACL:}") ;;
+    esac
+  done <"$work/acl.out"
+}
+
+ACE_RE='^(S-[0-9]+(-[0-9]+)+):([0-9]+)/0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)$'
+
+# the acl read last must be private: $1 its windows name, $2 = 1 lets the login's own sid own it (the
+# files: nt4 gives a new file to the group Administrators for an administrator, but the account itself
+# is no danger either). at least one ace, and every ace an allow ace for Administrators or SYSTEM
+check_private() {
+  local ace n=0 ok=1
+  if ! is_admin_sid "$ACL_OWNER" && ! { [[ $2 == 1 ]] && login_sid && [[ $ACL_OWNER == "$LOGIN_SID" ]]; }; then
+    ok=0
+  fi
+  for ace in "${ACL_ACES[@]}"; do
+    n=$((n + 1))
+    if [[ $ace =~ $ACE_RE ]] && is_admin_sid "${BASH_REMATCH[1]}" && ((BASH_REMATCH[3] == 0)); then
+      continue
+    fi
+    ok=0
+  done
+  ((n > 0 && ok)) ||
+    fail "$1 on $machine is not private (owner or acl is not administrators and system only); refusing to run"
+}
+
+# the root of the drive must not let anyone else delete children (rename our folder away), change
+# permissions, take ownership or write everything: refused when an allow ace (not inherit-only) for an
+# account other than Administrators, SYSTEM and Creator Owner holds delete child 0x40, write dac
+# 0x40000, write owner 0x80000, generic all 0x10000000 or generic write 0x40000000 (this includes
+# full control 0x1f01ff). change (0x1301bf) has none of them. the owner of the root must be Administrators
+# or SYSTEM as well, as an owner can always change the acl
+check_parent() {
+  local ace why= n=0 root="$DRIVE:\\"
+  read_acl "$DRIVE\$" '\' "$root"
+  is_admin_sid "$ACL_OWNER" || why="its owner is ${ACL_OWNER:-unknown}"
+  for ace in "${ACL_ACES[@]}"; do
+    n=$((n + 1))
+    if ! [[ $ace =~ $ACE_RE ]]; then
+      why="an ace is not understood ($ace)"
+      continue
+    fi
+    local sid=${BASH_REMATCH[1]} type=${BASH_REMATCH[3]}
+    local flags=$((16#${BASH_REMATCH[4]})) mask=$((16#${BASH_REMATCH[5]}))
+    ((type == 1)) && continue
+    if ((type != 0)); then
+      why="an ace of type $type is not understood"
+      continue
+    fi
+    # inherit-only (0x8): it grants nothing on the root itself
+    ((flags & 8)) && continue
+    is_admin_sid "$sid" || [[ $sid == S-1-3-0 ]] && continue
+    if ((mask & 0x500C0040)); then
+      why="$sid holds 0x$(printf '%x' "$mask")"
+    fi
+  done
+  ((n > 0)) || why="it has no permissions list"
+  [[ -z $why ]] ||
+    fail "the root $root of $machine is too open ($why): only Administrators, SYSTEM and Creator Owner" \
+      "may hold full control, delete subfolders and files, change permissions or take ownership there;" \
+      "tighten the permissions of $root (give others at most change) and retry"
+}
+
+# makes the work folder on the drive share. smbclient exits 0 even when a cd fails and then works in the
+# root, so the output is checked for both. its exit code follows the last command, so a mkdir that
+# failed (a collision or a denial) may exit non-zero and is not a connect failure. a collision means it
+# already existed (DIR_EXISTED)
 make_dir() {
   local mkdir_rc=0
-  smb -c "mkdir $1" >"$work/mkdir.log" 2>&1 || mkdir_rc=$?
+  DIR_EXISTED=0
+  smbd -c "mkdir $REMOTE_DIR" >"$work/mkdir.log" 2>&1 || mkdir_rc=$?
   local down='session setup failed|tree connect failed|Connection to .* failed|NT_STATUS_LOGON_FAILURE'
   down+='|NT_STATUS_IO_TIMEOUT|NT_STATUS_HOST_UNREACHABLE|NT_STATUS_CONNECTION|NT_STATUS_BAD_NETWORK_NAME'
   if grep -qE "$down" "$work/mkdir.log" ||
     { ((mkdir_rc)) && ! grep -q 'mkdir failed' "$work/mkdir.log"; }; then
     fail "could not connect to $machine: $(excerpt "$work/mkdir.log")"
-  elif grep -q 'NT_STATUS_' "$work/mkdir.log" && ! grep -q 'NT_STATUS_OBJECT_NAME_COLLISION' "$work/mkdir.log"; then
-    fail "could not create $2 on $machine: $(excerpt "$work/mkdir.log")"
+  elif grep -q 'NT_STATUS_OBJECT_NAME_COLLISION' "$work/mkdir.log"; then
+    DIR_EXISTED=1
+  elif grep -q 'NT_STATUS_' "$work/mkdir.log"; then
+    fail "could not create $WIN_DIR on $machine: $(excerpt "$work/mkdir.log")"
   fi
 }
 
 # makes the work folder and locks it to Administrators and SYSTEM; fails closed: nothing is uploaded
 # unless the acl read back is exactly that. the owner is set too: an owner keeps WRITE_DAC, so a user
-# who made the folder first could otherwise open it again
+# who made the folder first could otherwise open it again; for that reason a folder that already exists
+# and is owned by anyone else is refused instead of taken over
 prepare_dir() {
-  local line owner= aces=0 bad=0 sid='(S-1-5-32-544|S-1-5-18)'
-  make_dir Temp '%SystemRoot%\Temp'
-  make_dir "$REMOTE_DIR" "$WIN_DIR"
-  acl --sddl --set "$DIR_SDDL" >"$work/acl.log" 2>&1 ||
+  make_dir
+  smbd -c "cd $REMOTE_DIR" >"$work/cd.log" 2>&1
+  if grep -q 'NT_STATUS_' "$work/cd.log"; then
+    fail "$WIN_DIR on $machine is not a folder; delete it on $machine and retry"
+  fi
+  if ((DIR_EXISTED)); then
+    read_acl "$DRIVE\$" "$REMOTE_DIR" "$WIN_DIR"
+    is_admin_sid "$ACL_OWNER" ||
+      fail "$WIN_DIR on $machine already exists and is owned by ${ACL_OWNER:-unknown}, not" \
+        "administrators; delete $WIN_DIR on $machine and retry"
+  fi
+  acl "$DRIVE\$" "$REMOTE_DIR" --sddl --set "$DIR_SDDL" >"$work/acl.log" 2>&1 ||
     fail "could not lock $WIN_DIR on $machine to administrators: $(excerpt "$work/acl.log")"
   grep -q -e 'NT_STATUS_' -e 'ERROR' "$work/acl.log" &&
     fail "could not lock $WIN_DIR on $machine to administrators: $(excerpt "$work/acl.log")"
-  # read back: OWNER:<sid> and one ACL:<sid>:<type>/0x<flags>/0x<mask> line per ace, type 0 = allowed
-  acl --numeric >"$work/acl.out" 2>"$work/acl.err" ||
-    fail "could not read the acl of $WIN_DIR on $machine: $(excerpt "$work/acl.err")"
-  while IFS= read -r line; do
-    line=${line%$'\r'}
-    case $line in
-      OWNER:*) owner=${line#OWNER:} ;;
-      ACL:*)
-        aces=$((aces + 1))
-        [[ $line =~ ^ACL:$sid:0/0x[0-9a-fA-F]+/0x[0-9a-fA-F]+$ ]] || bad=1
-        ;;
-    esac
-  done <"$work/acl.out"
-  [[ $owner =~ ^$sid$ ]] && ((aces > 0 && !bad)) ||
-    fail "$WIN_DIR on $machine is not private (owner or acl is not administrators and system only); refusing to run"
+  read_acl "$DRIVE\$" "$REMOTE_DIR" "$WIN_DIR"
+  check_private "$WIN_DIR" 0
+}
+
+# right before the service is created: the root, the folder and the three uploaded files again
+verify_upload() {
+  local f
+  check_parent
+  read_acl "$DRIVE\$" "$REMOTE_DIR" "$WIN_DIR"
+  check_private "$WIN_DIR" 0
+  for f in "$bat.exe" "$bat.bat" "$bat.cmd.bat"; do
+    read_acl "$DRIVE\$" "$REMOTE_DIR\\$f" "$WIN_DIR\\$f"
+    check_private "$WIN_DIR\\$f" 1
+  done
 }
 
 # service names left by earlier runs, and their files, are removed
@@ -301,11 +447,12 @@ sweep_stale() {
     rpc delete "$svc" >/dev/null 2>&1
     n=$((n + 1))
   done
-  # the work folder is swept the same way; earlier versions dropped their files in the root of %SystemRoot%: only exact ll-<8 chars> names go
-  # (in Temp too: a missing Temp makes the cd fail and the dels run in the root)
+  # only exact ll-<8 chars> names go. earlier versions used the root of %SystemRoot% and Temp (a missing
+  # Temp makes the cd fail and the dels run in the root), and Temp\lanlord before the drive root
   local root=ll-????????
   local dels="del $root.exe; del $root.bat; del $root.cmd.bat; del $root.out; del $root.err; del $root.rc"
   smb -c "$dels; cd Temp; $dels; cd lanlord; $dels" >/dev/null 2>&1
+  [[ -n $DRIVE ]] && smbd -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
   SWEPT=$n
 }
 
@@ -377,6 +524,7 @@ fi
 } >"$work/auth"
 chmod 600 "$work/auth"
 password=
+LOGIN=$user
 user=
 
 # one run per machine
@@ -392,13 +540,21 @@ fi
 exec 8>"$LOCK_DIR/addr-$addr.lock"
 flock -n 8 || fail "another command is already running at $addr"
 
-[[ $mode == run ]] && prepare_dir
+# the drive is needed to run; a sweep without it only skips the drive root
+if [[ $mode == run ]]; then
+  find_drive || fail "could not find the system drive of $machine from its ADMIN\$ share: $(excerpt "$work/share.log")"
+else
+  find_drive || true
+fi
 sweep_stale
 if [[ $mode == sweep ]]; then
   event "{\"swept\":$SWEPT}"
   final_sent=1
   exit 0
 fi
+
+check_parent
+prepare_dir
 
 run_id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 bat=ll-$run_id
@@ -416,10 +572,13 @@ bat=ll-$run_id
 } >"$work/$bat.bat"
 made_bat=1
 puts="put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat; put $SVC_EXE $bat.exe"
-smb -c "cd $REMOTE_DIR; $puts" >"$work/put.log" 2>&1 || fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
+smbd -c "cd $REMOTE_DIR; $puts" >"$work/put.log" 2>&1 ||
+  fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
 # the exit code follows the last command only, so any error line counts (a failed cd included)
 grep -q 'NT_STATUS_' "$work/put.log" &&
   fail "could not copy the script to $machine: $WIN_DIR is not usable: $(excerpt "$work/put.log")"
+
+verify_upload
 
 made_service=1
 rpc create "LANlordExec$run_id" "LANlord exec" \
@@ -462,7 +621,7 @@ bad_rc=0
 SECONDS=0
 while :; do
   rm -f "$work/rc" "$work/out" "$work/err"
-  smb -c "cd $REMOTE_DIR; get $bat.rc $work/rc; get $bat.out $work/out; get $bat.err $work/err" >/dev/null 2>&1
+  smbd -c "cd $REMOTE_DIR; get $bat.rc $work/rc; get $bat.out $work/out; get $bat.err $work/err" >/dev/null 2>&1
   if [[ -s $work/rc ]]; then
     final_rc=$(tr -dc '0-9' <"$work/rc")
     if [[ -z $final_rc ]]; then

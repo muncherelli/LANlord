@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- NT4 commands now run from `%SystemRoot%\Temp\lanlord`, a folder only administrators and SYSTEM can write, instead of `%SystemRoot%\Temp` (which is writable by Everyone), so a local user can't swap the helper or the `.bat` before the service starts and get SYSTEM, or read other runs' output. Every run sets the owner and permissions of the folder, reads them back and refuses to run unless they are right. The image now keeps `smbcacls` for this
+- NT4 commands now run from `<drive>:\lanlord` (the system drive's root), a folder only administrators and SYSTEM can write, instead of `%SystemRoot%\Temp` (which is writable by Everyone), so a local user can't swap the helper or the `.bat` before the service starts and get SYSTEM, or read other runs' output. Every run checks that the drive root can't be changed by others (nobody else may delete children, change permissions or take ownership there), sets the owner and permissions of the folder, reads them back (again, with the uploaded files, right before the service is created) and refuses to run unless they are right; an existing `lanlord` folder owned by someone else is refused, not taken over. The image now keeps `smbcacls` for this
 
 ### Fixed
 
