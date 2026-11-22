@@ -36,6 +36,7 @@ TMP_DIR=${LANLORD_EXEC_TMP:-/dev/shm}
 POLL=${LANLORD_EXEC_POLL:-1}
 MAX_COMMAND=2000
 LOG=${LANLORD_EXEC_LOG:-/var/lib/samba/private/exec.log}
+LOCK_TRIES=${LANLORD_EXEC_LOCK_TRIES:-50}
 LOG_MAX=${LANLORD_EXEC_LOG_MAX:-1048576}
 CHUNK=1048576
 SMB_OPT=(--option='client min protocol=NT1' --option='client use spnego=no')
@@ -83,7 +84,12 @@ write_audit() {
   ms=$(($(now_ms) - started_ms))
   printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%d.%03d' "$ts" "$caller" "$machine" "${addr:--}" "$shown" "$audit_result" $((ms / 1000)) $((ms % 1000))
   (
-    flock -w 5 7 || exit 1
+    # busybox flock has no -w: wait by retrying -n, up to about 5 s
+    for ((try = 0; try < LOCK_TRIES; try++)); do
+      flock -n 7 && break
+      sleep 0.1
+    done
+    ((try < LOCK_TRIES)) || exit 1
     if [[ -f $LOG ]] && (($(stat -c %s "$LOG") >= LOG_MAX)); then
       mv -f "$LOG" "$LOG.1" || exit 1
     fi

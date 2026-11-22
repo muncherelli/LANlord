@@ -539,6 +539,36 @@ class LanlordExecTest(unittest.TestCase):
         self.assertEqual(self.log_lines()[-1][4], "echo run7")
         self.assertLess(os.path.getsize(self.log), 300 + 200)
 
+    def stub_flock_without_w(self):
+        # busybox flock: no -w, any other use goes to the real one
+        real = shutil.which("flock")
+        path = os.path.join(self.stubs, "bin", "flock")
+        with open(path, "w") as f:
+            f.write(
+                '#!/bin/bash\nfor a in "$@"; do [[ $a == -w ]] && { echo "flock: unrecognized option: w" >&2; exit 1; }; done\nexec %s "$@"\n'
+                % real
+            )
+        os.chmod(path, 0o755)
+
+    def test_the_audit_line_is_written_with_a_flock_that_has_no_w(self):
+        self.stub_flock_without_w()
+        out = self.run_exec()
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("could not write the audit log", out.stderr)
+        self.assertEqual(len(self.log_lines()), 1)
+
+    def test_a_held_audit_lock_gives_up_with_a_warning(self):
+        import fcntl
+
+        self.stub_flock_without_w()
+        self.env["LANLORD_EXEC_LOCK_TRIES"] = "3"
+        with open(self.log + ".lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            out = self.run_exec()
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("warning: could not write the audit log", out.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
     def test_an_unwritable_log_does_not_fail_the_run(self):
         # the log's parent is a regular file, so it cannot be created even by root
         blocker = os.path.join(self.tmp, "blocker")
