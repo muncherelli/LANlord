@@ -61,6 +61,9 @@ pub struct Preset {
     pub args: &'static [&'static str],
     /// does it change the machine? a front end asks before running one that does.
     pub mutating: bool,
+    /// the name of a whitelisted script (see [`SCRIPTS`]) that is put on the machine for the run;
+    /// the template then names it as `%LL_SCRIPT%`.
+    pub script: Option<&'static str>,
 }
 
 macro_rules! preset {
@@ -71,6 +74,17 @@ macro_rules! preset {
             template: $template,
             args: &[$($arg),*],
             mutating: $mutating,
+            script: None,
+        }
+    };
+    ($id:expr, $label:expr, $template:expr, $script:expr) => {
+        Preset {
+            id: $id,
+            label: $label,
+            template: $template,
+            args: &[],
+            mutating: false,
+            script: Some($script),
         }
     };
 }
@@ -107,6 +121,12 @@ pub const PRESETS: &[Preset] = &[
         false
     ),
     preset!("net-start", "Running services", "net start", [], false),
+    preset!(
+        "iis-dump",
+        "Dump the IIS metabase",
+        r#"cscript //nologo "%LL_SCRIPT%""#,
+        "lldump.vbs"
+    ),
     preset!(
         "adsutil-enum-w3svc",
         "Web service settings",
@@ -224,6 +244,75 @@ pub const PRESETS: &[Preset] = &[
         true
     ),
 ];
+
+/// a script the repo ships that may be put on a machine; nothing else is ever uploaded as one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Script {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub body: &'static str,
+}
+
+/// the whitelist of scripts a run may put on a machine.
+pub const SCRIPTS: &[Script] = &[Script {
+    name: "lldump.vbs",
+    label: "Dump the IIS metabase as key=value lines",
+    body: include_str!("../nt4-scripts/lldump.vbs"),
+}];
+
+/// the most data files one run may put on a machine.
+pub const MAX_PUT_FILES: usize = 4;
+
+/// the most bytes one data file may have.
+pub const MAX_PUT_FILE_BYTES: usize = 1 << 20;
+
+/// the script with this exact name from the whitelist. a name with a path in it (`/`, `\\`, `..`
+/// or a drive letter) is refused as such, so a traversal never gets as far as a lookup.
+pub fn find_script(name: &str) -> Result<&'static Script, &'static str> {
+    if name.is_empty() || name.len() > MAX_ARG_BYTES {
+        return Err("must be 1 to 64 characters");
+    }
+    if name.contains(['/', '\\', ':']) || name.contains("..") || name.starts_with('.') {
+        return Err("must be a plain script name, not a path");
+    }
+    SCRIPTS
+        .iter()
+        .find(|script| script.name == name)
+        .ok_or("is not a script that may be put on a machine")
+}
+
+/// whether `text` is base64 (standard alphabet, padded) of at most [`MAX_PUT_FILE_BYTES`] bytes.
+pub fn check_file(text: &str) -> Result<(), &'static str> {
+    if text.len() > MAX_PUT_FILE_BYTES.div_ceil(3) * 4 {
+        return Err("is longer than 1 MiB");
+    }
+    // the padding is part of the length, so the decoded size is exact
+    let padding = text.bytes().rev().take_while(|&b| b == b'=').count().min(2);
+    if (text.len() / 4 * 3).saturating_sub(padding) > MAX_PUT_FILE_BYTES {
+        return Err("is longer than 1 MiB");
+    }
+    if !text.len().is_multiple_of(4)
+        || !text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+    {
+        return Err("must be base64");
+    }
+    Ok(())
+}
+
+/// the command that runs a put script with these arguments. the machine's `%LL_SCRIPT%` is the
+/// staged copy; `%LL_DATA1%` and so on are the data files.
+pub fn render_put(script: &str, args: &[String]) -> Result<String, &'static str> {
+    find_script(script)?;
+    let mut command = String::from(r#"cscript //nologo "%LL_SCRIPT%""#);
+    for arg in args {
+        check_arg(arg)?;
+        command.push(' ');
+        command.push_str(arg);
+    }
+    Ok(command)
+}
 
 /// the preset with this id.
 pub fn find(id: &str) -> Option<&'static Preset> {
@@ -421,6 +510,101 @@ mod tests {
 
     const ADMIN: &str = r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples";
 
+    #[test]
+    fn only_a_shipped_script_name_is_found() {
+        assert_eq!(find_script("lldump.vbs").unwrap().name, "lldump.vbs");
+        for bad in [
+            "",
+            "other.vbs",
+            "../lldump.vbs",
+            "..\\lldump.vbs",
+            "/lldump.vbs",
+            "\\lldump.vbs",
+            "C:lldump.vbs",
+            "C:\\lldump.vbs",
+            "nt4-scripts/lldump.vbs",
+            ".lldump.vbs",
+            "lldump.vbs\0",
+            "LLDUMP.VBS",
+        ] {
+            assert!(find_script(bad).is_err(), "{bad:?}");
+        }
+        for script in SCRIPTS {
+            assert!(find_script(script.name).is_ok());
+            assert!(!script.body.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_script_preset_names_a_shipped_script() {
+        for preset in PRESETS {
+            if let Some(name) = preset.script {
+                assert!(find_script(name).is_ok(), "{}", preset.id);
+                assert!(preset.template.contains("%LL_SCRIPT%"), "{}", preset.id);
+                assert!(!preset.mutating && preset.args.is_empty(), "{}", preset.id);
+            }
+        }
+        assert_eq!(find("iis-dump").unwrap().script, Some("lldump.vbs"));
+    }
+
+    #[test]
+    fn a_put_command_runs_the_staged_script_with_plain_arguments() {
+        assert_eq!(
+            render_put("lldump.vbs", &[]).unwrap(),
+            r#"cscript //nologo "%LL_SCRIPT%""#
+        );
+        assert!(render_put("lldump.vbs", &["a".into(), "%LL_DATA1%".into()]).is_err());
+        assert!(render_put("lldump.vbs", &["-x".into()]).is_err());
+        assert!(render_put("../lldump.vbs", &[]).is_err());
+    }
+
+    #[test]
+    fn a_data_file_is_base64_within_the_limit() {
+        assert!(check_file("").is_ok());
+        assert!(check_file("aGk=").is_ok());
+        assert!(check_file("aGk").is_err());
+        assert!(check_file("a!k=").is_err());
+        assert!(check_file(&"A".repeat(MAX_PUT_FILE_BYTES.div_ceil(3) * 4 + 4)).is_err());
+        // exactly 1 MiB decoded passes, one byte more does not
+        let limit = MAX_PUT_FILE_BYTES.div_ceil(3) * 4;
+        assert!(check_file(&format!("{}==", "A".repeat(limit - 2))).is_ok());
+        assert!(check_file(&format!("{}=", "A".repeat(limit - 1))).is_err());
+        assert!(check_file(&"A".repeat(limit)).is_err());
+    }
+
+    #[test]
+    fn the_dump_script_never_reads_a_password_property() {
+        let body = SCRIPTS[0].body;
+        // drop comments: text after a quote that is outside a string literal
+        let strip = |line: &str| -> String {
+            let mut quoted = false;
+            for (i, c) in line.char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '\'' if !quoted => return line[..i].to_string(),
+                    _ => {}
+                }
+            }
+            line.to_string()
+        };
+        let stripped: Vec<String> = body.lines().map(strip).collect();
+        let code: Vec<&str> = stripped.iter().map(String::as_str).collect();
+        let is_get = |l: &str| {
+            let lower = l.to_ascii_lowercase();
+            lower.match_indices(".get").any(|(i, _)| {
+                let rest = &lower[i + 4..];
+                rest.trim_start().starts_with('(')
+            })
+        };
+        let gets: Vec<&&str> = code.iter().filter(|l| is_get(l)).collect();
+        assert_eq!(gets.len(), 1, "one Get, in SafeGet");
+        let text = code.join("\n");
+        let guard = text.find("If IsSecret(sName) Then Exit Function").unwrap();
+        assert!(guard < text.find(".Get(").unwrap());
+        assert!(text.contains(r#"InStr(1, sName, "pass", 1)"#));
+        assert!(!text.contains(".GetEx") && !text.contains(".GetInfo"));
+    }
+
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| a.to_string()).collect()
     }
@@ -573,7 +757,10 @@ mod tests {
     #[test]
     fn the_scripts_live_in_adminsamples() {
         assert!(ADMIN.ends_with(r"inetsrv\adminsamples"));
-        for preset in PRESETS.iter().filter(|p| p.template.contains("cscript")) {
+        for preset in PRESETS
+            .iter()
+            .filter(|p| p.template.contains("cscript") && p.script.is_none())
+        {
             assert!(preset.template.starts_with(ADMIN), "{}", preset.id);
             // every script named is one in adminsamples
             let scripts = preset.template.matches("cscript").count();

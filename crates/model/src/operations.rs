@@ -194,6 +194,21 @@ pub enum Operation {
         #[serde(default = "default_timeout_secs")]
         timeout_secs: u32,
     },
+    /// put a script of the whitelist ([`crate::nt4_exec::SCRIPTS`]) and data files on a domain
+    /// machine and run the script with `args`. the machine sees the script as `%LL_SCRIPT%` and the
+    /// files as `%LL_DATA1%` and so on; all of them are staged under generated `ll-<hex>` names in
+    /// the private work folder and deleted after the run. `files` are base64, at most 4 of 1 MiB.
+    /// `timeout_secs` is as for `MachineRun`.
+    MachinePut {
+        machine: String,
+        script: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        files: Vec<String>,
+        #[serde(default = "default_timeout_secs")]
+        timeout_secs: u32,
+    },
 }
 
 /// how long a machine command may run when the caller says nothing.
@@ -237,9 +252,9 @@ impl Operation {
             Operation::WriteLogon { .. } => Need::manage(Area::Shares),
             Operation::Run { .. } => Need::manage(Area::Commands),
             Operation::Machines => Need::view(Area::Domain),
-            Operation::MachineRun { .. } | Operation::MachinePreset { .. } => {
-                Need::manage(Area::Commands)
-            }
+            Operation::MachineRun { .. }
+            | Operation::MachinePreset { .. }
+            | Operation::MachinePut { .. } => Need::manage(Area::Commands),
             Operation::Power { .. } => Need::manage(Area::Status),
             Operation::ServerFacts | Operation::Doctor => Need::view(Area::Status),
             Operation::NetworkStatus => Need::view(Area::Network),
@@ -319,6 +334,7 @@ impl Operation {
                 | Operation::ClockApply { .. }
                 | Operation::MachineRun { .. }
                 | Operation::MachinePreset { .. }
+                | Operation::MachinePut { .. }
         )
     }
 
@@ -671,6 +687,13 @@ mod tests {
                 args: vec!["1".into()],
                 timeout_secs: 30,
             },
+            Operation::MachinePut {
+                machine: "NT4SRV01".into(),
+                script: "lldump.vbs".into(),
+                args: vec![],
+                files: vec!["aGk=".into()],
+                timeout_secs: 30,
+            },
             Operation::ChangeInternet {
                 change: InternetChange::Network {
                     network: "lab".into(),
@@ -745,6 +768,7 @@ mod tests {
             Operation::MachineRun { .. } => 49,
             Operation::MachinePreset { .. } => 50,
             Operation::RotateExecPassword => 51,
+            Operation::MachinePut { .. } => 52,
         }
     }
 
@@ -756,7 +780,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 52;
+    const VARIANTS: usize = 53;
 
     #[test]
     fn every_operation_says_what_it_needs() {
@@ -841,6 +865,7 @@ mod tests {
                     | Operation::Run { .. }
                     | Operation::MachineRun { .. }
                     | Operation::MachinePreset { .. }
+                    | Operation::MachinePut { .. }
             ) {
                 assert!(
                     matches!(operation.requires(), Need::Area(_, Level::Manage)),
