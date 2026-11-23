@@ -425,13 +425,14 @@ fn machines_by_container(
             last_error = Some(anyhow!("{container} is not a valid container name"));
             continue;
         }
-        let listed = root_argv(
+        // no root access fails the same way for every container: stop at the first error
+        let (remote, first) = root_argv(
             session,
             &admin,
             &["docker", "exec", &container, "lanlord-user", "list"],
             ask,
-        )
-        .and_then(|(remote, first)| session.capture_with_stdin(&remote, first.as_bytes()));
+        )?;
+        let listed = session.capture_with_stdin(&remote, first.as_bytes());
         match listed {
             Ok(listed) => found.push((container, machine_names(&listed))),
             Err(error) => {
