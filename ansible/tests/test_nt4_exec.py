@@ -197,7 +197,8 @@ class LanlordExecTest(unittest.TestCase):
             for _ in range(40):
                 os.killpg(pgid, 0)
                 time.sleep(0.05)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # the group is already gone, or no longer ours
             pass
 
     def scenario(self, **files):

@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- the NT4 exec sweep no longer tries to delete a folder whose name looks like a leftover run file
+- the NT4 command cleanup no longer tries to delete a folder that happens to be named like a leftover file from an earlier run
 - the read-only IIS 4 presets that list the metabase (`adsutil-enum-w3svc`, `adsutil-enum-site`, `adsutil-enum-ftp-site`) no longer print secrets such as `AnonymousUserPass` or `WAMUserPass`: the machine drops every property line whose name holds `pass` (any case, through `findstr`, so key headers such as `[/W3SVC/1/ROOT/Passport]` stay) before the output leaves it, and the output of any machine run hides the value of a property whose name holds `Pass` (any case and type, with the lines a list value goes on in), live and in the result; the raw output is not kept in the debug log either. `AnonymousPasswordSync` is no longer listed by these presets. The exit code of these three presets is `findstr`'s (0 when lines are left), not `cscript`'s
 - `lanlord-exec` deletes the `ll-*` files an earlier run left in `<drive>:\lanlord` (a run that timed out leaves its output behind when the program still held it open) at the start of the next run, after the folder is verified
 - `lanlord-exec` errors say "no output" when the failed tool printed nothing, instead of ending in a bare colon
