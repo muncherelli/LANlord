@@ -40,24 +40,26 @@
 # {"stream":...} lines carry at most 1 MiB of raw bytes each; more output comes as several lines.
 # every run appends one tab separated line to the audit log (LANLORD_EXEC_LOG, default
 # /var/lib/samba/private/exec.log, 0600): time, caller, machine, address, the command (or
-# sha256:<hex> with --hash-command), the exit code or timed_out, error, killed (a signal) or refused (a bad command), and the duration. the
-# password is never written. the log rotates at 1 MiB and keeps one .1; when it cannot be written
-# the run still completes and stderr gets a warning.
+# sha256:<hex> with --hash-command), the exit code or timed_out, error, killed (a signal) or
+# refused (a bad command), and the duration. the password is never written. the log rotates at
+# 1 MiB and keeps one .1; when it cannot be written the run still completes and stderr gets a
+# warning.
 # a free-form command must not use a plain "exit N": it ends the outer cmd.exe, so the exit code
-# is never written and the run shows as timed_out. nt4 has no "exit /b", and "cmd /c exit N" does not
-# help (nt4's cmd returns 0 for it): the exit code is the errorlevel of the last program run. core refuses a command in which any part, split at &, && || and parentheses and
-# after a leading @, if ... or do, starts with exit; a single | does not split, as the right side of
-# a pipe runs in a child cmd.
+# is never written and the run shows as timed_out. nt4 has no "exit /b", and "cmd /c exit N" does
+# not help (nt4's cmd returns 0 for it): the exit code is the errorlevel of the last program run.
+# core refuses a command in which any part, split at &, && || and parentheses and after a leading
+# @, if ... or do, starts with exit; a single | does not split, as the right side of a pipe runs
+# in a child cmd.
 # a command that outlives its timeout is killed: the service is stopped first, and the helper ends
 # its cmd.exe. programs that cmd.exe started (nt4 has no job objects or taskkill) may keep running
 # and hold the .out and .err open, so those files then stay until the next run's sweep retries.
 # the password goes into a 0600 file in tmpfs that smbclient and net read with -A. it is never an
 # argument, never in the environment and never printed.
-# nt4 has no smb extended security, so every smbclient, smbcacls, rpcclient and net call turns spnego off ("client use
-# spnego=no"); otherwise the session setup is refused before any credential is sent. ntlmv2 stays
-# on, and lanman and plaintext logins are never enabled. nt4 sp6a computes a bad signing key after an
-# ntlmv2 login, so the rpc calls on ipc$ must not require signing ("client ipc signing=if_required");
-# "client signing" keeps its default.
+# nt4 has no smb extended security, so every smbclient, smbcacls, rpcclient and net call turns
+# spnego off ("client use spnego=no"); otherwise the session setup is refused before any
+# credential is sent. ntlmv2 stays on, and lanman and plaintext logins are never enabled. nt4
+# sp6a computes a bad signing key after an ntlmv2 login, so the rpc calls on ipc$ must not
+# require signing ("client ipc signing=if_required"); "client signing" keeps its default.
 set -u
 umask 077
 
