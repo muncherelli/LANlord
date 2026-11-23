@@ -42,6 +42,8 @@ pub fn glyph_for(id: &str) -> Glyph {
         "web-proxy" => glyph("◎", BLUE),
         // a command run somewhere else
         "remote-commands" => glyph("▶", GREEN),
+        // a web page
+        "hosting" => glyph("▤", OLIVE),
         // the name tree
         "dns" => glyph("┬", TEAL),
         // a prompt

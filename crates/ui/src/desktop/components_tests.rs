@@ -218,7 +218,9 @@ fn the_wizard_keeps_one_size_and_its_buttons_in_place_on_every_page() {
     let first = wizard_place(&mut desktop, &ctx);
     // ticking any component on and off, and picking any row, changes nothing
     let rows = lanlord_model::components::catalogue().len();
-    for row in (0..rows).chain([0]) {
+    // not hosting: ticking it brings the nt4 server it needs in, and unticking it leaves that on
+    let hosting = lanlord_model_row("hosting");
+    for row in (0..rows).chain([0]).filter(|row| *row != hosting) {
         for _ in 0..2 {
             desktop
                 .components

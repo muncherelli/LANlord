@@ -1,0 +1,24 @@
+┌ ▤ Hosting ──────────────────────────────────────────────────────────── _ □ × ┐
+│ Hosting                                                                      │
+│ Status: available                                                            │
+│                                                                              │
+│ Manage IIS 4 web and FTP hosting on your NT4 servers                         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ IIS presets run on a domain machine as a domain administrator.               │
+│ ┌ Machines ────────────────────────────────────────────────────────────────┐ │
+│ │  Machine                                                                 │ │
+│ │  ws1                                                                     │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │ [   Refresh    ]                                                         │ │
+│ └──────────────────────────────────────────────────────────────────────────┘ │
+│ Turn on the IIS part of the Hosting component to use the presets.            │
+│ ┌ Output ──────────────────────────────────────────────────────────────────┐ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ │                                                                          │ │
+│ loaded the machines                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+[ L LANlord ] [ ▤ Hosting ]                                           12:00 PM
