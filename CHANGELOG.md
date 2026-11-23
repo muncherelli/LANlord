@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IIS 4 presets `smtpsvc-start`, `smtpsvc-stop` and `smtpsvc-restart`
 - the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout has its `cmd.exe` ended, but programs it started may keep running (NT4 has no way to end them); output files they hold open are removed by the next run
 - a Computers tab in the NT4 Server window (and in the text interface) lists the domain machines and runs a command or an IIS 4 preset on the one you pick, after a confirmation for anything that changes it; the output, exit code, duration and a timed-out state show under the list. It needs manage rights on Remote commands
 - Operations to list domain machines and run commands or IIS 4 presets on them
@@ -19,13 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `lanlord machines HOST put NAME SCRIPT [--file PATH]... [--timeout N] [ARGS...]` puts a script from the shipped whitelist (`lldump.vbs`) and up to four data files (1 MiB each) on a domain machine and runs it; the machine sees them as `%LL_SCRIPT%` and `%LL_DATA1%` and so on. They are staged under generated `ll-<hex>` names in `<drive>:\lanlord`, checked like the other run files, and deleted after the run. Paths and names outside the whitelist are refused. New `Operation::MachinePut`, with the same permission as running a command
 - `lldump.vbs` dumps the IIS metabase (W3SVC, MSFTPSVC and SMTPSVC with their sites, virtual directories, bindings, comments, paths, access flags, script maps, filters and filter load order) as `key=value` lines; a property with `Pass` in its name is never read and prints as `<redacted>`. Run it with the `iis-dump` preset (`lanlord iis HOST NAME iis-dump`, or the IIS presets box in the Computers tab)
 
+### Changed
+
+- the IIS 4 presets: `services-status` also lists SMTP; `iisadmin-start` also starts the web, FTP and SMTP services that `iisadmin-stop` takes down and ends with the service listing, so it exits with the code of `findstr` and a failed `net start` is masked; `startweb` and `stopweb` print the site's `ServerState` afterwards (2 started, 4 stopped, 1 starting, 3 stopping) and exit with the code of that read, not of the script
+
 ### Security
 
 - NT4 commands now run from `<drive>:\lanlord` (the system drive's root), a folder only administrators and SYSTEM can write, instead of `%SystemRoot%\Temp` (which is writable by Everyone), so a local user can't swap the helper or the `.bat` before the service starts and get SYSTEM, or read other runs' output. Every run checks that the drive root can't be changed by others (nobody else may delete children, change permissions or take ownership there), sets the owner and permissions of the folder, reads them back (again, with the uploaded files, right before the service is created) and refuses to run unless they are right; an existing `lanlord` folder owned by someone else is refused, not taken over. The image now keeps `smbcacls` for this
 
 ### Fixed
 
-- the NT4 exec sweep no longer tries to delete a folder whose name looks like a leftover run file
+- the IIS service status now shows the SMTP service on IIS 4
+- the NT4 command cleanup no longer tries to delete a folder that happens to be named like a leftover file from an earlier run
 - the read-only IIS 4 presets that list the metabase (`adsutil-enum-w3svc`, `adsutil-enum-site`, `adsutil-enum-ftp-site`) no longer print secrets such as `AnonymousUserPass` or `WAMUserPass`: the machine drops every property line whose name holds `pass` (any case, through `findstr`, so key headers such as `[/W3SVC/1/ROOT/Passport]` stay) before the output leaves it, and the output of any machine run hides the value of a property whose name holds `Pass` (any case and type, with the lines a list value goes on in), live and in the result; the raw output is not kept in the debug log either. `AnonymousPasswordSync` is no longer listed by these presets. The exit code of these three presets is `findstr`'s (0 when lines are left), not `cscript`'s
 - `lanlord-exec` deletes the `ll-*` files an earlier run left in `<drive>:\lanlord` (a run that timed out leaves its output behind when the program still held it open) at the start of the next run, after the folder is verified
 - `lanlord-exec` errors say "no output" when the failed tool printed nothing, instead of ending in a bare colon

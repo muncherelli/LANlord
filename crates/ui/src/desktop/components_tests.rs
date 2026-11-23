@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 
-use super::harness::{desktop, enabled, frames, press, until, with_host};
+use super::harness::{desktop, enabled, frames, press, press_until, until, with_host};
 use super::{menu, Desktop, Target, MODULES};
 use lanlord_app::components::{Msg, Step};
 use lanlord_app::gateway::Fake;
@@ -91,11 +91,17 @@ fn the_wizard_adds_a_component_and_its_icon_appears() {
     desktop
         .components
         .update(Msg::Toggle(row), &desktop.services, "me@gw");
-    assert!(press(&mut desktop, &ctx, "Next >"), "to the networks page");
-    frames(&mut desktop, &ctx, 4);
-    assert!(press(&mut desktop, &ctx, "Next >"), "to the summary");
-    assert!(press(&mut desktop, &ctx, "Finish"));
-    until(&mut desktop, &ctx, |d| {
+    // a click is dropped when a background read grabs the host between the probe and the
+    // click, so each button is pressed until the wizard has moved on, not once. Finish is
+    // gated on idle && !busy, so it can miss a click while a background read runs; Next on
+    // the Attach step waits for the networks to be read again after invalidate()
+    press_until(&mut desktop, &ctx, "Next >", |d| {
+        d.components.step == Step::Attach
+    });
+    press_until(&mut desktop, &ctx, "Next >", |d| {
+        d.components.step == Step::Summary
+    });
+    press_until(&mut desktop, &ctx, "Finish", |d| {
         !d.windows.iter().any(|w| w.target == Target::Components)
     });
     frames(&mut desktop, &ctx, 2);
