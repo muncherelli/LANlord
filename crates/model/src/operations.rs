@@ -237,9 +237,9 @@ impl Operation {
             Operation::WriteLogon { .. } => Need::manage(Area::Shares),
             Operation::Run { .. } => Need::manage(Area::Commands),
             Operation::Machines => Need::view(Area::Domain),
-            Operation::MachineRun { .. } | Operation::MachinePreset { .. } => {
-                Need::manage(Area::Commands)
-            }
+            Operation::MachineRun { .. }
+            | Operation::MachinePreset { .. }
+            | Operation::MachinePut { .. } => Need::manage(Area::Commands),
             Operation::Power { .. } => Need::manage(Area::Status),
             Operation::ServerFacts | Operation::Doctor => Need::view(Area::Status),
             Operation::NetworkStatus => Need::view(Area::Network),
@@ -319,6 +319,7 @@ impl Operation {
                 | Operation::ClockApply { .. }
                 | Operation::MachineRun { .. }
                 | Operation::MachinePreset { .. }
+                | Operation::MachinePut { .. }
         )
     }
 
@@ -671,6 +672,13 @@ mod tests {
                 args: vec!["1".into()],
                 timeout_secs: 30,
             },
+            Operation::MachinePut {
+                machine: "NT4SRV01".into(),
+                script: "lldump.vbs".into(),
+                args: vec![],
+                files: vec!["aGk=".into()],
+                timeout_secs: 30,
+            },
             Operation::ChangeInternet {
                 change: InternetChange::Network {
                     network: "lab".into(),
@@ -745,6 +753,7 @@ mod tests {
             Operation::MachineRun { .. } => 49,
             Operation::MachinePreset { .. } => 50,
             Operation::RotateExecPassword => 51,
+            Operation::MachinePut { .. } => 52,
         }
     }
 
@@ -841,6 +850,7 @@ mod tests {
                     | Operation::Run { .. }
                     | Operation::MachineRun { .. }
                     | Operation::MachinePreset { .. }
+                    | Operation::MachinePut { .. }
             ) {
                 assert!(
                     matches!(operation.requires(), Need::Area(_, Level::Manage)),

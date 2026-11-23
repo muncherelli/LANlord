@@ -1480,6 +1480,24 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             crate::nt4_exec::render(preset, args).map_err(|reason| invalid("preset", reason))?;
             check_timeout(*timeout_secs)
         }
+        Operation::MachinePut {
+            machine,
+            script,
+            args,
+            files,
+            timeout_secs,
+        } => {
+            check_machine(machine)?;
+            crate::nt4_exec::render_put(script, args)
+                .map_err(|reason| invalid("script", reason))?;
+            if files.len() > crate::nt4_exec::MAX_PUT_FILES {
+                return Err(invalid("files", "has more than 4 files"));
+            }
+            for file in files {
+                crate::nt4_exec::check_file(file).map_err(|reason| invalid("files", reason))?;
+            }
+            check_timeout(*timeout_secs)
+        }
         Operation::ClockZoneNow { zone } => named("zone", time_zone, zone),
         Operation::ClockApply { change } => check_clock(change),
         Operation::ChangePassword { old, new } => {

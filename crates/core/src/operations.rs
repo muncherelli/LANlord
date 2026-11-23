@@ -566,11 +566,43 @@ fn dispatch(
             timeout_secs,
         } => {
             let command = nt4_exec::render(preset, args).map_err(|reason| anyhow!("{reason}"))?;
-            machine_run(
+            let put = nt4_exec::Put {
+                script: lanlord_model::nt4_exec::find(preset).and_then(|p| p.script),
+                data: Vec::new(),
+            };
+            machine_put(
                 session,
                 &key()?,
                 ask,
                 (machine, &command, *timeout_secs, &who.caller.user),
+                &put,
+            )?
+        }
+        Operation::MachinePut {
+            machine,
+            script,
+            args,
+            files,
+            timeout_secs,
+        } => {
+            use base64::Engine;
+            let command = lanlord_model::nt4_exec::render_put(script, args)
+                .map_err(|reason| anyhow!("{reason}"))?;
+            let data = files
+                .iter()
+                .map(|file| base64::engine::general_purpose::STANDARD.decode(file))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| anyhow!("a file is not base64"))?;
+            let put = nt4_exec::Put {
+                script: Some(script),
+                data,
+            };
+            machine_put(
+                session,
+                &key()?,
+                ask,
+                (machine, &command, *timeout_secs, &who.caller.user),
+                &put,
             )?
         }
     })
@@ -583,7 +615,18 @@ fn machine_run(
     ask: AskPassword,
     job: nt4_exec::Job,
 ) -> Result<Reply> {
-    let outcome = nt4_exec::run(session, identity, ask, job, &mut |_, _| {})?;
+    machine_put(session, identity, ask, job, &nt4_exec::Put::default())
+}
+
+/// like `machine_run`, with a script and data files put on the machine.
+fn machine_put(
+    session: &Session,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+    job: nt4_exec::Job,
+    put: &nt4_exec::Put,
+) -> Result<Reply> {
+    let outcome = nt4_exec::run_put(session, identity, ask, job, put, &mut |_, _| {})?;
     Ok(Reply::MachineRun {
         stdout: outcome.stdout_text(),
         stderr: outcome.stderr_text(),

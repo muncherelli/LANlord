@@ -266,6 +266,44 @@ fn request(password: &str, command: &str, caller: &str) -> Vec<u8> {
     body
 }
 
+/// what a run puts on the machine besides its own helper: a whitelisted script and data files.
+/// the helper stages them as `ll-<hex>.script.<ext>` and `ll-<hex>.data<N>` and deletes them after
+/// the run.
+#[derive(Default)]
+pub struct Put<'a> {
+    /// the script's name in [`lanlord_model::nt4_exec::SCRIPTS`].
+    pub script: Option<&'a str>,
+    pub data: Vec<Vec<u8>>,
+}
+
+impl Put<'_> {
+    /// the lines that follow the json request: `file script <ext> <base64>` and `file data - <base64>`.
+    /// the script must be of the whitelist and the data within the limits, so nothing else is sent.
+    fn lines(&self) -> Result<Vec<u8>> {
+        use lanlord_model::nt4_exec as model;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let mut out = Vec::new();
+        if let Some(name) = self.script {
+            let script = model::find_script(name)
+                .map_err(|reason| anyhow::anyhow!("script {name} {reason}"))?;
+            let ext = script.name.rsplit('.').next().unwrap_or("");
+            out.extend_from_slice(
+                format!("file script {ext} {}\n", engine.encode(script.body)).as_bytes(),
+            );
+        }
+        if self.data.len() > model::MAX_PUT_FILES {
+            bail!("at most {} data files may be put", model::MAX_PUT_FILES);
+        }
+        for data in &self.data {
+            if data.len() > model::MAX_PUT_FILE_BYTES {
+                bail!("a data file is longer than 1 MiB");
+            }
+            out.extend_from_slice(format!("file data - {}\n", engine.encode(data)).as_bytes());
+        }
+        Ok(out)
+    }
+}
+
 /// a new random password for the account: 24 characters of the alphabet that is easy to type
 /// and that NT4 and its tools take as they are (no quotes, percent signs, backslashes or
 /// spaces), from the operating system's random source.
@@ -551,9 +589,22 @@ pub fn run(
     session: &Session,
     identity: &age::x25519::Identity,
     ask: AskPassword,
-    (machine, command, timeout_secs, caller): Job,
+    job: Job,
     on_chunk: &mut dyn FnMut(bool, &[u8]),
 ) -> Result<Outcome> {
+    run_put(session, identity, ask, job, &Put::default(), on_chunk)
+}
+
+/// like [`run`], with a script and data files put on the machine for the run.
+pub fn run_put(
+    session: &Session,
+    identity: &age::x25519::Identity,
+    ask: AskPassword,
+    (machine, command, timeout_secs, caller): Job,
+    put: &Put,
+    on_chunk: &mut dyn FnMut(bool, &[u8]),
+) -> Result<Outcome> {
+    let files = put.lines()?;
     let mut ask = cached(ask);
     let known = machines_by_container(session, &mut ask)?;
     let Some(container) = holder(&known, machine)? else {
@@ -567,6 +618,11 @@ pub fn run(
     let mut secret = password(session, identity, &mut ask)?;
     let mut body = request(&secret, command, &audit_name(caller));
     secret.zeroize();
+    if !files.is_empty() {
+        // the json is one line; the files follow it, one line each
+        body.push(b'\n');
+        body.extend_from_slice(&files);
+    }
     let run = |address: Option<&str>, ask: AskPassword, on_chunk: &mut dyn FnMut(bool, &[u8])| {
         run_request(
             session,
@@ -673,6 +729,37 @@ pub(crate) mod tests {
             parse_event(&event(r#"{"error":"nope"}"#)),
             Some(Event::Error("nope".into()))
         );
+    }
+
+    #[test]
+    fn put_lines_hold_the_whitelisted_script_and_the_data_files() {
+        let put = Put {
+            script: Some("lldump.vbs"),
+            data: vec![b"hi".to_vec()],
+        };
+        let text = String::from_utf8(put.lines().unwrap()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("file script vbs "));
+        assert_eq!(lines[1], "file data - aGk=");
+        assert!(Put::default().lines().unwrap().is_empty());
+        for bad in ["../lldump.vbs", "other.vbs", "/x"] {
+            let put = Put {
+                script: Some(bad),
+                data: Vec::new(),
+            };
+            assert!(put.lines().is_err(), "{bad}");
+        }
+        let many = Put {
+            script: None,
+            data: vec![Vec::new(); 5],
+        };
+        assert!(many.lines().is_err());
+        let big = Put {
+            script: None,
+            data: vec![vec![0; MAX_PUT_FILE_BYTES + 1]],
+        };
+        assert!(big.lines().is_err());
     }
 
     #[test]

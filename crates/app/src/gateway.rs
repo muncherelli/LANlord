@@ -163,7 +163,7 @@ pub trait Gateway: Send + Sync {
         }
     }
 
-    /// run a `MachineRun` or `MachinePreset` operation and give back what the machine printed.
+    /// run a `MachineRun`, `MachinePreset` or `MachinePut` operation and give back what the machine printed.
     fn machine_run(&self, host: &str, operation: Operation, ask: AskPassword) -> Result<RunOutput> {
         match self.call(host, operation, ask)? {
             Reply::MachineRun {
@@ -1312,6 +1312,12 @@ mod fake {
                     machine, preset, ..
                 } => {
                     self.enter(format!("machine-preset {host} {machine} {preset}"), ask)?;
+                    self.fake_run()
+                }
+                Operation::MachinePut {
+                    machine, script, ..
+                } => {
+                    self.enter(format!("machine-put {host} {machine} {script}"), ask)?;
                     self.fake_run()
                 }
             })
