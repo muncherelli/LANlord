@@ -640,20 +640,21 @@ mod tests {
 
     #[test]
     fn the_password_check_rejects_bad_templates() {
-        let get = r"cscript //nologo x\adsutil.vbs GET W3SVC/1/";
+        let tool = r"cscript //nologo x\adsutil.vbs";
+        let get = format!("{tool} GET W3SVC/1/");
         assert!(password_problem(&format!("{get}ServerState")).is_ok());
         for bad in [
             format!("{get}ServerState & {get}AnonymousUserPass"),
             format!("{get}AnonymousUserPass"),
             format!("{get}ServerState/../x"),
             format!("{get}ServerState & echo PASSWORD"),
-            r"cscript //nologo x\adsutil.vbs ENUM W3SVC".to_string(),
-            format!(r"cscript //nologo x\adsutil.vbs ENUM W3SVC & echo x{FILTER}"),
-            format!(r"cscript //nologo x\adsutil.vbs ENUM W3SVC/1 & {get}ServerState{FILTER}"),
+            format!("{tool} ENUM W3SVC"),
+            format!("{tool} ENUM W3SVC & echo x{FILTER}"),
+            format!("{tool} ENUM W3SVC/1 & {get}ServerState{FILTER}"),
         ] {
             assert!(password_problem(&bad).is_err(), "{bad}");
         }
-        let ok = format!(r"cscript //nologo x\adsutil.vbs ENUM W3SVC{FILTER}");
+        let ok = format!("{tool} ENUM W3SVC{FILTER}");
         assert!(password_problem(&ok).is_ok());
     }
 
