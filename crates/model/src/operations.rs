@@ -194,6 +194,21 @@ pub enum Operation {
         #[serde(default = "default_timeout_secs")]
         timeout_secs: u32,
     },
+    /// put a script of the whitelist ([`crate::nt4_exec::SCRIPTS`]) and data files on a domain
+    /// machine and run the script with `args`. the machine sees the script as `%LL_SCRIPT%` and the
+    /// files as `%LL_DATA1%` and so on; all of them are staged under generated `ll-<hex>` names in
+    /// the private work folder and deleted after the run. `files` are base64, at most 4 of 1 MiB.
+    /// `timeout_secs` is as for `MachineRun`.
+    MachinePut {
+        machine: String,
+        script: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        files: Vec<String>,
+        #[serde(default = "default_timeout_secs")]
+        timeout_secs: u32,
+    },
 }
 
 /// how long a machine command may run when the caller says nothing.
