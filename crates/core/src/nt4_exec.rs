@@ -88,11 +88,11 @@ pub struct Outcome {
 
 impl Outcome {
     pub fn stdout_text(&self) -> String {
-        decode_cp437(&self.stdout)
+        decode_cp437(&redact_secrets(&self.stdout))
     }
 
     pub fn stderr_text(&self) -> String {
-        decode_cp437(&self.stderr)
+        decode_cp437(&redact_secrets(&self.stderr))
     }
 }
 
@@ -500,14 +500,25 @@ fn run_request(
     let mut input = first.into_bytes();
     input.extend_from_slice(body);
     let mut collector = Collector::default();
+    // a secret property is hidden in the live output too; a line is held until it is complete
+    let mut live = [LiveRedactor::default(), LiveRedactor::default()];
     let code = session.run_with_stdin_filtered(&remote, &input, &mut |line| {
         if let Some((err, bytes)) = collector.feed(line) {
-            on_chunk(err, &bytes);
+            let shown = live[usize::from(err)].push(&bytes);
+            if !shown.is_empty() {
+                on_chunk(err, &shown);
+            }
         }
         // output past the cap is dropped, so it is not kept in the debug log either
         !(collector.is_full() && line.starts_with(concat!("LANLORD_EVENT ", r#"{"stream""#)))
     });
     input.zeroize();
+    for (err, redactor) in live.iter_mut().enumerate() {
+        let rest = redactor.finish();
+        if !rest.is_empty() {
+            on_chunk(err == 1, &rest);
+        }
+    }
     collector.finish(code?)
 }
 

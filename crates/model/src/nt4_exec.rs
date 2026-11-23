@@ -82,14 +82,14 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "adsutil-enum-w3svc",
         "Web service settings",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC",
+        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC | find /v /i "pass""#,
         [],
         false
     ),
     preset!(
         "adsutil-enum-site",
         "Web site settings",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC/{site}",
+        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC/{site} | find /v /i "pass""#,
         ["site"],
         false
     ),
@@ -110,7 +110,7 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "adsutil-enum-ftp-site",
         "FTP site settings",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM MSFTPSVC/{site}",
+        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM MSFTPSVC/{site} | find /v /i "pass""#,
         ["site"],
         false
     ),
@@ -265,6 +265,80 @@ const CP437_HIGH: [char; 128] = [
     '≡', '±', '≥', '≤', '⌠', '⌡', '÷', '≈', '°', '∙', '·', '√', 'ⁿ', '²', '■', '\u{a0}',
 ];
 
+/// what replaces the value of a secret property in output.
+const HIDDEN: &[u8] = b"(hidden)";
+
+/// is this line (without its line ending) a metabase string property whose name holds `Pass`,
+/// such as `AnonymousUserPass : (STRING) "..."`? returns where the value starts.
+fn secret_value_start(line: &[u8]) -> Option<usize> {
+    let skip = |at: usize| {
+        at + line[at..]
+            .iter()
+            .take_while(|b| b.is_ascii_whitespace())
+            .count()
+    };
+    let name = skip(0);
+    let word = line[name..]
+        .iter()
+        .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
+        .count();
+    if !line[name..name + word].windows(4).any(|w| w == b"Pass") {
+        return None;
+    }
+    let colon = skip(name + word);
+    if line.get(colon) != Some(&b':') {
+        return None;
+    }
+    let tag = skip(colon + 1);
+    line[tag..].starts_with(b"(STRING)").then_some(tag + 8)
+}
+
+/// the output with the value of every secret string property (a name holding `Pass`, as
+/// `AnonymousUserPass` or `WAMUserPass`) replaced by `(hidden)`, line by line.
+pub fn redact_secrets(output: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(output.len());
+    for raw in output.split_inclusive(|&b| b == b'\n') {
+        let body = raw.strip_suffix(b"\n").unwrap_or(raw);
+        let body = body.strip_suffix(b"\r").unwrap_or(body);
+        match secret_value_start(body) {
+            Some(start) => {
+                out.extend_from_slice(&body[..start]);
+                out.push(b' ');
+                out.extend_from_slice(HIDDEN);
+                out.extend_from_slice(&raw[body.len()..]);
+            }
+            None => out.extend_from_slice(raw),
+        }
+    }
+    out
+}
+
+/// redacts a stream that arrives in chunks: a line is held until it is complete.
+#[derive(Debug, Default)]
+pub struct LiveRedactor {
+    pending: Vec<u8>,
+}
+
+impl LiveRedactor {
+    /// take a chunk; returns the complete lines it finished, redacted.
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(chunk);
+        match self.pending.iter().rposition(|&b| b == b'\n') {
+            Some(end) => {
+                let rest = self.pending.split_off(end + 1);
+                let done = std::mem::replace(&mut self.pending, rest);
+                redact_secrets(&done)
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// the unfinished last line, redacted.
+    pub fn finish(&mut self) -> Vec<u8> {
+        redact_secrets(&std::mem::take(&mut self.pending))
+    }
+}
+
 /// text from a machine's oem code page 437 output. nt 4 prints in it by default.
 pub fn decode_cp437(bytes: &[u8]) -> String {
     bytes
@@ -306,6 +380,40 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn enum_presets_drop_password_lines_on_the_machine() {
+        for id in [
+            "adsutil-enum-w3svc",
+            "adsutil-enum-site",
+            "adsutil-enum-ftp-site",
+        ] {
+            let preset = find(id).unwrap();
+            assert!(!preset.mutating);
+            assert!(preset.template.ends_with(r#" | find /v /i "pass""#), "{id}");
+        }
+    }
+
+    #[test]
+    fn secret_values_are_hidden() {
+        let text = b"KeyType : (STRING) \"IIsWebServer\"\r\n  AnonymousUserPass   : (STRING) \"s3cret\"\r\nWAMUserPass: (STRING) \"x\"\nUNCPassword : (STRING) \"y\"\nAnonymousPasswordSync : (BOOLEAN) True\nServerComment : (STRING) \"a Pass b\"\nlast Pass : (STRING) \"z\"";
+        let out = String::from_utf8(redact_secrets(text)).unwrap();
+        assert_eq!(
+            out,
+            "KeyType : (STRING) \"IIsWebServer\"\r\n  AnonymousUserPass   : (STRING) (hidden)\r\nWAMUserPass: (STRING) (hidden)\nUNCPassword : (STRING) (hidden)\nAnonymousPasswordSync : (BOOLEAN) True\nServerComment : (STRING) \"a Pass b\"\nlast Pass : (STRING) \"z\""
+        );
+        assert!(!out.contains("s3cret"));
+    }
+
+    #[test]
+    fn a_secret_split_across_chunks_is_hidden() {
+        let mut live = LiveRedactor::default();
+        let mut out = live.push(b"Anonymous");
+        out.extend(live.push(b"UserPass : (STRING) \"s3c"));
+        out.extend(live.push(b"ret\"\nnext"));
+        out.extend(live.finish());
+        assert_eq!(out, b"AnonymousUserPass : (STRING) (hidden)\nnext");
     }
 
     #[test]
