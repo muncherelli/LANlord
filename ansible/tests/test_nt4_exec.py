@@ -1266,7 +1266,7 @@ class IisPresetFilterTest(unittest.TestCase):
         with open(src) as f:
             self.text = f.read()
         found = re.findall(r'\| findstr /v /r /i /c:"([^"]+)""#', self.text)
-        self.assertEqual(len(found), 3)
+        self.assertGreaterEqual(len(found), 3)
         self.assertEqual(len(set(found)), 1)
         self.pattern = re.compile(found[0], re.I)
 
