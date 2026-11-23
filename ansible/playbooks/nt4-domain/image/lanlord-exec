@@ -455,11 +455,13 @@ prepare_dir() {
 # that is still held fails to delete, which is ignored: a later run gets it. this run's files are not
 # there yet, they are uploaded after this
 sweep_folder() {
-  local line name dels= re='^[[:space:]]*(ll-[0-9a-f]{8}\.(exe|bat|cmd\.bat|out|err|rc))[[:space:]]'
+  # a listing line is "  name  ATTRS  size  date", ATTRS being letters such as A, D, DA or AH (or empty)
+  local line name dels= re='^[[:space:]]*(ll-[0-9a-f]{8}\.(exe|bat|cmd\.bat|out|err|rc))[[:space:]]+([A-Za-z]*)[[:space:]]+[0-9]'
   smbd -c "cd $REMOTE_DIR; ls ll-*" >"$work/ls.log" 2>&1
   while IFS= read -r line; do
     line=${line%$'\r'}
-    if [[ $line =~ $re ]]; then
+    # a folder (attribute D) is never deleted, whatever its name
+    if [[ $line =~ $re && ${BASH_REMATCH[3]} != *D* ]]; then
       name=${BASH_REMATCH[1]}
       dels+="; del $name"
     fi

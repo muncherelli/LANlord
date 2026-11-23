@@ -973,10 +973,12 @@ class LanlordExecTest(unittest.TestCase):
         for path in (other, keep):
             with open(path, "w") as f:
                 f.write("x")
-        os.makedirs(os.path.join(self.stubs, "cdrive", "lanlord", "ll-0badf00d"))
+        os.makedirs(os.path.join(self.stubs, "cdrive", "lanlord", "ll-0badf00d.out"))
         out = self.run_exec()
         self.assertEqual(self.events(out)[-1], {"exit": 0})
-        self.assertEqual(sorted(os.listdir(os.path.join(self.stubs, "cdrive", "lanlord"))), ["ll-0badf00d", "ll-notahexx.out", "report.txt"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.stubs, "cdrive", "lanlord"))), ["ll-0badf00d.out", "ll-notahexx.out", "report.txt"])
+        # the folder is listed with attribute D and must not get a del, a stale file beside it does
+        self.assertNotIn("del ll-0badf00d.out", self.calls())
         lines = self.lines()
         read = max(i for i, c in enumerate(lines) if c.startswith("smbcacls") and "--numeric" in c and "C$ lanlord " in c and i < self.index(lines, " put "))
         ls = self.index(lines, "ls ll-*")
