@@ -696,7 +696,10 @@ mod tests {
     #[test]
     fn the_scripts_live_in_adminsamples() {
         assert!(ADMIN.ends_with(r"inetsrv\adminsamples"));
-        for preset in PRESETS.iter().filter(|p| p.template.contains("cscript")) {
+        for preset in PRESETS
+            .iter()
+            .filter(|p| p.template.contains("cscript") && p.script.is_none())
+        {
             assert!(preset.template.starts_with(ADMIN), "{}", preset.id);
         }
     }

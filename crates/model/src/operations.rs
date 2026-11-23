@@ -780,7 +780,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 52;
+    const VARIANTS: usize = 53;
 
     #[test]
     fn every_operation_says_what_it_needs() {
