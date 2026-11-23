@@ -154,7 +154,7 @@ impl Component {
     /// everything it needs, directly or through other components, the deepest first.
     pub fn requirements(&self, catalogue: &[Component]) -> Vec<&'static str> {
         let mut found = Vec::new();
-        collect_requirements(self, catalogue, &mut found);
+        collect_requirements(self, catalogue, &mut found, &mut Vec::new());
         found
     }
 
@@ -183,25 +183,25 @@ impl Component {
     }
 }
 
-/// add what `component` needs to `found`, requirements of requirements first; safe on cycles.
+/// add what `component` needs to `found`, requirements of requirements first; `visiting` holds
+/// the ids on the way down, so a cycle stops where it closes.
 fn collect_requirements(
     component: &Component,
     catalogue: &[Component],
     found: &mut Vec<&'static str>,
+    visiting: &mut Vec<&'static str>,
 ) {
+    visiting.push(component.id());
     for id in component.requires {
-        if found.contains(id) {
+        if found.contains(id) || visiting.contains(id) {
             continue;
         }
         if let Some(required) = catalogue.iter().find(|c| c.id() == *id) {
-            if required.id() != component.id() {
-                collect_requirements(required, catalogue, found);
-            }
+            collect_requirements(required, catalogue, found, visiting);
         }
-        if !found.contains(id) {
-            found.push(id);
-        }
+        found.push(id);
     }
+    visiting.pop();
 }
 
 /// what the catalogue adds to a module.
@@ -484,7 +484,6 @@ impl Selection {
     pub fn validate(&self, networks: &[Network]) -> Vec<ValidationError> {
         let catalogue = catalogue();
         let mut errors = self.required_errors(&catalogue);
-        errors.extend(self.requires_errors(&catalogue));
         let mut claims = Claims::default();
         for (id, choice) in &self.enabled {
             let Some(component) = catalogue.iter().find(|c| c.id() == id) else {
@@ -500,6 +499,7 @@ impl Selection {
                 choice,
                 path: format!("{SECTION}.{id}"),
             };
+            errors.extend(self.requires_errors(component, &catalogue));
             errors.extend(self.component_errors(&site));
             if component.netbios && choice.mechanism == Mechanism::HostBind {
                 claims.host_bound_netbios += 1;
@@ -537,23 +537,28 @@ impl Selection {
             .collect()
     }
 
-    /// enabled components whose required components are switched off; this also refuses
+    /// the required components of `component` that are switched off; this also refuses
     /// switching one off while another enabled component needs it.
-    fn requires_errors(&self, catalogue: &[Component]) -> Vec<ValidationError> {
-        let mut errors = Vec::new();
-        for component in catalogue.iter().filter(|c| self.is_enabled(c.id())) {
-            for id in component.requires.iter().filter(|id| !self.is_enabled(id)) {
+    fn requires_errors(
+        &self,
+        component: &Component,
+        catalogue: &[Component],
+    ) -> Vec<ValidationError> {
+        component
+            .requires
+            .iter()
+            .filter(|id| !self.is_enabled(id))
+            .map(|id| {
                 let name = catalogue
                     .iter()
                     .find(|c| c.id() == *id)
                     .map_or(*id, |c| c.name());
-                errors.push(fail(
+                fail(
                     format!("{SECTION}.{}", component.id()),
                     format!("{} needs {name}", component.name()),
-                ));
-            }
-        }
-        errors
+                )
+            })
+            .collect()
     }
 
     /// mechanism and subcomponent problems of one entry.
@@ -1746,6 +1751,15 @@ mod tests {
         ]
     }
 
+    /// every requires error of the enabled components of `catalogue`.
+    fn requires_errors(selection: &Selection, catalogue: &[Component]) -> Vec<ValidationError> {
+        catalogue
+            .iter()
+            .filter(|c| selection.is_enabled(c.id()))
+            .flat_map(|c| selection.requires_errors(c, catalogue))
+            .collect()
+    }
+
     fn picked(ids: &[&str]) -> Selection {
         Selection {
             enabled: ids
@@ -1765,22 +1779,58 @@ mod tests {
     #[test]
     fn a_missing_required_component_is_refused_naming_both() {
         let catalogue = chain();
-        assert!(picked(&["base", "middle", "top"])
-            .requires_errors(&catalogue)
+        assert!(requires_errors(&picked(&["base", "middle", "top"]), &catalogue)
             .is_empty());
         // the middle one is off while the top one needs it
-        let errors = picked(&["base", "top"]).requires_errors(&catalogue);
+        let errors = requires_errors(&picked(&["base", "top"]), &catalogue);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("Top needs Middle"));
         // the base is off while the middle one needs it
-        let errors = picked(&["middle"]).requires_errors(&catalogue);
+        let errors = requires_errors(&picked(&["middle"]), &catalogue);
         assert!(errors[0].message.contains("Middle needs Base"));
     }
 
     #[test]
     fn docker_is_required_through_the_same_mechanism() {
-        let errors = picked(&["dns"]).requires_errors(&catalogue());
+        let errors = requires_errors(&picked(&["dns"]), &catalogue());
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("DNS needs Docker"));
+    }
+
+    static LOOP: [Module; 3] = [
+        test_module("a", "A"),
+        test_module("b", "B"),
+        test_module("c", "C"),
+    ];
+
+    fn looped(links: [&'static [&'static str]; 3]) -> Vec<Component> {
+        (0..3)
+            .map(|i| Component {
+                requires: links[i],
+                ..component(&LOOP[i])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn requirement_cycles_terminate() {
+        let two = looped([&["b"], &["a"], &[]]);
+        assert_eq!(two[0].requirements(&two), ["b"]);
+        let three = looped([&["b"], &["c"], &["a"]]);
+        assert_eq!(three[0].requirements(&three), ["c", "b"]);
+    }
+
+    #[test]
+    fn every_requires_id_is_in_the_catalogue() {
+        let catalogue = catalogue();
+        for component in &catalogue {
+            for id in component.requires {
+                assert!(
+                    catalogue.iter().any(|c| c.id() == *id),
+                    "{} requires {id}, which is not a component",
+                    component.id()
+                );
+            }
+        }
     }
 }

@@ -387,24 +387,13 @@ impl Components {
             self.typed.retain(|(id, _), _| id != component.id());
             return;
         }
+        // what it needs comes in the way a user tick would bring it, deepest first
         for id in component.requirements(catalogue) {
-            draft.enabled.entry(id.into()).or_default();
+            if let Some(required) = catalogue.iter().find(|c| c.id() == id) {
+                tick(draft, required, first.clone());
+            }
         }
-        let attach = match (component.attaches(), first) {
-            (true, Some(network)) => vec![Attachment {
-                network,
-                address: None,
-            }],
-            _ => Vec::new(),
-        };
-        draft.enabled.insert(
-            component.id().to_string(),
-            Choice {
-                attach,
-                subcomponents: component.default_subcomponents(),
-                ..Choice::default()
-            },
-        );
+        tick(draft, component, first);
     }
 
     /// tick or untick part `i` of the component.
@@ -918,6 +907,28 @@ impl Components {
             escape: Some(Msg::CloseDetails),
         })
     }
+}
+
+/// switch `component` on with its first network and default parts, unless it already is.
+fn tick(draft: &mut Selection, component: &Component, first: Option<String>) {
+    if draft.is_enabled(component.id()) {
+        return;
+    }
+    let attach = match (component.attaches(), first) {
+        (true, Some(network)) => vec![Attachment {
+            network,
+            address: None,
+        }],
+        _ => Vec::new(),
+    };
+    draft.enabled.insert(
+        component.id().to_string(),
+        Choice {
+            attach,
+            subcomponents: component.default_subcomponents(),
+            ..Choice::default()
+        },
+    );
 }
 
 #[cfg(test)]
@@ -1590,5 +1601,58 @@ mod tests {
         }
         assert!(fake.stored.lock().unwrap().contains("components:"));
         assert!(window.current().unwrap().is_enabled("remote-commands"));
+    }
+
+    #[test]
+    fn a_required_middle_link_comes_in_fully_configured() {
+        use lanlord_model::components::SubComponent;
+        use lanlord_model::modules::{Module, Status};
+        static MODULES: [Module; 3] = [
+            module("base", "Base"),
+            module("middle", "Middle"),
+            module("top", "Top"),
+        ];
+        static PARTS: [SubComponent; 1] = [SubComponent {
+            id: "part",
+            name: "Part",
+            description: "",
+            default: true,
+        }];
+        const fn module(id: &'static str, name: &'static str) -> Module {
+            Module {
+                id,
+                name,
+                icon: ["", "", ""],
+                summary: "",
+                example: "",
+                status: Status::Available,
+            }
+        }
+        let entry = |i: usize, requires, joins: bool| Component {
+            module: &MODULES[i],
+            required: false,
+            requires,
+            ports: &[],
+            roles: &[],
+            netbios: false,
+            attach_min: usize::from(joins),
+            attach_max: if joins { None } else { Some(0) },
+            external: false,
+            needs_own_address: false,
+            mechanisms: &[Mechanism::HostBind],
+            subcomponents: if i == 1 { &PARTS } else { &[] },
+        };
+        let catalogue = vec![
+            entry(0, &[], false),
+            entry(1, &["base"], true),
+            entry(2, &["middle"], false),
+        ];
+        let (mut window, _, _) = ready();
+        window.toggle(&catalogue[2], &catalogue);
+        let draft = window.draft();
+        assert!(draft.is_enabled("base") && draft.is_enabled("top"));
+        let middle = &draft.enabled["middle"];
+        assert_eq!(middle.subcomponents, ["part"]);
+        assert_eq!(middle.attach.len(), 1, "it joins the first network");
     }
 }
