@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `lanlord-exec` deletes the `ll-*` files an earlier run left in `<drive>:\lanlord` (a run that timed out leaves its output behind when the program still held it open) at the start of the next run, after the folder is verified
 - `lanlord-exec` errors say "no output" when the failed tool printed nothing, instead of ending in a bare colon
 - the Computers command box closes when you switch hosts from another tab, instead of staying open and refusing OK
 - the Computers tab no longer runs a command on the wrong server after switching hosts: an open command box only runs on the host it was opened on, and the pick and the last output are cleared as soon as another host is shown

@@ -65,7 +65,12 @@ case $name in
           # on timeout can never come first
           if [[ -e $STUBS/slow ]]; then n=0; while [[ ! -e $STUBS/ready ]] && ((n++ < 200)); do sleep 0.05; done; fi
           [[ -f $cur/${w[1]} ]] && cp "$cur/${w[1]}" "${w[2]}" ;;
-        del) [[ -e $STUBS/del_hang && ${w[1]} != *[*?]* ]] && sleep 30; (cd "$cur" && rm -f ${w[1]}) ;;
+        ls)
+          for f in $(cd "$cur" && ls -d ${w[1]} 2>/dev/null); do printf '  %-24s A %9d  Sun Nov 23 10:00:00 2026\n' "$f" 1; done
+          echo "                 65535 blocks of size 4096. 1000 blocks available" ;;
+        del)
+          if [[ -e $STUBS/del_locked && $cur == */lanlord ]]; then echo "NT_STATUS_SHARING_VIOLATION deleting remote file \\lanlord\\${w[1]}"; continue; fi
+          [[ -e $STUBS/del_hang && ${w[1]} != *[*?]* ]] && sleep 30; (cd "$cur" && rm -f ${w[1]}) ;;
       esac
     done
     exit 0 ;;
@@ -935,6 +940,51 @@ class LanlordExecTest(unittest.TestCase):
         out = self.run_exec()
         self.assertEqual(self.events(out)[-1], {"exit": 0})
         self.assert_clean()
+
+    def stale_files(self):
+        names = ("ll-deadbeef.out", "ll-deadbeef.err", "ll-0123abcd.exe", "ll-0123abcd.cmd.bat")
+        for name in names:
+            with open(os.path.join(self.stubs, "cdrive", "lanlord", name), "w") as f:
+                f.write("x")
+        return names
+
+    def test_stale_files_in_the_folder_are_deleted_after_it_is_verified_and_before_the_put(self):
+        self.stale_files()
+        other = os.path.join(self.stubs, "cdrive", "lanlord", "ll-notahexx.out")
+        keep = os.path.join(self.stubs, "cdrive", "lanlord", "report.txt")
+        for path in (other, keep):
+            with open(path, "w") as f:
+                f.write("x")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assertEqual(sorted(os.listdir(os.path.join(self.stubs, "cdrive", "lanlord"))), ["ll-notahexx.out", "report.txt"])
+        lines = self.lines()
+        read = max(i for i, c in enumerate(lines) if c.startswith("smbcacls") and "--numeric" in c and "C$ lanlord " in c and i < self.index(lines, " put "))
+        ls = self.index(lines, "ls ll-*")
+        dels = [i for i, c in enumerate(lines) if "del ll-deadbeef.out" in c and "cd lanlord" in c]
+        put = self.index(lines, " put ")
+        self.assertLess(read, ls)
+        self.assertLess(ls, dels[0])
+        self.assertLess(dels[0], put)
+        # only the listed names go, never a wildcard, in the folder
+        self.assertNotIn("del ll-*", self.calls())
+        self.assertNotIn("ll-notahexx", "".join(c for c in lines if " del " in c or "; del" in c))
+
+    def test_a_stale_file_that_cannot_be_deleted_does_not_fail_the_run(self):
+        self.stale_files()
+        self.flag("del_locked")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        self.assertIn("ll-deadbeef.out", os.listdir(os.path.join(self.stubs, "cdrive", "lanlord")))
+
+    def test_a_refused_folder_is_not_swept(self):
+        self.stale_files()
+        self.scenario(acl=self.head() + "ACL:S-1-1-0:0/0x3/0x001f01ff\n")
+        out = self.run_exec()
+        self.assertEqual(self.events(out)[-1]["error"][:20], "C:\\lanlord on NT4SRV")
+        self.assertNotIn("ls ll-*", self.calls())
+        self.assertNotIn("service create", self.calls())
+        self.assertIn("ll-deadbeef.out", os.listdir(os.path.join(self.stubs, "cdrive", "lanlord")))
 
     def test_sweep_without_a_drive_still_cleans_the_old_places(self):
         self.flag("no_share")

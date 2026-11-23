@@ -176,7 +176,8 @@ pub enum Operation {
     Machines,
     /// run a command on a domain machine; the reply is its output and exit code. `timeout_secs`
     /// is 1 to 900 and 120 when left out. a plain `exit N` in the command is refused: it ends the
-    /// outer cmd.exe on nt4 (no `exit /b`), so the run would show as timed out; use `cmd /c exit N`.
+    /// outer cmd.exe on nt4 (no `exit /b`), so the run would show as timed out. the exit code comes from
+    /// the programs the command runs; `exit N` (and `cmd /c exit N`, which nt4 returns 0 for) cannot set one.
     MachineRun {
         machine: String,
         command: String,

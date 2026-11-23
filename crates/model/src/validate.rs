@@ -1225,7 +1225,8 @@ fn check_machine(machine: &str) -> Result<(), Invalid> {
 }
 
 /// a plain `exit N` ends the outer cmd.exe, so the exit code is never written and the run would
-/// show as timed out; nt4 has no `exit /b`. a command is refused when any part of it, split at
+/// show as timed out; nt4 has no `exit /b`, and `cmd /c exit N` returns 0 there, so only a program's
+/// errorlevel sets the exit code. a command is refused when any part of it, split at
 /// `&`, `&&`, `||` and parentheses, starts with `exit` once a leading `@`, `if ...`, `do` and
 /// the like are taken off. a single `|` does not split: the right side of a pipe runs in a child
 /// cmd, where exit only ends that child. `"` and `^` quote what follows. a `(` splits only where

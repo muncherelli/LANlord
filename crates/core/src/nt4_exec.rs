@@ -824,6 +824,7 @@ pub(crate) mod tests {
         // the error says what failed, not the password, and it does not name the controller
         assert!(error.contains("could not set"), "{error}");
         assert!(!error.contains(&new), "{error}");
+        assert!(!error.contains("lab2"), "{error}");
         // the first controller was set and is remembered; the second is not
         let (argv, _) = gw.exec_calls();
         assert_eq!(argv.len(), 1, "{argv:?}");
