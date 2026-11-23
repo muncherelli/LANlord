@@ -22,6 +22,7 @@ use crate::admin_setup::{self, AdminSetup};
 use crate::clock_panel::{ClockFeed, ClockPanel};
 use crate::command_panel::CommandPanel;
 use crate::components_window::{self, Components};
+use crate::computers_panel::ComputersPanel;
 use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
@@ -94,6 +95,8 @@ pub struct Desktop {
     ctx: egui::Context,
     settings: SettingsEditor,
     nt4: Nt4Window,
+    /// the body of the hosting window.
+    hosting: ComputersPanel,
     account: AccountWindow,
     permissions: PermissionsWindow,
     /// what the gateway says the signed-in account may do, fetched once after logon.
@@ -190,6 +193,7 @@ impl Desktop {
             services,
             settings: SettingsEditor::default(),
             nt4: Nt4Window::default(),
+            hosting: ComputersPanel::hosting(),
             account: AccountWindow::default(),
             permissions: PermissionsWindow::default(),
             grants_remote: Remote::default(),
@@ -371,6 +375,7 @@ impl Desktop {
         self.close_requests.clear();
         self.settings = SettingsEditor::default();
         self.nt4 = Nt4Window::default();
+        self.hosting = ComputersPanel::hosting();
         self.account = AccountWindow::default();
         self.permissions = PermissionsWindow::default();
         self.grants_remote = Remote::default();
@@ -651,6 +656,7 @@ impl Desktop {
         self.permissions.poll();
         self.settings.poll();
         self.nt4.poll();
+        self.hosting.poll();
         self.dns.poll();
         self.commands.poll();
         self.poll_clock();
@@ -926,6 +932,8 @@ impl Desktop {
         self.settings.dialog(ctx);
         let host = self.host();
         self.nt4.dialog(ctx, &self.services, host.as_deref());
+        self.hosting.close_stale_box(host.as_deref());
+        self.hosting.dialog(ctx, &self.services, host.as_deref());
         self.dns.dialog(ctx);
         self.account_dialogs(ctx, host.as_deref());
         self.network_dialog(ctx);
@@ -1706,6 +1714,13 @@ impl Desktop {
                 let may = lanlord_app::computers_panel::may_run(&self.grants());
                 self.nt4.computers.set_can_run(may);
                 self.nt4.show(ui, &self.services, host.as_deref());
+            }
+            "hosting" => {
+                let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
+                self.hosting.set_can_run(may);
+                let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
+                self.hosting.set_iis_on(iis);
+                self.hosting.show(ui, &self.services, host.as_deref());
             }
             "dns" | "dhcp" => self.dns.show(ui, &self.services, host.as_deref()),
             "remote-commands" => {

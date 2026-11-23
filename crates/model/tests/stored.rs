@@ -88,8 +88,8 @@ fn a_newer_file_is_refused_for_both_kinds_and_never_stamped_over() {
 #[test]
 fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V3, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(6));
-    assert_eq!(Kind::Plain.current(), 6);
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
+    assert_eq!(Kind::Plain.current(), 7);
     assert!(settings.text().contains("name: lab"));
     assert!(!settings.text().contains("internet"));
     // a file with grants is current, and an older lanlord (format 3) refuses it
@@ -105,7 +105,7 @@ fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else()
 #[test]
 fn step_four_stamps_networks_that_may_allow_ssh_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V4, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(6));
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
     let text = settings.text();
     // the keys of format 4 are kept as they were, and no ssh key appears
     assert!(
@@ -129,7 +129,7 @@ const V5: &str = include_str!("fixtures/stored/plain-v5-nt4-domain.yml");
 #[test]
 fn step_five_splits_the_nt4_domain_into_a_domain_and_a_server_and_is_stable() {
     let settings = load(Kind::Plain, V5, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(6));
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
     let server = settings.section("nt4-servers").unwrap()[0].clone();
     assert_eq!(server["name"], "nt4-domain");
     assert_eq!(server["role"], "pdc");
@@ -148,4 +148,33 @@ fn step_five_splits_the_nt4_domain_into_a_domain_and_a_server_and_is_stable() {
     // a second load changes nothing
     let again = load(Kind::Plain, &settings.text(), &admins()).unwrap();
     assert_eq!(again.text(), settings.text());
+}
+
+const V6_PLAIN: &str = include_str!("fixtures/stored/plain-v6.yml");
+
+#[test]
+fn step_six_only_moves_the_format_on_and_is_stable() {
+    let settings = load(Kind::Plain, V6_PLAIN, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(7));
+    // nothing about hosting is added, and what was there is kept
+    assert!(
+        settings.section("components").is_none(),
+        "{}",
+        settings.text()
+    );
+    assert_eq!(settings.section("nt4-domain").unwrap()["name"], "RETRODOM");
+    let selection = lanlord_model::components::Selection::from_settings(&settings).unwrap();
+    assert!(selection.iis_allowed().is_err());
+    // a second load changes nothing
+    let again = load(Kind::Plain, &settings.text(), &admins()).unwrap();
+    assert_eq!(again.text(), settings.text());
+}
+
+#[test]
+fn step_six_keeps_what_the_settings_already_say_about_hosting() {
+    let said =
+        "lanlord_format: 6\nnt4-domain: {}\ncomponents:\n  hosting: {subcomponents: [iis]}\n";
+    let settings = load(Kind::Plain, said, &admins()).unwrap();
+    let selection = lanlord_model::components::Selection::from_settings(&settings).unwrap();
+    assert_eq!(selection.iis_allowed(), Ok(()));
 }

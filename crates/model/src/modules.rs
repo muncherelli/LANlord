@@ -90,6 +90,14 @@ pub const MODULES: &[Module] = &[
         Status::Available,
     ),
     Module::new(
+        "hosting",
+        "Hosting",
+        ["┌─────┐", "│ WWW │", "└─────┘"],
+        "Manage IIS 4 web and FTP hosting on your NT4 servers",
+        "hosting: {}\n\n# it has no section of its own: switch it on as a component, with its parts:\ncomponents:\n  hosting:\n    subcomponents: [iis]",
+        Status::Available,
+    ),
+    Module::new(
         "dns",
         "DNS",
         ["┌─────┐", "│ DNS │", "└─────┘"],
@@ -159,5 +167,6 @@ mod tests {
         assert_eq!(find("dns").unwrap().status, Status::Available);
         assert_eq!(find("time-server").unwrap().status, Status::Available);
         assert_eq!(find("remote-commands").unwrap().status, Status::Available);
+        assert_eq!(find("hosting").unwrap().status, Status::Available);
     }
 }

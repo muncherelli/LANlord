@@ -94,7 +94,7 @@ impl Target {
             // the modules with a list of logins, hosts or commands; the rest are plain forms
             Self::Module(i) => matches!(
                 MODULES[i].id,
-                "nt4-domain" | "dns" | "dhcp" | "remote-commands"
+                "nt4-domain" | "hosting" | "dns" | "dhcp" | "remote-commands"
             ),
             _ => false,
         }
@@ -123,6 +123,7 @@ impl Target {
                 "nt4-domain" => Area::Domain,
                 "dns" | "dhcp" => Area::Dns,
                 "remote-commands" => Area::Commands,
+                "hosting" => Area::Hosting,
                 _ => Area::Services,
             }),
             // anyone may watch the Task Manager; ending a process is for administrators
@@ -185,6 +186,7 @@ impl Target {
                 "nt4-domain" => (600.0, 600.0),
                 "dns" | "dhcp" => (620.0, 580.0),
                 "remote-commands" => (580.0, 580.0),
+                "hosting" => (560.0, 520.0),
                 _ => (480.0, 320.0),
             },
             // 6 more each way than the 8 pixel margin needed, for the 11 pixel margin
@@ -334,6 +336,28 @@ mod tests {
                 "hosts"
             ]
         );
+    }
+
+    #[test]
+    fn the_hosting_window_is_there_only_with_the_component_and_needs_its_own_area() {
+        use lanlord_model::access::{Grants, Level};
+        let at = MODULES.iter().position(|m| m.id == "hosting").unwrap();
+        let hosting = Target::Module(at);
+        assert!(!icons(None).contains(&hosting));
+        let mut off = Selection::default();
+        off.enabled.insert("dns".into(), Default::default());
+        assert!(!icons(Some(&off)).contains(&hosting));
+        let mut on = Selection::default();
+        on.enabled.insert("hosting".into(), Default::default());
+        assert!(icons(Some(&on)).contains(&hosting));
+        assert_eq!(hosting.area(), Some(Area::Hosting));
+        // the commands area alone does not show it
+        let mut commands = Grants::default();
+        commands.0.insert(Area::Commands, Level::Manage);
+        assert!(!hosting.visible(&commands));
+        let mut hosts = Grants::default();
+        hosts.0.insert(Area::Hosting, Level::Manage);
+        assert!(hosting.visible(&hosts));
     }
 
     #[test]

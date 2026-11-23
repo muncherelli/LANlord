@@ -28,6 +28,7 @@ use std::net::Ipv4Addr;
 
 use serde_yaml_ng::{Mapping, Value};
 
+use crate::format::Context;
 use crate::modules::{Module, MODULES};
 use crate::settings::{Settings, Subnet, ValidationError};
 
@@ -204,6 +205,23 @@ fn collect_requirements(
     visiting.pop();
 }
 
+/// settings step: hosting became a component of its own. nothing stored before it said anything
+/// about hosting (the iis presets were never released), so there is nothing to carry over and
+/// the step changes no settings. it only moves the format on, so that an older build refuses
+/// the settings instead of silently dropping the `hosting` entry.
+pub fn migrate_hosting(_: &mut Settings, _: &Context) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// the id of the hosting component.
+pub const HOSTING: &str = "hosting";
+
+/// what a refused IIS preset says.
+pub const IIS_REFUSED: &str = "turn on the Hosting component (iis) to use IIS presets";
+
+/// the id of the hosting subcomponent that switches the IIS 4 web and FTP features on.
+pub const HOSTING_IIS: &str = "iis";
+
 /// what the catalogue adds to a module.
 fn component(module: &'static Module) -> Component {
     use Proto::{Tcp, Udp};
@@ -312,6 +330,27 @@ fn component(module: &'static Module) -> Component {
             attach_max: None,
             ..plain
         },
+        // no container, ports or networks: it reaches the machines through the nt4 exec path,
+        // so it needs the nt4 server and its exec account. the subcomponents are the admin's
+        // feature switches; they let lanlord manage a feature, never install it
+        "hosting" => Component {
+            requires: &["nt4-domain"],
+            subcomponents: &[
+                SubComponent {
+                    id: HOSTING_IIS,
+                    name: "IIS web and FTP",
+                    description: "Manage the IIS 4 web and FTP services and sites.",
+                    default: true,
+                },
+                SubComponent {
+                    id: "frontpage",
+                    name: "FrontPage Server Extensions",
+                    description: "Manage the FrontPage Server Extensions on the sites.",
+                    default: false,
+                },
+            ],
+            ..plain
+        },
         _ => plain,
     }
 }
@@ -370,6 +409,23 @@ impl Selection {
         self.enabled.contains_key(id)
     }
 
+    /// is the subcomponent `part` of the component `id` switched on, with its component?
+    pub fn has_part(&self, id: &str, part: &str) -> bool {
+        self.enabled
+            .get(id)
+            .is_some_and(|choice| choice.subcomponents.iter().any(|p| p == part))
+    }
+
+    /// may IIS presets run? the hosting component is on, with its `iis` part. the message is
+    /// what to turn on when they may not.
+    pub fn iis_allowed(&self) -> Result<(), &'static str> {
+        if self.has_part(HOSTING, HOSTING_IIS) {
+            Ok(())
+        } else {
+            Err(IIS_REFUSED)
+        }
+    }
+
     /// the choice the old way only, from the top-level module sections; what a front end can
     /// still show when the `components` section cannot be read.
     pub fn from_sections(settings: &Settings) -> Self {
@@ -400,10 +456,21 @@ impl Selection {
                         Value::Null => Value::Mapping(Mapping::new()),
                         other => other.clone(),
                     };
+                    let has_parts = value
+                        .as_mapping()
+                        .is_some_and(|m| m.contains_key("subcomponents"));
                     let stored: Stored = serde_yaml_ng::from_value(value)
                         .map_err(|e| anyhow::anyhow!("components.{id}: {e}"))?;
                     if stored.enabled {
-                        enabled.insert(id.to_string(), stored.choice);
+                        let mut choice = stored.choice;
+                        // a hosting entry that does not list its parts runs the default ones
+                        // (the iis part); other components keep an empty list as before
+                        if !has_parts && id == "hosting" {
+                            if let Some(component) = catalogue().iter().find(|c| c.id() == id) {
+                                choice.subcomponents = component.default_subcomponents();
+                            }
+                        }
+                        enabled.insert(id.to_string(), choice);
                     } else {
                         enabled.remove(id);
                     }
@@ -474,6 +541,13 @@ impl Selection {
             entry.insert("enabled".into(), Value::Bool(true));
             if let Ok(Value::Mapping(fields)) = serde_yaml_ng::to_value(choice) {
                 entry.extend(fields);
+            }
+            // no parts ticked is written as such: an entry without the key runs the default parts
+            let has_parts = catalogue()
+                .iter()
+                .any(|c| c.id() == id && !c.subcomponents.is_empty());
+            if has_parts && choice.subcomponents.is_empty() {
+                entry.insert("subcomponents".into(), Value::Sequence(Vec::new()));
             }
             entries.insert(Value::String(id.clone()), Value::Mapping(entry));
         }
@@ -1817,6 +1891,122 @@ mod tests {
         assert_eq!(two[0].requirements(&two), ["b"]);
         let three = looped([&["b"], &["c"], &["a"]]);
         assert_eq!(three[0].requirements(&three), ["c", "b"]);
+    }
+
+    #[test]
+    fn hosting_is_a_component_without_a_container_or_networks() {
+        let hosting = find(HOSTING).unwrap();
+        assert_eq!(hosting.name(), "Hosting");
+        assert_eq!(
+            hosting.description(),
+            "Manage IIS 4 web and FTP hosting on your NT4 servers"
+        );
+        assert_eq!(hosting.requires, ["nt4-domain"]);
+        assert!(!hosting.required && !hosting.attaches() && !hosting.own_address());
+        assert_eq!((hosting.attach_min, hosting.attach_max), (0, Some(0)));
+        assert!(hosting.ports.is_empty() && hosting.roles.is_empty() && !hosting.netbios);
+        assert_eq!(hosting.needs(), "NT4 Server");
+        // no docker of its own: it gets nt4-domain's, through nt4-domain
+        assert_eq!(hosting.requirements(&catalogue()), ["docker", "nt4-domain"]);
+        let parts: Vec<_> = hosting
+            .subcomponents
+            .iter()
+            .map(|p| (p.id, p.name, p.default))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("iis", "IIS web and FTP", true),
+                ("frontpage", "FrontPage Server Extensions", false)
+            ]
+        );
+        assert_eq!(hosting.default_subcomponents(), ["iis"]);
+    }
+
+    #[test]
+    fn hosting_without_the_nt4_server_is_refused_and_with_it_needs_no_network() {
+        let alone = with(&[(HOSTING, vec![])]);
+        let errors = messages(&alone);
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("Hosting needs NT4 Server")),
+            "{errors:?}"
+        );
+        let both = with(&[
+            ("nt4-domain", vec![at("retronet", None)]),
+            (HOSTING, vec![]),
+        ]);
+        assert_eq!(messages(&both), Vec::<String>::new());
+        // a network on it is refused like on the gateway
+        let wired = with(&[
+            ("nt4-domain", vec![at("retronet", None)]),
+            (HOSTING, vec![at("retronet", None)]),
+        ]);
+        assert!(messages(&wired)
+            .iter()
+            .any(|m| m.contains("joins no network")));
+    }
+
+    #[test]
+    fn iis_presets_need_hosting_on_with_its_iis_part() {
+        let mut selection = with(&[("nt4-domain", vec![at("retronet", None)])]);
+        assert_eq!(selection.iis_allowed(), Err(IIS_REFUSED));
+        assert!(IIS_REFUSED.contains("Hosting") && IIS_REFUSED.contains("(iis)"));
+        let hosting = |parts: &[&str]| Choice {
+            subcomponents: parts.iter().map(|p| p.to_string()).collect(),
+            ..Choice::default()
+        };
+        selection.enabled.insert(HOSTING.into(), hosting(&[]));
+        assert_eq!(selection.iis_allowed(), Err(IIS_REFUSED));
+        selection
+            .enabled
+            .insert(HOSTING.into(), hosting(&["frontpage"]));
+        assert_eq!(selection.iis_allowed(), Err(IIS_REFUSED));
+        selection.enabled.insert(HOSTING.into(), hosting(&["iis"]));
+        assert_eq!(selection.iis_allowed(), Ok(()));
+        // read from the settings the way the server does
+        let on = Settings::parse(
+            "components:\n  nt4-domain: {}\n  hosting:\n    subcomponents: [iis]\n",
+        )
+        .unwrap();
+        assert_eq!(Selection::from_settings(&on).unwrap().iis_allowed(), Ok(()));
+        let off = Settings::parse(
+            "components:\n  hosting:\n    enabled: false\n    subcomponents: [iis]\n",
+        )
+        .unwrap();
+        assert!(Selection::from_settings(&off)
+            .unwrap()
+            .iis_allowed()
+            .is_err());
+        assert!(Selection::from_settings(&Settings::empty())
+            .unwrap()
+            .iis_allowed()
+            .is_err());
+        // an entry that lists no parts runs the default ones, `{}` and null alike
+        for text in [
+            "components:\n  nt4-domain: {}\n  hosting: {}\n",
+            "components:\n  nt4-domain: {}\n  hosting:\n",
+        ] {
+            let bare = Settings::parse(text).unwrap();
+            assert_eq!(
+                Selection::from_settings(&bare).unwrap().iis_allowed(),
+                Ok(())
+            );
+        }
+        // only hosting takes its default parts this way; other components keep an empty list
+        let bare = Settings::parse("components:\n  nt4-domain: {}\n  hosting: {}\n").unwrap();
+        assert!(!Selection::from_settings(&bare)
+            .unwrap()
+            .has_part("nt4-domain", "domain-controller"));
+        // an explicit empty list stays empty
+        let none =
+            Settings::parse("components:\n  nt4-domain: {}\n  hosting: {subcomponents: []}\n")
+                .unwrap();
+        assert!(Selection::from_settings(&none)
+            .unwrap()
+            .iis_allowed()
+            .is_err());
     }
 
     #[test]
