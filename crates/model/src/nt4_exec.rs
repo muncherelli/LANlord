@@ -48,6 +48,9 @@ pub fn check_command(command: &str) -> Result<(), &'static str> {
 /// listing (`| findstr ...`) exits with the code of `findstr` (0 when lines are left, 1 when
 /// none are), not of `cscript`: the pipe is the last command of the batch file, and cmd on nt 4
 /// has no way to keep the first command's code without writing the unfiltered listing to disk.
+/// likewise `iisadmin-start` exits with the code of its closing `findstr` (a failed `net start`
+/// is masked), and `startweb` and `stopweb` with the code of the `adsutil GET` that reads the
+/// site's state back, not of the script that started or stopped it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub id: &'static str,
@@ -72,12 +75,34 @@ macro_rules! preset {
     };
 }
 
+/// the start or stop preset of a service: `service_preset!(start, "w3svc", "web")`.
+macro_rules! service_preset {
+    (start, $service:expr, $what:expr) => {
+        preset!(
+            concat!($service, "-start"),
+            concat!("Start the ", $what, " service"),
+            concat!("net start ", $service),
+            [],
+            true
+        )
+    };
+    (stop, $service:expr, $what:expr) => {
+        preset!(
+            concat!($service, "-stop"),
+            concat!("Stop the ", $what, " service"),
+            concat!("net stop ", $service),
+            [],
+            true
+        )
+    };
+}
+
 /// every preset, read-only ones first.
 pub const PRESETS: &[Preset] = &[
     preset!(
         "services-status",
         "IIS service status",
-        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing""#,
+        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"Simple Mail""#,
         [],
         false
     ),
@@ -119,42 +144,29 @@ pub const PRESETS: &[Preset] = &[
     ),
     preset!("ver", "Windows version", "ver", [], false),
     preset!("ipconfig", "Network settings", "ipconfig /all", [], false),
+    service_preset!(start, "w3svc", "web"),
+    service_preset!(stop, "w3svc", "web"),
+    service_preset!(start, "msftpsvc", "FTP"),
+    service_preset!(stop, "msftpsvc", "FTP"),
+    service_preset!(start, "smtpsvc", "SMTP"),
+    service_preset!(stop, "smtpsvc", "SMTP"),
     preset!(
-        "w3svc-start",
-        "Start the web service",
-        "net start w3svc",
+        "smtpsvc-restart",
+        "Restart the SMTP service",
+        "net stop smtpsvc & net start smtpsvc",
         [],
         true
     ),
-    preset!(
-        "w3svc-stop",
-        "Stop the web service",
-        "net stop w3svc",
-        [],
-        true
-    ),
-    preset!(
-        "msftpsvc-start",
-        "Start the FTP service",
-        "net start msftpsvc",
-        [],
-        true
-    ),
-    preset!(
-        "msftpsvc-stop",
-        "Stop the FTP service",
-        "net stop msftpsvc",
-        [],
-        true
-    ),
+    // `&` runs the next command whatever the last one returned, so a service that is not
+    // installed ("service name is invalid") does not stop the rest; the listing ends it
     preset!(
         "iisadmin-start",
-        "Start the IIS admin service",
-        "net start iisadmin",
+        "Start the IIS admin service and its dependents",
+        r#"net start iisadmin & net start w3svc & net start msftpsvc & net start smtpsvc & net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"Simple Mail""#,
         [],
         true
     ),
-    // iisadmin has dependents (web, ftp): /y stops them too
+    // iisadmin has dependents (web, ftp, smtp): /y stops them too
     preset!(
         "iisadmin-stop",
         "Stop the IIS admin service and its dependents",
@@ -165,14 +177,14 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "startweb",
         "Start a web site",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\startweb.vbs -a {site}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\startweb.vbs -a {site} & cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs GET W3SVC/{site}/ServerState",
         ["site"],
         true
     ),
     preset!(
         "stopweb",
         "Stop a web site",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\stopweb.vbs -a {site}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\stopweb.vbs -a {site} & cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs GET W3SVC/{site}/ServerState",
         ["site"],
         true
     ),
@@ -486,8 +498,13 @@ mod tests {
     fn preset_ids_are_unique_and_templates_match_their_arguments() {
         for (i, preset) in PRESETS.iter().enumerate() {
             assert!(PRESETS[i + 1..].iter().all(|p| p.id != preset.id));
-            let placeholders = preset.template.matches('{').count();
-            assert_eq!(placeholders, preset.args.len(), "{}", preset.id);
+            // a name may appear more than once (the site of startweb is also read back)
+            let named: usize = preset
+                .args
+                .iter()
+                .map(|name| preset.template.matches(&format!("{{{name}}}")).count())
+                .sum();
+            assert_eq!(named, preset.template.matches('{').count(), "{}", preset.id);
             for name in preset.args {
                 assert!(preset.template.contains(&format!("{{{name}}}")));
             }
@@ -510,6 +527,23 @@ mod tests {
             render("iisadmin-stop", &[]).unwrap(),
             "net stop iisadmin /y"
         );
+        assert_eq!(
+            render("smtpsvc-restart", &[]).unwrap(),
+            "net stop smtpsvc & net start smtpsvc"
+        );
+        let up = render("iisadmin-start", &[]).unwrap();
+        for service in ["iisadmin", "w3svc", "msftpsvc", "smtpsvc"] {
+            assert!(up.contains(&format!("net start {service}")), "{service}");
+        }
+        assert!(!up.contains("&&"));
+        assert!(render("services-status", &[])
+            .unwrap()
+            .contains("Simple Mail"));
+        let web = render("startweb", &args(&["1"])).unwrap();
+        assert!(web.ends_with("adsutil.vbs GET W3SVC/1/ServerState"));
+        assert!(render("stopweb", &args(&["2"]))
+            .unwrap()
+            .ends_with("W3SVC/2/ServerState"));
     }
 
     #[test]
@@ -541,7 +575,77 @@ mod tests {
         assert!(ADMIN.ends_with(r"inetsrv\adminsamples"));
         for preset in PRESETS.iter().filter(|p| p.template.contains("cscript")) {
             assert!(preset.template.starts_with(ADMIN), "{}", preset.id);
+            // every script named is one in adminsamples
+            let scripts = preset.template.matches("cscript").count();
+            assert_eq!(
+                scripts,
+                preset.template.matches(ADMIN).count(),
+                "{}",
+                preset.id
+            );
         }
+    }
+
+    /// the metabase properties a preset may GET, by the last segment of the path.
+    const GET_ALLOWED: &[&str] = &["ServerState", "ServerBindings"];
+
+    /// why a template could print a password property, or `Ok`. every command of the template
+    /// (they are joined with `&`) is looked at: a GET must name an allowed property, an ENUM
+    /// must end in [`FILTER`], and `Pass` may only appear inside [`FILTER`].
+    fn password_problem(template: &str) -> Result<(), String> {
+        if template.replace(FILTER, "").to_lowercase().contains("pass") {
+            return Err("names a password outside the filter".into());
+        }
+        for command in template.split('&') {
+            let words: Vec<&str> = command.split_whitespace().collect();
+            for (i, word) in words.iter().enumerate() {
+                match *word {
+                    verb if verb.eq_ignore_ascii_case("GET") => {
+                        let path = words.get(i + 1).ok_or("GET without a path")?;
+                        let last = path.rsplit('/').next().unwrap_or_default();
+                        if !GET_ALLOWED.contains(&last) {
+                            return Err(format!("GET of {last}"));
+                        }
+                    }
+                    verb if verb.eq_ignore_ascii_case("ENUM")
+                        && !command.trim_end().ends_with(FILTER) =>
+                    {
+                        return Err("ENUM without the filter".into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn no_preset_reads_a_password() {
+        for preset in PRESETS {
+            assert_eq!(password_problem(preset.template), Ok(()), "{}", preset.id);
+        }
+    }
+
+    #[test]
+    fn the_password_check_rejects_bad_templates() {
+        let tool = r"cscript //nologo x\adsutil.vbs";
+        let get = format!("{tool} GET W3SVC/1/");
+        assert!(password_problem(&format!("{get}ServerState")).is_ok());
+        for bad in [
+            format!("{get}ServerState & {get}AnonymousUserPass"),
+            format!("{get}AnonymousUserPass"),
+            format!("{tool} get W3SVC/1/AnonymousUserPass"),
+            format!("{tool} enum W3SVC"),
+            format!("{get}ServerState/../x"),
+            format!("{get}ServerState & echo PASSWORD"),
+            format!("{tool} ENUM W3SVC"),
+            format!("{tool} ENUM W3SVC & echo x{FILTER}"),
+            format!("{tool} ENUM W3SVC/1 & {get}ServerState{FILTER}"),
+        ] {
+            assert!(password_problem(&bad).is_err(), "{bad}");
+        }
+        let ok = format!("{tool} ENUM W3SVC{FILTER}");
+        assert!(password_problem(&ok).is_ok());
     }
 
     #[test]
