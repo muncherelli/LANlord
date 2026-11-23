@@ -802,6 +802,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn rotate_stops_at_a_failing_second_controller_and_remembers_only_the_first() {
+        use crate::engine::host::FakeHost;
+        use crate::engine::{state::State, Secret};
+        use crate::testgw::{identity, no_password, Gateway};
+        let two = "nt4-servers:\n  - {name: lab, role: pdc, domain: LAB, netbios_name: ONE, network: lab}\n  - {name: lab2, role: pdc, domain: LABTWO, netbios_name: TWO, network: lab}\ndomains:\n  LAB: {}\n  LABTWO: {}\n";
+        let (gw, id) = (Gateway::new("exec-second"), identity("exec-second"));
+        gw.seed_plain(two);
+        gw.fail_exec_on("lanlord-nt4-lab2 ");
+        let engine = FakeHost::new();
+        let error = rotate_with(
+            &gw.session,
+            "gw",
+            &id,
+            &mut no_password,
+            Some((&engine, "/s")),
+        )
+        .unwrap_err()
+        .to_string();
+        let new = sealed_password(&gw, &id).unwrap();
+        // the error says what failed, not the password, and it does not name the controller
+        assert!(error.contains("could not set"), "{error}");
+        assert!(!error.contains(&new), "{error}");
+        // the first controller was set and is remembered; the second is not
+        let (argv, _) = gw.exec_calls();
+        assert_eq!(argv.len(), 1, "{argv:?}");
+        assert!(
+            argv[0].contains("lanlord-nt4-lab lanlord-user exec"),
+            "{argv:?}"
+        );
+        let state = State::load(&engine, "/s", false).unwrap();
+        assert!(state.is_current("lab/exec", &Secret::new(&new)));
+        assert!(!state.is_current("lab2/exec", &Secret::new(&new)));
+        assert!(!engine.text("/s/state.json").unwrap().contains(&new));
+    }
+
+    #[test]
     fn rotate_without_settings_says_so() {
         use crate::testgw::{identity, no_password, Gateway};
         let (gw, id) = (Gateway::new("exec-none"), identity("exec-none"));
