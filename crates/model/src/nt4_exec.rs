@@ -102,7 +102,7 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "services-status",
         "IIS service status",
-        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"Simple Mail""#,
+        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"SMTP Service""#,
         [],
         false
     ),
@@ -162,7 +162,7 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "iisadmin-start",
         "Start the IIS admin service and its dependents",
-        r#"net start iisadmin & net start w3svc & net start msftpsvc & net start smtpsvc & net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"Simple Mail""#,
+        r#"net start iisadmin & net start w3svc & net start msftpsvc & net start smtpsvc & net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"SMTP Service""#,
         [],
         true
     ),
@@ -538,7 +538,7 @@ mod tests {
         assert!(!up.contains("&&"));
         assert!(render("services-status", &[])
             .unwrap()
-            .contains("Simple Mail"));
+            .contains("SMTP Service"));
         let web = render("startweb", &args(&["1"])).unwrap();
         assert!(web.ends_with("adsutil.vbs GET W3SVC/1/ServerState"));
         assert!(render("stopweb", &args(&["2"]))

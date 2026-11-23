@@ -92,7 +92,9 @@ fn the_wizard_adds_a_component_and_its_icon_appears() {
         .components
         .update(Msg::Toggle(row), &desktop.services, "me@gw");
     // a click is dropped when a background read grabs the host between the probe and the
-    // click, so each button is pressed until the wizard has moved on, not once
+    // click, so each button is pressed until the wizard has moved on, not once. Finish is
+    // gated on idle && !busy, so it can miss a click while a background read runs; Next on
+    // the Attach step waits for the networks to be read again after invalidate()
     press_until(&mut desktop, &ctx, "Next >", |d| {
         d.components.step == Step::Attach
     });

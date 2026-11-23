@@ -408,7 +408,8 @@ fn valid_container(name: &str) -> bool {
 
 /// the machine accounts of each domain controller's container, without the `$`. a container
 /// whose name is not valid, or whose list fails (not applied yet, stopped), is skipped with a
-/// warning naming it; it is an error only when no container can be listed.
+/// warning naming it; it is an error only when no container can be listed or when root access
+/// fails.
 fn machines_by_container(
     session: &Session,
     ask: AskPassword,
