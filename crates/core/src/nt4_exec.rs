@@ -1102,13 +1102,21 @@ pub(crate) mod tests {
         let reset_error = crate::nt4::reset_machine(&gw.session, "ws1", &mut no_password)
             .unwrap_err()
             .to_string();
-        assert!(reset_error.contains("more than one domain"), "{reset_error}");
+        assert!(
+            reset_error.contains("more than one domain"),
+            "{reset_error}"
+        );
         assert!(gw.calls().is_empty());
     }
 
     #[test]
     fn only_the_engines_container_names_are_valid() {
-        for good in ["lanlord-nt4", "lanlord-nt4-lab", "lanlord-nt4-a-b", "lanlord-nt4-7"] {
+        for good in [
+            "lanlord-nt4",
+            "lanlord-nt4-lab",
+            "lanlord-nt4-a-b",
+            "lanlord-nt4-7",
+        ] {
             assert!(valid_container(good), "{good}");
         }
         for bad in [
