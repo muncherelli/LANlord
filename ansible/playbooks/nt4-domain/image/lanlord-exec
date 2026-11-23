@@ -153,10 +153,12 @@ fail() {
 }
 
 # the last meaningful lines of a tool's output: samba's deprecation warnings, the extended security
-# notice and blank lines are dropped so the real error is not cut off
+# notice and blank lines are dropped so the real error is not cut off. "no output" when nothing is left
 excerpt() {
-  grep -v -e 'lpcfg_do_global_parameter: WARNING' -e 'does not support EXTENDED_SECURITY' "$1" 2>/dev/null |
-    grep -v '^[[:space:]]*$' | tail -n 3 | tr '\n' ' ' | head -c 300
+  local text
+  text=$(cat "$@" 2>/dev/null | grep -v -e 'lpcfg_do_global_parameter: WARNING' -e 'does not support EXTENDED_SECURITY' |
+    grep -v '^[[:space:]]*$' | tail -n 3 | tr '\n' ' ' | head -c 300)
+  echo "${text:-no output}"
 }
 
 smb() { smbclient "//$addr/ADMIN\$" -A "$work/auth" "${SMB_OPT[@]}" "$@"; }
@@ -313,7 +315,7 @@ ACL_ACES=()
 read_acl() {
   local line
   acl "$1" "$2" --numeric >"$work/acl.out" 2>"$work/acl.err" ||
-    fail "could not read the acl of $3 on $machine: $(excerpt "$work/acl.err") $(excerpt "$work/acl.out")"
+    fail "could not read the acl of $3 on $machine: $(excerpt "$work/acl.err" "$work/acl.out")"
   grep -q 'NT_STATUS_' "$work/acl.out" &&
     fail "could not read the acl of $3 on $machine: $(excerpt "$work/acl.out")"
   ACL_OWNER=

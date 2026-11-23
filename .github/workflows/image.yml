@@ -43,6 +43,7 @@ on:
       - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
       - tools/test-nt4-join.sh
+      - ansible/tests/test_nt4_exec.py
       - .github/images.json
   pull_request:
     paths:
@@ -51,6 +52,7 @@ on:
       - ansible/playbooks/time/image/**
       - .github/workflows/image.yml
       - tools/test-nt4-join.sh
+      - ansible/tests/test_nt4_exec.py
       - .github/images.json
   workflow_dispatch:
     inputs:
@@ -232,6 +234,37 @@ jobs:
           build-args: |
             IMAGE_VERSION=${{ matrix.version }}
             IMAGE_REVISION=${{ matrix.revision }}
+
+  # the exec script runs on busybox in the image, so its tests run on that busybox too: the stubs go first in
+  # PATH and everything else (flock, stat, tail, head, tr, sha256sum...) is busybox. this is a job of its own
+  # because the build job only runs when an image input changed, and the script is not one (it is mounted, not
+  # baked in). the container is the alpine the images are built on (the pin in the Dockerfile, so it is the same
+  # busybox) with bash and python3 added: the script needs bash and the tests need python3; no samba build
+  # (--init: the tests orphan processes and check they are gone, so pid 1 must reap them)
+  exec-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: exec script tests on busybox
+        shell: bash
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          # fail open: when the diff cannot be made the tests run
+          if files=$(git diff --name-only "origin/$BASE...HEAD"); then
+            grep -qxE 'ansible/playbooks/nt4-domain/image/(lanlord-exec|Dockerfile)|ansible/tests/test_nt4_exec.py|\.github/workflows/image.yml' <<<"$files" || {
+              echo "::notice::the exec script, its tests and the nt4 image are unchanged"
+              exit 0
+            }
+          else
+            echo "::warning::could not diff, running the tests"
+          fi
+          alpine=$(sed -n 's/^ARG ALPINE_IMAGE=//p' ansible/playbooks/nt4-domain/image/Dockerfile)
+          docker run --rm --init -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo "$alpine" \
+            sh -c 'apk add --no-cache bash python3 >/dev/null && python3 -m unittest discover -s ansible/tests -p test_nt4_exec.py'
 
   # one job per image and architecture that needs a build
   publish:

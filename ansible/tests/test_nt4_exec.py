@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -123,10 +124,11 @@ case $name in
         [[ -e $STUBS/start_error ]] && { echo "Query status request failed. [WERR_ACCESS_DENIED]"; exit 1; }
         [[ -e $STUBS/start_io_timeout ]] && io_timeout=1
         [[ -e $STUBS/slow ]] && { echo $$ > "$STUBS/startpid"; sleep 30 & echo $! > "$STUBS/sleeppid"; touch "$STUBS/ready"; wait; }
+        # the files are named after the service, not the first bat found (earlier runs leave theirs)
         [[ -e $STUBS/hang ]] || {
-          [[ -e $STUBS/out ]] && cp "$STUBS/out" "$STUBS/cdrive/lanlord/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.out/')"
-          [[ -e $STUBS/err ]] && cp "$STUBS/err" "$STUBS/cdrive/lanlord/$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.err/')"
-          rcname=$(ls "$STUBS/bats" | head -1 | sed 's/.bat$/.rc/')
+          [[ -e $STUBS/out ]] && cp "$STUBS/out" "$STUBS/cdrive/lanlord/ll-${4#LANlordExec}.out"
+          [[ -e $STUBS/err ]] && cp "$STUBS/err" "$STUBS/cdrive/lanlord/ll-${4#LANlordExec}.err"
+          rcname=ll-${4#LANlordExec}.rc
           if [[ -e $STUBS/late ]]; then
             ( sleep 1.5; cp "$STUBS/rc" "$STUBS/cdrive/lanlord/$rcname" ) >/dev/null 2>&1 &
           else
@@ -697,6 +699,18 @@ class LanlordExecTest(unittest.TestCase):
             self.assertIn("client use spnego=no", c)
             self.assertIn("client ipc signing=if_required", c)
 
+    def test_a_failed_tool_with_nothing_to_show_says_no_output(self):
+        for log in ("", "\n  \nlpcfg_do_global_parameter: WARNING: the old option\n"):
+            with self.subTest(log=log):
+                self.scenario(no_share="")
+                path = os.path.join(self.stubs, "bin", "rpcclient")
+                with open(path, "w") as f:
+                    f.write("#!/bin/bash\nprintf '%s' " + shlex.quote(log) + " >&2\nexit 1\n")
+                os.chmod(path, 0o755)
+                out = self.run_exec()
+                self.assertEqual(out.returncode, 1)
+                self.assertTrue(self.error(out).endswith("no output"), self.error(out))
+
     def test_a_sign_in_failure_is_not_reported_as_a_folder_problem(self):
         path = os.path.join(self.stubs, "bin", "smbclient")
         with open(path) as f:
@@ -1067,7 +1081,7 @@ class LanlordExecTest(unittest.TestCase):
         self.env["LANLORD_EXEC_LOG_MAX"] = "300"
         for n in range(8):
             out = self.run_exec(command="echo run%d" % n)
-            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(out.returncode, 0, out.stderr + out.stdout)
         old = self.log + ".1"
         self.assertTrue(os.path.exists(old))
         self.assertFalse(os.path.exists(self.log + ".2"))
@@ -1158,6 +1172,8 @@ class LanlordExecTest(unittest.TestCase):
         )
         proc.stdin.write(json.dumps(request))
         proc.stdin.close()
+        # communicate below must not flush the closed pipe (python 3.12 raises)
+        proc.stdin = None
         # the start stub touches "ready" once it is running, so the kill comes after the service exists
         ready = os.path.join(self.stubs, "ready")
         deadline = time.time() + 30
