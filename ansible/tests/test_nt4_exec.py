@@ -1258,5 +1258,46 @@ class SvcDockerfileTest(unittest.TestCase):
         self.assertIn("exit 1; fi", self.text)
 
 
+class IisPresetFilterTest(unittest.TestCase):
+    """the findstr filter of the read-only listing presets, tried on the regex it carries."""
+
+    def setUp(self):
+        src = os.path.join(os.path.dirname(__file__), "..", "..", "crates", "model", "src", "nt4_exec.rs")
+        with open(src) as f:
+            self.text = f.read()
+        found = re.findall(r'\| findstr /v /r /i /c:"([^"]+)""#', self.text)
+        self.assertGreaterEqual(len(found), 3)
+        self.assertEqual(len(set(found)), 1)
+        self.pattern = re.compile(found[0], re.I)
+
+    def kept(self, lines):
+        # findstr /v keeps the lines the pattern does not match
+        return [line for line in lines if not self.pattern.search(line)]
+
+    def test_property_lines_with_pass_are_dropped_in_any_case(self):
+        lines = [
+            'AnonymousUserPass : (STRING) "x"',
+            '  WAMUserPass   : (STRING) "x"',
+            'password : (EXPANDSZ) "x"',
+            'UNCPassword: (STRING) "x"',
+        ]
+        self.assertEqual(self.kept(lines), [])
+
+    def test_headers_and_other_properties_survive(self):
+        lines = [
+            "[/W3SVC/1/ROOT/Passport]",
+            'ServerComment : (STRING) "a pass b"',
+            "KeyType : (STRING)",
+        ]
+        self.assertEqual(self.kept(lines), lines)
+
+    def test_the_filter_is_the_last_stage_so_the_exit_code_is_findstrs(self):
+        # documented: the .rc holds the code of the last command of the pipe
+        self.assertIn("exits with the code of `findstr`", self.text)
+        for line in self.text.splitlines():
+            if "adsutil.vbs ENUM" in line:
+                self.assertRegex(line, r"adsutil\.vbs ENUM \S+ \| findstr ")
+
+
 if __name__ == "__main__":
     unittest.main()
