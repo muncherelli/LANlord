@@ -235,7 +235,6 @@ jobs:
             IMAGE_VERSION=${{ matrix.version }}
             IMAGE_REVISION=${{ matrix.revision }}
 
-  # one job per image and architecture that needs a build
   # the exec script runs on busybox in the image, so its tests run on that busybox too: the stubs go first in
   # PATH and everything else (flock, stat, tail, head, tr, sha256sum...) is busybox. this is a job of its own
   # because the build job only runs when an image input changed, and the script is not one (it is mounted, not
@@ -250,16 +249,24 @@ jobs:
         with:
           fetch-depth: 0
       - name: exec script tests on busybox
+        shell: bash
+        env:
+          BASE: ${{ github.base_ref }}
         run: |
-          if ! git diff --name-only "origin/${{ github.base_ref }}...HEAD" |
-            grep -qxE 'ansible/playbooks/nt4-domain/image/(lanlord-exec|Dockerfile)|ansible/tests/test_nt4_exec.py|\.github/workflows/image.yml'; then
-            echo "::notice::the exec script, its tests and the nt4 image are unchanged"
-            exit 0
+          # fail open: when the diff cannot be made the tests run
+          if files=$(git diff --name-only "origin/$BASE...HEAD"); then
+            grep -qxE 'ansible/playbooks/nt4-domain/image/(lanlord-exec|Dockerfile)|ansible/tests/test_nt4_exec.py|\.github/workflows/image.yml' <<<"$files" || {
+              echo "::notice::the exec script, its tests and the nt4 image are unchanged"
+              exit 0
+            }
+          else
+            echo "::warning::could not diff, running the tests"
           fi
           alpine=$(sed -n 's/^ARG ALPINE_IMAGE=//p' ansible/playbooks/nt4-domain/image/Dockerfile)
           docker run --rm --init -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo "$alpine" \
             sh -c 'apk add --no-cache bash python3 >/dev/null && python3 -m unittest discover -s ansible/tests -p test_nt4_exec.py'
 
+  # one job per image and architecture that needs a build
   publish:
     if: github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.builds == 'true'
     needs: versions
