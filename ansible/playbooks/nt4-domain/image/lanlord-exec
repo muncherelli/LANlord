@@ -34,6 +34,11 @@
 #   lanlord-exec sweep --machine NAME [--address ADDR]
 #                             stdin: {"user":"...","password":"..."}
 #                             remove services and files that an earlier run left behind
+# a run may put files on the machine: stdin then has the json on its first line, and after it one line
+# for each file, "file script <ext> <base64>" (at most one) or "file data - <base64>" (at most 4, 1 MiB
+# each). they are staged as ll-<id>.script.<ext> and ll-<id>.data<N> in the same folder, checked and
+# deleted like the other ll-<id>.* files, and the command sees them as %LL_SCRIPT% and %LL_DATA<N>%.
+# the gateway only sends scripts of its whitelist.
 # stdout is one json object per line after the LANLORD_EVENT marker:
 #   {"stream":"out"|"err","data":"<base64>"}   new bytes of the command's output
 #   {"exit":N} | {"timed_out":true} | {"error":"..."}   the last line of a run
@@ -90,6 +95,13 @@ addr=
 machine=
 run_id=
 made_bat=0
+# the whitelisted script and data files a run puts on the machine: their local paths in $work and
+# their names on the machine (without the ll-<id>. prefix) as the request gives them, then the full
+# names once the run id is known
+PUT_LOCAL=()
+PUT_SUFFIX=()
+PUT_ENV=()
+STAGED=()
 made_service=0
 start_pid=
 final_sent=0
@@ -204,7 +216,10 @@ cleanup() {
     fi
     if ((made_bat)); then
       local f=ll-$run_id
-      local dels="del $f.exe; del $f.bat; del $f.cmd.bat; del $f.out; del $f.err; del $f.rc"
+      local dels="del $f.exe; del $f.bat; del $f.cmd.bat; del $f.out; del $f.err; del $f.rc" staged
+      for staged in "${STAGED[@]}"; do
+        dels+="; del $staged"
+      done
       smbd -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
     fi
   fi
@@ -456,7 +471,7 @@ prepare_dir() {
 # there yet, they are uploaded after this
 sweep_folder() {
   # a listing line is "  name  ATTRS  size  date", ATTRS being letters such as A, D, DA or AH (or empty)
-  local line name dels= re='^[[:space:]]*(ll-[0-9a-f]{8}\.(exe|bat|cmd\.bat|out|err|rc))[[:space:]]+([A-Za-z]*)[[:space:]]+[0-9]'
+  local line name dels= re='^[[:space:]]*(ll-[0-9a-f]{8}\.(exe|bat|cmd\.bat|out|err|rc|script\.[a-z0-9]{1,4}|data[1-4]))[[:space:]]+([A-Za-z]*)[[:space:]]+[0-9]'
   smbd -c "cd $REMOTE_DIR; ls ll-*" >"$work/ls.log" 2>&1
   while IFS= read -r line; do
     line=${line%$'\r'}
@@ -475,7 +490,7 @@ verify_upload() {
   check_parent
   read_acl "$DRIVE\$" "$REMOTE_DIR" "$WIN_DIR"
   check_private "$WIN_DIR" 0
-  for f in "$bat.exe" "$bat.bat" "$bat.cmd.bat"; do
+  for f in "$bat.exe" "$bat.bat" "$bat.cmd.bat" "${STAGED[@]}"; do
     read_acl "$DRIVE\$" "$REMOTE_DIR\\$f" "$WIN_DIR\\$f"
     check_private "$WIN_DIR\\$f" 1
   done
@@ -496,7 +511,7 @@ sweep_stale() {
   local dels="del $root.exe; del $root.bat; del $root.cmd.bat; del $root.out; del $root.err; del $root.rc"
   smb -c "$dels; cd Temp; $dels; cd lanlord; $dels" >/dev/null 2>&1
   # the work folder is swept by sweep_folder in a run, after it is verified; a sweep has no verification
-  [[ $mode == sweep && -n $DRIVE ]] && smbd -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
+  [[ $mode == sweep && -n $DRIVE ]] && smbd -c "cd $REMOTE_DIR; $dels; del $root.script.*; del $root.data?" >/dev/null 2>&1
   SWEPT=$n
 }
 
@@ -535,8 +550,11 @@ cat >"$work/in"
 if [[ $(tr -d '\0' <"$work/in" | wc -c) != "$(wc -c <"$work/in")" ]]; then
   fail "the request holds a nul byte"
 fi
-parse_json "$(cat "$work/in")" || fail "the request is not a json object of strings"
-rm -f "$work/in"
+# the json is the first line; the lines after it (a run only) are files to put on the machine
+head -n 1 "$work/in" >"$work/in.json"
+tail -n +2 "$work/in" >"$work/in.files"
+parse_json "$(cat "$work/in.json")" || fail "the request is not a json object of strings"
+rm -f "$work/in" "$work/in.json"
 user=${J[user]:-}
 password=${J[password]:-}
 command=${J[command]:-}
@@ -554,6 +572,47 @@ if [[ $mode == run ]]; then
   [[ $command != *[$'\r\n']* ]] || refuse "the command holds a line break"
   ((${#command} <= MAX_COMMAND)) || refuse "the command is longer than $MAX_COMMAND characters"
   [[ -f $SVC_EXE ]] || fail "the service helper $SVC_EXE is missing from the image; update the nt4-domain image"
+fi
+
+# the files that follow the json line: "file script <ext> <base64>" (at most one, a short extension
+# such as vbs) and "file data - <base64>" (at most 4), each at most 1 MiB. the service never runs a
+# script that is not in the request, and the gateway only sends scripts of its whitelist
+read_files() {
+  local line tag kind ext data scripts=0 datas=0 local_name size
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -n $line ]] || continue
+    read -r tag kind ext data <<<"$line"
+    [[ $tag == file ]] || refuse "the request holds a malformed file line"
+    [[ -z $(printf '%s' "$data" | tr -d 'A-Za-z0-9+/=') ]] || refuse "a file is not base64"
+    case $kind in
+      script)
+        [[ $ext =~ ^[a-z0-9]{1,4}$ ]] || refuse "the script extension is not valid"
+        [[ -n $data ]] || refuse "the request holds a malformed file line"
+        ((scripts == 0)) || refuse "only one script may be put"
+        scripts=1
+        PUT_SUFFIX+=("script.$ext")
+        PUT_ENV+=("LL_SCRIPT")
+        ;;
+      data)
+        [[ $ext == - ]] || refuse "a data file has no extension"
+        ((datas < 4)) || refuse "at most 4 data files may be put"
+        datas=$((datas + 1))
+        PUT_SUFFIX+=("data$datas")
+        PUT_ENV+=("LL_DATA$datas")
+        ;;
+      *) refuse "the request holds a malformed file line" ;;
+    esac
+    local_name="$work/put.${#PUT_LOCAL[@]}"
+    printf '%s' "$data" | base64 -d >"$local_name" 2>/dev/null || refuse "a file is not base64"
+    size=$(wc -c <"$local_name")
+    ((size <= 1048576)) || refuse "a file is longer than 1 MiB"
+    PUT_LOCAL+=("$local_name")
+  done <"$work/in.files"
+}
+if [[ $mode == run ]]; then
+  read_files
+elif [[ -s $work/in.files ]]; then
+  fail "a sweep takes no files"
 fi
 
 # the password file; a DOMAIN\user name is split the way smbclient wants it
@@ -607,7 +666,12 @@ bat=ll-$run_id
 # a chain (a & b) is redirected as a whole. batch-file rules apply, though: a for loop variable needs
 # %%i, not %i. the outer .bat calls it with the output redirected and then writes the exit code
 {
-  printf '@echo off\r\n%s\r\n' "$command"
+  printf '@echo off\r\n'
+  # the machine sees the staged files by these variables
+  for ((i = 0; i < ${#PUT_LOCAL[@]}; i++)); do
+    printf 'set %s=%s\\%s.%s\r\n' "${PUT_ENV[i]}" "$WIN_DIR" "$bat" "${PUT_SUFFIX[i]}"
+  done
+  printf '%s\r\n' "$command"
 } >"$work/$bat.cmd.bat"
 {
   printf '@echo off\r\n'
@@ -617,6 +681,10 @@ bat=ll-$run_id
 } >"$work/$bat.bat"
 made_bat=1
 puts="put $work/$bat.cmd.bat $bat.cmd.bat; put $work/$bat.bat $bat.bat; put $SVC_EXE $bat.exe"
+for ((i = 0; i < ${#PUT_LOCAL[@]}; i++)); do
+  STAGED+=("$bat.${PUT_SUFFIX[i]}")
+  puts+="; put ${PUT_LOCAL[i]} ${STAGED[i]}"
+done
 smbd -c "cd $REMOTE_DIR; $puts" >"$work/put.log" 2>&1 ||
   fail "could not copy the script to $machine: $(excerpt "$work/put.log")"
 # the exit code follows the last command only, so any error line counts (a failed cd included)

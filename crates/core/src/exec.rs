@@ -99,6 +99,44 @@ pub fn machine_preset(
     })
 }
 
+/// the operation that puts the whitelisted `script` and the data files on `machine` and runs it
+/// with `args`; the script name, the arguments and the file count and sizes are checked here, so
+/// a path or a script that is not shipped never leaves the caller.
+pub fn machine_put(
+    machine: &str,
+    script: &str,
+    args: &[String],
+    data: &[Vec<u8>],
+    timeout_secs: u32,
+) -> Result<Operation> {
+    use base64::Engine;
+    use lanlord_model::nt4_exec as model;
+    if !(1..=900).contains(&timeout_secs) {
+        bail!("the timeout must be 1 to 900 seconds");
+    }
+    model::render_put(script, args)
+        .map_err(|reason| anyhow::anyhow!("script {script} {reason}"))?;
+    if data.len() > model::MAX_PUT_FILES {
+        bail!("at most {} data files may be put", model::MAX_PUT_FILES);
+    }
+    if data
+        .iter()
+        .any(|file| file.len() > model::MAX_PUT_FILE_BYTES)
+    {
+        bail!("a data file is longer than 1 MiB");
+    }
+    Ok(Operation::MachinePut {
+        machine: machine.to_string(),
+        script: script.to_string(),
+        args: args.to_vec(),
+        files: data
+            .iter()
+            .map(|file| base64::engine::general_purpose::STANDARD.encode(file))
+            .collect(),
+        timeout_secs,
+    })
+}
+
 /// ask before a preset that changes the machine runs: `yes` skips the question, a read-only
 /// preset never asks. without `yes` the question needs a terminal, so a script cannot answer it.
 /// `confirm` gets the question and answers whether to go on.
@@ -179,6 +217,38 @@ mod tests {
 
     fn words(list: &[&str]) -> Vec<String> {
         list.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn a_put_operation_takes_only_whitelisted_script_names() {
+        let op = machine_put("ws1", "lldump.vbs", &[], &[b"hi".to_vec()], 30).unwrap();
+        assert_eq!(
+            op,
+            Operation::MachinePut {
+                machine: "ws1".into(),
+                script: "lldump.vbs".into(),
+                args: vec![],
+                files: vec!["aGk=".into()],
+                timeout_secs: 30
+            }
+        );
+        for bad in [
+            "../lldump.vbs",
+            "..\\lldump.vbs",
+            "/etc/passwd",
+            "C:\\x.vbs",
+            "nt4-scripts/lldump.vbs",
+            "other.vbs",
+            "",
+        ] {
+            assert!(machine_put("ws1", bad, &[], &[], 30).is_err(), "{bad}");
+        }
+        assert!(machine_put("ws1", "lldump.vbs", &[], &[], 0).is_err());
+        let five = vec![Vec::new(); 5];
+        assert!(machine_put("ws1", "lldump.vbs", &[], &five, 30).is_err());
+        let big = vec![vec![0u8; (1 << 20) + 1]];
+        assert!(machine_put("ws1", "lldump.vbs", &[], &big, 30).is_err());
+        assert!(machine_put("ws1", "lldump.vbs", &words(&["-x"]), &[], 30).is_err());
     }
 
     #[test]

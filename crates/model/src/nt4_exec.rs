@@ -48,6 +48,9 @@ pub fn check_command(command: &str) -> Result<(), &'static str> {
 /// listing (`| findstr ...`) exits with the code of `findstr` (0 when lines are left, 1 when
 /// none are), not of `cscript`: the pipe is the last command of the batch file, and cmd on nt 4
 /// has no way to keep the first command's code without writing the unfiltered listing to disk.
+/// likewise `iisadmin-start` exits with the code of its closing `findstr` (a failed `net start`
+/// is masked), and `startweb` and `stopweb` with the code of the `adsutil GET` that reads the
+/// site's state back, not of the script that started or stopped it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub id: &'static str,
@@ -58,6 +61,9 @@ pub struct Preset {
     pub args: &'static [&'static str],
     /// does it change the machine? a front end asks before running one that does.
     pub mutating: bool,
+    /// the name of a whitelisted script (see [`SCRIPTS`]) that is put on the machine for the run;
+    /// the template then names it as `%LL_SCRIPT%`.
+    pub script: Option<&'static str>,
 }
 
 macro_rules! preset {
@@ -68,7 +74,40 @@ macro_rules! preset {
             template: $template,
             args: &[$($arg),*],
             mutating: $mutating,
+            script: None,
         }
+    };
+    ($id:expr, $label:expr, $template:expr, $script:expr) => {
+        Preset {
+            id: $id,
+            label: $label,
+            template: $template,
+            args: &[],
+            mutating: false,
+            script: Some($script),
+        }
+    };
+}
+
+/// the start or stop preset of a service: `service_preset!(start, "w3svc", "web")`.
+macro_rules! service_preset {
+    (start, $service:expr, $what:expr) => {
+        preset!(
+            concat!($service, "-start"),
+            concat!("Start the ", $what, " service"),
+            concat!("net start ", $service),
+            [],
+            true
+        )
+    };
+    (stop, $service:expr, $what:expr) => {
+        preset!(
+            concat!($service, "-stop"),
+            concat!("Stop the ", $what, " service"),
+            concat!("net stop ", $service),
+            [],
+            true
+        )
     };
 }
 
@@ -77,11 +116,17 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "services-status",
         "IIS service status",
-        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing""#,
+        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"SMTP Service""#,
         [],
         false
     ),
     preset!("net-start", "Running services", "net start", [], false),
+    preset!(
+        "iis-dump",
+        "Dump the IIS metabase",
+        r#"cscript //nologo "%LL_SCRIPT%""#,
+        "lldump.vbs"
+    ),
     preset!(
         "adsutil-enum-w3svc",
         "Web service settings",
@@ -119,42 +164,29 @@ pub const PRESETS: &[Preset] = &[
     ),
     preset!("ver", "Windows version", "ver", [], false),
     preset!("ipconfig", "Network settings", "ipconfig /all", [], false),
+    service_preset!(start, "w3svc", "web"),
+    service_preset!(stop, "w3svc", "web"),
+    service_preset!(start, "msftpsvc", "FTP"),
+    service_preset!(stop, "msftpsvc", "FTP"),
+    service_preset!(start, "smtpsvc", "SMTP"),
+    service_preset!(stop, "smtpsvc", "SMTP"),
     preset!(
-        "w3svc-start",
-        "Start the web service",
-        "net start w3svc",
+        "smtpsvc-restart",
+        "Restart the SMTP service",
+        "net stop smtpsvc & net start smtpsvc",
         [],
         true
     ),
-    preset!(
-        "w3svc-stop",
-        "Stop the web service",
-        "net stop w3svc",
-        [],
-        true
-    ),
-    preset!(
-        "msftpsvc-start",
-        "Start the FTP service",
-        "net start msftpsvc",
-        [],
-        true
-    ),
-    preset!(
-        "msftpsvc-stop",
-        "Stop the FTP service",
-        "net stop msftpsvc",
-        [],
-        true
-    ),
+    // `&` runs the next command whatever the last one returned, so a service that is not
+    // installed ("service name is invalid") does not stop the rest; the listing ends it
     preset!(
         "iisadmin-start",
-        "Start the IIS admin service",
-        "net start iisadmin",
+        "Start the IIS admin service and its dependents",
+        r#"net start iisadmin & net start w3svc & net start msftpsvc & net start smtpsvc & net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"SMTP Service""#,
         [],
         true
     ),
-    // iisadmin has dependents (web, ftp): /y stops them too
+    // iisadmin has dependents (web, ftp, smtp): /y stops them too
     preset!(
         "iisadmin-stop",
         "Stop the IIS admin service and its dependents",
@@ -165,14 +197,14 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "startweb",
         "Start a web site",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\startweb.vbs -a {site}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\startweb.vbs -a {site} & cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs GET W3SVC/{site}/ServerState",
         ["site"],
         true
     ),
     preset!(
         "stopweb",
         "Stop a web site",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\stopweb.vbs -a {site}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\stopweb.vbs -a {site} & cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs GET W3SVC/{site}/ServerState",
         ["site"],
         true
     ),
@@ -221,6 +253,75 @@ const GENERAL: &[&str] = &["net-start", "ver", "ipconfig"];
 /// manage rights on hosting? an unknown id is not: it is refused as unknown before it matters.
 pub fn is_hosting(id: &str) -> bool {
     find(id).is_some() && !GENERAL.contains(&id)
+}
+
+/// a script the repo ships that may be put on a machine; nothing else is ever uploaded as one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Script {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub body: &'static str,
+}
+
+/// the whitelist of scripts a run may put on a machine.
+pub const SCRIPTS: &[Script] = &[Script {
+    name: "lldump.vbs",
+    label: "Dump the IIS metabase as key=value lines",
+    body: include_str!("../nt4-scripts/lldump.vbs"),
+}];
+
+/// the most data files one run may put on a machine.
+pub const MAX_PUT_FILES: usize = 4;
+
+/// the most bytes one data file may have.
+pub const MAX_PUT_FILE_BYTES: usize = 1 << 20;
+
+/// the script with this exact name from the whitelist. a name with a path in it (`/`, `\\`, `..`
+/// or a drive letter) is refused as such, so a traversal never gets as far as a lookup.
+pub fn find_script(name: &str) -> Result<&'static Script, &'static str> {
+    if name.is_empty() || name.len() > MAX_ARG_BYTES {
+        return Err("must be 1 to 64 characters");
+    }
+    if name.contains(['/', '\\', ':']) || name.contains("..") || name.starts_with('.') {
+        return Err("must be a plain script name, not a path");
+    }
+    SCRIPTS
+        .iter()
+        .find(|script| script.name == name)
+        .ok_or("is not a script that may be put on a machine")
+}
+
+/// whether `text` is base64 (standard alphabet, padded) of at most [`MAX_PUT_FILE_BYTES`] bytes.
+pub fn check_file(text: &str) -> Result<(), &'static str> {
+    if text.len() > MAX_PUT_FILE_BYTES.div_ceil(3) * 4 {
+        return Err("is longer than 1 MiB");
+    }
+    // the padding is part of the length, so the decoded size is exact
+    let padding = text.bytes().rev().take_while(|&b| b == b'=').count().min(2);
+    if (text.len() / 4 * 3).saturating_sub(padding) > MAX_PUT_FILE_BYTES {
+        return Err("is longer than 1 MiB");
+    }
+    if !text.len().is_multiple_of(4)
+        || !text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
+    {
+        return Err("must be base64");
+    }
+    Ok(())
+}
+
+/// the command that runs a put script with these arguments. the machine's `%LL_SCRIPT%` is the
+/// staged copy; `%LL_DATA1%` and so on are the data files.
+pub fn render_put(script: &str, args: &[String]) -> Result<String, &'static str> {
+    find_script(script)?;
+    let mut command = String::from(r#"cscript //nologo "%LL_SCRIPT%""#);
+    for arg in args {
+        check_arg(arg)?;
+        command.push(' ');
+        command.push_str(arg);
+    }
+    Ok(command)
 }
 
 /// the preset with this id.
@@ -428,13 +529,108 @@ mod tests {
         for general in GENERAL {
             assert!(find(general).is_some(), "{general} is not a preset");
         }
-        assert!(is_hosting("startweb") && is_hosting("services-status"));
+        assert!(is_hosting("startweb") && is_hosting("services-status") && is_hosting("iis-dump"));
         assert!(!is_hosting("ver") && !is_hosting("nope"));
     }
 
     const FILTER: &str = r#" | findstr /v /r /i /c:"^ *[A-Za-z]*Pass[A-Za-z]* *:""#;
 
     const ADMIN: &str = r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples";
+
+    #[test]
+    fn only_a_shipped_script_name_is_found() {
+        assert_eq!(find_script("lldump.vbs").unwrap().name, "lldump.vbs");
+        for bad in [
+            "",
+            "other.vbs",
+            "../lldump.vbs",
+            "..\\lldump.vbs",
+            "/lldump.vbs",
+            "\\lldump.vbs",
+            "C:lldump.vbs",
+            "C:\\lldump.vbs",
+            "nt4-scripts/lldump.vbs",
+            ".lldump.vbs",
+            "lldump.vbs\0",
+            "LLDUMP.VBS",
+        ] {
+            assert!(find_script(bad).is_err(), "{bad:?}");
+        }
+        for script in SCRIPTS {
+            assert!(find_script(script.name).is_ok());
+            assert!(!script.body.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_script_preset_names_a_shipped_script() {
+        for preset in PRESETS {
+            if let Some(name) = preset.script {
+                assert!(find_script(name).is_ok(), "{}", preset.id);
+                assert!(preset.template.contains("%LL_SCRIPT%"), "{}", preset.id);
+                assert!(!preset.mutating && preset.args.is_empty(), "{}", preset.id);
+            }
+        }
+        assert_eq!(find("iis-dump").unwrap().script, Some("lldump.vbs"));
+    }
+
+    #[test]
+    fn a_put_command_runs_the_staged_script_with_plain_arguments() {
+        assert_eq!(
+            render_put("lldump.vbs", &[]).unwrap(),
+            r#"cscript //nologo "%LL_SCRIPT%""#
+        );
+        assert!(render_put("lldump.vbs", &["a".into(), "%LL_DATA1%".into()]).is_err());
+        assert!(render_put("lldump.vbs", &["-x".into()]).is_err());
+        assert!(render_put("../lldump.vbs", &[]).is_err());
+    }
+
+    #[test]
+    fn a_data_file_is_base64_within_the_limit() {
+        assert!(check_file("").is_ok());
+        assert!(check_file("aGk=").is_ok());
+        assert!(check_file("aGk").is_err());
+        assert!(check_file("a!k=").is_err());
+        assert!(check_file(&"A".repeat(MAX_PUT_FILE_BYTES.div_ceil(3) * 4 + 4)).is_err());
+        // exactly 1 MiB decoded passes, one byte more does not
+        let limit = MAX_PUT_FILE_BYTES.div_ceil(3) * 4;
+        assert!(check_file(&format!("{}==", "A".repeat(limit - 2))).is_ok());
+        assert!(check_file(&format!("{}=", "A".repeat(limit - 1))).is_err());
+        assert!(check_file(&"A".repeat(limit)).is_err());
+    }
+
+    #[test]
+    fn the_dump_script_never_reads_a_password_property() {
+        let body = SCRIPTS[0].body;
+        // drop comments: text after a quote that is outside a string literal
+        let strip = |line: &str| -> String {
+            let mut quoted = false;
+            for (i, c) in line.char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '\'' if !quoted => return line[..i].to_string(),
+                    _ => {}
+                }
+            }
+            line.to_string()
+        };
+        let stripped: Vec<String> = body.lines().map(strip).collect();
+        let code: Vec<&str> = stripped.iter().map(String::as_str).collect();
+        let is_get = |l: &str| {
+            let lower = l.to_ascii_lowercase();
+            lower.match_indices(".get").any(|(i, _)| {
+                let rest = &lower[i + 4..];
+                rest.trim_start().starts_with('(')
+            })
+        };
+        let gets: Vec<&&str> = code.iter().filter(|l| is_get(l)).collect();
+        assert_eq!(gets.len(), 1, "one Get, in SafeGet");
+        let text = code.join("\n");
+        let guard = text.find("If IsSecret(sName) Then Exit Function").unwrap();
+        assert!(guard < text.find(".Get(").unwrap());
+        assert!(text.contains(r#"InStr(1, sName, "pass", 1)"#));
+        assert!(!text.contains(".GetEx") && !text.contains(".GetInfo"));
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| a.to_string()).collect()
@@ -513,8 +709,13 @@ mod tests {
     fn preset_ids_are_unique_and_templates_match_their_arguments() {
         for (i, preset) in PRESETS.iter().enumerate() {
             assert!(PRESETS[i + 1..].iter().all(|p| p.id != preset.id));
-            let placeholders = preset.template.matches('{').count();
-            assert_eq!(placeholders, preset.args.len(), "{}", preset.id);
+            // a name may appear more than once (the site of startweb is also read back)
+            let named: usize = preset
+                .args
+                .iter()
+                .map(|name| preset.template.matches(&format!("{{{name}}}")).count())
+                .sum();
+            assert_eq!(named, preset.template.matches('{').count(), "{}", preset.id);
             for name in preset.args {
                 assert!(preset.template.contains(&format!("{{{name}}}")));
             }
@@ -537,6 +738,23 @@ mod tests {
             render("iisadmin-stop", &[]).unwrap(),
             "net stop iisadmin /y"
         );
+        assert_eq!(
+            render("smtpsvc-restart", &[]).unwrap(),
+            "net stop smtpsvc & net start smtpsvc"
+        );
+        let up = render("iisadmin-start", &[]).unwrap();
+        for service in ["iisadmin", "w3svc", "msftpsvc", "smtpsvc"] {
+            assert!(up.contains(&format!("net start {service}")), "{service}");
+        }
+        assert!(!up.contains("&&"));
+        assert!(render("services-status", &[])
+            .unwrap()
+            .contains("SMTP Service"));
+        let web = render("startweb", &args(&["1"])).unwrap();
+        assert!(web.ends_with("adsutil.vbs GET W3SVC/1/ServerState"));
+        assert!(render("stopweb", &args(&["2"]))
+            .unwrap()
+            .ends_with("W3SVC/2/ServerState"));
     }
 
     #[test]
@@ -566,9 +784,88 @@ mod tests {
     #[test]
     fn the_scripts_live_in_adminsamples() {
         assert!(ADMIN.ends_with(r"inetsrv\adminsamples"));
-        for preset in PRESETS.iter().filter(|p| p.template.contains("cscript")) {
+        for preset in PRESETS
+            .iter()
+            .filter(|p| p.template.contains("cscript") && p.script.is_none())
+        {
             assert!(preset.template.starts_with(ADMIN), "{}", preset.id);
+            // every script named is one in adminsamples
+            let scripts = preset.template.matches("cscript").count();
+            assert_eq!(
+                scripts,
+                preset.template.matches(ADMIN).count(),
+                "{}",
+                preset.id
+            );
         }
+    }
+
+    /// the metabase properties a preset may GET, by the last segment of the path.
+    const GET_ALLOWED: &[&str] = &["ServerState", "ServerBindings"];
+
+    /// why a template could print a password property, or `Ok`. every command of the template
+    /// (they are joined with `&`) is looked at: a GET must name an allowed property, an ENUM
+    /// must end in [`FILTER`], and `Pass` may only appear inside [`FILTER`].
+    fn password_problem(template: &str) -> Result<(), String> {
+        if template.replace(FILTER, "").to_lowercase().contains("pass") {
+            return Err("names a password outside the filter".into());
+        }
+        for command in template.split('&') {
+            let words: Vec<&str> = command.split_whitespace().collect();
+            for (i, word) in words.iter().enumerate() {
+                match *word {
+                    verb if verb.eq_ignore_ascii_case("GET") => {
+                        let path = words.get(i + 1).ok_or("GET without a path")?;
+                        let last = path.rsplit('/').next().unwrap_or_default();
+                        if !GET_ALLOWED.contains(&last) {
+                            return Err(format!("GET of {last}"));
+                        }
+                    }
+                    verb if verb.eq_ignore_ascii_case("ENUM")
+                        && !command.trim_end().ends_with(FILTER) =>
+                    {
+                        return Err("ENUM without the filter".into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn no_preset_reads_a_password() {
+        for preset in PRESETS {
+            assert_eq!(password_problem(preset.template), Ok(()), "{}", preset.id);
+        }
+    }
+
+    #[test]
+    fn the_password_check_rejects_bad_templates() {
+        let tool = r"cscript //nologo x\adsutil.vbs";
+        let get = format!("{tool} GET W3SVC/1/");
+        assert!(password_problem(&format!("{get}ServerState")).is_ok());
+        for bad in [
+            format!("{get}ServerState & {get}AnonymousUserPass"),
+            format!("{get}AnonymousUserPass"),
+            format!("{tool} get W3SVC/1/KeyType"),
+            format!("{tool} enum W3SVC"),
+            format!("{get}ServerState/../x"),
+            format!("{get}ServerState & echo PASSWORD"),
+            format!("{tool} ENUM W3SVC"),
+            format!("{tool} ENUM W3SVC & echo x{FILTER}"),
+            format!("{tool} ENUM W3SVC/1 & {get}ServerState{FILTER}"),
+        ] {
+            assert!(password_problem(&bad).is_err(), "{bad}");
+        }
+        // a lowercase get of a property that holds no password is refused for the GET rule
+        // itself, not by the "Pass" check, so it exercises the case-insensitive verb
+        assert_eq!(
+            password_problem(&format!("{tool} get W3SVC/1/KeyType")),
+            Err("GET of KeyType".to_string())
+        );
+        let ok = format!("{tool} ENUM W3SVC{FILTER}");
+        assert!(password_problem(&ok).is_ok());
     }
 
     #[test]

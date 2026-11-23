@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IIS 4 presets `smtpsvc-start`, `smtpsvc-stop` and `smtpsvc-restart`
 - the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout has its `cmd.exe` ended, but programs it started may keep running (NT4 has no way to end them); output files they hold open are removed by the next run
 - a Computers tab in the NT4 Server window (and in the text interface) lists the domain machines and runs a command or an IIS 4 preset on the one you pick, after a confirmation for anything that changes it; the output, exit code, duration and a timed-out state show under the list. It needs manage rights on Remote commands
 - Operations to list domain machines and run commands or IIS 4 presets on them
@@ -17,10 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every `lanlord-exec` run is appended to `/var/lib/samba/private/exec.log` in the NT4 container (caller, machine, address, command or its hash, result, duration; never the password), and its output now comes in chunks of at most 1 MiB. A free-form command with a plain `exit N` is refused, as it ends the shell on the machine and the run would show as timed out
 - the `lanlord-exec` domain admin account is created on a domain controller, with a generated 24-character password sealed as `nt4-domain.exec_password`; it has no logon script and is not listed as a user. `lanlord secrets HOST rotate nt4-domain.exec_password` makes and sets a new one. The name `lanlord-exec` is reserved: settings that list a user of that name are refused, and an account of that name that already exists on the server is taken over on apply (its password is set and it is made a Domain Admin)
 - the Hosting component (requires the NT4 domain, no network attachment): a Hosting window in the desktop and the text interface lists the domain machines and runs the IIS 4 presets on the one you pick, and has a new `Hosting` permission area. It has an `iis` part (on by default) and a `frontpage` part (off by default, nothing uses it yet). Gateways that already used IIS get the component on with `iis` when their settings are migrated; the built-in Administrators and Operators roles can manage Hosting (so operators can use the IIS presets through it) and Users cannot see it; custom roles are not changed, so give them the Hosting area to let them use the presets
+- `lanlord machines HOST put NAME SCRIPT [--file PATH]... [--timeout N] [ARGS...]` puts a script from the shipped whitelist (`lldump.vbs`) and up to four data files (1 MiB each) on a domain machine and runs it; the machine sees them as `%LL_SCRIPT%` and `%LL_DATA1%` and so on. They are staged under generated `ll-<hex>` names in `<drive>:\lanlord`, checked like the other run files, and deleted after the run. Paths and names outside the whitelist are refused. New `Operation::MachinePut`, with the same permission as running a command
+- `lldump.vbs` dumps the IIS metabase (W3SVC, MSFTPSVC and SMTPSVC with their sites, virtual directories, bindings, comments, paths, access flags, script maps, filters and filter load order) as `key=value` lines; a property with `Pass` in its name is never read and prints as `<redacted>`. Run it with the `iis-dump` preset (`lanlord iis HOST NAME iis-dump`, or the IIS presets box in the Computers tab)
 
 ### Changed
 
 - the IIS 4 presets moved from the Computers tab to the Hosting window and need the Hosting component with its `iis` part turned on; with it off the presets are hidden and the server refuses them with a message naming the component. Plain `machines run` and the Computers tab's Run command are unaffected. `lanlord iis` is now `lanlord hosting` (`lanlord iis` stays as an alias for one release and prints a note on stderr)
+- the IIS 4 presets: `services-status` also lists SMTP; `iisadmin-start` also starts the web, FTP and SMTP services that `iisadmin-stop` takes down and ends with the service listing, so it exits with the code of `findstr` and a failed `net start` is masked; `startweb` and `stopweb` print the site's `ServerState` afterwards (2 started, 4 stopped, 1 starting, 3 stopping) and exit with the code of that read, not of the script
 
 ### Security
 
@@ -28,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- the NT4 exec sweep no longer tries to delete a folder whose name looks like a leftover run file
+- the IIS service status now shows the SMTP service on IIS 4
+- the NT4 command cleanup no longer tries to delete a folder that happens to be named like a leftover file from an earlier run
 - the read-only IIS 4 presets that list the metabase (`adsutil-enum-w3svc`, `adsutil-enum-site`, `adsutil-enum-ftp-site`) no longer print secrets such as `AnonymousUserPass` or `WAMUserPass`: the machine drops every property line whose name holds `pass` (any case, through `findstr`, so key headers such as `[/W3SVC/1/ROOT/Passport]` stay) before the output leaves it, and the output of any machine run hides the value of a property whose name holds `Pass` (any case and type, with the lines a list value goes on in), live and in the result; the raw output is not kept in the debug log either. `AnonymousPasswordSync` is no longer listed by these presets. The exit code of these three presets is `findstr`'s (0 when lines are left), not `cscript`'s
 - `lanlord-exec` deletes the `ll-*` files an earlier run left in `<drive>:\lanlord` (a run that timed out leaves its output behind when the program still held it open) at the start of the next run, after the folder is verified
 - `lanlord-exec` errors say "no output" when the failed tool printed nothing, instead of ending in a bare colon

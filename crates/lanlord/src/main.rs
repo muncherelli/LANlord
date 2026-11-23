@@ -7,7 +7,7 @@ mod webui;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use lanlord_core::bootstrap::AskPassword;
 use lanlord_core::bootstrap::{bootstrap, AnsibleMode, Options};
@@ -128,6 +128,23 @@ enum MachinesCommand {
         timeout: u32,
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
+    },
+    /// put a whitelisted script (currently only lldump.vbs) and data files on a domain machine and
+    /// run it; the files are deleted afterwards. the machine sees them as %LL_SCRIPT% and
+    /// %LL_DATA1% and so on
+    Put {
+        name: String,
+        /// the script's name, such as lldump.vbs
+        script: String,
+        /// a local file to put as a data file (up to 4, 1 MiB each)
+        #[arg(long = "file")]
+        files: Vec<std::path::PathBuf>,
+        /// seconds to wait for the script, 1 to 900
+        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS, value_parser = clap::value_parser!(u32).range(1..=900))]
+        timeout: u32,
+        /// the script's arguments
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
     },
 }
 
@@ -941,6 +958,26 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
         std::process::exit(lanlord_core::exec::show_run(&reply)?);
     }
 
+    if let MachinesCommand::Put {
+        name,
+        script,
+        files,
+        timeout,
+        args,
+    } = action
+    {
+        let mut data = Vec::new();
+        for path in &files {
+            data.push(
+                std::fs::read(path)
+                    .with_context(|| format!("could not read {}", path.display()))?,
+            );
+        }
+        let operation = lanlord_core::exec::machine_put(&name, &script, &args, &data, timeout)?;
+        let reply = execute(host, &operation, &mut ask)?;
+        std::process::exit(lanlord_core::exec::show_run(&reply)?);
+    }
+
     use lanlord_core::nt4::{edit_machines, valid_machine, MachineChange, Nt4Settings};
     let change = match action {
         MachinesCommand::List => {
@@ -951,7 +988,9 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
             }
             return Ok(());
         }
-        MachinesCommand::Run { .. } => unreachable!("run is handled above"),
+        MachinesCommand::Run { .. } | MachinesCommand::Put { .. } => {
+            unreachable!("run and put are handled above")
+        }
         MachinesCommand::Add { name } => MachineChange::Add(name),
         MachinesCommand::Remove { name } => MachineChange::Remove(name),
         MachinesCommand::Reset { name } => {
@@ -3102,6 +3141,44 @@ mod tests {
         };
         assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
         assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "run", "ws1"]).is_err());
+    }
+
+    #[test]
+    fn machines_put_takes_a_script_data_files_and_arguments() {
+        let Command::Machines {
+            action:
+                Some(MachinesCommand::Put {
+                    name,
+                    script,
+                    files,
+                    timeout,
+                    args,
+                }),
+            ..
+        } = parse(&[
+            "machines",
+            "gw",
+            "put",
+            "ws1",
+            "lldump.vbs",
+            "--file",
+            "a.txt",
+            "--file",
+            "b.txt",
+            "--timeout",
+            "30",
+            "x",
+        ])
+        else {
+            panic!("not a put");
+        };
+        assert_eq!(
+            (name.as_str(), script.as_str(), timeout),
+            ("ws1", "lldump.vbs", 30)
+        );
+        assert_eq!(files.len(), 2);
+        assert_eq!(args, ["x"]);
+        assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "put", "ws1"]).is_err());
     }
 
     #[test]

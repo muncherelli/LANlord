@@ -197,7 +197,8 @@ class LanlordExecTest(unittest.TestCase):
             for _ in range(40):
                 os.killpg(pgid, 0)
                 time.sleep(0.05)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # the group is already gone, or no longer ours
             pass
 
     def scenario(self, **files):
@@ -301,6 +302,96 @@ class LanlordExecTest(unittest.TestCase):
         )
         self.assertIn("del ll-%s.exe" % run_id, calls)
         self.assertEqual(self.remote(), [])
+
+    def run_put(self, lines, command="cscript //nologo \"%LL_SCRIPT%\"", mode="run"):
+        # the json on the first line, then one line for each file
+        request = {"user": "DEMO\\Administrator", "password": SECRET, "command": command}
+        body = json.dumps(request) + "\n" + "".join(line + "\n" for line in lines)
+        return subprocess.run(
+            ["bash", EXEC, mode, "--machine", "nt4srv01", "--timeout", "5"],
+            input=body, text=True, capture_output=True, env=self.env,
+        )
+
+    @staticmethod
+    def b64(data):
+        return base64.b64encode(data).decode()
+
+    def test_a_script_and_data_files_are_staged_under_run_names_and_deleted(self):
+        out = self.run_put([
+            "file script vbs " + self.b64(b"WScript.Echo 1\r\n"),
+            "file data - " + self.b64(b"one"),
+            "file data - " + self.b64(b"two"),
+        ])
+        self.assertEqual(self.events(out)[-1], {"exit": 0}, out.stderr)
+        calls = self.calls()
+        run_id = re.search(r"put \S+/ll-([0-9a-f]{8})\.bat ll-", calls).group(1)
+        for name in ("script.vbs", "data1", "data2"):
+            self.assertIn("ll-%s.%s" % (run_id, name), calls)
+            self.assertIn("del ll-%s.%s" % (run_id, name), calls)
+        with open(os.path.join(self.stubs, "bats", "ll-%s.script.vbs" % run_id), "rb") as f:
+            self.assertEqual(f.read(), b"WScript.Echo 1\r\n")
+        with open(os.path.join(self.stubs, "bats", "ll-%s.data2" % run_id), "rb") as f:
+            self.assertEqual(f.read(), b"two")
+        d = "C:\\lanlord\\ll-" + run_id
+        self.assertEqual(
+            self.bat(".cmd.bat"),
+            "@echo off\r\n"
+            "set LL_SCRIPT=" + d + ".script.vbs\r\n"
+            "set LL_DATA1=" + d + ".data1\r\n"
+            "set LL_DATA2=" + d + ".data2\r\n"
+            'cscript //nologo "%LL_SCRIPT%"\r\n',
+        )
+        self.assert_clean()
+        self.assert_no_secret(out)
+
+    def test_an_empty_data_file_is_staged(self):
+        out = self.run_put(["file script vbs " + self.b64(b"x"), "file data - "])
+        self.assertEqual(self.events(out)[-1], {"exit": 0}, out.stderr)
+        run_id = re.search(r"ll-([0-9a-f]{8})\.script\.vbs", self.calls()).group(1)
+        with open(os.path.join(self.stubs, "bats", "ll-%s.data1" % run_id), "rb") as f:
+            self.assertEqual(f.read(), b"")
+
+    def test_every_put_file_gets_its_acl_read_before_the_service_exists(self):
+        out = self.run_put(["file script vbs " + self.b64(b"x"), "file data - " + self.b64(b"y")])
+        self.assertEqual(self.events(out)[-1], {"exit": 0})
+        calls = self.calls()
+        run_id = re.search(r"ll-([0-9a-f]{8})\.script\.vbs", calls).group(1)
+        create = calls.index("net rpc service create")
+        for name in ("script.vbs", "data1"):
+            read = calls.index("smbcacls //192.0.2.20/C$ lanlord\\ll-%s.%s" % (run_id, name))
+            self.assertLess(read, create)
+
+    def test_a_bad_file_line_is_refused_before_anything_is_sent(self):
+        good = self.b64(b"x")
+        bad = [
+            ["file script vbs"],
+            ["file script VBS " + good],
+            ["file script ../x " + good],
+            ["file script vbs " + good, "file script vbs " + good],
+            ["file data x " + good],
+            ["file data - !!!!"],
+            ["file other - " + good],
+            ["junk"],
+            ["file data - " + good] * 5,
+            ["file data - " + self.b64(b"x" * ((1 << 20) + 1))],
+        ]
+        for lines in bad:
+            out = self.run_put(lines)
+            self.assertIn("error", self.events(out)[-1], lines[0][:30])
+        self.assertEqual(self.calls(), "")
+
+    def test_a_sweep_takes_no_files(self):
+        out = self.run_put(["file data - " + self.b64(b"x")], mode="sweep")
+        self.assertIn("error", self.events(out)[-1])
+        self.assertEqual(self.calls(), "")
+
+    def test_the_sweep_removes_left_over_put_files(self):
+        folder = os.path.join(self.stubs, "cdrive", "lanlord")
+        for name in ("ll-0123abcd.script.vbs", "ll-0123abcd.data1"):
+            open(os.path.join(folder, name), "w").close()
+        out = self.run_exec(mode="sweep", args=("--machine", "nt4srv01"))
+        self.assertEqual(self.events(out)[-1], {"swept": 0})
+        self.assertEqual(os.listdir(folder), [])
 
     def test_a_missing_helper_is_a_clear_error_before_anything_is_sent(self):
         os.remove(self.svc)
@@ -1322,6 +1413,64 @@ class IisPresetFilterTest(unittest.TestCase):
         for line in self.text.splitlines():
             if "adsutil.vbs ENUM" in line:
                 self.assertRegex(line, r"adsutil\.vbs ENUM \S+ \| findstr ")
+
+
+def strip_comment(line):
+    """the line without its vbscript comment: text after a ' outside a string literal"""
+    quoted = False
+    for i, c in enumerate(line):
+        if c == '"':
+            quoted = not quoted
+        elif c == "'" and not quoted:
+            return line[:i]
+    return line
+
+
+class LldumpTest(unittest.TestCase):
+    PATH = os.path.join(os.path.dirname(__file__), "..", "..", "crates", "model", "nt4-scripts", "lldump.vbs")
+
+    def setUp(self):
+        with open(self.PATH) as f:
+            self.text = f.read()
+        self.code = [strip_comment(l) for l in self.text.splitlines()]
+        self.code = [l for l in self.code if l.strip()]
+
+    def test_get_is_only_called_in_safeget_after_the_name_is_checked(self):
+        calls = [i for i, l in enumerate(self.code) if re.search(r"\.Get\s*\(", l, re.I)]
+        self.assertEqual(len(calls), 1)
+        start = next(i for i, l in enumerate(self.code) if l.startswith("Function SafeGet"))
+        end = next(i for i, l in enumerate(self.code) if i > start and l.startswith("End Function"))
+        self.assertTrue(start < calls[0] < end)
+        guard = next(i for i in range(start, end) if "IsSecret(sName)" in self.code[i])
+        self.assertIn("Exit Function", self.code[guard])
+        self.assertLess(guard, calls[0])
+        # the guard looks for "pass" in any case
+        self.assertRegex(self.text, r'InStr\(1, sName, "pass", 1\)')
+
+    def test_no_other_way_to_read_a_property(self):
+        for l in self.code:
+            self.assertNotRegex(l, r"\.(GetEx|GetInfo|GetInfoEx|GetDataPaths|GetPropertyValue)\b", l)
+            # no direct property read of a name with Pass in it
+            self.assertIsNone(re.search(r"[A-Za-z_]\w*\.\w*pass", l, re.I), l)
+
+    def test_every_secret_name_is_redacted_not_read(self):
+        # the names that hold pass are listed so the output says so, and Show prints the marker
+        # before it reads anything
+        names = re.findall(r'"(\w*pass\w*)"', "\n".join(self.code), re.I)
+        self.assertIn("AnonymousUserPass", names)
+        self.assertIn("WAMUserPass", names)
+        show = self.text[self.text.index("Sub Show("):]
+        self.assertLess(show.index("<redacted>"), show.index("SafeGet(oObj, sName)"))
+        self.assertIn('"=<redacted>"', show)
+
+    def test_it_dumps_the_services_and_the_wanted_properties(self):
+        for word in ("W3SVC", "MSFTPSVC", "SMTPSVC", "ServerComment", "ServerBindings", "Path",
+                     "AccessFlags", "ScriptMaps", "FilterLoadOrder", "IIsFilter", "IIsWebVirtualDir"):
+            self.assertIn(word, self.text)
+
+    def test_only_what_vbscript_5_on_nt4_has(self):
+        for word in ("RegExp", "Dictionary", "Execute", "Eval("):
+            self.assertNotIn(word, "\n".join(self.code))
 
 
 if __name__ == "__main__":
