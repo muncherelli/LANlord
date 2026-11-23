@@ -634,7 +634,7 @@ mod tests {
         for bad in [
             format!("{get}ServerState & {get}AnonymousUserPass"),
             format!("{get}AnonymousUserPass"),
-            format!("{tool} get W3SVC/1/AnonymousUserPass"),
+            format!("{tool} get W3SVC/1/KeyType"),
             format!("{tool} enum W3SVC"),
             format!("{get}ServerState/../x"),
             format!("{get}ServerState & echo PASSWORD"),
@@ -644,6 +644,12 @@ mod tests {
         ] {
             assert!(password_problem(&bad).is_err(), "{bad}");
         }
+        // a lowercase get of a property that holds no password is refused for the GET rule
+        // itself, not by the "Pass" check, so it exercises the case-insensitive verb
+        assert_eq!(
+            password_problem(&format!("{tool} get W3SVC/1/KeyType")),
+            Err("GET of KeyType".to_string())
+        );
         let ok = format!("{tool} ENUM W3SVC{FILTER}");
         assert!(password_problem(&ok).is_ok());
     }
