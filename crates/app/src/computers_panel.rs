@@ -1,8 +1,9 @@
 //! the machines of the nt4 domain with something to run on one of them, and what it printed.
-//! the plain panel is the computers tab of the nt4 domain window (a free-form command, and the general presets); the
-//! hosting panel is the body of the hosting window (the iis 4 presets). every front end draws
-//! the same nodes. a run is one operation that answers when the machine is done (its progress topic needs
-//! the run id, which only the answer carries), so the tab shows a running line, then the result.
+//! the plain panel is the computers tab of the nt4 domain window (a free-form command, and the
+//! general presets); the hosting panel is the body of the hosting window (the iis 4 presets).
+//! every front end draws the same nodes. a run is one operation that answers when the machine is
+//! done (its progress topic needs the run id, which only the answer carries), so the tab shows a
+//! running line, then the result.
 
 use lanlord_model::access::Grants;
 use lanlord_model::hosting::{HostingFacts, SiteFact};

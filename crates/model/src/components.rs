@@ -463,8 +463,9 @@ impl Selection {
                         .map_err(|e| anyhow::anyhow!("components.{id}: {e}"))?;
                     if stored.enabled {
                         let mut choice = stored.choice;
-                        // an entry that does not list its parts runs the default ones
-                        if !has_parts {
+                        // a hosting entry that does not list its parts runs the default ones
+                        // (the iis part); other components keep an empty list as before
+                        if !has_parts && id == "hosting" {
                             if let Some(component) = catalogue().iter().find(|c| c.id() == id) {
                                 choice.subcomponents = component.default_subcomponents();
                             }
@@ -1993,6 +1994,11 @@ mod tests {
                 Ok(())
             );
         }
+        // only hosting takes its default parts this way; other components keep an empty list
+        let bare = Settings::parse("components:\n  nt4-domain: {}\n  hosting: {}\n").unwrap();
+        assert!(!Selection::from_settings(&bare)
+            .unwrap()
+            .has_part("nt4-domain", "domain-controller"));
         // an explicit empty list stays empty
         let none =
             Settings::parse("components:\n  nt4-domain: {}\n  hosting: {subcomponents: []}\n")
