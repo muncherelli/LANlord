@@ -274,7 +274,7 @@ pub fn check_file(text: &str) -> Result<(), &'static str> {
     if text.len() > MAX_PUT_FILE_BYTES.div_ceil(3) * 4 {
         return Err("is longer than 1 MiB");
     }
-    if text.len() % 4 != 0
+    if !text.len().is_multiple_of(4)
         || !text
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b))
@@ -536,10 +536,7 @@ mod tests {
             render_put("lldump.vbs", &[]).unwrap(),
             r#"cscript //nologo "%LL_SCRIPT%""#
         );
-        assert_eq!(
-            render_put("lldump.vbs", &["a".into(), "%LL_DATA1%".into()]).is_err(),
-            true
-        );
+        assert!(render_put("lldump.vbs", &["a".into(), "%LL_DATA1%".into()]).is_err());
         assert!(render_put("lldump.vbs", &["-x".into()]).is_err());
         assert!(render_put("../lldump.vbs", &[]).is_err());
     }
