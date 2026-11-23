@@ -11,11 +11,11 @@
 │ │                                                                          │ │
 │ │                                                                          │ │
 │ │                                                                          │ │
-│ │ [   Refresh    ]                                                         │ │
+│ │ [    Detect    ] [   Refresh    ]                                        │ │
 │ └──────────────────────────────────────────────────────────────────────────┘ │
 │ Turn on the IIS part of the Hosting component to use the presets.            │
-│ ┌ Output ──────────────────────────────────────────────────────────────────┐ │
-│ │                                                                          │ │
+│ ┌ Detected sites ──────────────────────────────────────────────────────────┐ │
+│ │ Pick a machine to see what was detected on it.                           │ │
 │ │                                                                          │ │
 │ │                                                                          │ │
 │ │                                                                          │ │

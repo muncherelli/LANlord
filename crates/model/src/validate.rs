@@ -1498,6 +1498,9 @@ pub fn operation(operation: &Operation) -> Result<(), Invalid> {
             }
             check_timeout(*timeout_secs)
         }
+        Operation::HostingDetect { machine } | Operation::HostingFacts { machine } => {
+            check_machine(machine)
+        }
         Operation::ClockZoneNow { zone } => named("zone", time_zone, zone),
         Operation::ClockApply { change } => check_clock(change),
         Operation::ChangePassword { old, new } => {

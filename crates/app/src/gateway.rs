@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use lanlord_model::access::{Access, Profile};
 use lanlord_model::clock::{Change as ClockChange, ClockState, Stored, ZoneNow};
 use lanlord_model::doctor::Report;
+use lanlord_model::hosting::HostingFacts;
 use lanlord_model::identity::{AccountInfo, PasswordReport};
 use lanlord_model::internet::Change as InternetChange;
 use lanlord_model::lan_edit::Edit as NetworkEdit;
@@ -160,6 +161,38 @@ pub trait Gateway: Send + Sync {
         match self.call(host, Operation::Machines, ask)? {
             Reply::Machines(names) => Ok(names),
             other => Err(unexpected("machines", other)),
+        }
+    }
+
+    /// look for iis on a machine and keep the facts on the gateway; gives the new facts.
+    fn hosting_detect(
+        &self,
+        host: &str,
+        machine: &str,
+        ask: AskPassword,
+    ) -> Result<Option<Box<HostingFacts>>> {
+        let operation = Operation::HostingDetect {
+            machine: machine.to_string(),
+        };
+        match self.call(host, operation, ask)? {
+            Reply::Hosting(facts) => Ok(facts),
+            other => Err(unexpected("hosting_detect", other)),
+        }
+    }
+
+    /// the facts kept for a machine, or none when it was never detected.
+    fn hosting_facts(
+        &self,
+        host: &str,
+        machine: &str,
+        ask: AskPassword,
+    ) -> Result<Option<Box<HostingFacts>>> {
+        let operation = Operation::HostingFacts {
+            machine: machine.to_string(),
+        };
+        match self.call(host, operation, ask)? {
+            Reply::Hosting(facts) => Ok(facts),
+            other => Err(unexpected("hosting_facts", other)),
         }
     }
 
@@ -925,6 +958,8 @@ mod fake {
         pub machines: Mutex<Vec<String>>,
         /// what a machine run prints; `ok` when not set.
         pub machine_out: Mutex<Option<String>>,
+        /// the facts of each machine that was detected, by machine name.
+        pub hosting: Mutex<Vec<lanlord_model::hosting::HostingFacts>>,
     }
 
     impl Default for Fake {
@@ -1035,6 +1070,7 @@ mod fake {
                 }),
                 machines: Mutex::new(vec!["ws1".into()]),
                 machine_out: Mutex::new(None),
+                hosting: Mutex::new(Vec::new()),
                 probe: Mutex::new("virt_container=none\nvirt_vm=none\nlink_bridge=ok\n".into()),
                 zones: Mutex::new(
                     [
@@ -1320,6 +1356,24 @@ mod fake {
                     self.enter(format!("machine-put {host} {machine} {script}"), ask)?;
                     self.fake_run()
                 }
+                Operation::HostingDetect { machine } => {
+                    self.enter(format!("hosting-detect {host} {machine}"), ask)?;
+                    let found = fake_facts(&machine);
+                    let mut all = self.hosting.lock().unwrap();
+                    all.retain(|f| f.machine != machine);
+                    all.push(found.clone());
+                    Reply::Hosting(Some(Box::new(found)))
+                }
+                Operation::HostingFacts { machine } => {
+                    self.enter(format!("hosting-facts {host} {machine}"), ask)?;
+                    let all = self.hosting.lock().unwrap();
+                    Reply::Hosting(
+                        all.iter()
+                            .find(|f| f.machine == machine)
+                            .cloned()
+                            .map(Box::new),
+                    )
+                }
             })
         }
 
@@ -1341,6 +1395,22 @@ mod fake {
             let stdout = self.machine_out.lock().unwrap().clone();
             fake_reply(stdout.unwrap_or_else(|| "ok\r\n".into()))
         }
+    }
+
+    /// what detection finds on the made-up machines: one web site and one ftp site.
+    fn fake_facts(machine: &str) -> lanlord_model::hosting::HostingFacts {
+        use lanlord_model::hosting::facts;
+        let dump =
+            "W3SVC/1/ServerComment=Intranet\nW3SVC/1/ServerBindings[0]=:80:intranet.example.lan\n\
+                    W3SVC/1/ServerState=2\nW3SVC/1/ROOT/Path=D:\\Sites\\intranet\n\
+                    MSFTPSVC/1/ServerComment=Files\nMSFTPSVC/1/ServerBindings[0]=:21:\n\
+                    MSFTPSVC/1/ServerState=4\nMSFTPSVC/1/ROOT/Path=D:\\Ftp\n";
+        facts(
+            machine,
+            1_767_268_800,
+            "   IIS Admin Service\n   World Wide Web Publishing Service",
+            dump,
+        )
     }
 
     fn fake_reply(stdout: String) -> Reply {

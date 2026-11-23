@@ -14,8 +14,8 @@ use crate::{
     access, authkeys, internet, lan, operate, save_guard, self_service, settings, stored, users,
 };
 use crate::{
-    account, apply, clock, crypto, doctor, leases, logon, netstatus, network, nt4, nt4_exec, power,
-    purge, rootssh, setup, sshauth,
+    account, apply, clock, crypto, doctor, hosting, leases, logon, netstatus, network, nt4,
+    nt4_exec, power, purge, rootssh, setup, sshauth,
 };
 
 /// the message when the gateway has no key to decrypt the secrets with.
@@ -608,6 +608,39 @@ fn dispatch(
                 &put,
             )?
         }
+        Operation::HostingDetect { machine } => {
+            let identity = key()?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let found = hosting::detect(machine, now, &mut |preset| {
+                let command =
+                    nt4_exec::render(preset, &[]).map_err(|reason| anyhow!("{reason}"))?;
+                let put = nt4_exec::Put {
+                    script: lanlord_model::nt4_exec::find(preset).and_then(|p| p.script),
+                    data: Vec::new(),
+                };
+                let job = (
+                    machine.as_str(),
+                    command.as_str(),
+                    DEFAULT_TIMEOUT_SECS,
+                    &*who.caller.user,
+                );
+                let out =
+                    nt4_exec::run_put(session, &identity, &mut *ask, job, &put, &mut |_, _| {})?;
+                Ok(hosting::Ran {
+                    exit_code: out.exit_code,
+                    timed_out: out.timed_out,
+                    stdout: out.stdout_text(),
+                })
+            })?;
+            hosting::store(&crate::engine::host::RealHost, hosting::FACTS_DIR, &found)?;
+            Reply::Hosting(Some(Box::new(found)))
+        }
+        Operation::HostingFacts { machine } => Reply::Hosting(
+            hosting::cached(&crate::engine::host::RealHost, hosting::FACTS_DIR, machine)?
+                .map(Box::new),
+        ),
     })
 }
 

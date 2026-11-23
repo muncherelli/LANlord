@@ -186,7 +186,7 @@ impl Target {
                 "nt4-domain" => (600.0, 600.0),
                 "dns" | "dhcp" => (620.0, 580.0),
                 "remote-commands" => (580.0, 580.0),
-                "hosting" => (560.0, 520.0),
+                "hosting" => (560.0, 640.0),
                 _ => (480.0, 320.0),
             },
             // 6 more each way than the 8 pixel margin needed, for the 11 pixel margin
