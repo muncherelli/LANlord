@@ -634,8 +634,8 @@ mod tests {
         for bad in [
             format!("{get}ServerState & {get}AnonymousUserPass"),
             format!("{get}AnonymousUserPass"),
-            format!("{} get W3SVC/1/AnonymousUserPass", tool),
-            format!("{} enum W3SVC", tool),
+            format!("{tool} get W3SVC/1/AnonymousUserPass"),
+            format!("{tool} enum W3SVC"),
             format!("{get}ServerState/../x"),
             format!("{get}ServerState & echo PASSWORD"),
             format!("{tool} ENUM W3SVC"),
