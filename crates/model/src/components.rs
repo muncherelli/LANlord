@@ -1779,8 +1779,7 @@ mod tests {
     #[test]
     fn a_missing_required_component_is_refused_naming_both() {
         let catalogue = chain();
-        assert!(requires_errors(&picked(&["base", "middle", "top"]), &catalogue)
-            .is_empty());
+        assert!(requires_errors(&picked(&["base", "middle", "top"]), &catalogue).is_empty());
         // the middle one is off while the top one needs it
         let errors = requires_errors(&picked(&["base", "top"]), &catalogue);
         assert_eq!(errors.len(), 1);
