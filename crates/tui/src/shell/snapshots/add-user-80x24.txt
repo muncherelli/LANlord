@@ -15,10 +15,10 @@
 │                                       │ Task manager             Manage   │  │
 │                                       │ Install and updates      Manage   │  │
 │                                       │ Remote commands          Manage   │  │
-│                                       │ Hosting                  Manage   │  │
-│                                       │ Users and permissions    Manage   │  │
 │                                       │ [ New role... ] [ Remove role ]   │  │
 │                                       └───────────────────────────────────┘  │
+│ [ Save ] [ Reload ]                                                          │
 │ loaded the permissions                                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
+
 [ L LANlord ] [ ◆ Users and Permissions ]                             12:00 PM

@@ -15,13 +15,13 @@
    Settings   │                                               │ Task manager             Manage           │ │
               │                                               │ Install and updates      Manage           │ │
               │                                               │ Remote commands          Manage           │ │
-      >       │                                               │ Hosting                  Manage           │ │
-   Console    │                                               │ Users and permissions    Manage           │ │
-              │                                               │ [ New role... ] [ Remove role ]           │ │
-              │                                               └───────────────────────────────────────────┘ │
-      ▣       │ [ Save ] [ Reload ]                                                                         │
-    Hosts     │ loaded the permissions                                                                      │
-              └─────────────────────────────────────────────────────────────────────────────────────────────┘
+      >       │                                               │ [ New role... ] [ Remove role ]           │ │
+   Console    │                                               └───────────────────────────────────────────┘ │
+              │ [ Save ] [ Reload ]                                                                         │
+              │ loaded the permissions                                                                      │
+      ▣       └─────────────────────────────────────────────────────────────────────────────────────────────┘
+    Hosts
+
 
 
 
