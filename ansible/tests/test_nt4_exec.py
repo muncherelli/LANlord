@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -66,7 +67,12 @@ case $name in
           if [[ -e $STUBS/slow ]]; then n=0; while [[ ! -e $STUBS/ready ]] && ((n++ < 200)); do sleep 0.05; done; fi
           [[ -f $cur/${w[1]} ]] && cp "$cur/${w[1]}" "${w[2]}" ;;
         ls)
-          for f in $(cd "$cur" && ls -d ${w[1]} 2>/dev/null); do printf '  %-24s A %9d  Sun Nov 23 10:00:00 2026\n' "$f" 1; done
+          # like smbclient: . and .. first, D for a folder and A for a file
+          printf '  %-24s D %9d  Sun Nov 23 10:00:00 2026\n' . 0 .. 0
+          for f in $(cd "$cur" && ls -d ${w[1]} 2>/dev/null); do
+            if [[ -d $cur/$f ]]; then printf '  %-24s D %9d  Sun Nov 23 10:00:00 2026\n' "$f" 0
+            else printf '  %-24s A %9d  Sun Nov 23 10:00:00 2026\n' "$f" 1; fi
+          done
           echo "                 65535 blocks of size 4096. 1000 blocks available" ;;
         del)
           if [[ -e $STUBS/del_locked && $cur == */lanlord ]]; then echo "NT_STATUS_SHARING_VIOLATION deleting remote file \\lanlord\\${w[1]}"; continue; fi
@@ -182,6 +188,17 @@ class LanlordExecTest(unittest.TestCase):
         os.makedirs(os.path.join(self.stubs, "remote", "Temp"))
         os.makedirs(os.path.join(self.stubs, "cdrive", "lanlord"))
         self.scenario(rc="0\r\n")
+
+    @staticmethod
+    def kill_session(pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            # wait until the group is gone (a zombie may keep it from raising: stop after about 2 s)
+            for _ in range(40):
+                os.killpg(pgid, 0)
+                time.sleep(0.05)
+        except ProcessLookupError:
+            pass
 
     def scenario(self, **files):
         for name, content in files.items():
@@ -447,7 +464,12 @@ class LanlordExecTest(unittest.TestCase):
             stderr=subprocess.DEVNULL,
             text=True,
             env=self.env,
+            start_new_session=True,
         )
+        # terminate only stops lanlord-exec: the stub smbclient and its sleep are orphaned and go on
+        # writing into the stubs folder while the cleanup removes it. kill the whole session first
+        # (cleanups run last in, first out, so this runs before the rmtree from setUp)
+        self.addCleanup(self.kill_session, proc.pid)
         proc.stdin.write(json.dumps({"user": "DEMO\\Administrator", "password": SECRET, "command": "ver"}))
         proc.stdin.close()
         for _ in range(100):
@@ -955,9 +977,12 @@ class LanlordExecTest(unittest.TestCase):
         for path in (other, keep):
             with open(path, "w") as f:
                 f.write("x")
+        os.makedirs(os.path.join(self.stubs, "cdrive", "lanlord", "ll-0badf00d.out"))
         out = self.run_exec()
         self.assertEqual(self.events(out)[-1], {"exit": 0})
-        self.assertEqual(sorted(os.listdir(os.path.join(self.stubs, "cdrive", "lanlord"))), ["ll-notahexx.out", "report.txt"])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.stubs, "cdrive", "lanlord"))), ["ll-0badf00d.out", "ll-notahexx.out", "report.txt"])
+        # the folder is listed with attribute D and must not get a del, a stale file beside it does
+        self.assertNotIn("del ll-0badf00d.out", self.calls())
         lines = self.lines()
         read = max(i for i, c in enumerate(lines) if c.startswith("smbcacls") and "--numeric" in c and "C$ lanlord " in c and i < self.index(lines, " put "))
         ls = self.index(lines, "ls ll-*")

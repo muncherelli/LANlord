@@ -23,9 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- the NT4 exec sweep no longer tries to delete a folder whose name looks like a leftover run file
 - the read-only IIS 4 presets that list the metabase (`adsutil-enum-w3svc`, `adsutil-enum-site`, `adsutil-enum-ftp-site`) no longer print secrets such as `AnonymousUserPass` or `WAMUserPass`: the machine drops every property line whose name holds `pass` (any case, through `findstr`, so key headers such as `[/W3SVC/1/ROOT/Passport]` stay) before the output leaves it, and the output of any machine run hides the value of a property whose name holds `Pass` (any case and type, with the lines a list value goes on in), live and in the result; the raw output is not kept in the debug log either. `AnonymousPasswordSync` is no longer listed by these presets. The exit code of these three presets is `findstr`'s (0 when lines are left), not `cscript`'s
 - `lanlord-exec` deletes the `ll-*` files an earlier run left in `<drive>:\lanlord` (a run that timed out leaves its output behind when the program still held it open) at the start of the next run, after the folder is verified
 - `lanlord-exec` errors say "no output" when the failed tool printed nothing, instead of ending in a bare colon
+- running a command on a machine, listing the domain's machines and resetting a machine account now use the container of the machine's domain (`lanlord-nt4-<name>`), not always `lanlord-nt4`, so they work on a gateway with more than one domain controller; a machine name that exists in two domains is refused with an error naming both, and a controller whose container cannot be listed is skipped with a warning
 - the Computers command box closes when you switch hosts from another tab, instead of staying open and refusing OK
 - the Computers tab no longer runs a command on the wrong server after switching hosts: an open command box only runs on the host it was opened on, and the pick and the last output are cleared as soon as another host is shown
 - the NT4 command helper (`lanlord-svc.exe`) no longer crashes with an illegal instruction on NT4: it is built without SSE and MMX, which NT4 does not enable, and the image build fails if the helper contains such an instruction

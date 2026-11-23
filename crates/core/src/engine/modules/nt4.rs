@@ -38,7 +38,7 @@ pub const ID: &str = "nt4-domain";
 const ROOT: &str = "/opt/lanlord/nt4";
 const IMAGE: &str = "ghcr.io/muncherelli/lanlord-nt4-server-components";
 /// the server that keeps the container and the folder from before there was a list.
-const LEGACY: &str = "nt4-domain";
+pub(crate) const LEGACY: &str = "nt4-domain";
 
 const ENTRYPOINT: &str =
     include_str!("../../../../../ansible/playbooks/nt4-domain/image/entrypoint.sh");
@@ -94,7 +94,7 @@ impl Server {
 }
 
 /// the container of the server called `id`: the first server keeps the name from before the list.
-fn container_name(id: &str) -> String {
+pub(crate) fn container_name(id: &str) -> String {
     if id == LEGACY {
         "lanlord-nt4".into()
     } else {
