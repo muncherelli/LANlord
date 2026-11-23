@@ -205,45 +205,11 @@ fn collect_requirements(
     visiting.pop();
 }
 
-/// settings step: hosting is a component of its own, with the IIS presets under its `iis` part.
-/// it is switched on, with only `iis`, when the settings show the IIS presets in use (an `iis`
-/// section, which is where an install that managed IIS would have written it) and the NT4
-/// server it needs is on; otherwise it stays off, and settings that already say something about
-/// hosting are left alone.
-pub fn migrate_hosting(settings: &mut Settings, _: &Context) -> anyhow::Result<()> {
-    let in_use = settings.section("iis").is_some();
-    let stated = matches!(
-        settings.section(SECTION),
-        Some(Value::Mapping(m)) if m.contains_key(HOSTING)
-    );
-    if !in_use || stated {
-        return Ok(());
-    }
-    // a choice that cannot be read is not made worse; the validator names what is wrong with it
-    let Ok(selection) = Selection::from_settings(settings) else {
-        return Ok(());
-    };
-    if !selection.is_enabled("nt4-domain") {
-        return Ok(());
-    }
-    let mut entry = Mapping::new();
-    entry.insert("enabled".into(), Value::Bool(true));
-    entry.insert(
-        "subcomponents".into(),
-        Value::Sequence(vec![Value::from(HOSTING_IIS)]),
-    );
-    match settings.section(SECTION) {
-        Some(Value::Mapping(map)) => {
-            let mut entries = map.clone();
-            entries.insert(HOSTING.into(), Value::Mapping(entry));
-            settings.set_section(SECTION, Value::Mapping(entries));
-        }
-        _ => {
-            let mut entries = Mapping::new();
-            entries.insert(HOSTING.into(), Value::Mapping(entry));
-            settings.add_section_keeping_text(SECTION, Value::Mapping(entries));
-        }
-    }
+/// settings step: hosting became a component of its own. nothing stored before it said anything
+/// about hosting (the iis presets were never released), so there is nothing to carry over and
+/// the step changes no settings. it only moves the format on, so that an older build refuses
+/// the settings instead of silently dropping the `hosting` entry.
+pub fn migrate_hosting(_: &mut Settings, _: &Context) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -490,10 +456,20 @@ impl Selection {
                         Value::Null => Value::Mapping(Mapping::new()),
                         other => other.clone(),
                     };
+                    let has_parts = value
+                        .as_mapping()
+                        .is_some_and(|m| m.contains_key("subcomponents"));
                     let stored: Stored = serde_yaml_ng::from_value(value)
                         .map_err(|e| anyhow::anyhow!("components.{id}: {e}"))?;
                     if stored.enabled {
-                        enabled.insert(id.to_string(), stored.choice);
+                        let mut choice = stored.choice;
+                        // an entry that does not list its parts runs the default ones
+                        if !has_parts {
+                            if let Some(component) = catalogue().iter().find(|c| c.id() == id) {
+                                choice.subcomponents = component.default_subcomponents();
+                            }
+                        }
+                        enabled.insert(id.to_string(), choice);
                     } else {
                         enabled.remove(id);
                     }
@@ -564,6 +540,13 @@ impl Selection {
             entry.insert("enabled".into(), Value::Bool(true));
             if let Ok(Value::Mapping(fields)) = serde_yaml_ng::to_value(choice) {
                 entry.extend(fields);
+            }
+            // no parts ticked is written as such: an entry without the key runs the default parts
+            let has_parts = catalogue()
+                .iter()
+                .any(|c| c.id() == id && !c.subcomponents.is_empty());
+            if has_parts && choice.subcomponents.is_empty() {
+                entry.insert("subcomponents".into(), Value::Sequence(Vec::new()));
             }
             entries.insert(Value::String(id.clone()), Value::Mapping(entry));
         }
@@ -1996,6 +1979,25 @@ mod tests {
             .iis_allowed()
             .is_err());
         assert!(Selection::from_settings(&Settings::empty())
+            .unwrap()
+            .iis_allowed()
+            .is_err());
+        // an entry that lists no parts runs the default ones, `{}` and null alike
+        for text in [
+            "components:\n  nt4-domain: {}\n  hosting: {}\n",
+            "components:\n  nt4-domain: {}\n  hosting:\n",
+        ] {
+            let bare = Settings::parse(text).unwrap();
+            assert_eq!(
+                Selection::from_settings(&bare).unwrap().iis_allowed(),
+                Ok(())
+            );
+        }
+        // an explicit empty list stays empty
+        let none =
+            Settings::parse("components:\n  nt4-domain: {}\n  hosting: {subcomponents: []}\n")
+                .unwrap();
+        assert!(Selection::from_settings(&none)
             .unwrap()
             .iis_allowed()
             .is_err());

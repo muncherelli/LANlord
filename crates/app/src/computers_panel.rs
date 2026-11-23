@@ -1,5 +1,5 @@
 //! the machines of the nt4 domain with something to run on one of them, and what it printed.
-//! the plain panel is the computers tab of the nt4 domain window (a free-form command); the
+//! the plain panel is the computers tab of the nt4 domain window (a free-form command, and the general presets); the
 //! hosting panel is the body of the hosting window (the iis 4 presets). every front end draws
 //! the same nodes. a run is one operation that answers when the machine is done (its progress topic needs
 //! the run id, which only the answer carries), so the tab shows a running line, then the result.
@@ -95,8 +95,10 @@ struct RunBox {
     /// the host the box was opened on; it only ever runs there.
     host: String,
     machine: String,
-    /// `Some` for the iis box: the index in `PRESETS`.
+    /// `Some` for a preset box: the index in `PRESETS`.
     preset: Option<usize>,
+    /// the box offers the hosting presets (the hosting window) rather than the general ones.
+    hosting: bool,
     command: String,
     args: Vec<String>,
     timeout: String,
@@ -114,6 +116,7 @@ impl RunBox {
             host: host.into(),
             machine: machine.into(),
             preset: None,
+            hosting: false,
             command: String::new(),
             args: Vec::new(),
             timeout: DEFAULT_TIMEOUT_SECS.to_string(),
@@ -124,19 +127,20 @@ impl RunBox {
         }
     }
 
-    fn iis(host: &str, machine: &str) -> Self {
+    fn presets(host: &str, machine: &str, hosting: bool) -> Self {
         let mut run = Self::free(host, machine);
-        run.set_preset(first_hosting());
+        run.hosting = hosting;
+        run.set_preset(first_preset(hosting));
         run
     }
 
     fn set_preset(&mut self, index: usize) {
         let index = index.min(PRESETS.len() - 1);
-        // only hosting presets are offered here; a message for another one is not followed
-        let index = if nt4_exec::is_hosting(PRESETS[index].id) {
+        // only this box's kind of preset is offered; a message for another one is not followed
+        let index = if nt4_exec::is_hosting(PRESETS[index].id) == self.hosting {
             index
         } else {
-            first_hosting()
+            first_preset(self.hosting)
         };
         self.preset = Some(index);
         self.args = vec![String::new(); PRESETS[index].args.len()];
@@ -209,7 +213,8 @@ impl RunBox {
         self.focused = true;
         let (id, title) = match (self.preset, self.confirming) {
             (_, true) => ("computer-confirm", "Run on machine"),
-            (Some(_), false) => ("computer-iis", "IIS presets"),
+            (Some(_), false) if self.hosting => ("computer-iis", "IIS presets"),
+            (Some(_), false) => ("computer-presets", "Presets"),
             (None, false) => ("computer-run", "Run command"),
         };
         if self.confirming {
@@ -270,7 +275,7 @@ impl RunBox {
             options: PRESETS
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| nt4_exec::is_hosting(p.id))
+                .filter(|(_, p)| nt4_exec::is_hosting(p.id) == self.hosting)
                 .map(|(i, p)| (i, p.label.to_string()))
                 .collect(),
             pick: BoxMsg::Preset,
@@ -300,11 +305,11 @@ impl RunBox {
     }
 }
 
-/// the index in `PRESETS` of the first hosting preset.
-fn first_hosting() -> usize {
+/// the index in `PRESETS` of the first hosting preset, or of the first general one.
+fn first_preset(hosting: bool) -> usize {
     PRESETS
         .iter()
-        .position(|p| nt4_exec::is_hosting(p.id))
+        .position(|p| nt4_exec::is_hosting(p.id) == hosting)
         .unwrap_or(0)
 }
 
@@ -450,7 +455,7 @@ impl ComputersPanel {
         let may = idle && self.ask.is_none() && self.can_run && picked;
         Gates {
             run: may && self.mode == Mode::Plain,
-            iis: may && self.mode == Mode::Hosting && self.iis_on,
+            iis: may && (self.mode == Mode::Plain || self.iis_on),
             reload: idle,
         }
     }
@@ -486,6 +491,7 @@ impl ComputersPanel {
             }
         } else {
             buttons.push(Button::new("Run command...", gates.run, Msg::Run).width(BUTTON));
+            buttons.push(Button::new("Presets...", gates.iis, Msg::Iis).width(BUTTON));
         }
         buttons.push(Button::new("Refresh", gates.reload, Msg::Reload).width(BUTTON));
         let mut nodes = vec![
@@ -594,7 +600,10 @@ impl ComputersPanel {
         match (msg, machine) {
             (Msg::Pick(i), _) => self.selected = Some(i),
             (Msg::Run, Some(machine)) => self.ask = Some(RunBox::free(host, &machine)),
-            (Msg::Iis, Some(machine)) => self.ask = Some(RunBox::iis(host, &machine)),
+            (Msg::Iis, Some(machine)) => {
+                let hosting = self.mode == Mode::Hosting;
+                self.ask = Some(RunBox::presets(host, &machine, hosting));
+            }
             (Msg::Reload, _) => self.reload(services, host),
             (Msg::Run | Msg::Iis, None) => {}
         }
@@ -799,7 +808,7 @@ mod tests {
         assert!(!off.run && !off.iis && off.reload);
         panel.update(Msg::Pick(1), &services, "a@b");
         let on = panel.gates(&services, "a@b");
-        assert!(on.run && !on.iis);
+        assert!(on.run && on.iis);
         // another host's list is not this host's machine
         assert!(!panel.gates(&services, "c@d").run);
     }
@@ -910,7 +919,7 @@ mod tests {
 
     #[test]
     fn preset_arguments_are_checked_inline() {
-        let mut run = RunBox::iis("a@b", "NT4DEV01");
+        let mut run = RunBox::presets("a@b", "NT4DEV01", true);
         let start = PRESETS.iter().position(|p| p.id == "startweb").unwrap();
         run.set_preset(start);
         assert_eq!(run.args.len(), 1);
@@ -1149,7 +1158,7 @@ mod tests {
             })
             .next()
             .unwrap();
-        assert_eq!(widths, [Some(BUTTON); 2]);
+        assert_eq!(widths, [Some(BUTTON); 3]);
         assert!(nodes
             .iter()
             .any(|n| matches!(n, Node::Group { title, .. } if title == "Output")));
@@ -1160,7 +1169,18 @@ mod tests {
         let (mut plain, services, _) = panel();
         plain.select("NT4DEV01");
         plain.update(Msg::Iis, &services, "a@b");
-        assert!(!plain.box_open());
+        let dialog = plain.ask.as_mut().unwrap().view();
+        let offered = dialog.body.iter().find_map(|n| match n {
+            Node::Choice { options, .. } => Some(options.clone()),
+            _ => None,
+        });
+        // the computers tab offers the general presets, and none of the iis ones
+        let offered = offered.unwrap();
+        assert!(offered.iter().any(|(i, _)| PRESETS[*i].id == "ver"));
+        assert!(offered
+            .iter()
+            .all(|(i, _)| !nt4_exec::is_hosting(PRESETS[*i].id)));
+        plain.update_dialog(BoxMsg::Cancel, &services, Some("a@b"));
         let (mut hosted, services, _) = hosting();
         hosted.select("NT4DEV01");
         hosted.update(Msg::Run, &services, "a@b");
