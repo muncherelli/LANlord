@@ -39,7 +39,7 @@ pub fn reset_machine(session: &Session, name: &str, ask_password: AskPassword) -
     // the container's accounts are lower case
     let name = name.to_ascii_lowercase();
     let container = nt4_exec::container_of(session, ask_password, &name)?;
-    let script = format!("docker exec {container} lanlord-user machine {name} reset\n");
+    let script = format!("docker exec {container} lanlord-user machine {name} reset\n", container = crate::ssh::shell_quote(&container));
     let out = capture_as_root(session, &admin, script, ask_password)?;
     emit(Kind::Info, out.trim());
     Ok(())

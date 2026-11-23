@@ -65,6 +65,9 @@ case "$last" in
     printf '%s\n' "$last" >> "$D/argv"; cat > "$D/stdin" ;;
   *"lanlord-user list")
     c=${last##*docker exec }; c=${c%% *}
+    if [ -f "$D/fail-list" ] && case "$last " in *"$(cat "$D/fail-list")"*) true ;; *) false ;; esac; then
+      echo boom >&2; exit 1
+    fi
     if [ -f "$D/accounts-$c" ]; then cat "$D/accounts-$c"; fi ;;
   *"lanlord-exec run"*) printf '%s\n' "$last" >> "$D/calls"; cat > /dev/null ;;
   "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;
@@ -138,6 +141,11 @@ esac"##
     pub fn calls(&self) -> Vec<String> {
         let text = std::fs::read_to_string(self.dir.join("calls")).unwrap_or_default();
         text.lines().map(String::from).collect()
+    }
+
+    /// make the `lanlord-user list` call whose command names `container` fail.
+    pub fn fail_list_on(&self, container: &str) {
+        std::fs::write(self.dir.join("fail-list"), container).unwrap();
     }
 
     pub fn seed_sealed(&self, id: &age::x25519::Identity, text: &str) {

@@ -10,6 +10,7 @@ use crate::config;
 use crate::engine::host::Host;
 use crate::engine::modules::nt4::{container_name, exec_targets, remember_exec};
 use crate::leases;
+use crate::log::{emit, Kind};
 use crate::settings;
 use crate::ssh::Session;
 use crate::users::cached;
@@ -391,40 +392,96 @@ fn controllers(session: &Session, ask: AskPassword) -> Result<Vec<String>> {
     Ok(containers)
 }
 
-/// the machine accounts of each domain controller's container, without the `$`.
+/// whether `name` is a container name the engine could have made: `lanlord-nt4`, or
+/// `lanlord-nt4-` and a server id of letters, digits and inner hyphens.
+fn valid_container(name: &str) -> bool {
+    match name.strip_prefix("lanlord-nt4") {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix('-').is_some_and(|id| {
+            id.starts_with(|c: char| c.is_ascii_alphanumeric())
+                && id.ends_with(|c: char| c.is_ascii_alphanumeric())
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        }),
+        None => false,
+    }
+}
+
+/// the machine accounts of each domain controller's container, without the `$`. a container
+/// whose name is not valid, or whose list fails (not applied yet, stopped), is skipped with a
+/// warning naming it; it is an error only when no container can be listed.
 fn machines_by_container(
     session: &Session,
     ask: AskPassword,
 ) -> Result<Vec<(String, Vec<String>)>> {
     let admin = config::admin(session)?;
     let mut found = Vec::new();
+    let mut last_error = None;
     for container in controllers(session, ask)? {
-        let (remote, first) = root_argv(
+        if !valid_container(&container) {
+            emit(
+                Kind::Info,
+                format!("warning: skipped {container}: not a container name of the nt4 module"),
+            );
+            last_error = Some(anyhow!("{container} is not a valid container name"));
+            continue;
+        }
+        let listed = root_argv(
             session,
             &admin,
             &["docker", "exec", &container, "lanlord-user", "list"],
             ask,
-        )?;
-        let listed = session.capture_with_stdin(&remote, first.as_bytes())?;
-        found.push((container, machine_names(&listed)));
+        )
+        .and_then(|(remote, first)| session.capture_with_stdin(&remote, first.as_bytes()));
+        match listed {
+            Ok(listed) => found.push((container, machine_names(&listed))),
+            Err(error) => {
+                emit(
+                    Kind::Info,
+                    format!("warning: could not list the machines of {container}: {error}"),
+                );
+                last_error = Some(error);
+            }
+        }
     }
-    Ok(found)
+    match (found.is_empty(), last_error) {
+        (true, Some(error)) => Err(error),
+        _ => Ok(found),
+    }
 }
 
 /// the container whose domain has the account `machine`; when none has it, the first
-/// controller's, so the account tool says what is wrong.
+/// controller's, so the account tool says what is wrong. a name that is an account in more
+/// than one domain is an error, never the first of them.
 pub(crate) fn container_of(session: &Session, ask: AskPassword, machine: &str) -> Result<String> {
     let found = machines_by_container(session, ask)?;
-    let holder = found
-        .iter()
-        .find(|(_, names)| names.iter().any(|name| name.eq_ignore_ascii_case(machine)));
-    holder
-        .or(found.first())
+    if let Some(container) = holder(&found, machine)? {
+        return Ok(container.to_string());
+    }
+    found
+        .first()
         .map(|(container, _)| container.clone())
         .ok_or_else(|| anyhow!("{machine} is not a machine of the domain"))
 }
 
-/// the names of the machine accounts of every domain, without the `$`.
+/// the one container that has the account `machine`, if any; two is an error.
+fn holder<'a>(found: &'a [(String, Vec<String>)], machine: &str) -> Result<Option<&'a str>> {
+    let holders: Vec<&str> = found
+        .iter()
+        .filter(|(_, names)| names.iter().any(|name| name.eq_ignore_ascii_case(machine)))
+        .map(|(container, _)| container.as_str())
+        .collect();
+    match holders[..] {
+        [] => Ok(None),
+        [one] => Ok(Some(one)),
+        _ => bail!(
+            "{machine} is a machine in more than one domain ({}); rename or remove one of the accounts",
+            holders.join(", ")
+        ),
+    }
+}
+
+/// the names of the machine accounts of every domain, without the `$`; a name in two domains is
+/// listed once, and running on it or resetting it is refused.
 pub fn machines(session: &Session, ask: AskPassword) -> Result<Vec<String>> {
     let mut names: Vec<String> = Vec::new();
     for name in machines_by_container(session, ask)?
@@ -499,14 +556,14 @@ pub fn run(
 ) -> Result<Outcome> {
     let mut ask = cached(ask);
     let known = machines_by_container(session, &mut ask)?;
-    let Some((container, machine)) = known.iter().find_map(|(container, names)| {
-        names
-            .iter()
-            .find(|name| name.eq_ignore_ascii_case(machine))
-            .map(|name| (container.as_str(), name))
-    }) else {
+    let Some(container) = holder(&known, machine)? else {
         bail!("{machine} is not a machine of the domain");
     };
+    let machine = known
+        .iter()
+        .flat_map(|(_, names)| names)
+        .find(|name| name.eq_ignore_ascii_case(machine))
+        .expect("the holder lists the machine");
     let mut secret = password(session, identity, &mut ask)?;
     let mut body = request(&secret, command, &audit_name(caller));
     secret.zeroize();
@@ -1002,6 +1059,70 @@ pub(crate) mod tests {
         let calls = gw.calls();
         assert!(calls[0].contains("docker exec lanlord-nt4-lab lanlord-user machine ws2 reset"));
         assert!(calls[1].contains("docker exec lanlord-nt4 lanlord-user machine ws1 reset"));
+    }
+
+    #[test]
+    fn a_container_that_cannot_be_listed_is_skipped_and_the_others_still_work() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-badlist"), identity("exec-badlist"));
+        gw.seed_plain(TWO_DOMAINS);
+        gw.seed_accounts("lanlord-nt4-lab", "ws2$:1001:\n");
+        gw.fail_list_on("lanlord-nt4 ");
+        gw.seed_sealed(&id, "nt4-domain:\n  exec_password: pw\n");
+        assert_eq!(machines(&gw.session, &mut no_password).unwrap(), ["ws2"]);
+        crate::nt4::reset_machine(&gw.session, "ws2", &mut no_password).unwrap();
+        assert!(gw.calls()[0].contains("docker exec lanlord-nt4-lab lanlord-user machine ws2"));
+        // every list failing is an error
+        gw.fail_list_on("lanlord-nt4");
+        assert!(machines(&gw.session, &mut no_password).is_err());
+    }
+
+    #[test]
+    fn a_machine_in_two_domains_is_refused_by_run_and_reset() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-dup"), identity("exec-dup"));
+        gw.seed_plain(TWO_DOMAINS);
+        gw.seed_accounts("lanlord-nt4", "ws1$:1001:\n");
+        gw.seed_accounts("lanlord-nt4-lab", "WS1$:1001:\n");
+        gw.seed_sealed(&id, "nt4-domain:\n  exec_password: pw\n");
+        assert_eq!(machines(&gw.session, &mut no_password).unwrap(), ["ws1"]);
+        let run_error = run(
+            &gw.session,
+            &id,
+            &mut no_password,
+            ("ws1", "ver", 5, "cli"),
+            &mut |_, _| {},
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            run_error.contains("more than one domain (lanlord-nt4, lanlord-nt4-lab)"),
+            "{run_error}"
+        );
+        let reset_error = crate::nt4::reset_machine(&gw.session, "ws1", &mut no_password)
+            .unwrap_err()
+            .to_string();
+        assert!(reset_error.contains("more than one domain"), "{reset_error}");
+        assert!(gw.calls().is_empty());
+    }
+
+    #[test]
+    fn only_the_engines_container_names_are_valid() {
+        for good in ["lanlord-nt4", "lanlord-nt4-lab", "lanlord-nt4-a-b", "lanlord-nt4-7"] {
+            assert!(valid_container(good), "{good}");
+        }
+        for bad in [
+            "",
+            "lanlord-nt4-",
+            "lanlord-nt4--a",
+            "lanlord-nt4-a-",
+            "lanlord-nt4x",
+            "lanlord-nt4-a;b",
+            "lanlord-nt4-a b",
+            "other",
+        ] {
+            assert!(!valid_container(bad), "{bad}");
+        }
     }
 
     #[test]
