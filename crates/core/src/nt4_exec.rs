@@ -243,7 +243,7 @@ fn audit_name(caller: &str) -> String {
 
 /// the json request for stdin. it is written straight into one buffer that is big enough for
 /// the worst case, so no copy of the password is left behind by a regrowing buffer.
-fn request(password: &str, command: &str, caller: &str) -> Vec<u8> {
+fn request(password: &str, command: &str, caller: &str, extra: usize) -> Vec<u8> {
     #[derive(serde::Serialize)]
     struct Request<'a> {
         user: &'a str,
@@ -251,8 +251,10 @@ fn request(password: &str, command: &str, caller: &str) -> Vec<u8> {
         command: &'a str,
         caller: &'a str,
     }
-    // an escaped character takes at most six bytes
-    let mut body = Vec::with_capacity(64 + 6 * (password.len() + command.len() + caller.len()));
+    // an escaped character takes at most six bytes; `extra` is room for what the caller appends,
+    // so the buffer never regrows and leaves a copy of the password in freed memory
+    let mut body =
+        Vec::with_capacity(64 + 6 * (password.len() + command.len() + caller.len()) + extra);
     // writing to a vec cannot fail
     let _ = serde_json::to_writer(
         &mut body,
@@ -616,7 +618,7 @@ pub fn run_put(
         .find(|name| name.eq_ignore_ascii_case(machine))
         .expect("the holder lists the machine");
     let mut secret = password(session, identity, &mut ask)?;
-    let mut body = request(&secret, command, &audit_name(caller));
+    let mut body = request(&secret, command, &audit_name(caller), files.len() + 1);
     secret.zeroize();
     if !files.is_empty() {
         // the json is one line; the files follow it, one line each
@@ -669,7 +671,11 @@ fn run_request(
     let command = argv(container, machine, address, timeout_secs);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let (remote, first) = root_argv(session, &admin, &refs, ask)?;
-    let mut input = first.into_bytes();
+    // sized up front so appending the body never regrows and strands a copy of the password
+    let mut first = first;
+    let mut input = Vec::with_capacity(first.len() + body.len());
+    input.extend_from_slice(first.as_bytes());
+    first.zeroize();
     input.extend_from_slice(body);
     let mut collector = Collector::default();
     // a secret property is hidden in the live output too; a line is held until it is complete
@@ -870,7 +876,7 @@ pub(crate) mod tests {
             );
             assert_eq!(argv[argv.len() - 2..], ["--timeout", "30"]);
         }
-        let body = String::from_utf8(request(secret, "ver", "ann")).unwrap();
+        let body = String::from_utf8(request(secret, "ver", "ann", 0)).unwrap();
         assert!(body.contains(secret) && body.contains(USER));
         assert!(body.contains(r#""caller":"ann""#), "{body}");
     }

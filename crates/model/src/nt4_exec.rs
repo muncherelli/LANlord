@@ -274,6 +274,11 @@ pub fn check_file(text: &str) -> Result<(), &'static str> {
     if text.len() > MAX_PUT_FILE_BYTES.div_ceil(3) * 4 {
         return Err("is longer than 1 MiB");
     }
+    // the padding is part of the length, so the decoded size is exact
+    let padding = text.bytes().rev().take_while(|&b| b == b'=').count().min(2);
+    if (text.len() / 4 * 3).saturating_sub(padding) > MAX_PUT_FILE_BYTES {
+        return Err("is longer than 1 MiB");
+    }
     if !text.len().is_multiple_of(4)
         || !text
             .bytes()
@@ -548,16 +553,38 @@ mod tests {
         assert!(check_file("aGk").is_err());
         assert!(check_file("a!k=").is_err());
         assert!(check_file(&"A".repeat(MAX_PUT_FILE_BYTES.div_ceil(3) * 4 + 4)).is_err());
+        // exactly 1 MiB decoded passes, one byte more does not
+        let limit = MAX_PUT_FILE_BYTES.div_ceil(3) * 4;
+        assert!(check_file(&format!("{}==", "A".repeat(limit - 2))).is_ok());
+        assert!(check_file(&format!("{}=", "A".repeat(limit - 1))).is_err());
+        assert!(check_file(&"A".repeat(limit)).is_err());
     }
 
     #[test]
     fn the_dump_script_never_reads_a_password_property() {
         let body = SCRIPTS[0].body;
-        let code: Vec<&str> = body
-            .lines()
-            .filter(|line| !line.trim_start().starts_with('\''))
-            .collect();
-        let gets: Vec<&&str> = code.iter().filter(|l| l.contains(".Get(")).collect();
+        // drop comments: text after a quote that is outside a string literal
+        let strip = |line: &str| -> String {
+            let mut quoted = false;
+            for (i, c) in line.char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '\'' if !quoted => return line[..i].to_string(),
+                    _ => {}
+                }
+            }
+            line.to_string()
+        };
+        let stripped: Vec<String> = body.lines().map(strip).collect();
+        let code: Vec<&str> = stripped.iter().map(String::as_str).collect();
+        let is_get = |l: &str| {
+            let lower = l.to_ascii_lowercase();
+            lower.match_indices(".get").any(|(i, _)| {
+                let rest = &lower[i + 4..];
+                rest.trim_start().starts_with('(')
+            })
+        };
+        let gets: Vec<&&str> = code.iter().filter(|l| is_get(l)).collect();
         assert_eq!(gets.len(), 1, "one Get, in SafeGet");
         let text = code.join("\n");
         let guard = text.find("If IsSecret(sName) Then Exit Function").unwrap();

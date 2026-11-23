@@ -343,6 +343,13 @@ class LanlordExecTest(unittest.TestCase):
         self.assert_clean()
         self.assert_no_secret(out)
 
+    def test_an_empty_data_file_is_staged(self):
+        out = self.run_put(["file script vbs " + self.b64(b"x"), "file data - "])
+        self.assertEqual(self.events(out)[-1], {"exit": 0}, out.stderr)
+        run_id = re.search(r"ll-([0-9a-f]{8})\.script\.vbs", self.calls()).group(1)
+        with open(os.path.join(self.stubs, "bats", "ll-%s.data1" % run_id), "rb") as f:
+            self.assertEqual(f.read(), b"")
+
     def test_every_put_file_gets_its_acl_read_before_the_service_exists(self):
         out = self.run_put(["file script vbs " + self.b64(b"x"), "file data - " + self.b64(b"y")])
         self.assertEqual(self.events(out)[-1], {"exit": 0})
@@ -1407,13 +1414,25 @@ class IisPresetFilterTest(unittest.TestCase):
                 self.assertRegex(line, r"adsutil\.vbs ENUM \S+ \| findstr ")
 
 
+def strip_comment(line):
+    """the line without its vbscript comment: text after a ' outside a string literal"""
+    quoted = False
+    for i, c in enumerate(line):
+        if c == '"':
+            quoted = not quoted
+        elif c == "'" and not quoted:
+            return line[:i]
+    return line
+
+
 class LldumpTest(unittest.TestCase):
     PATH = os.path.join(os.path.dirname(__file__), "..", "..", "crates", "model", "nt4-scripts", "lldump.vbs")
 
     def setUp(self):
         with open(self.PATH) as f:
             self.text = f.read()
-        self.code = [l for l in self.text.splitlines() if not l.lstrip().startswith("'")]
+        self.code = [strip_comment(l) for l in self.text.splitlines()]
+        self.code = [l for l in self.code if l.strip()]
 
     def test_get_is_only_called_in_safeget_after_the_name_is_checked(self):
         calls = [i for i, l in enumerate(self.code) if re.search(r"\.Get\s*\(", l, re.I)]

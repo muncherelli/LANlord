@@ -36,8 +36,24 @@ End Function
 
 ' one text line: a value never breaks the output
 Function Clean(vValue)
-  Dim s
-  s = CStr(vValue)
+  Dim s, n
+  If IsNull(vValue) Then
+    s = ""
+  ElseIf IsObject(vValue) Then
+    s = "<object>"
+  ElseIf IsArray(vValue) Then
+    s = ""
+    For n = LBound(vValue) To UBound(vValue)
+      If n > LBound(vValue) Then s = s & ","
+      If IsArray(vValue(n)) Then
+        s = s & "<array>"
+      Else
+        s = s & Clean(vValue(n))
+      End If
+    Next
+  Else
+    s = CStr(vValue)
+  End If
   s = Replace(s, vbCr, " ")
   s = Replace(s, vbLf, " ")
   Clean = s

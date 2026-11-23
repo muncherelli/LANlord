@@ -129,7 +129,7 @@ enum MachinesCommand {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
-    /// put a whitelisted script (see `lanlord iis --list`) and data files on a domain machine and
+    /// put a whitelisted script (currently only lldump.vbs) and data files on a domain machine and
     /// run it; the files are deleted afterwards. the machine sees them as %LL_SCRIPT% and
     /// %LL_DATA1% and so on
     Put {
