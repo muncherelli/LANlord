@@ -1285,6 +1285,41 @@ fn dragging_the_left_or_top_edge_past_the_least_size_keeps_the_far_edges_still()
     }
 }
 
+/// a window moves when it is dragged by its caption, and never when it is dragged by its body.
+#[test]
+fn a_window_moves_by_its_title_bar_and_not_by_its_body() {
+    use eframe::egui::{Pos2, Vec2};
+    let size = Vec2::new(1280.0, 720.0);
+    let by = Vec2::new(60.0, 40.0);
+    type Grab = fn(egui::Rect) -> Pos2;
+    let cases: [(Grab, bool); 2] = [
+        (|r| Pos2::new(r.left() + 60.0, r.top() + 13.0), true),
+        (|r| Pos2::new(r.center().x, r.top() + 60.0), false),
+    ];
+    for (grab, moves) in cases {
+        let (mut desktop, ctx, _) = desktop();
+        with_host(&mut desktop, &ctx);
+        desktop.open(Target::Networks);
+        settled_on(&mut desktop, &ctx, size, true);
+        let start = desktop
+            .measured
+            .iter()
+            .find(|m| m.0 == Target::Networks)
+            .unwrap()
+            .1;
+        let seen = drag_from(&mut desktop, &ctx, size, Target::Networks, grab, by);
+        let end = seen.last().unwrap();
+        if moves {
+            assert!(
+                (end.min - (start.min + by)).length() < 1.5,
+                "{start:?} {end:?}"
+            );
+        } else {
+            assert!((end.min - start.min).length() < 1.5, "{start:?} {end:?}");
+        }
+    }
+}
+
 /// what one frame painted: the shapes as text, how many of them are rects, and where the window
 /// stood once the frame was done.
 struct Painted {

@@ -312,6 +312,55 @@ fn spare_room(before: Option<Room>, sized: bool, fit: bool, room: f32, floor: f3
     }
 }
 
+/// whether the held press began on the window but not on its caption (clear of the title buttons)
+/// or an edge: such a press must never move it, as in nt4. the answer is kept until the button is
+/// let go.
+fn body_pressed(ctx: &egui::Context, id: &str, key: Id, buttons: usize) -> bool {
+    if !ctx.input(|i| i.pointer.primary_down()) {
+        ctx.data_mut(|d| d.remove::<bool>(key));
+        return false;
+    }
+    if let Some(held) = ctx.data(|d| d.get_temp::<bool>(key)) {
+        return held;
+    }
+    let Some(p) = ctx.input(|i| {
+        i.pointer
+            .primary_pressed()
+            .then(|| i.pointer.press_origin())
+            .flatten()
+    }) else {
+        return false;
+    };
+    let Some(r) = ctx.memory(|m| m.area_rect(Id::unique(id))) else {
+        return false;
+    };
+    let gaps = buttons.saturating_sub(1).min(1) as f32 * 2.0;
+    let buttons_width = 2.0 + buttons as f32 * TITLE_BUTTON + gaps;
+    let caption = Rect::from_min_max(
+        r.min + Vec2::splat(FRAME),
+        Pos2::new(
+            r.right() - FRAME - buttons_width,
+            r.top() + FRAME + TITLE_BAR,
+        ),
+    );
+    let interaction = ctx.global_style().interaction.clone();
+    let (left, right, top, bottom) = host::grab(
+        interaction.resize_grab_radius_side,
+        interaction.resize_grab_radius_corner,
+        r,
+        p,
+    );
+    let edge = left || right || top || bottom;
+    let on_it = r.contains(p)
+        && !caption.contains(p)
+        && !edge
+        && ctx
+            .layer_id_at(p)
+            .is_none_or(|layer| layer.id == Id::unique(id));
+    ctx.data_mut(|d| d.insert_temp(key, on_it));
+    on_it
+}
+
 /// the user has sized the window once they press on its edge or corner.
 fn grabbed_edge(ctx: &egui::Context, id: &str) -> bool {
     let Some(r) = ctx.memory(|m| m.area_rect(Id::unique(id))) else {
@@ -620,12 +669,24 @@ pub fn show(
     least.y = least.y.min(max_height);
     // only a window with a list, a log or a text can be resized: the rest are forms, as big as
     // their controls
+    let buttons = if dialog {
+        1
+    } else if fixed {
+        2
+    } else {
+        3
+    };
     let mut window = egui::Window::new(title)
         .id(layer(id).id)
         .title_bar(false)
         .collapsible(false)
         .resizable(growable)
         .frame(host::frame());
+    // the window stays movable, which resizing from its top and left edges needs, except while a
+    // press that began on its body, frame or buttons is held: only the caption moves a window
+    if body_pressed(ctx, id, Id::unique(("window-body", id)), buttons) {
+        window = window.movable(false);
+    }
     let dialog_key = Id::unique(("window-dialog", id));
     let seen = dialog_seen(ctx, id, dialog_key);
     window = if dialog {
