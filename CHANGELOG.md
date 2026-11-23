@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- IIS 4 presets `smtpsvc-start`, `smtpsvc-stop` and `smtpsvc-restart`; `services-status` lists SMTP, `iisadmin-start` also starts the web, FTP and SMTP services that `iisadmin-stop` takes down, and `startweb` and `stopweb` print the site's `ServerState` afterwards (2 started, 4 stopped)
+- IIS 4 presets `smtpsvc-start`, `smtpsvc-stop` and `smtpsvc-restart`
 - the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout has its `cmd.exe` ended, but programs it started may keep running (NT4 has no way to end them); output files they hold open are removed by the next run
 - a Computers tab in the NT4 Server window (and in the text interface) lists the domain machines and runs a command or an IIS 4 preset on the one you pick, after a confirmation for anything that changes it; the output, exit code, duration and a timed-out state show under the list. It needs manage rights on Remote commands
 - Operations to list domain machines and run commands or IIS 4 presets on them
@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `lanlord iis HOST NAME PRESET [ARGS...] [--timeout N] [--yes]` runs an IIS 4 preset on a domain machine and returns its exit code; `lanlord iis --list` shows the presets and which ones change the machine. A preset that changes the machine asks first, unless `--yes` is given. `Operation::MachinePreset` now takes a `timeout_secs` (120 when left out). Starting and stopping the IIS services still goes through `cmd` (`net start|stop`)
 - Every `lanlord-exec` run is appended to `/var/lib/samba/private/exec.log` in the NT4 container (caller, machine, address, command or its hash, result, duration; never the password), and its output now comes in chunks of at most 1 MiB. A free-form command with a plain `exit N` is refused, as it ends the shell on the machine and the run would show as timed out
 - the `lanlord-exec` domain admin account is created on a domain controller, with a generated 24-character password sealed as `nt4-domain.exec_password`; it has no logon script and is not listed as a user. `lanlord secrets HOST rotate nt4-domain.exec_password` makes and sets a new one. The name `lanlord-exec` is reserved: settings that list a user of that name are refused, and an account of that name that already exists on the server is taken over on apply (its password is set and it is made a Domain Admin)
+
+### Changed
+
+- the IIS 4 presets: `services-status` also lists SMTP; `iisadmin-start` also starts the web, FTP and SMTP services that `iisadmin-stop` takes down and ends with the service listing, so it exits with the code of `findstr` and a failed `net start` is masked; `startweb` and `stopweb` print the site's `ServerState` afterwards (2 started, 4 stopped, 1 starting, 3 stopping) and exit with the code of that read, not of the script
 
 ### Security
 

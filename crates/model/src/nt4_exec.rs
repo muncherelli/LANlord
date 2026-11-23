@@ -48,6 +48,9 @@ pub fn check_command(command: &str) -> Result<(), &'static str> {
 /// listing (`| findstr ...`) exits with the code of `findstr` (0 when lines are left, 1 when
 /// none are), not of `cscript`: the pipe is the last command of the batch file, and cmd on nt 4
 /// has no way to keep the first command's code without writing the unfiltered listing to disk.
+/// likewise `iisadmin-start` exits with the code of its closing `findstr` (a failed `net start`
+/// is masked), and `startweb` and `stopweb` with the code of the `adsutil GET` that reads the
+/// site's state back, not of the script that started or stopped it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub id: &'static str,
@@ -590,19 +593,68 @@ mod tests {
             let scripts = preset.template.matches("cscript").count();
             assert_eq!(
                 scripts,
-                preset.template.matches(&ADMIN[..ADMIN.len()]).count()
+                preset.template.matches(ADMIN).count(),
+                "{}",
+                preset.id
             );
         }
     }
 
+    /// the metabase properties a preset may GET, by the last segment of the path.
+    const GET_ALLOWED: &[&str] = &["ServerState", "ServerBindings"];
+
+    /// why a template could print a password property, or `Ok`. every command of the template
+    /// (they are joined with `&`) is looked at: a GET must name an allowed property, an ENUM
+    /// must end in [`FILTER`], and `Pass` may only appear inside [`FILTER`].
+    fn password_problem(template: &str) -> Result<(), String> {
+        if template.replace(FILTER, "").to_lowercase().contains("pass") {
+            return Err("names a password outside the filter".into());
+        }
+        for command in template.split('&') {
+            let words: Vec<&str> = command.split_whitespace().collect();
+            for (i, word) in words.iter().enumerate() {
+                match *word {
+                    "GET" => {
+                        let path = words.get(i + 1).ok_or("GET without a path")?;
+                        let last = path.rsplit('/').next().unwrap_or_default();
+                        if !GET_ALLOWED.contains(&last) {
+                            return Err(format!("GET of {last}"));
+                        }
+                    }
+                    "ENUM" if !command.trim_end().ends_with(FILTER) => {
+                        return Err("ENUM without the filter".into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn no_preset_reads_a_password() {
-        for preset in PRESETS.iter().filter(|p| p.template.contains("adsutil")) {
-            let pass = preset.template.to_lowercase().contains("pass");
-            let filtered = preset.template.contains("findstr /v");
-            assert!(!pass || filtered, "{}", preset.id);
-            assert!(!preset.template.contains("GET") || preset.template.contains("/Server"));
+        for preset in PRESETS {
+            assert_eq!(password_problem(preset.template), Ok(()), "{}", preset.id);
         }
+    }
+
+    #[test]
+    fn the_password_check_rejects_bad_templates() {
+        let get = r"cscript //nologo x\adsutil.vbs GET W3SVC/1/";
+        assert!(password_problem(&format!("{get}ServerState")).is_ok());
+        for bad in [
+            format!("{get}ServerState & {get}AnonymousUserPass"),
+            format!("{get}AnonymousUserPass"),
+            format!("{get}ServerState/../x"),
+            format!("{get}ServerState & echo PASSWORD"),
+            r"cscript //nologo x\adsutil.vbs ENUM W3SVC".to_string(),
+            format!(r"cscript //nologo x\adsutil.vbs ENUM W3SVC & echo x{FILTER}"),
+            format!(r"cscript //nologo x\adsutil.vbs ENUM W3SVC/1 & {get}ServerState{FILTER}"),
+        ] {
+            assert!(password_problem(&bad).is_err(), "{bad}");
+        }
+        let ok = format!(r"cscript //nologo x\adsutil.vbs ENUM W3SVC{FILTER}");
+        assert!(password_problem(&ok).is_ok());
     }
 
     #[test]
