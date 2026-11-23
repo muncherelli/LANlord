@@ -1,7 +1,9 @@
-//! the computers tab of the nt4 domain window: the machines of the domain, a free-form command
-//! or an iis 4 preset run on one of them, and what it printed. every front end draws the same
-//! nodes. a run is one operation that answers when the machine is done (its progress topic needs
-//! the run id, which only the answer carries), so the tab shows a running line, then the result.
+//! the machines of the nt4 domain with something to run on one of them, and what it printed.
+//! the plain panel is the computers tab of the nt4 domain window (a free-form command, and the
+//! general presets); the hosting panel is the body of the hosting window (the iis 4 presets).
+//! every front end draws the same nodes. a run is one operation that answers when the machine is
+//! done (its progress topic needs the run id, which only the answer carries), so the tab shows a
+//! running line, then the result.
 
 use lanlord_model::access::Grants;
 use lanlord_model::nt4_exec::{self, Preset, PRESETS};
@@ -30,6 +32,32 @@ pub fn may_run(grants: &Grants) -> bool {
         }
         .requires(),
     )
+}
+
+/// may these grants run the iis presets of the hosting component?
+pub fn may_run_hosting(grants: &Grants) -> bool {
+    grants.allows(
+        Operation::MachinePreset {
+            machine: String::new(),
+            preset: HOSTING_PRESET.into(),
+            args: Vec::new(),
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+        }
+        .requires(),
+    )
+}
+
+/// any preset that `nt4_exec::is_hosting` counts, to ask what the hosting presets need.
+const HOSTING_PRESET: &str = "w3svc-stop";
+
+/// which of the two windows a panel is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// the computers tab: free-form commands.
+    #[default]
+    Plain,
+    /// the hosting window: the iis presets.
+    Hosting,
 }
 
 /// what a click in the page means.
@@ -68,8 +96,10 @@ struct RunBox {
     /// the host the box was opened on; it only ever runs there.
     host: String,
     machine: String,
-    /// `Some` for the iis box: the index in `PRESETS`.
+    /// `Some` for a preset box: the index in `PRESETS`.
     preset: Option<usize>,
+    /// the box offers the hosting presets (the hosting window) rather than the general ones.
+    hosting: bool,
     command: String,
     args: Vec<String>,
     timeout: String,
@@ -87,6 +117,7 @@ impl RunBox {
             host: host.into(),
             machine: machine.into(),
             preset: None,
+            hosting: false,
             command: String::new(),
             args: Vec::new(),
             timeout: DEFAULT_TIMEOUT_SECS.to_string(),
@@ -97,14 +128,21 @@ impl RunBox {
         }
     }
 
-    fn iis(host: &str, machine: &str) -> Self {
+    fn presets(host: &str, machine: &str, hosting: bool) -> Self {
         let mut run = Self::free(host, machine);
-        run.set_preset(0);
+        run.hosting = hosting;
+        run.set_preset(first_preset(hosting));
         run
     }
 
     fn set_preset(&mut self, index: usize) {
         let index = index.min(PRESETS.len() - 1);
+        // only this box's kind of preset is offered; a message for another one is not followed
+        let index = if nt4_exec::is_hosting(PRESETS[index].id) == self.hosting {
+            index
+        } else {
+            first_preset(self.hosting)
+        };
         self.preset = Some(index);
         self.args = vec![String::new(); PRESETS[index].args.len()];
         self.error = None;
@@ -176,7 +214,8 @@ impl RunBox {
         self.focused = true;
         let (id, title) = match (self.preset, self.confirming) {
             (_, true) => ("computer-confirm", "Run on machine"),
-            (Some(_), false) => ("computer-iis", "IIS presets"),
+            (Some(_), false) if self.hosting => ("computer-iis", "IIS presets"),
+            (Some(_), false) => ("computer-presets", "Presets"),
             (None, false) => ("computer-run", "Run command"),
         };
         if self.confirming {
@@ -237,6 +276,7 @@ impl RunBox {
             options: PRESETS
                 .iter()
                 .enumerate()
+                .filter(|(_, p)| nt4_exec::is_hosting(p.id) == self.hosting)
                 .map(|(i, p)| (i, p.label.to_string()))
                 .collect(),
             pick: BoxMsg::Preset,
@@ -266,6 +306,14 @@ impl RunBox {
     }
 }
 
+/// the index in `PRESETS` of the first hosting preset, or of the first general one.
+fn first_preset(hosting: bool) -> usize {
+    PRESETS
+        .iter()
+        .position(|p| nt4_exec::is_hosting(p.id) == hosting)
+        .unwrap_or(0)
+}
+
 /// a run in progress.
 struct Running {
     job: Job<RunOutput>,
@@ -288,6 +336,9 @@ struct LastRun {
 
 #[derive(Default)]
 pub struct ComputersPanel {
+    mode: Mode,
+    /// the hosting window only: is the iis part of the component on?
+    iis_on: bool,
     remote: Remote<Vec<String>>,
     selected: Option<usize>,
     /// the host `selected` and `last` belong to.
@@ -370,6 +421,16 @@ impl ComputersPanel {
         self.can_run = can;
     }
 
+    /// make this the panel of the hosting window.
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+    }
+
+    /// hosting window: is the iis part of the component on? the server decides anyway.
+    pub fn set_iis_on(&mut self, on: bool) {
+        self.iis_on = on;
+    }
+
     pub fn running(&self) -> bool {
         self.running.is_some()
     }
@@ -394,8 +455,8 @@ impl ComputersPanel {
         let picked = self.current().is_some() && self.remote.belongs_to(host);
         let may = idle && self.ask.is_none() && self.can_run && picked;
         Gates {
-            run: may,
-            iis: may,
+            run: may && self.mode == Mode::Plain,
+            iis: may && (self.mode == Mode::Plain || self.iis_on),
             reload: idle,
         }
     }
@@ -423,8 +484,26 @@ impl ComputersPanel {
         };
         let gates = self.gates(services, host);
         let rows = self.names().iter().map(|n| vec![n.clone()]).collect();
+        let hosting = self.mode == Mode::Hosting;
+        let mut buttons = Vec::new();
+        if hosting {
+            if self.iis_on {
+                buttons.push(Button::new("IIS presets...", gates.iis, Msg::Iis).width(BUTTON));
+            }
+        } else {
+            buttons.push(Button::new("Run command...", gates.run, Msg::Run).width(BUTTON));
+            buttons.push(Button::new("Presets...", gates.iis, Msg::Iis).width(BUTTON));
+        }
+        buttons.push(Button::new("Refresh", gates.reload, Msg::Reload).width(BUTTON));
         let mut nodes = vec![
-            Node::Text("Commands run on a domain machine as a domain administrator.".into()),
+            Node::Text(
+                if hosting {
+                    "IIS presets run on a domain machine as a domain administrator."
+                } else {
+                    "Commands run on a domain machine as a domain administrator."
+                }
+                .into(),
+            ),
             Node::Gap(4.0),
             Node::Group {
                 title: "Machines".into(),
@@ -441,17 +520,22 @@ impl ComputersPanel {
                         steady: true,
                     }),
                     Node::Gap(4.0),
-                    Node::Toolbar(vec![
-                        Button::new("Run command...", gates.run, Msg::Run).width(BUTTON),
-                        Button::new("IIS...", gates.iis, Msg::Iis).width(BUTTON),
-                        Button::new("Refresh", gates.reload, Msg::Reload).width(BUTTON),
-                    ]),
+                    Node::Toolbar(buttons),
                 ],
             },
         ];
-        if !self.can_run {
+        if hosting && !self.iis_on {
             nodes.push(Node::Text(
-                "Running commands needs manage rights on Remote commands.".into(),
+                "Turn on the IIS part of the Hosting component to use the presets.".into(),
+            ));
+        } else if !self.can_run {
+            nodes.push(Node::Text(
+                if hosting {
+                    "Running IIS presets needs manage rights on Hosting."
+                } else {
+                    "Running commands needs manage rights on Remote commands."
+                }
+                .into(),
             ));
         }
         nodes.push(Node::Gap(4.0));
@@ -517,7 +601,10 @@ impl ComputersPanel {
         match (msg, machine) {
             (Msg::Pick(i), _) => self.selected = Some(i),
             (Msg::Run, Some(machine)) => self.ask = Some(RunBox::free(host, &machine)),
-            (Msg::Iis, Some(machine)) => self.ask = Some(RunBox::iis(host, &machine)),
+            (Msg::Iis, Some(machine)) => {
+                let hosting = self.mode == Mode::Hosting;
+                self.ask = Some(RunBox::presets(host, &machine, hosting));
+            }
             (Msg::Reload, _) => self.reload(services, host),
             (Msg::Run | Msg::Iis, None) => {}
         }
@@ -673,10 +760,21 @@ mod tests {
     use crate::wake::Wake;
 
     fn panel() -> (ComputersPanel, Services, Arc<Fake>) {
+        panel_in(Mode::Plain)
+    }
+
+    fn hosting() -> (ComputersPanel, Services, Arc<Fake>) {
+        let (mut panel, services, fake) = panel_in(Mode::Hosting);
+        panel.set_iis_on(true);
+        (panel, services, fake)
+    }
+
+    fn panel_in(mode: Mode) -> (ComputersPanel, Services, Arc<Fake>) {
         let fake = Arc::new(Fake::new());
         *fake.machines.lock().unwrap() = vec!["NT4DEV02".into(), "NT4DEV01".into()];
         let services = Services::new(fake.clone(), Wake::none());
         let mut panel = ComputersPanel::default();
+        panel.set_mode(mode);
         panel.set_can_run(true);
         panel.shown_host = Some("a@b".into());
         panel.reload(&services, "a@b");
@@ -796,7 +894,7 @@ mod tests {
 
     #[test]
     fn a_read_only_preset_runs_at_once_and_a_mutating_one_asks() {
-        let (mut panel, services, fake) = panel();
+        let (mut panel, services, fake) = hosting();
         panel.select("NT4DEV01");
         panel.update(Msg::Iis, &services, "a@b");
         let index = |id: &str| PRESETS.iter().position(|p| p.id == id).unwrap();
@@ -805,7 +903,11 @@ mod tests {
         assert!(panel.ask.as_ref().unwrap().confirming);
         assert_eq!(panel.ask.as_ref().unwrap().shown(), "net stop w3svc");
         panel.update_dialog(BoxMsg::Cancel, &services, Some("a@b"));
-        panel.update_dialog(BoxMsg::Preset(index("ver")), &services, Some("a@b"));
+        panel.update_dialog(
+            BoxMsg::Preset(index("services-status")),
+            &services,
+            Some("a@b"),
+        );
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         assert!(!panel.box_open() && panel.running());
         wait(&mut panel);
@@ -813,12 +915,12 @@ mod tests {
             .calls
             .lock()
             .unwrap()
-            .contains(&"machine-preset a@b NT4DEV01 ver".to_string()));
+            .contains(&"machine-preset a@b NT4DEV01 services-status".to_string()));
     }
 
     #[test]
     fn preset_arguments_are_checked_inline() {
-        let mut run = RunBox::iis("a@b", "NT4DEV01");
+        let mut run = RunBox::presets("a@b", "NT4DEV01", true);
         let start = PRESETS.iter().position(|p| p.id == "startweb").unwrap();
         run.set_preset(start);
         assert_eq!(run.args.len(), 1);
@@ -921,8 +1023,10 @@ mod tests {
     #[test]
     fn a_box_opened_on_one_host_refuses_ok_on_another() {
         let (mut panel, services, fake) = panel();
+        let (mut hosted, _, _) = hosting();
         panel.select("NT4DEV01");
-        for open in [Msg::Run, Msg::Iis] {
+        hosted.select("NT4DEV01");
+        for (panel, open) in [(&mut panel, Msg::Run), (&mut hosted, Msg::Iis)] {
             panel.update(open, &services, "a@b");
             if panel.ask.as_ref().unwrap().preset.is_none() {
                 panel.update_dialog(BoxMsg::Command("ver".into()), &services, Some("a@b"));
@@ -1059,5 +1163,84 @@ mod tests {
         assert!(nodes
             .iter()
             .any(|n| matches!(n, Node::Group { title, .. } if title == "Output")));
+    }
+
+    #[test]
+    fn the_two_panels_offer_their_own_buttons_and_only_hosting_presets() {
+        let (mut plain, services, _) = panel();
+        plain.select("NT4DEV01");
+        plain.update(Msg::Iis, &services, "a@b");
+        let dialog = plain.ask.as_mut().unwrap().view();
+        let offered = dialog.body.iter().find_map(|n| match n {
+            Node::Choice { options, .. } => Some(options.clone()),
+            _ => None,
+        });
+        // the computers tab offers the general presets, and none of the iis ones
+        let offered = offered.unwrap();
+        assert!(offered.iter().any(|(i, _)| PRESETS[*i].id == "ver"));
+        assert!(offered
+            .iter()
+            .all(|(i, _)| !nt4_exec::is_hosting(PRESETS[*i].id)));
+        plain.update_dialog(BoxMsg::Cancel, &services, Some("a@b"));
+        let (mut hosted, services, _) = hosting();
+        hosted.select("NT4DEV01");
+        hosted.update(Msg::Run, &services, "a@b");
+        assert!(!hosted.box_open());
+        hosted.update(Msg::Iis, &services, "a@b");
+        let run = hosted.ask.as_mut().unwrap();
+        let dialog = run.view();
+        let offered = dialog.body.iter().find_map(|n| match n {
+            Node::Choice { options, .. } => Some(options.clone()),
+            _ => None,
+        });
+        let offered = offered.unwrap();
+        assert!(!offered.is_empty());
+        assert!(offered
+            .iter()
+            .all(|(i, _)| nt4_exec::is_hosting(PRESETS[*i].id)));
+        assert!(!offered.iter().any(|(i, _)| PRESETS[*i].id == "ver"));
+        // a general preset sent by a front end is not followed
+        hosted.update_dialog(
+            BoxMsg::Preset(PRESETS.iter().position(|p| p.id == "ver").unwrap()),
+            &services,
+            Some("a@b"),
+        );
+        let shown = hosted.ask.as_ref().unwrap().the_preset().unwrap().id;
+        assert!(nt4_exec::is_hosting(shown));
+    }
+
+    #[test]
+    fn hosting_without_its_iis_part_has_no_presets_and_says_why() {
+        let (mut hosted, services, _) = hosting();
+        hosted.set_iis_on(false);
+        hosted.select("NT4DEV01");
+        assert!(!hosted.gates(&services, "a@b").iis);
+        hosted.update(Msg::Iis, &services, "a@b");
+        assert!(!hosted.box_open());
+        let nodes = hosted.preview(&services, Some("a@b"));
+        let has = |text: &str| {
+            nodes
+                .iter()
+                .any(|n| matches!(n, Node::Text(t) if t.contains(text)))
+        };
+        assert!(has("Turn on the IIS part"));
+        let toolbar = nodes.iter().find_map(|n| match n {
+            Node::Group { body, .. } => body.iter().find_map(|b| match b {
+                Node::Toolbar(buttons) => Some(buttons.len()),
+                _ => None,
+            }),
+            _ => None,
+        });
+        assert_eq!(toolbar, Some(1));
+    }
+
+    #[test]
+    fn hosting_rights_follow_the_hosting_area() {
+        use lanlord_model::access::{Area, Level};
+        assert!(may_run_hosting(&Grants::all(Level::Manage)));
+        let mut commands_only = Grants::all(Level::View);
+        commands_only.0.insert(Area::Commands, Level::Manage);
+        assert!(!may_run_hosting(&commands_only));
+        assert!(may_run(&commands_only));
     }
 }

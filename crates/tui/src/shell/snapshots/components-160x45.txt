@@ -11,10 +11,10 @@
    Gateway    │  [ ] ▌ NT4 Server                               ✓  Docker, 1+ network   │
               │  [ ] ◎ Web Proxy                                ✓  Docker, 1+ network   │
               │  [ ] ▶ Remote Cmds                                  networks optional   │
-      ▦       │  [ ] ┬ DNS                                      ✓  Docker, 1+ network   │
-   Settings   │  [ ] ◆ DHCP                                     ✓  Docker, 1+ network   │
+      ▦       │  [ ] ▤ Hosting                                             NT4 Server   │
+   Settings   │  [ ] ┬ DNS                                      ✓  Docker, 1+ network   │
+              │  [ ] ◆ DHCP                                     ✓  Docker, 1+ network   │
               │  [ ] ◆ Time Server (NTP)                        ?  Docker, 1+ network   │
-              │                                                                         │
       >       │ ┌ Gateway ────────────────────────────────────────────────────────────┐ │
    Console    │ │ Baseline for the gateway: its state record and message of the day.  │ │
               │ └─────────────────────────────────────────────────────────────────────┘ │

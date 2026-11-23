@@ -554,7 +554,7 @@ fn the_computers_tab_lists_machines_and_runs_a_command_after_asking() {
     shell.nt4_tab = 3;
     let text = frame_until(&mut shell, "ws1");
     assert!(
-        text.contains("Run command...") && text.contains("IIS..."),
+        text.contains("Run command...") && !text.contains("IIS"),
         "{text}"
     );
     let host = shell.host().unwrap();
@@ -574,6 +574,25 @@ fn the_computers_tab_lists_machines_and_runs_a_command_after_asking() {
         .update_dialog(BoxMsg::Ok, &shell.services, Some(&host));
     let text = frame_until(&mut shell, "exit code 0");
     assert!(text.contains("ok"), "{text}");
+}
+
+#[test]
+fn the_hosting_window_lists_machines_and_offers_no_iis_presets_without_the_iis_part() {
+    use lanlord_app::computers_panel::Msg;
+    let mut shell = demo();
+    frame(&mut shell);
+    let hosting = module("hosting");
+    shell.open(hosting);
+    // the demo has hosting off, so there are no presets and the window says why
+    let text = frame_until(&mut shell, "ws1");
+    assert!(
+        text.contains("Turn on the IIS part") && !text.contains("Run command..."),
+        "{text}"
+    );
+    let host = shell.host().unwrap();
+    shell.hosting.select("ws1");
+    shell.hosting.update(Msg::Iis, &shell.services, &host);
+    assert!(shell.hosting.dialog().is_none());
 }
 
 #[test]

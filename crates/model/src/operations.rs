@@ -252,6 +252,10 @@ impl Operation {
             Operation::WriteLogon { .. } => Need::manage(Area::Shares),
             Operation::Run { .. } => Need::manage(Area::Commands),
             Operation::Machines => Need::view(Area::Domain),
+            // the iis presets are hosting; the rest of the presets and plain runs are commands
+            Operation::MachinePreset { preset, .. } if crate::nt4_exec::is_hosting(preset) => {
+                Need::manage(Area::Hosting)
+            }
             Operation::MachineRun { .. }
             | Operation::MachinePreset { .. }
             | Operation::MachinePut { .. } => Need::manage(Area::Commands),
@@ -832,6 +836,20 @@ mod tests {
         );
         assert_eq!(topic::machine_run_id("machine-run:0a1b2c3"), None);
         assert_eq!(Operation::Machines.requires(), Need::view(Area::Domain));
+        let preset = |id: &str| {
+            Operation::MachinePreset {
+                machine: "NT4SRV01".into(),
+                preset: id.into(),
+                args: Vec::new(),
+                timeout_secs: 1,
+            }
+            .requires()
+        };
+        // the iis presets are hosting; the general ones and an unknown id stay under commands
+        assert_eq!(preset("w3svc-start"), Need::manage(Area::Hosting));
+        assert_eq!(preset("services-status"), Need::manage(Area::Hosting));
+        assert_eq!(preset("ver"), Need::manage(Area::Commands));
+        assert_eq!(preset("nope"), Need::manage(Area::Commands));
         assert!(Operation::MachineRun {
             machine: "NT4SRV01".into(),
             command: "ver".into(),

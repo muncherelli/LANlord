@@ -145,6 +145,13 @@ struct Answer {
     width: u16,
 }
 
+/// the panel of the hosting window, which runs the iis presets.
+fn hosting_panel() -> ComputersPanel {
+    let mut panel = ComputersPanel::default();
+    panel.set_mode(lanlord_app::computers_panel::Mode::Hosting);
+    panel
+}
+
 /// run `pass` over `nodes`; the message it produced, if any.
 fn drive<M: Clone>(
     nodes: &[Node<M>],
@@ -274,6 +281,8 @@ pub struct Shell {
     nt4: Nt4Panel,
     logon: LogonPanel,
     computers: ComputersPanel,
+    /// the body of the hosting window.
+    hosting: ComputersPanel,
     dns: DnsPanel,
     commands: CommandPanel,
     /// the open tab of the NT4 Server window: Settings, Logins, Logon scripts or Computers.
@@ -386,6 +395,7 @@ impl Shell {
             nt4: Nt4Panel::default(),
             logon: LogonPanel::default(),
             computers: ComputersPanel::default(),
+            hosting: hosting_panel(),
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
             nt4_tab: 0,
@@ -511,6 +521,7 @@ impl Shell {
         self.nt4_tab = 0;
         self.logon = LogonPanel::default();
         self.computers = ComputersPanel::default();
+        self.hosting = hosting_panel();
         self.dns = DnsPanel::default();
         self.commands = CommandPanel::default();
         self.clock_panel = ClockPanel::default();
@@ -877,9 +888,11 @@ impl Shell {
         self.nt4.poll();
         self.logon.poll();
         self.computers.poll();
+        self.hosting.poll();
         // the host can change from another tab, while the Computers tab draws nothing
         let host = self.host();
         self.computers.close_stale_box(host.as_deref());
+        self.hosting.close_stale_box(host.as_deref());
         self.dns.poll();
         self.commands.poll();
         self.poll_clock();
@@ -1037,6 +1050,19 @@ impl Shell {
                 let module = &MODULES[i];
                 match module.id {
                     "nt4-domain" => self.nt4_window(module, pass, &state),
+                    "hosting" => {
+                        let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
+                        self.hosting.set_can_run(may);
+                        let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
+                        self.hosting.set_iis_on(iis);
+                        let mut nodes = module_window::header(module);
+                        nodes.extend(self.hosting.view(&self.services, host.as_deref()));
+                        let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                        if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                            self.hosting.update(msg, &self.services, host);
+                        }
+                        answer
+                    }
                     "dns" | "dhcp" => {
                         let mut nodes = module_window::header(module);
                         nodes.extend(self.dns.view(&self.services, host.as_deref()));
@@ -1389,6 +1415,9 @@ impl Shell {
         if let Some(dialog) = self.computers.dialog() {
             return Some(dialog.id);
         }
+        if let Some(dialog) = self.hosting.dialog() {
+            return Some(dialog.id);
+        }
         if let Some(dialog) = self.dns.dialog() {
             return Some(dialog.id);
         }
@@ -1501,6 +1530,15 @@ impl Shell {
             if let Some(msg) = msg {
                 let host = self.host();
                 self.computers
+                    .update_dialog(msg, &self.services, host.as_deref());
+            }
+            (title, answer)
+        } else if let Some(dialog) = self.hosting.dialog() {
+            let (answer, msg) = drive_dialog(&dialog, &mut pass, &state, palette, escape);
+            let title = dialog.title.clone();
+            if let Some(msg) = msg {
+                let host = self.host();
+                self.hosting
                     .update_dialog(msg, &self.services, host.as_deref());
             }
             (title, answer)

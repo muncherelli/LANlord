@@ -224,12 +224,21 @@ fn the_wizard_keeps_one_size_and_its_buttons_in_place_on_every_page() {
     let first = wizard_place(&mut desktop, &ctx);
     // ticking any component on and off, and picking any row, changes nothing
     let rows = lanlord_model::components::catalogue().len();
+    let hosting = lanlord_model_row("hosting");
+    let nt4 = lanlord_model_row("nt4-domain");
     for row in (0..rows).chain([0]) {
         for _ in 0..2 {
             desktop
                 .components
                 .update(Msg::Toggle(row), &desktop.services, "me@gw");
             assert_eq!(wizard_place(&mut desktop, &ctx), first, "row {row}");
+        }
+        if row == hosting {
+            // ticking hosting brought the nt4 server in, and unticking it leaves that on
+            desktop
+                .components
+                .update(Msg::Toggle(nt4), &desktop.services, "me@gw");
+            assert_eq!(wizard_place(&mut desktop, &ctx), first, "nt4 server again");
         }
     }
     let row = lanlord_model_row("web-proxy");

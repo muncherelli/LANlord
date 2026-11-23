@@ -56,6 +56,8 @@ pub enum Area {
     Updates,
     /// running commands on the gateway.
     Commands,
+    /// iis hosting on the nt4 servers: the iis presets and the hosting window.
+    Hosting,
     /// lanlord's own users, roles and permissions.
     Users,
 }
@@ -74,7 +76,7 @@ pub fn area_of_section(key: &str) -> Area {
 }
 
 impl Area {
-    pub const ALL: [Area; 13] = [
+    pub const ALL: [Area; 14] = [
         Area::Status,
         Area::Network,
         Area::Dns,
@@ -87,6 +89,7 @@ impl Area {
         Area::Tasks,
         Area::Updates,
         Area::Commands,
+        Area::Hosting,
         Area::Users,
     ];
 
@@ -104,6 +107,7 @@ impl Area {
             Self::Tasks => "Task manager",
             Self::Updates => "Install and updates",
             Self::Commands => "Remote commands",
+            Self::Hosting => "Hosting",
             Self::Users => "Users and permissions",
         }
     }
@@ -201,6 +205,7 @@ impl Role {
                     (Shares, Manage),
                     (Logs, View),
                     (Tasks, View),
+                    (Hosting, Manage),
                 ],
             ),
             make(USERS, &[(Status, View), (Clock, View)]),
@@ -430,6 +435,28 @@ mod tests {
         assert_eq!(user.level(Area::Status), Level::View);
         assert_eq!(user.level(Area::Network), Level::Hidden);
         assert_eq!(user.level(Area::Users), Level::Hidden);
+    }
+
+    #[test]
+    fn hosting_is_managed_by_administrators_and_operators_and_hidden_from_users() {
+        let mut access = Access::default();
+        access.members.insert("olive".into(), names(&[OPERATORS]));
+        for (who, admin, level) in [
+            ("root", true, Level::Manage),
+            ("olive", false, Level::Manage),
+            ("dana", false, Level::Hidden),
+        ] {
+            assert_eq!(
+                access.grants(who, admin).level(Area::Hosting),
+                level,
+                "{who}"
+            );
+        }
+        // the remote commands area is still not the operators'
+        assert_eq!(
+            access.grants("olive", false).level(Area::Commands),
+            Level::Hidden
+        );
     }
 
     #[test]

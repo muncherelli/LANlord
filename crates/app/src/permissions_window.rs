@@ -8,6 +8,9 @@ use crate::remote::Remote;
 use crate::services::Services;
 use crate::view::{self, Button, Dialog, Node, Table};
 
+/// the height the areas of a role take before they scroll.
+const AREAS_HEIGHT: f32 = 192.0;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
     PickUser(usize),
@@ -159,7 +162,14 @@ impl PermissionsWindow {
             empty: String::new(),
             select: Msg::PickRole,
         }];
-        body.extend((0..Area::ALL.len()).map(|a| self.level_choice(a, &role, writable)));
+        // the areas scroll, so the buttons under them stay in view whatever the number of areas
+        body.push(Node::Scroll {
+            id: "permission-areas",
+            max_height: AREAS_HEIGHT,
+            body: (0..Area::ALL.len())
+                .map(|a| self.level_choice(a, &role, writable))
+                .collect(),
+        });
         body.push(Node::Toolbar(vec![
             Button::new("New role...", writable, Msg::NewRole),
             Button::new(

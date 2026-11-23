@@ -129,6 +129,21 @@ enum MachinesCommand {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
+    /// run a general preset (ver, ipconfig or net-start) on a domain machine; the IIS presets
+    /// run with `lanlord hosting`
+    Preset {
+        name: String,
+        /// the preset: net-start, ver or ipconfig
+        preset: String,
+        /// the preset's arguments, in order
+        args: Vec<String>,
+        /// seconds to wait for the preset, 1 to 900
+        #[arg(long, default_value_t = lanlord_core::operations::DEFAULT_TIMEOUT_SECS, value_parser = clap::value_parser!(u32).range(1..=900))]
+        timeout: u32,
+        /// run a preset that changes the machine without asking
+        #[arg(long)]
+        yes: bool,
+    },
     /// put a whitelisted script (currently only lldump.vbs) and data files on a domain machine and
     /// run it; the files are deleted afterwards. the machine sees them as %LL_SCRIPT% and
     /// %LL_DATA1% and so on
@@ -657,8 +672,10 @@ enum Command {
         action: Option<MachinesCommand>,
     },
     /// run an IIS 4 preset on a domain machine through the gateway, or list the presets with
-    /// --list; the exit code is the one the machine returned
-    Iis {
+    /// --list; the exit code is the one the machine returned. the IIS presets need the Hosting
+    /// component with its iis part; the general presets (ver, ipconfig, net-start) run with
+    /// `machines HOST preset`
+    Hosting {
         /// the gateway
         #[arg(required_unless_present = "list", conflicts_with = "list")]
         host: Option<String>,
@@ -895,10 +912,11 @@ fn secrets(host: &str, action: SecretsCommand) -> Result<()> {
     }
 }
 
-/// the preset table, one line each: id and arguments, whether it changes the machine, label.
+/// the hosting presets, one line each: id and arguments, whether it changes the machine, label.
 fn preset_lines() -> Vec<String> {
     lanlord_model::nt4_exec::PRESETS
         .iter()
+        .filter(|p| lanlord_model::nt4_exec::is_hosting(p.id))
         .map(|p| {
             let args: String = p.args.iter().map(|a| format!(" <{a}>")).collect();
             let kind = if p.mutating { "mutating" } else { "read-only" };
@@ -907,7 +925,23 @@ fn preset_lines() -> Vec<String> {
         .collect()
 }
 
-fn iis(
+/// `lanlord hosting`: the hosting presets only; the general ones run with `machines ... preset`.
+fn hosting(
+    host: &str,
+    name: &str,
+    (preset, args): (&str, &[String]),
+    (timeout, yes): (u32, bool),
+) -> Result<()> {
+    if lanlord_model::nt4_exec::find(preset).is_some()
+        && !lanlord_model::nt4_exec::is_hosting(preset)
+    {
+        bail!("{preset} is not a hosting preset; run it with `lanlord machines {host} preset {name} {preset}`");
+    }
+    run_preset(host, name, (preset, args), (timeout, yes))
+}
+
+/// run a preset on a machine, after the question a preset that changes it asks.
+fn run_preset(
     host: &str,
     name: &str,
     (preset, args): (&str, &[String]),
@@ -943,6 +977,20 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
         std::process::exit(lanlord_core::exec::show_run(&reply)?);
     }
 
+    if let MachinesCommand::Preset {
+        name,
+        preset,
+        args,
+        timeout,
+        yes,
+    } = action
+    {
+        if lanlord_model::nt4_exec::is_hosting(&preset) {
+            bail!("{preset} is a hosting preset; run it with `lanlord hosting {host} {name} {preset}`");
+        }
+        return run_preset(host, &name, (&preset, &args), (timeout, yes));
+    }
+
     if let MachinesCommand::Put {
         name,
         script,
@@ -973,7 +1021,9 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
             }
             return Ok(());
         }
-        MachinesCommand::Run { .. } | MachinesCommand::Put { .. } => {
+        MachinesCommand::Run { .. }
+        | MachinesCommand::Preset { .. }
+        | MachinesCommand::Put { .. } => {
             unreachable!("run and put are handled above")
         }
         MachinesCommand::Add { name } => MachineChange::Add(name),
@@ -2381,13 +2431,13 @@ fn main() -> Result<()> {
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
-        Some(Command::Iis { list: true, .. }) => {
+        Some(Command::Hosting { list: true, .. }) => {
             for line in preset_lines() {
                 println!("{line}");
             }
             Ok(())
         }
-        Some(Command::Iis {
+        Some(Command::Hosting {
             host: Some(host),
             name: Some(name),
             preset: Some(preset),
@@ -2395,8 +2445,8 @@ fn main() -> Result<()> {
             timeout,
             yes,
             ..
-        }) => iis(&host, &name, (&preset, &args), (timeout, yes)),
-        Some(Command::Iis { .. }) => unreachable!("clap requires the host, name and preset"),
+        }) => hosting(&host, &name, (&preset, &args), (timeout, yes)),
+        Some(Command::Hosting { .. }) => unreachable!("clap requires the host, name and preset"),
         Some(Command::Secrets { host, action }) => secrets(&host, action),
         Some(Command::Networks { host, action }) => networks(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
@@ -3162,8 +3212,8 @@ mod tests {
     }
 
     #[test]
-    fn iis_runs_a_preset_with_arguments_or_lists_them() {
-        let Command::Iis {
+    fn hosting_runs_a_preset_with_arguments_or_lists_them() {
+        let Command::Hosting {
             host,
             name,
             preset,
@@ -3172,7 +3222,7 @@ mod tests {
             timeout,
             yes,
         } = parse(&[
-            "iis",
+            "hosting",
             "gw",
             "ws1",
             "startweb",
@@ -3182,7 +3232,7 @@ mod tests {
             "--yes",
         ])
         else {
-            panic!("not iis");
+            panic!("not hosting");
         };
         assert_eq!(host.as_deref(), Some("gw"));
         assert_eq!(name.as_deref(), Some("ws1"));
@@ -3190,25 +3240,25 @@ mod tests {
         assert_eq!(args, ["1"]);
         assert!(!list && yes);
         assert_eq!(timeout, 30);
-        let Command::Iis { yes, timeout, .. } = parse(&["iis", "gw", "ws1", "ver"]) else {
-            panic!("not iis");
+        let Command::Hosting { yes, timeout, .. } = parse(&["hosting", "gw", "ws1", "ver"]) else {
+            panic!("not hosting");
         };
         assert!(!yes);
         assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
         assert!(matches!(
-            parse(&["iis", "--list"]),
-            Command::Iis {
+            parse(&["hosting", "--list"]),
+            Command::Hosting {
                 list: true,
                 host: None,
                 ..
             }
         ));
-        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1"]).is_err());
-        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1", "ver", "--list"]).is_err());
-        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1", "--list"]).is_err());
-        assert!(Cli::try_parse_from(["lanlord", "iis", "--list", "--yes"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "gw", "ws1"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "gw", "ws1", "ver", "--list"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "gw", "ws1", "--list"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "--list", "--yes"]).is_err());
         for bad in ["0", "901"] {
-            let args = ["lanlord", "iis", "gw", "ws1", "ver", "--timeout", bad];
+            let args = ["lanlord", "hosting", "gw", "ws1", "ver", "--timeout", bad];
             assert!(Cli::try_parse_from(args).is_err());
         }
     }
@@ -3216,8 +3266,10 @@ mod tests {
     #[test]
     fn the_preset_list_names_every_preset_and_marks_the_mutating_ones() {
         let lines = preset_lines();
-        assert_eq!(lines.len(), lanlord_model::nt4_exec::PRESETS.len());
-        assert!(lines.contains(&"ver\tread-only\tWindows version".to_string()));
+        assert!(lines
+            .iter()
+            .all(|l| !l.starts_with("ver\t") && !l.starts_with("ipconfig\t")));
+        assert!(lines.iter().any(|l| l.starts_with("iis-dump\tread-only\t")));
         assert!(lines
             .iter()
             .any(|l| l.starts_with("startweb <site>\tmutating\t")));
@@ -3226,9 +3278,47 @@ mod tests {
     #[test]
     fn a_refused_preset_stops_before_the_gateway_is_asked() {
         let bad = vec!["1 & x".to_string()];
-        let unknown = iis("gw", "ws1", ("nope", &[]), (30, true)).unwrap_err();
+        let unknown = hosting("gw", "ws1", ("nope", &[]), (30, true)).unwrap_err();
         assert!(unknown.to_string().contains("not a known preset"));
-        assert!(iis("gw", "ws1", ("startweb", &bad), (30, true)).is_err());
+        assert!(hosting("gw", "ws1", ("startweb", &bad), (30, true)).is_err());
+        // the general presets belong to `machines`, and the other way round
+        let general = hosting("gw", "ws1", ("ver", &[]), (30, true)).unwrap_err();
+        assert!(general.to_string().contains("machines gw preset ws1 ver"));
+        let iis = run_machines_preset("startweb");
+        assert!(iis.to_string().contains("lanlord hosting gw ws1 startweb"));
+    }
+
+    fn run_machines_preset(preset: &str) -> anyhow::Error {
+        let action = MachinesCommand::Preset {
+            name: "ws1".into(),
+            preset: preset.into(),
+            args: Vec::new(),
+            timeout: 30,
+            yes: true,
+        };
+        machines("gw", Some(action)).unwrap_err()
+    }
+
+    #[test]
+    fn machines_preset_takes_a_machine_a_preset_and_arguments() {
+        let Command::Machines {
+            action:
+                Some(MachinesCommand::Preset {
+                    name,
+                    preset,
+                    timeout,
+                    yes,
+                    ..
+                }),
+            ..
+        } = parse(&["machines", "gw", "preset", "ws1", "ver", "--yes"])
+        else {
+            panic!("not a preset");
+        };
+        assert_eq!((name.as_str(), preset.as_str()), ("ws1", "ver"));
+        assert!(yes);
+        assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
+        assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "preset", "ws1"]).is_err());
     }
 
     #[test]
