@@ -954,7 +954,8 @@ fn machines(host: &str, action: Option<MachinesCommand>) -> Result<()> {
         let mut data = Vec::new();
         for path in &files {
             data.push(
-                std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?,
+                std::fs::read(path)
+                    .with_context(|| format!("could not read {}", path.display()))?,
             );
         }
         let operation = lanlord_core::exec::machine_put(&name, &script, &args, &data, timeout)?;
@@ -3151,7 +3152,10 @@ mod tests {
         else {
             panic!("not a put");
         };
-        assert_eq!((name.as_str(), script.as_str(), timeout), ("ws1", "lldump.vbs", 30));
+        assert_eq!(
+            (name.as_str(), script.as_str(), timeout),
+            ("ws1", "lldump.vbs", 30)
+        );
         assert_eq!(files.len(), 2);
         assert_eq!(args, ["x"]);
         assert!(Cli::try_parse_from(["lanlord", "machines", "gw", "put", "ws1"]).is_err());

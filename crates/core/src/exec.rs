@@ -119,7 +119,10 @@ pub fn machine_put(
     if data.len() > model::MAX_PUT_FILES {
         bail!("at most {} data files may be put", model::MAX_PUT_FILES);
     }
-    if data.iter().any(|file| file.len() > model::MAX_PUT_FILE_BYTES) {
+    if data
+        .iter()
+        .any(|file| file.len() > model::MAX_PUT_FILE_BYTES)
+    {
         bail!("a data file is longer than 1 MiB");
     }
     Ok(Operation::MachinePut {
