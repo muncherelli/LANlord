@@ -58,7 +58,11 @@ case "$last" in
   "id -nG "*) echo "users" ;;
   "sudo -n true") exit 0 ;;
   "sh -c "*"getent passwd lanlord"*) echo @INSTALLED@ ;;
-  *"lanlord-user exec") printf '%s\n' "$last" >> "$D/argv"; cat > "$D/stdin" ;;
+  *"lanlord-user exec")
+    if [ -f "$D/fail-exec" ] && case "$last" in *"$(cat "$D/fail-exec")"*) true ;; *) false ;; esac; then
+      cat > /dev/null; echo boom >&2; exit 1
+    fi
+    printf '%s\n' "$last" >> "$D/argv"; cat > "$D/stdin" ;;
   "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;
   *)
 input=$(cat)
@@ -113,6 +117,11 @@ esac"##
         let argv = std::fs::read_to_string(self.dir.join("argv")).unwrap_or_default();
         let stdin = std::fs::read(self.dir.join("stdin")).unwrap_or_default();
         (argv.lines().map(String::from).collect(), stdin)
+    }
+
+    /// make the `lanlord-user exec` call whose command names `container` fail.
+    pub fn fail_exec_on(&self, container: &str) {
+        std::fs::write(self.dir.join("fail-exec"), container).unwrap();
     }
 
     pub fn seed_sealed(&self, id: &age::x25519::Identity, text: &str) {
