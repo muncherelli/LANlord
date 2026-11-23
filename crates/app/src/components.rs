@@ -133,14 +133,14 @@ impl Components {
     }
 
     /// what stops `component` on this server: the checks that definitely fail for it (and for
-    /// docker, which it brings along). empty while the report is not read.
+    /// the components it needs, which it brings along). empty while the report is not read.
     fn blockers(&self, component: &Component) -> Vec<&Check> {
         let Some(report) = &self.report else {
             return Vec::new();
         };
         let mut found = compat::blockers(report, component.id());
-        if component.requires_docker {
-            for check in compat::blockers(report, "docker") {
+        for id in component.requirements(&catalogue()) {
+            for check in compat::blockers(report, id) {
                 if !found.iter().any(|c| c.id == check.id) {
                     found.push(check);
                 }
@@ -377,10 +377,9 @@ impl Components {
             .map(|n| n.id.clone());
         let draft = self.draft_mut();
         // like the nt wizard, a component others need stays ticked
-        if component.id() == "docker"
-            && catalogue
-                .iter()
-                .any(|c| c.requires_docker && draft.is_enabled(c.id()))
+        if catalogue
+            .iter()
+            .any(|c| c.requires.contains(&component.id()) && draft.is_enabled(c.id()))
         {
             return;
         }
@@ -388,8 +387,8 @@ impl Components {
             self.typed.retain(|(id, _), _| id != component.id());
             return;
         }
-        if component.requires_docker {
-            draft.enabled.entry("docker".into()).or_default();
+        for id in component.requirements(catalogue) {
+            draft.enabled.entry(id.into()).or_default();
         }
         let attach = match (component.attaches(), first) {
             (true, Some(network)) => vec![Attachment {

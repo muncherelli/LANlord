@@ -92,7 +92,8 @@ pub struct Component {
     pub module: &'static Module,
     /// always installed; the box cannot be cleared.
     pub required: bool,
-    pub requires_docker: bool,
+    /// ids of components that must be enabled for this one (and cannot be disabled while it is on).
+    pub requires: &'static [&'static str],
     pub ports: &'static [(Proto, u16)],
     pub roles: &'static [Role],
     /// speaks netbios: at most one such component per network.
@@ -135,8 +136,8 @@ impl Component {
     /// the short text in the list's right-hand column, like "Docker, 1+ network".
     pub fn needs(&self) -> String {
         let mut needs = Vec::new();
-        if self.requires_docker {
-            needs.push("Docker".to_string());
+        for id in self.requires {
+            needs.push(find(id).map_or_else(|| (*id).to_string(), |c| c.name().to_string()));
         }
         if self.attach_min > 0 {
             needs.push(format!("{}+ network", self.attach_min));
@@ -148,6 +149,13 @@ impl Component {
         } else {
             needs.join(", ")
         }
+    }
+
+    /// everything it needs, directly or through other components, the deepest first.
+    pub fn requirements(&self, catalogue: &[Component]) -> Vec<&'static str> {
+        let mut found = Vec::new();
+        collect_requirements(self, catalogue, &mut found);
+        found
     }
 
     /// the ports it listens on, like "tcp 53, udp 53".
@@ -175,13 +183,34 @@ impl Component {
     }
 }
 
+/// add what `component` needs to `found`, requirements of requirements first; safe on cycles.
+fn collect_requirements(
+    component: &Component,
+    catalogue: &[Component],
+    found: &mut Vec<&'static str>,
+) {
+    for id in component.requires {
+        if found.contains(id) {
+            continue;
+        }
+        if let Some(required) = catalogue.iter().find(|c| c.id() == *id) {
+            if required.id() != component.id() {
+                collect_requirements(required, catalogue, found);
+            }
+        }
+        if !found.contains(id) {
+            found.push(id);
+        }
+    }
+}
+
 /// what the catalogue adds to a module.
 fn component(module: &'static Module) -> Component {
     use Proto::{Tcp, Udp};
     let plain = Component {
         module,
         required: false,
-        requires_docker: false,
+        requires: &[],
         ports: &[],
         roles: &[],
         netbios: false,
@@ -198,7 +227,7 @@ fn component(module: &'static Module) -> Component {
             ..plain
         },
         "nt4-domain" => Component {
-            requires_docker: true,
+            requires: &["docker"],
             ports: &[(Udp, 137), (Udp, 138), (Tcp, 139), (Tcp, 445)],
             roles: &[Role::Wins, Role::LogonServer],
             netbios: true,
@@ -229,7 +258,7 @@ fn component(module: &'static Module) -> Component {
             ..plain
         },
         "web-proxy" => Component {
-            requires_docker: true,
+            requires: &["docker"],
             ports: &[(Tcp, 80), (Tcp, 443)],
             roles: &[Role::Http],
             attach_min: 1,
@@ -254,7 +283,7 @@ fn component(module: &'static Module) -> Component {
         },
         // the DNS server and the DHCP server are two entries that share one dnsmasq per network
         "dns" => Component {
-            requires_docker: true,
+            requires: &["docker"],
             ports: &[(Udp, 53), (Tcp, 53)],
             roles: &[Role::Dns],
             attach_min: 1,
@@ -263,7 +292,7 @@ fn component(module: &'static Module) -> Component {
             ..plain
         },
         "dhcp" => Component {
-            requires_docker: true,
+            requires: &["docker"],
             ports: &[(Udp, 67)],
             roles: &[Role::Dhcp],
             attach_min: 1,
@@ -272,7 +301,7 @@ fn component(module: &'static Module) -> Component {
             ..plain
         },
         "time-server" => Component {
-            requires_docker: true,
+            requires: &["docker"],
             ports: &[(Udp, 123)],
             roles: &[Role::Ntp],
             attach_min: 1,
@@ -455,6 +484,7 @@ impl Selection {
     pub fn validate(&self, networks: &[Network]) -> Vec<ValidationError> {
         let catalogue = catalogue();
         let mut errors = self.required_errors(&catalogue);
+        errors.extend(self.requires_errors(&catalogue));
         let mut claims = Claims::default();
         for (id, choice) in &self.enabled {
             let Some(component) = catalogue.iter().find(|c| c.id() == id) else {
@@ -507,11 +537,28 @@ impl Selection {
             .collect()
     }
 
-    /// docker, mechanism and subcomponent problems of one entry.
+    /// enabled components whose required components are switched off; this also refuses
+    /// switching one off while another enabled component needs it.
+    fn requires_errors(&self, catalogue: &[Component]) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        for component in catalogue.iter().filter(|c| self.is_enabled(c.id())) {
+            for id in component.requires.iter().filter(|id| !self.is_enabled(id)) {
+                let name = catalogue
+                    .iter()
+                    .find(|c| c.id() == *id)
+                    .map_or(*id, |c| c.name());
+                errors.push(fail(
+                    format!("{SECTION}.{}", component.id()),
+                    format!("{} needs {name}", component.name()),
+                ));
+            }
+        }
+        errors
+    }
+
+    /// mechanism and subcomponent problems of one entry.
     fn component_errors(&self, site: &Site) -> Vec<ValidationError> {
         let (component, choice, path) = (site.component, site.choice, &site.path);
-        let docker = (component.requires_docker && !self.is_enabled("docker"))
-            .then(|| fail(path.clone(), format!("{} needs Docker", component.name())));
         let mechanism = (!component.mechanisms.contains(&choice.mechanism)).then(|| {
             fail(
                 format!("{path}.mechanism"),
@@ -528,7 +575,7 @@ impl Selection {
                     format!("{} has no part called {sub}", component.name()),
                 )
             });
-        docker.into_iter().chain(mechanism).chain(parts).collect()
+        mechanism.into_iter().chain(parts).collect()
     }
 }
 
@@ -1668,5 +1715,72 @@ mod tests {
         );
         let back = Selection::from_settings(&settings).unwrap();
         assert!(!back.is_enabled("dns") && back.is_enabled("dhcp"));
+    }
+
+    const fn test_module(id: &'static str, name: &'static str) -> Module {
+        Module {
+            id,
+            name,
+            icon: ["", "", ""],
+            summary: "",
+            example: "",
+            status: crate::modules::Status::Available,
+        }
+    }
+
+    static CHAIN: [Module; 3] = [
+        test_module("base", "Base"),
+        test_module("middle", "Middle"),
+        test_module("top", "Top"),
+    ];
+
+    fn chain() -> Vec<Component> {
+        let plain = |module, requires| Component {
+            requires,
+            ..component(module)
+        };
+        vec![
+            plain(&CHAIN[0], &[]),
+            plain(&CHAIN[1], &["base"]),
+            plain(&CHAIN[2], &["middle"]),
+        ]
+    }
+
+    fn picked(ids: &[&str]) -> Selection {
+        Selection {
+            enabled: ids
+                .iter()
+                .map(|id| (id.to_string(), Choice::default()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_requires_chain_is_followed_deepest_first() {
+        let catalogue = chain();
+        assert_eq!(catalogue[2].requirements(&catalogue), ["base", "middle"]);
+        assert!(catalogue[0].requirements(&catalogue).is_empty());
+    }
+
+    #[test]
+    fn a_missing_required_component_is_refused_naming_both() {
+        let catalogue = chain();
+        assert!(picked(&["base", "middle", "top"])
+            .requires_errors(&catalogue)
+            .is_empty());
+        // the middle one is off while the top one needs it
+        let errors = picked(&["base", "top"]).requires_errors(&catalogue);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("Top needs Middle"));
+        // the base is off while the middle one needs it
+        let errors = picked(&["middle"]).requires_errors(&catalogue);
+        assert!(errors[0].message.contains("Middle needs Base"));
+    }
+
+    #[test]
+    fn docker_is_required_through_the_same_mechanism() {
+        let errors = picked(&["dns"]).requires_errors(&catalogue());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("DNS needs Docker"));
     }
 }
