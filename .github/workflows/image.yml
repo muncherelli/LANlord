@@ -236,11 +236,11 @@ jobs:
             IMAGE_REVISION=${{ matrix.revision }}
 
   # one job per image and architecture that needs a build
-  # the exec script runs on busybox in the image, so its tests run there too: the stubs go first in PATH and
-  # everything else (flock, stat, tail, head, tr, sha256sum...) is the image's busybox. this is a job of its
-  # own because the build job only runs when an image input changed, and the script is not one (it is mounted,
-  # not baked in). the build stage has python3 but no bash, which the script needs; the final image has it, so
-  # only this container gets it. the layers come from the nt4 build cache, read only
+  # the exec script runs on busybox in the image, so its tests run on that busybox too: the stubs go first in
+  # PATH and everything else (flock, stat, tail, head, tr, sha256sum...) is busybox. this is a job of its own
+  # because the build job only runs when an image input changed, and the script is not one (it is mounted, not
+  # baked in). the container is the alpine the images are built on (the pin in the Dockerfile, so it is the same
+  # busybox) with bash and python3 added: the script needs bash and the tests need python3; no samba build
   exec-tests:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -248,30 +248,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: is the exec script or its tests changed
-        id: changed
+      - name: exec script tests on busybox
         run: |
-          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" |
+          if ! git diff --name-only "origin/${{ github.base_ref }}...HEAD" |
             grep -qxE 'ansible/playbooks/nt4-domain/image/(lanlord-exec|Dockerfile)|ansible/tests/test_nt4_exec.py|\.github/workflows/image.yml'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::the exec script, its tests and the nt4 build are unchanged"
+            echo "::notice::the exec script, its tests and the nt4 image are unchanged"
+            exit 0
           fi
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        if: steps.changed.outputs.run == 'true'
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        if: steps.changed.outputs.run == 'true'
-        with:
-          context: ansible/playbooks/nt4-domain/image
-          target: build
-          load: true
-          tags: nt4-build:test
-          cache-from: type=gha,scope=nt4-amd64
-      - name: nt4 exec script tests on busybox
-        if: steps.changed.outputs.run == 'true'
-        run: |
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo nt4-build:test \
-            sh -c 'apk add --no-cache bash >/dev/null && python3 -m unittest discover -s ansible/tests -p test_nt4_exec.py'
+          alpine=$(sed -n 's/^ARG ALPINE_IMAGE=//p' ansible/playbooks/nt4-domain/image/Dockerfile)
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo "$alpine" \
+            sh -c 'apk add --no-cache bash python3 >/dev/null && python3 -m unittest discover -s ansible/tests -p test_nt4_exec.py'
 
   publish:
     if: github.repository_owner == 'muncherelli' && github.ref == 'refs/heads/trunk' && github.event_name != 'pull_request' && needs.versions.outputs.builds == 'true'
