@@ -523,6 +523,18 @@ impl ComputersPanel {
         }
     }
 
+    /// closes the box when it was opened on another host than `host`: `view` does this only
+    /// while the tab is open, and the host can change from another tab of the window.
+    pub fn close_stale_box(&mut self, host: Option<&str>) {
+        if self
+            .ask
+            .as_ref()
+            .is_some_and(|run| Some(run.host.as_str()) != host)
+        {
+            self.ask = None;
+        }
+    }
+
     /// the box that asks what to run, while one is open.
     pub fn dialog(&mut self) -> Option<Dialog<BoxMsg>> {
         self.ask.as_mut().map(RunBox::view)
@@ -969,6 +981,17 @@ mod tests {
     }
 
     #[test]
+    fn a_box_is_closed_when_the_host_changes_without_a_view() {
+        let (mut panel, services, _) = panel();
+        panel.select("NT4DEV01");
+        panel.update(Msg::Run, &services, "a@b");
+        panel.close_stale_box(Some("a@b"));
+        assert!(panel.box_open());
+        panel.close_stale_box(Some("c@d"));
+        assert!(!panel.box_open());
+    }
+
+    #[test]
     fn a_run_from_the_old_host_never_shows_under_the_new_one() {
         let (mut panel, services, _) = panel();
         panel.select("NT4DEV01");
@@ -977,8 +1000,9 @@ mod tests {
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         panel.update_dialog(BoxMsg::Ok, &services, Some("a@b"));
         assert!(panel.running());
-        // the new host is on screen while the old run is still going
-        panel.view(&services, Some("c@d"));
+        // no host is on screen while the old run is still going: this starts no load, so the
+        // list still belongs to the run's host and only the `shown_host` guard keeps it out
+        panel.view(&services, None);
         let start = std::time::Instant::now();
         while panel.running() {
             panel.poll();
@@ -986,9 +1010,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(panel.last_summary().is_none());
-        wait(&mut panel);
-        assert!(panel.last_summary().is_none());
-        assert_eq!(panel.shown_host.as_deref(), Some("c@d"));
+        assert!(panel.remote.belongs_to("a@b"));
+        assert!(panel.shown_host.is_none());
     }
 
     #[test]

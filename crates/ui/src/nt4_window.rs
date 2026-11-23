@@ -71,6 +71,8 @@ impl Nt4Window {
         self.settings.dialog(ctx, services, host);
         self.users.dialog(ctx, services, host);
         self.logon.dialog(ctx);
+        // the host can change from another tab, while the Computers tab draws nothing
+        self.computers.close_stale_box(host);
         self.computers.dialog(ctx, services, host);
     }
 }
