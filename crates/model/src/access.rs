@@ -205,8 +205,7 @@ impl Role {
                     (Shares, Manage),
                     (Logs, View),
                     (Tasks, View),
-                    // todo: decide whether operators get hosting; for now they have exactly
-                    // what they had for the iis presets, which ran under commands (hidden)
+                    (Hosting, Manage),
                 ],
             ),
             make(USERS, &[(Status, View), (Clock, View)]),
@@ -439,25 +438,24 @@ mod tests {
     }
 
     #[test]
-    fn hosting_gives_each_builtin_role_what_it_had_for_the_iis_presets() {
-        // the iis presets ran under commands before hosting was an area of its own
+    fn hosting_is_managed_by_administrators_and_operators_and_hidden_from_users() {
         let mut access = Access::default();
         access.members.insert("olive".into(), names(&[OPERATORS]));
-        for (who, admin) in [("root", true), ("olive", false), ("dana", false)] {
-            let grants = access.grants(who, admin);
+        for (who, admin, level) in [
+            ("root", true, Level::Manage),
+            ("olive", false, Level::Manage),
+            ("dana", false, Level::Hidden),
+        ] {
             assert_eq!(
-                grants.level(Area::Hosting),
-                grants.level(Area::Commands),
+                access.grants(who, admin).level(Area::Hosting),
+                level,
                 "{who}"
             );
         }
+        // the remote commands area is still not the operators'
         assert_eq!(
-            access.grants("olive", false).level(Area::Hosting),
+            access.grants("olive", false).level(Area::Commands),
             Level::Hidden
-        );
-        assert_eq!(
-            access.grants("root", true).level(Area::Hosting),
-            Level::Manage
         );
     }
 
