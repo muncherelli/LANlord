@@ -46,7 +46,7 @@ pub const PLAIN_STEPS: &[Step<Settings>] = &[
         ready: always,
     },
     Step {
-        name: "hosting is a component, on when the iis presets were in use",
+        name: "hosting is a component of its own (a version marker, no settings change)",
         run: components::migrate_hosting,
         ready: always,
     },
