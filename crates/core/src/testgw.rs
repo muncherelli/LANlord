@@ -63,6 +63,10 @@ case "$last" in
       cat > /dev/null; echo boom >&2; exit 1
     fi
     printf '%s\n' "$last" >> "$D/argv"; cat > "$D/stdin" ;;
+  *"lanlord-user list")
+    c=${last##*docker exec }; c=${c%% *}
+    if [ -f "$D/accounts-$c" ]; then cat "$D/accounts-$c"; fi ;;
+  *"lanlord-exec run"*) printf '%s\n' "$last" >> "$D/calls"; cat > /dev/null ;;
   "sh -c "*settings.yml*) if [ -f "$D/yml" ]; then echo present; cat "$D/yml"; fi ;;
   *)
 input=$(cat)
@@ -75,6 +79,7 @@ case "$input" in
   *"> /opt/lanlord/config/settings.age.tmp"*)
     if [ -f "$D/fail-age" ]; then echo "disk full" >&2; exit 1; fi
     @PAYLOAD@ > "$D/age" ;;
+  *"lanlord-user machine "*) printf '%s\n' "$input" >> "$D/calls" ;;
   *"base64 < /opt/lanlord/config/settings.age"*) if [ -f "$D/age" ]; then base64 < "$D/age"; fi ;;
 esac ;;
 esac"##
@@ -122,6 +127,17 @@ esac"##
     /// make the `lanlord-user exec` call whose command names `container` fail.
     pub fn fail_exec_on(&self, container: &str) {
         std::fs::write(self.dir.join("fail-exec"), container).unwrap();
+    }
+
+    /// the accounts `lanlord-user list` prints in `container`, one `name:uid:` line each.
+    pub fn seed_accounts(&self, container: &str, lines: &str) {
+        std::fs::write(self.dir.join(format!("accounts-{container}")), lines).unwrap();
+    }
+
+    /// the `lanlord-user machine` scripts and `lanlord-exec run` calls the gateway saw.
+    pub fn calls(&self) -> Vec<String> {
+        let text = std::fs::read_to_string(self.dir.join("calls")).unwrap_or_default();
+        text.lines().map(String::from).collect()
     }
 
     pub fn seed_sealed(&self, id: &age::x25519::Identity, text: &str) {

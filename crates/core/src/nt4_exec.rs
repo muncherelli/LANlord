@@ -8,7 +8,7 @@ use zeroize::Zeroize;
 use crate::bootstrap::{root_argv, AskPassword};
 use crate::config;
 use crate::engine::host::Host;
-use crate::engine::modules::nt4::{exec_targets, remember_exec};
+use crate::engine::modules::nt4::{container_name, exec_targets, remember_exec};
 use crate::leases;
 use crate::settings;
 use crate::ssh::Session;
@@ -27,7 +27,6 @@ pub const NOT_SET_UP: &str = "the exec account is not set up yet; run apply";
 pub const MODULE: &str = "nt4-domain";
 
 const MARKER: &str = "LANLORD_EVENT ";
-const CONTAINER: &str = "lanlord-nt4";
 /// what the script says when the name does not resolve; the lease fallback answers it.
 const NO_ANSWER: &str = "does not answer to its name";
 
@@ -195,12 +194,17 @@ impl Collector {
 }
 
 /// the arguments of the run; the password is never among them, it goes on stdin.
-pub fn argv(machine: &str, address: Option<&str>, timeout_secs: u32) -> Vec<String> {
+pub fn argv(
+    container: &str,
+    machine: &str,
+    address: Option<&str>,
+    timeout_secs: u32,
+) -> Vec<String> {
     let mut argv: Vec<String> = [
         "docker",
         "exec",
         "-i",
-        CONTAINER,
+        container,
         "lanlord-exec",
         "run",
         "--machine",
@@ -371,17 +375,67 @@ fn set_account(session: &Session, ask: AskPassword, container: &str, password: &
         .map_err(|_| anyhow!("could not set the exec account's password"))
 }
 
-/// the names of the domain's machine accounts, without the `$`.
-pub fn machines(session: &Session, ask: AskPassword) -> Result<Vec<String>> {
+/// the containers of the domain controllers in the settings, one per domain. settings that
+/// name none (or no settings yet) mean the first server's container, as before the list.
+fn controllers(session: &Session, ask: AskPassword) -> Result<Vec<String>> {
+    let mut containers: Vec<String> = match config::pull_plain_with(session, ask)? {
+        Some(plain) => exec_targets(&lanlord_model::settings::parse_value(&plain)?)
+            .into_iter()
+            .map(|target| target.container)
+            .collect(),
+        None => Vec::new(),
+    };
+    if containers.is_empty() {
+        containers.push(container_name(crate::engine::modules::nt4::LEGACY));
+    }
+    Ok(containers)
+}
+
+/// the machine accounts of each domain controller's container, without the `$`.
+fn machines_by_container(
+    session: &Session,
+    ask: AskPassword,
+) -> Result<Vec<(String, Vec<String>)>> {
     let admin = config::admin(session)?;
-    let (remote, first) = root_argv(
-        session,
-        &admin,
-        &["docker", "exec", CONTAINER, "lanlord-user", "list"],
-        ask,
-    )?;
-    let listed = session.capture_with_stdin(&remote, first.as_bytes())?;
-    Ok(machine_names(&listed))
+    let mut found = Vec::new();
+    for container in controllers(session, ask)? {
+        let (remote, first) = root_argv(
+            session,
+            &admin,
+            &["docker", "exec", &container, "lanlord-user", "list"],
+            ask,
+        )?;
+        let listed = session.capture_with_stdin(&remote, first.as_bytes())?;
+        found.push((container, machine_names(&listed)));
+    }
+    Ok(found)
+}
+
+/// the container whose domain has the account `machine`; when none has it, the first
+/// controller's, so the account tool says what is wrong.
+pub(crate) fn container_of(session: &Session, ask: AskPassword, machine: &str) -> Result<String> {
+    let found = machines_by_container(session, ask)?;
+    let holder = found
+        .iter()
+        .find(|(_, names)| names.iter().any(|name| name.eq_ignore_ascii_case(machine)));
+    holder
+        .or(found.first())
+        .map(|(container, _)| container.clone())
+        .ok_or_else(|| anyhow!("{machine} is not a machine of the domain"))
+}
+
+/// the names of the machine accounts of every domain, without the `$`.
+pub fn machines(session: &Session, ask: AskPassword) -> Result<Vec<String>> {
+    let mut names: Vec<String> = Vec::new();
+    for name in machines_by_container(session, ask)?
+        .into_iter()
+        .flat_map(|(_, names)| names)
+    {
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    Ok(names)
 }
 
 /// the machine accounts in `pdbedit -L` output (`name$:uid:full name`).
@@ -444,8 +498,13 @@ pub fn run(
     on_chunk: &mut dyn FnMut(bool, &[u8]),
 ) -> Result<Outcome> {
     let mut ask = cached(ask);
-    let known = machines(session, &mut ask)?;
-    let Some(machine) = known.iter().find(|name| name.eq_ignore_ascii_case(machine)) else {
+    let known = machines_by_container(session, &mut ask)?;
+    let Some((container, machine)) = known.iter().find_map(|(container, names)| {
+        names
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case(machine))
+            .map(|name| (container.as_str(), name))
+    }) else {
         bail!("{machine} is not a machine of the domain");
     };
     let mut secret = password(session, identity, &mut ask)?;
@@ -455,7 +514,7 @@ pub fn run(
         run_request(
             session,
             ask,
-            machine,
+            (container, machine),
             &body,
             timeout_secs,
             address,
@@ -487,14 +546,14 @@ fn lease_address(session: &Session, ask: AskPassword, machine: &str) -> Option<S
 fn run_request(
     session: &Session,
     ask: AskPassword,
-    machine: &str,
+    (container, machine): (&str, &str),
     body: &[u8],
     timeout_secs: u32,
     address: Option<&str>,
     on_chunk: &mut dyn FnMut(bool, &[u8]),
 ) -> Result<Outcome> {
     let admin = config::admin(session)?;
-    let command = argv(machine, address, timeout_secs);
+    let command = argv(container, machine, address, timeout_secs);
     let refs: Vec<&str> = command.iter().map(String::as_str).collect();
     let (remote, first) = root_argv(session, &admin, &refs, ask)?;
     let mut input = first.into_bytes();
@@ -659,7 +718,7 @@ pub(crate) mod tests {
     fn the_password_is_never_an_argument() {
         let secret = "s3cretpw";
         for address in [None, Some("192.0.2.7")] {
-            let argv = argv("WS1", address, 30);
+            let argv = argv("lanlord-nt4", "WS1", address, 30);
             assert!(argv.iter().all(|a| !a.contains(secret)), "{argv:?}");
             assert_eq!(
                 argv[..6],
@@ -710,7 +769,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_account_argv_never_holds_a_password() {
-        let argv = account_argv(CONTAINER);
+        let argv = account_argv("lanlord-nt4");
         assert_eq!(argv.last().map(String::as_str), Some("exec"));
         assert!(argv.iter().all(|a| !a.contains(&new_password())));
         assert!(argv.contains(&"-i".to_string()));
@@ -868,7 +927,7 @@ pub(crate) mod tests {
             "for a; do last=$a; done\ncase \"$last\" in\n  \"id -un\") echo tester ;;\n  \"sudo -n true\") exit 0 ;;\n  *\"lanlord-user exec\") cat >/dev/null; echo boom >&2; exit 1 ;;\nesac",
         );
         let password = new_password();
-        let error = set_account(&session, &mut no_password, CONTAINER, &password)
+        let error = set_account(&session, &mut no_password, "lanlord-nt4", &password)
             .unwrap_err()
             .to_string();
         assert!(!error.contains(&password), "{error}");
@@ -876,10 +935,82 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn every_exec_path_uses_the_container_of_the_machines_domain() {
+        use crate::testgw::{identity, no_password, Gateway};
+        let (gw, id) = (Gateway::new("exec-two"), identity("exec-two"));
+        gw.seed_plain(TWO_DOMAINS);
+        gw.seed_accounts("lanlord-nt4", "ws1$:1001:\n");
+        gw.seed_accounts("lanlord-nt4-lab", "ws2$:1001:\nlanlord-exec:1002:\n");
+        gw.seed_sealed(&id, "nt4-domain:\n  exec_password: pw\n");
+        let all = machines(&gw.session, &mut no_password).unwrap();
+        assert_eq!(all, ["ws1", "ws2"]);
+        run(
+            &gw.session,
+            &id,
+            &mut no_password,
+            ("WS2", "ver", 5, "cli"),
+            &mut |_, _| {},
+        )
+        .ok();
+        run(
+            &gw.session,
+            &id,
+            &mut no_password,
+            ("ws1", "ver", 5, "cli"),
+            &mut |_, _| {},
+        )
+        .ok();
+        let calls = gw.calls();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(calls[0].contains("exec -i lanlord-nt4-lab lanlord-exec run --machine ws2"));
+        assert!(calls[1].contains("exec -i lanlord-nt4 lanlord-exec run --machine ws1"));
+        let error = run(
+            &gw.session,
+            &id,
+            &mut no_password,
+            ("files", "ver", 5, "cli"),
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not a machine"), "{error}");
+        assert_eq!(gw.calls().len(), 2);
+    }
+
+    #[test]
+    fn no_settings_or_no_controller_means_the_single_domain_container() {
+        use crate::testgw::{no_password, Gateway};
+        let gw = Gateway::new("exec-single");
+        gw.seed_accounts("lanlord-nt4", "ws1$:1001:\n");
+        assert_eq!(machines(&gw.session, &mut no_password).unwrap(), ["ws1"]);
+        gw.seed_plain("domains:\n  ONE: {}\n");
+        assert_eq!(machines(&gw.session, &mut no_password).unwrap(), ["ws1"]);
+        assert_eq!(
+            container_of(&gw.session, &mut no_password, "ws1").unwrap(),
+            "lanlord-nt4"
+        );
+    }
+
+    #[test]
+    fn a_reset_goes_to_the_container_that_holds_the_account() {
+        use crate::testgw::{no_password, Gateway};
+        let gw = Gateway::new("exec-reset");
+        gw.seed_plain(TWO_DOMAINS);
+        gw.seed_accounts("lanlord-nt4", "ws1$:1001:\n");
+        gw.seed_accounts("lanlord-nt4-lab", "ws2$:1001:\n");
+        crate::nt4::reset_machine(&gw.session, "WS2", &mut no_password).unwrap();
+        crate::nt4::reset_machine(&gw.session, "ws1", &mut no_password).unwrap();
+        let calls = gw.calls();
+        assert!(calls[0].contains("docker exec lanlord-nt4-lab lanlord-user machine ws2 reset"));
+        assert!(calls[1].contains("docker exec lanlord-nt4 lanlord-user machine ws1 reset"));
+    }
+
+    #[test]
     fn domain_machines_are_listed_without_the_dollar() {
         let listed = "root:0:Administrator\nws1$:1001:\nlanlord-exec:1002:\nnt4srv$:1003:\n$:1:\n";
         assert_eq!(machine_names(listed), ["ws1", "nt4srv"]);
     }
+
+    const TWO_DOMAINS: &str = "nt4-servers:\n  - {name: nt4-domain, role: pdc, domain: ONE, netbios_name: AAA, network: lab}\n  - {name: lab, role: pdc, domain: LAB, netbios_name: BBB, network: lab}\n  - {name: files, role: workgroup, workgroup: WG, netbios_name: CCC, network: lab}\ndomains:\n  ONE: {}\n  LAB: {}\n";
 
     pub(crate) const PASSWORD: &str = "s3cretpw";
     pub(crate) const LEASE: &str = "1 aa:bb:cc:dd:ee:ff 192.0.2.50 ws1 *";
@@ -902,6 +1033,7 @@ case "$last" in
   "id -un") echo tester ;;
   "sudo -n true") exit 0 ;;
   *"lanlord-user list") printf 'ws1$:1001:\n' ;;
+  "sh -c "*settings.yml*) exit 0 ;;
   "sh -c "*) printf 'present\n%s\n' '@LEASE@' ;;
   *"--address 192.0.2.50"*) printf '%s\n' "$last" >> '@REC@.argv'; cat > '@REC@'; printf '%s\n' '@SECOND@' ;;
   *lanlord-exec*) printf '%s\n' "$last" >> '@REC@.argv'; cat > '@REC@'; printf '%s\n' '@FIRST@' ;;
