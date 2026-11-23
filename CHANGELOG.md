@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IIS 4 presets `smtpsvc-start`, `smtpsvc-stop` and `smtpsvc-restart`; `services-status` lists SMTP, `iisadmin-start` also starts the web, FTP and SMTP services that `iisadmin-stop` takes down, and `startweb` and `stopweb` print the site's `ServerState` afterwards (2 started, 4 stopped)
 - the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout has its `cmd.exe` ended, but programs it started may keep running (NT4 has no way to end them); output files they hold open are removed by the next run
 - a Computers tab in the NT4 Server window (and in the text interface) lists the domain machines and runs a command or an IIS 4 preset on the one you pick, after a confirmation for anything that changes it; the output, exit code, duration and a timed-out state show under the list. It needs manage rights on Remote commands
 - Operations to list domain machines and run commands or IIS 4 presets on them

@@ -77,7 +77,7 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "services-status",
         "IIS service status",
-        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing""#,
+        r#"net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"Simple Mail""#,
         [],
         false
     ),
@@ -148,13 +148,36 @@ pub const PRESETS: &[Preset] = &[
         true
     ),
     preset!(
-        "iisadmin-start",
-        "Start the IIS admin service",
-        "net start iisadmin",
+        "smtpsvc-start",
+        "Start the SMTP service",
+        "net start smtpsvc",
         [],
         true
     ),
-    // iisadmin has dependents (web, ftp): /y stops them too
+    preset!(
+        "smtpsvc-stop",
+        "Stop the SMTP service",
+        "net stop smtpsvc",
+        [],
+        true
+    ),
+    preset!(
+        "smtpsvc-restart",
+        "Restart the SMTP service",
+        "net stop smtpsvc & net start smtpsvc",
+        [],
+        true
+    ),
+    // `&` runs the next command whatever the last one returned, so a service that is not
+    // installed ("service name is invalid") does not stop the rest; the listing ends it
+    preset!(
+        "iisadmin-start",
+        "Start the IIS admin service and its dependents",
+        r#"net start iisadmin & net start w3svc & net start msftpsvc & net start smtpsvc & net start | findstr /i /c:"IIS Admin" /c:"World Wide Web" /c:"FTP Publishing" /c:"Simple Mail""#,
+        [],
+        true
+    ),
+    // iisadmin has dependents (web, ftp, smtp): /y stops them too
     preset!(
         "iisadmin-stop",
         "Stop the IIS admin service and its dependents",
@@ -165,14 +188,14 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "startweb",
         "Start a web site",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\startweb.vbs -a {site}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\startweb.vbs -a {site} & cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs GET W3SVC/{site}/ServerState",
         ["site"],
         true
     ),
     preset!(
         "stopweb",
         "Stop a web site",
-        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\stopweb.vbs -a {site}",
+        r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\stopweb.vbs -a {site} & cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs GET W3SVC/{site}/ServerState",
         ["site"],
         true
     ),
@@ -486,8 +509,13 @@ mod tests {
     fn preset_ids_are_unique_and_templates_match_their_arguments() {
         for (i, preset) in PRESETS.iter().enumerate() {
             assert!(PRESETS[i + 1..].iter().all(|p| p.id != preset.id));
-            let placeholders = preset.template.matches('{').count();
-            assert_eq!(placeholders, preset.args.len(), "{}", preset.id);
+            // a name may appear more than once (the site of startweb is also read back)
+            let named: usize = preset
+                .args
+                .iter()
+                .map(|name| preset.template.matches(&format!("{{{name}}}")).count())
+                .sum();
+            assert_eq!(named, preset.template.matches('{').count(), "{}", preset.id);
             for name in preset.args {
                 assert!(preset.template.contains(&format!("{{{name}}}")));
             }
@@ -510,6 +538,23 @@ mod tests {
             render("iisadmin-stop", &[]).unwrap(),
             "net stop iisadmin /y"
         );
+        assert_eq!(
+            render("smtpsvc-restart", &[]).unwrap(),
+            "net stop smtpsvc & net start smtpsvc"
+        );
+        let up = render("iisadmin-start", &[]).unwrap();
+        for service in ["iisadmin", "w3svc", "msftpsvc", "smtpsvc"] {
+            assert!(up.contains(&format!("net start {service}")), "{service}");
+        }
+        assert!(!up.contains("&&"));
+        assert!(render("services-status", &[])
+            .unwrap()
+            .contains("Simple Mail"));
+        let web = render("startweb", &args(&["1"])).unwrap();
+        assert!(web.ends_with("adsutil.vbs GET W3SVC/1/ServerState"));
+        assert!(render("stopweb", &args(&["2"]))
+            .unwrap()
+            .ends_with("W3SVC/2/ServerState"));
     }
 
     #[test]
@@ -541,6 +586,22 @@ mod tests {
         assert!(ADMIN.ends_with(r"inetsrv\adminsamples"));
         for preset in PRESETS.iter().filter(|p| p.template.contains("cscript")) {
             assert!(preset.template.starts_with(ADMIN), "{}", preset.id);
+            // every script named is one in adminsamples
+            let scripts = preset.template.matches("cscript").count();
+            assert_eq!(
+                scripts,
+                preset.template.matches(&ADMIN[..ADMIN.len()]).count()
+            );
+        }
+    }
+
+    #[test]
+    fn no_preset_reads_a_password() {
+        for preset in PRESETS.iter().filter(|p| p.template.contains("adsutil")) {
+            let pass = preset.template.to_lowercase().contains("pass");
+            let filtered = preset.template.contains("findstr /v");
+            assert!(!pass || filtered, "{}", preset.id);
+            assert!(!preset.template.contains("GET") || preset.template.contains("/Server"));
         }
     }
 
