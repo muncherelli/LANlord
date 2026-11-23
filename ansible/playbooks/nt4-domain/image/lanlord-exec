@@ -7,7 +7,7 @@
 # %SystemRoot%), so no folder under them can be protected: a local user could swap the helper or the
 # .bat before the service starts and get LocalSystem, or read other runs' output. the work folder is
 # at the root of the system drive instead, and every run goes through these steps, in this order:
-#   1. stale services and files are swept (also in the old places: the root, Temp and Temp\lanlord)
+#   1. stale services and files are swept (in the old places: the root, Temp and Temp\lanlord)
 #   2. the acl of the drive root is read (smbcacls) and the run is refused unless no account other than
 #      Administrators, SYSTEM and Creator Owner can delete children, change permissions, take
 #      ownership or has full or generic write access there (that is what lets a user rename the folder
@@ -16,8 +16,10 @@
 #      exists its owner must be Administrators or SYSTEM: ownership is never taken, as a handle that
 #      was opened with WRITE_DAC would survive it); owner and dacl are set (Administrators and SYSTEM
 #      full, inherited by files and subfolders), the acl is read back and verified
-#   4. the files are uploaded
-#   5. right before the service is created the root, the folder and the uploaded files are verified
+#   4. stale ll-<8 hex>.* files in the folder (a timed-out run's output, which its still running program
+#      held open when it was cleaned up) are deleted, failures ignored; only after the folder is verified
+#   5. the files are uploaded
+#   6. right before the service is created the root, the folder and the uploaded files are verified
 #      again (the files' owner must be Administrators, SYSTEM or the login's own sid)
 # any smbcacls or rpcclient error, or an acl that is not as expected, refuses the run (fail closed).
 # two small windows remain. on the first creation on a machine the new folder inherits the drive root's
@@ -42,8 +44,8 @@
 # password is never written. the log rotates at 1 MiB and keeps one .1; when it cannot be written
 # the run still completes and stderr gets a warning.
 # a free-form command must not use a plain "exit N": it ends the outer cmd.exe, so the exit code
-# is never written and the run shows as timed_out. nt4 has no "exit /b"; use "cmd /c exit N" to
-# set a code. core refuses a command in which any part, split at &, && || and parentheses and
+# is never written and the run shows as timed_out. nt4 has no "exit /b", and "cmd /c exit N" does not
+# help (nt4's cmd returns 0 for it): the exit code is the errorlevel of the last program run. core refuses a command in which any part, split at &, && || and parentheses and
 # after a leading @, if ... or do, starts with exit; a single | does not split, as the right side of
 # a pipe runs in a child cmd.
 # a command that outlives its timeout is killed: the service is stopped first, and the helper ends
@@ -445,6 +447,24 @@ prepare_dir() {
   check_private "$WIN_DIR" 0
 }
 
+# the work folder is verified: files that earlier runs left in it go (a run that timed out leaves its
+# .out and .err when the program still running held them open). the names come from a listing and only
+# ll-<8 hex>.<known extension> is deleted, one del each, so no wildcard can reach anything else; a file
+# that is still held fails to delete, which is ignored: a later run gets it. this run's files are not
+# there yet, they are uploaded after this
+sweep_folder() {
+  local line name dels= re='^[[:space:]]*(ll-[0-9a-f]{8}\.(exe|bat|cmd\.bat|out|err|rc))[[:space:]]'
+  smbd -c "cd $REMOTE_DIR; ls ll-*" >"$work/ls.log" 2>&1
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    if [[ $line =~ $re ]]; then
+      name=${BASH_REMATCH[1]}
+      dels+="; del $name"
+    fi
+  done <"$work/ls.log"
+  [[ -z $dels ]] || smbd -c "cd $REMOTE_DIR$dels" >/dev/null 2>&1 || true
+}
+
 # right before the service is created: the root, the folder and the three uploaded files again
 verify_upload() {
   local f
@@ -471,7 +491,8 @@ sweep_stale() {
   local root=ll-????????
   local dels="del $root.exe; del $root.bat; del $root.cmd.bat; del $root.out; del $root.err; del $root.rc"
   smb -c "$dels; cd Temp; $dels; cd lanlord; $dels" >/dev/null 2>&1
-  [[ -n $DRIVE ]] && smbd -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
+  # the work folder is swept by sweep_folder in a run, after it is verified; a sweep has no verification
+  [[ $mode == sweep && -n $DRIVE ]] && smbd -c "cd $REMOTE_DIR; $dels" >/dev/null 2>&1
   SWEPT=$n
 }
 
@@ -574,6 +595,7 @@ fi
 
 check_parent
 prepare_dir
+sweep_folder
 
 run_id=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 bat=ll-$run_id
