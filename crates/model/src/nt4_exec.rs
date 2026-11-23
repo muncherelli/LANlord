@@ -75,6 +75,28 @@ macro_rules! preset {
     };
 }
 
+/// the start or stop preset of a service: `service_preset!(start, "w3svc", "web")`.
+macro_rules! service_preset {
+    (start, $service:expr, $what:expr) => {
+        preset!(
+            concat!($service, "-start"),
+            concat!("Start the ", $what, " service"),
+            concat!("net start ", $service),
+            [],
+            true
+        )
+    };
+    (stop, $service:expr, $what:expr) => {
+        preset!(
+            concat!($service, "-stop"),
+            concat!("Stop the ", $what, " service"),
+            concat!("net stop ", $service),
+            [],
+            true
+        )
+    };
+}
+
 /// every preset, read-only ones first.
 pub const PRESETS: &[Preset] = &[
     preset!(
@@ -122,48 +144,12 @@ pub const PRESETS: &[Preset] = &[
     ),
     preset!("ver", "Windows version", "ver", [], false),
     preset!("ipconfig", "Network settings", "ipconfig /all", [], false),
-    preset!(
-        "w3svc-start",
-        "Start the web service",
-        "net start w3svc",
-        [],
-        true
-    ),
-    preset!(
-        "w3svc-stop",
-        "Stop the web service",
-        "net stop w3svc",
-        [],
-        true
-    ),
-    preset!(
-        "msftpsvc-start",
-        "Start the FTP service",
-        "net start msftpsvc",
-        [],
-        true
-    ),
-    preset!(
-        "msftpsvc-stop",
-        "Stop the FTP service",
-        "net stop msftpsvc",
-        [],
-        true
-    ),
-    preset!(
-        "smtpsvc-start",
-        "Start the SMTP service",
-        "net start smtpsvc",
-        [],
-        true
-    ),
-    preset!(
-        "smtpsvc-stop",
-        "Stop the SMTP service",
-        "net stop smtpsvc",
-        [],
-        true
-    ),
+    service_preset!(start, "w3svc", "web"),
+    service_preset!(stop, "w3svc", "web"),
+    service_preset!(start, "msftpsvc", "FTP"),
+    service_preset!(stop, "msftpsvc", "FTP"),
+    service_preset!(start, "smtpsvc", "SMTP"),
+    service_preset!(stop, "smtpsvc", "SMTP"),
     preset!(
         "smtpsvc-restart",
         "Restart the SMTP service",
@@ -614,14 +600,16 @@ mod tests {
             let words: Vec<&str> = command.split_whitespace().collect();
             for (i, word) in words.iter().enumerate() {
                 match *word {
-                    "GET" => {
+                    verb if verb.eq_ignore_ascii_case("GET") => {
                         let path = words.get(i + 1).ok_or("GET without a path")?;
                         let last = path.rsplit('/').next().unwrap_or_default();
                         if !GET_ALLOWED.contains(&last) {
                             return Err(format!("GET of {last}"));
                         }
                     }
-                    "ENUM" if !command.trim_end().ends_with(FILTER) => {
+                    verb if verb.eq_ignore_ascii_case("ENUM")
+                        && !command.trim_end().ends_with(FILTER) =>
+                    {
                         return Err("ENUM without the filter".into());
                     }
                     _ => {}
@@ -646,6 +634,8 @@ mod tests {
         for bad in [
             format!("{get}ServerState & {get}AnonymousUserPass"),
             format!("{get}AnonymousUserPass"),
+            format!("{} get W3SVC/1/AnonymousUserPass", tool),
+            format!("{} enum W3SVC", tool),
             format!("{get}ServerState/../x"),
             format!("{get}ServerState & echo PASSWORD"),
             format!("{tool} ENUM W3SVC"),
