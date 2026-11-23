@@ -88,8 +88,8 @@ fn a_newer_file_is_refused_for_both_kinds_and_never_stamped_over() {
 #[test]
 fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V3, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(6));
-    assert_eq!(Kind::Plain.current(), 6);
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
+    assert_eq!(Kind::Plain.current(), 7);
     assert!(settings.text().contains("name: lab"));
     assert!(!settings.text().contains("internet"));
     // a file with grants is current, and an older lanlord (format 3) refuses it
@@ -105,7 +105,7 @@ fn step_three_stamps_networks_that_may_allow_internet_and_changes_nothing_else()
 #[test]
 fn step_four_stamps_networks_that_may_allow_ssh_and_changes_nothing_else() {
     let settings = load(Kind::Plain, V4, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(6));
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
     let text = settings.text();
     // the keys of format 4 are kept as they were, and no ssh key appears
     assert!(
@@ -129,7 +129,7 @@ const V5: &str = include_str!("fixtures/stored/plain-v5-nt4-domain.yml");
 #[test]
 fn step_five_splits_the_nt4_domain_into_a_domain_and_a_server_and_is_stable() {
     let settings = load(Kind::Plain, V5, &admins()).unwrap();
-    assert_eq!(settings.format().unwrap().0, Some(6));
+    assert_eq!(settings.format().unwrap().0, Some(Kind::Plain.current()));
     let server = settings.section("nt4-servers").unwrap()[0].clone();
     assert_eq!(server["name"], "nt4-domain");
     assert_eq!(server["role"], "pdc");
@@ -148,4 +148,65 @@ fn step_five_splits_the_nt4_domain_into_a_domain_and_a_server_and_is_stable() {
     // a second load changes nothing
     let again = load(Kind::Plain, &settings.text(), &admins()).unwrap();
     assert_eq!(again.text(), settings.text());
+}
+
+const V6_IIS: &str = include_str!("fixtures/stored/plain-v6-iis.yml");
+const V6_NO_IIS: &str = include_str!("fixtures/stored/plain-v6-no-iis.yml");
+
+fn hosting_of(settings: &Settings) -> Option<serde_yaml_ng::Value> {
+    settings.section("components")?.get("hosting").cloned()
+}
+
+#[test]
+fn step_six_turns_hosting_on_with_iis_only_when_iis_was_in_use_and_is_stable() {
+    let settings = load(Kind::Plain, V6_IIS, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(7));
+    let hosting = hosting_of(&settings).expect("hosting is on");
+    assert_eq!(hosting["enabled"], true);
+    assert_eq!(
+        hosting["subcomponents"],
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>("[iis]").unwrap()
+    );
+    // what was there is kept, and the result reads as hosting on beside the nt4 server
+    assert_eq!(settings.section("nt4-domain").unwrap()["name"], "RETRODOM");
+    let selection = lanlord_model::components::Selection::from_settings(&settings).unwrap();
+    assert_eq!(selection.iis_allowed(), Ok(()));
+    assert!(selection.is_enabled("nt4-domain"));
+    // a second load changes nothing
+    let again = load(Kind::Plain, &settings.text(), &admins()).unwrap();
+    assert_eq!(again.text(), settings.text());
+}
+
+#[test]
+fn step_six_leaves_hosting_off_without_iis_in_use() {
+    let settings = load(Kind::Plain, V6_NO_IIS, &admins()).unwrap();
+    assert_eq!(settings.format().unwrap().0, Some(7));
+    assert!(
+        settings.section("components").is_none(),
+        "{}",
+        settings.text()
+    );
+    let selection = lanlord_model::components::Selection::from_settings(&settings).unwrap();
+    assert!(selection.iis_allowed().is_err());
+}
+
+#[test]
+fn step_six_keeps_other_components_and_what_the_settings_already_say_about_hosting() {
+    let with_components =
+        "lanlord_format: 6\nnt4-domain: {}\niis: {}\ncomponents:\n  web-proxy: {}\n";
+    let settings = load(Kind::Plain, with_components, &admins()).unwrap();
+    let components = settings.section("components").unwrap();
+    assert!(components.get("web-proxy").is_some());
+    assert_eq!(components["hosting"]["enabled"], true);
+    // an explicit choice stays as it is, even off
+    let off =
+        "lanlord_format: 6\nnt4-domain: {}\niis: {}\ncomponents:\n  hosting: {enabled: false}\n";
+    let settings = load(Kind::Plain, off, &admins()).unwrap();
+    assert_eq!(
+        settings.section("components").unwrap()["hosting"]["enabled"],
+        false
+    );
+    // hosting needs the nt4 server: with it off nothing is switched on
+    let no_nt4 = "lanlord_format: 6\niis: {}\ncomponents:\n  nt4-domain: {enabled: false}\n";
+    assert!(hosting_of(&load(Kind::Plain, no_nt4, &admins()).unwrap()).is_none());
 }

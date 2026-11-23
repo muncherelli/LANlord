@@ -566,6 +566,9 @@ fn dispatch(
             timeout_secs,
         } => {
             let command = nt4_exec::render(preset, args).map_err(|reason| anyhow!("{reason}"))?;
+            if lanlord_model::nt4_exec::is_hosting(preset) {
+                require_iis(session, ask)?;
+            }
             machine_run(
                 session,
                 &key()?,
@@ -574,6 +577,15 @@ fn dispatch(
             )?
         }
     })
+}
+
+/// refuse an iis preset unless the hosting component is on with its `iis` part. the front ends
+/// hide the presets too, but this is the check.
+fn require_iis(session: &Session, ask: AskPassword) -> Result<()> {
+    let (settings, _) = access::load(session, ask)?;
+    lanlord_model::components::Selection::from_settings(&settings)?
+        .iis_allowed()
+        .map_err(|reason| access::Refused(reason.into()).into())
 }
 
 /// run a command on a machine and answer with what it did.
@@ -1008,10 +1020,15 @@ esac"#,
     /// a gateway with the exec account's secret sealed to the test key, whose machine `ws1`
     /// answers `events` to any run.
     fn machine_gateway(record: &std::path::Path, events: &str) -> Session {
+        machine_gateway_with(record, events, "")
+    }
+
+    /// `machine_gateway` whose plain settings are `plain`.
+    fn machine_gateway_with(record: &std::path::Path, events: &str, plain: &str) -> Session {
         use crate::nt4_exec::tests as fixtures;
         let identity = key().unwrap().unwrap();
         let sealed = fixtures::sealed(&identity, fixtures::PASSWORD);
-        fixtures::gateway(
+        fixtures::gateway_with_plain(
             record,
             &fixtures::Fake {
                 sealed: &sealed,
@@ -1019,6 +1036,7 @@ esac"#,
                 first: events,
                 second: "",
             },
+            plain,
         )
     }
 
@@ -1085,6 +1103,76 @@ esac"#,
             timeout_secs: 5,
         };
         assert!(on_machines(&session, &unknown).is_err());
+    }
+
+    fn iis_preset(preset: &str) -> Operation {
+        Operation::MachinePreset {
+            machine: "ws1".into(),
+            preset: preset.into(),
+            args: vec![],
+            timeout_secs: 5,
+        }
+    }
+
+    #[test]
+    fn an_iis_preset_is_refused_by_the_server_unless_hosting_has_its_iis_part_on() {
+        let events = crate::nt4_exec::tests::event(r#"{"exit":0}"#);
+        let off = [
+            // nothing stored, hosting not chosen, hosting off, hosting without its iis part
+            "",
+            "components:\n  nt4-domain: {}\n",
+            "components:\n  nt4-domain: {}\n  hosting: {enabled: false, subcomponents: [iis]}\n",
+            "components:\n  nt4-domain: {}\n  hosting: {subcomponents: [frontpage]}\n",
+        ];
+        for plain in off {
+            let record = tempfile::NamedTempFile::new().unwrap();
+            let session = machine_gateway_with(record.path(), &events, plain);
+            let refused = on_machines(&session, &iis_preset("services-status")).unwrap_err();
+            let text = refused.to_string();
+            assert!(
+                text.contains("turn on the Hosting component (iis) to use IIS presets"),
+                "{plain:?}: {text}"
+            );
+            assert!(refused.downcast_ref::<access::Refused>().is_some());
+            // nothing reached the machine
+            assert_eq!(
+                std::fs::read_to_string(record.path()).unwrap(),
+                "",
+                "{plain:?}"
+            );
+            // a general preset and a plain run are not hosting: they still run
+            assert!(
+                on_machines(&session, &iis_preset("ver")).is_ok(),
+                "{plain:?}"
+            );
+            let run = Operation::MachineRun {
+                machine: "ws1".into(),
+                command: "ver".into(),
+                timeout_secs: 5,
+            };
+            assert!(on_machines(&session, &run).is_ok(), "{plain:?}");
+        }
+    }
+
+    #[test]
+    fn an_iis_preset_runs_when_hosting_is_on_with_its_iis_part() {
+        let events = crate::nt4_exec::tests::event(r#"{"exit":0}"#);
+        let record = tempfile::NamedTempFile::new().unwrap();
+        let plain = "components:\n  nt4-domain: {}\n  hosting:\n    subcomponents: [iis]\n";
+        let session = machine_gateway_with(record.path(), &events, plain);
+        let reply = on_machines(&session, &iis_preset("services-status")).unwrap();
+        assert!(
+            matches!(
+                reply,
+                Reply::MachineRun {
+                    exit_code: Some(0),
+                    ..
+                }
+            ),
+            "{reply:?}"
+        );
+        let sent = std::fs::read_to_string(record.path()).unwrap();
+        assert!(sent.contains("IIS Admin"), "{sent}");
     }
 
     #[test]

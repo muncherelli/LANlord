@@ -1157,12 +1157,21 @@ pub(crate) mod tests {
     /// a gateway whose docker lists `ws1$`. every lanlord-exec call appends its argv to
     /// `<record>.argv` and saves its stdin in `record`.
     pub(crate) fn gateway(record: &std::path::Path, fake: &Fake) -> Session {
+        gateway_with_plain(record, fake, "")
+    }
+
+    /// `gateway`, whose plain settings are `plain` (none when it is empty).
+    pub(crate) fn gateway_with_plain(
+        record: &std::path::Path,
+        fake: &Fake,
+        plain: &str,
+    ) -> Session {
         let script = r#"for a; do last=$a; done
 case "$last" in
   "id -un") echo tester ;;
   "sudo -n true") exit 0 ;;
   *"lanlord-user list") printf 'ws1$:1001:\n' ;;
-  "sh -c "*settings.yml*) exit 0 ;;
+  "sh -c "*settings.yml*) @PLAIN@ ;;
   "sh -c "*) printf 'present\n%s\n' '@LEASE@' ;;
   *"--address 192.0.2.50"*) printf '%s\n' "$last" >> '@REC@.argv'; cat > '@REC@'; printf '%s\n' '@SECOND@' ;;
   *lanlord-exec*) printf '%s\n' "$last" >> '@REC@.argv'; cat > '@REC@'; printf '%s\n' '@FIRST@' ;;
@@ -1171,6 +1180,14 @@ case "$last" in
 esac"#;
         Session::fake(
             &script
+                .replace(
+                    "@PLAIN@",
+                    &if plain.is_empty() {
+                        "exit 0".to_string()
+                    } else {
+                        format!("printf 'present\\n%s' '{plain}'")
+                    },
+                )
                 .replace("@REC@", &record.display().to_string())
                 .replace("@LEASE@", fake.lease)
                 .replace("@FIRST@", fake.first)

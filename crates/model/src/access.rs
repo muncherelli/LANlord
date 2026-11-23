@@ -56,6 +56,8 @@ pub enum Area {
     Updates,
     /// running commands on the gateway.
     Commands,
+    /// iis hosting on the nt4 servers: the iis presets and the hosting window.
+    Hosting,
     /// lanlord's own users, roles and permissions.
     Users,
 }
@@ -74,7 +76,7 @@ pub fn area_of_section(key: &str) -> Area {
 }
 
 impl Area {
-    pub const ALL: [Area; 13] = [
+    pub const ALL: [Area; 14] = [
         Area::Status,
         Area::Network,
         Area::Dns,
@@ -87,6 +89,7 @@ impl Area {
         Area::Tasks,
         Area::Updates,
         Area::Commands,
+        Area::Hosting,
         Area::Users,
     ];
 
@@ -104,6 +107,7 @@ impl Area {
             Self::Tasks => "Task manager",
             Self::Updates => "Install and updates",
             Self::Commands => "Remote commands",
+            Self::Hosting => "Hosting",
             Self::Users => "Users and permissions",
         }
     }
@@ -201,6 +205,8 @@ impl Role {
                     (Shares, Manage),
                     (Logs, View),
                     (Tasks, View),
+                    // todo: decide whether operators get hosting; for now they have exactly
+                    // what they had for the iis presets, which ran under commands (hidden)
                 ],
             ),
             make(USERS, &[(Status, View), (Clock, View)]),
@@ -430,6 +436,29 @@ mod tests {
         assert_eq!(user.level(Area::Status), Level::View);
         assert_eq!(user.level(Area::Network), Level::Hidden);
         assert_eq!(user.level(Area::Users), Level::Hidden);
+    }
+
+    #[test]
+    fn hosting_gives_each_builtin_role_what_it_had_for_the_iis_presets() {
+        // the iis presets ran under commands before hosting was an area of its own
+        let mut access = Access::default();
+        access.members.insert("olive".into(), names(&[OPERATORS]));
+        for (who, admin) in [("root", true), ("olive", false), ("dana", false)] {
+            let grants = access.grants(who, admin);
+            assert_eq!(
+                grants.level(Area::Hosting),
+                grants.level(Area::Commands),
+                "{who}"
+            );
+        }
+        assert_eq!(
+            access.grants("olive", false).level(Area::Hosting),
+            Level::Hidden
+        );
+        assert_eq!(
+            access.grants("root", true).level(Area::Hosting),
+            Level::Manage
+        );
     }
 
     #[test]

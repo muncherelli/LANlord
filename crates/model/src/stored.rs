@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use crate::format::{always, check, current, run_steps, Context, Step, TooNew};
 use crate::settings::Settings;
-use crate::{access, internet, lan_networks, nt4_servers, ssh_access};
+use crate::{access, components, internet, lan_networks, nt4_servers, ssh_access};
 
 /// which settings file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +43,11 @@ pub const PLAIN_STEPS: &[Step<Settings>] = &[
     Step {
         name: "the nt4 domain becomes a domain and a list of nt4 servers",
         run: nt4_servers::migrate_legacy,
+        ready: always,
+    },
+    Step {
+        name: "hosting is a component, on when the iis presets were in use",
+        run: components::migrate_hosting,
         ready: always,
     },
 ];

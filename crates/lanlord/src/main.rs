@@ -640,8 +640,10 @@ enum Command {
         action: Option<MachinesCommand>,
     },
     /// run an IIS 4 preset on a domain machine through the gateway, or list the presets with
-    /// --list; the exit code is the one the machine returned
-    Iis {
+    /// --list; the exit code is the one the machine returned. the IIS presets need the Hosting
+    /// component with its iis part. `iis` is the old name of this command, kept for one release
+    #[command(alias = "iis")]
+    Hosting {
         /// the gateway
         #[arg(required_unless_present = "list", conflicts_with = "list")]
         host: Option<String>,
@@ -890,7 +892,20 @@ fn preset_lines() -> Vec<String> {
         .collect()
 }
 
-fn iis(
+/// does the command line name the old `iis` command rather than `hosting`? the first word that
+/// is not an option is the command.
+fn names_old_iis(args: &[String]) -> bool {
+    args.iter()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-'))
+        .is_some_and(|arg| arg == "iis")
+}
+
+/// said on stderr when the old `iis` name is used.
+const IIS_DEPRECATED: &str =
+    "note: `lanlord iis` is now `lanlord hosting`; the iis name goes in a later release";
+
+fn hosting(
     host: &str,
     name: &str,
     (preset, args): (&str, &[String]),
@@ -2271,6 +2286,11 @@ fn main() -> Result<()> {
         std::process::exit(code);
     }
     let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Hosting { .. }))
+        && names_old_iis(&std::env::args().collect::<Vec<_>>())
+    {
+        eprintln!("{IIS_DEPRECATED}");
+    }
     lanlord_core::log::set_verbose(cli.verbose);
     match cli.command {
         None => {
@@ -2342,13 +2362,13 @@ fn main() -> Result<()> {
         }
         Some(Command::Users { host, action }) => users(&host, action),
         Some(Command::Machines { host, action }) => machines(&host, action),
-        Some(Command::Iis { list: true, .. }) => {
+        Some(Command::Hosting { list: true, .. }) => {
             for line in preset_lines() {
                 println!("{line}");
             }
             Ok(())
         }
-        Some(Command::Iis {
+        Some(Command::Hosting {
             host: Some(host),
             name: Some(name),
             preset: Some(preset),
@@ -2356,8 +2376,8 @@ fn main() -> Result<()> {
             timeout,
             yes,
             ..
-        }) => iis(&host, &name, (&preset, &args), (timeout, yes)),
-        Some(Command::Iis { .. }) => unreachable!("clap requires the host, name and preset"),
+        }) => hosting(&host, &name, (&preset, &args), (timeout, yes)),
+        Some(Command::Hosting { .. }) => unreachable!("clap requires the host, name and preset"),
         Some(Command::Secrets { host, action }) => secrets(&host, action),
         Some(Command::Networks { host, action }) => networks(&host, action),
         Some(Command::Logon { host, action }) => logon(&host, action),
@@ -3085,8 +3105,8 @@ mod tests {
     }
 
     #[test]
-    fn iis_runs_a_preset_with_arguments_or_lists_them() {
-        let Command::Iis {
+    fn hosting_runs_a_preset_with_arguments_or_lists_them() {
+        let Command::Hosting {
             host,
             name,
             preset,
@@ -3095,7 +3115,7 @@ mod tests {
             timeout,
             yes,
         } = parse(&[
-            "iis",
+            "hosting",
             "gw",
             "ws1",
             "startweb",
@@ -3105,7 +3125,7 @@ mod tests {
             "--yes",
         ])
         else {
-            panic!("not iis");
+            panic!("not hosting");
         };
         assert_eq!(host.as_deref(), Some("gw"));
         assert_eq!(name.as_deref(), Some("ws1"));
@@ -3113,27 +3133,63 @@ mod tests {
         assert_eq!(args, ["1"]);
         assert!(!list && yes);
         assert_eq!(timeout, 30);
-        let Command::Iis { yes, timeout, .. } = parse(&["iis", "gw", "ws1", "ver"]) else {
-            panic!("not iis");
+        let Command::Hosting { yes, timeout, .. } = parse(&["hosting", "gw", "ws1", "ver"]) else {
+            panic!("not hosting");
         };
         assert!(!yes);
         assert_eq!(timeout, lanlord_core::operations::DEFAULT_TIMEOUT_SECS);
         assert!(matches!(
-            parse(&["iis", "--list"]),
-            Command::Iis {
+            parse(&["hosting", "--list"]),
+            Command::Hosting {
                 list: true,
                 host: None,
                 ..
             }
         ));
-        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1"]).is_err());
-        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1", "ver", "--list"]).is_err());
-        assert!(Cli::try_parse_from(["lanlord", "iis", "gw", "ws1", "--list"]).is_err());
-        assert!(Cli::try_parse_from(["lanlord", "iis", "--list", "--yes"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "gw", "ws1"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "gw", "ws1", "ver", "--list"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "gw", "ws1", "--list"]).is_err());
+        assert!(Cli::try_parse_from(["lanlord", "hosting", "--list", "--yes"]).is_err());
         for bad in ["0", "901"] {
-            let args = ["lanlord", "iis", "gw", "ws1", "ver", "--timeout", bad];
+            let args = ["lanlord", "hosting", "gw", "ws1", "ver", "--timeout", bad];
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn iis_is_an_alias_of_hosting_that_says_it_is_old() {
+        let Command::Hosting {
+            host,
+            name,
+            preset,
+            args,
+            yes,
+            ..
+        } = parse(&["iis", "gw", "ws1", "startweb", "1", "--yes"])
+        else {
+            panic!("iis is not the hosting command");
+        };
+        assert_eq!(host.as_deref(), Some("gw"));
+        assert_eq!(name.as_deref(), Some("ws1"));
+        assert_eq!(preset.as_deref(), Some("startweb"));
+        assert_eq!((args, yes), (vec!["1".to_string()], true));
+        assert!(matches!(
+            parse(&["iis", "--list"]),
+            Command::Hosting { list: true, .. }
+        ));
+        let words = |line: &[&str]| -> Vec<String> {
+            std::iter::once("lanlord")
+                .chain(line.iter().copied())
+                .map(String::from)
+                .collect()
+        };
+        assert!(names_old_iis(&words(&["iis", "gw", "ws1", "ver"])));
+        assert!(names_old_iis(&words(&["-v", "iis", "--list"])));
+        assert!(!names_old_iis(&words(&["hosting", "gw", "ws1", "ver"])));
+        // a host called iis is not the old command
+        assert!(!names_old_iis(&words(&["hosting", "iis", "ws1", "ver"])));
+        assert!(!names_old_iis(&words(&[])));
+        assert!(IIS_DEPRECATED.contains("lanlord hosting") && !IIS_DEPRECATED.contains('\n'));
     }
 
     #[test]
@@ -3149,9 +3205,9 @@ mod tests {
     #[test]
     fn a_refused_preset_stops_before_the_gateway_is_asked() {
         let bad = vec!["1 & x".to_string()];
-        let unknown = iis("gw", "ws1", ("nope", &[]), (30, true)).unwrap_err();
+        let unknown = hosting("gw", "ws1", ("nope", &[]), (30, true)).unwrap_err();
         assert!(unknown.to_string().contains("not a known preset"));
-        assert!(iis("gw", "ws1", ("startweb", &bad), (30, true)).is_err());
+        assert!(hosting("gw", "ws1", ("startweb", &bad), (30, true)).is_err());
     }
 
     #[test]

@@ -1,0 +1,11 @@
+lanlord_format: 6
+lanlord_version: "0.1"
+networks:
+  - name: lab
+    interface: eth2
+    address: 192.0.2.1/24
+nt4-domain:
+  name: RETRODOM
+  network: lab
+iis:
+  machines: [web1]

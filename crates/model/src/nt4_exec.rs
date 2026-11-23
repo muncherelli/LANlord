@@ -213,6 +213,16 @@ pub const PRESETS: &[Preset] = &[
     ),
 ];
 
+/// the presets that are not about hosting; they stay under the nt4 domain and its remote
+/// commands. every other preset (the iis ones, and any added later) needs the hosting component.
+const GENERAL: &[&str] = &["net-start", "ver", "ipconfig"];
+
+/// is this preset one of the hosting presets, that needs the hosting component switched on and
+/// manage rights on hosting? an unknown id is not: it is refused as unknown before it matters.
+pub fn is_hosting(id: &str) -> bool {
+    find(id).is_some() && !GENERAL.contains(&id)
+}
+
 /// the preset with this id.
 pub fn find(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|preset| preset.id == id)
@@ -404,6 +414,23 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_iis_presets_are_hosting_and_the_general_ones_are_not() {
+        for preset in PRESETS {
+            assert_eq!(
+                is_hosting(preset.id),
+                !GENERAL.contains(&preset.id),
+                "{}",
+                preset.id
+            );
+        }
+        for general in GENERAL {
+            assert!(find(general).is_some(), "{general} is not a preset");
+        }
+        assert!(is_hosting("startweb") && is_hosting("services-status"));
+        assert!(!is_hosting("ver") && !is_hosting("nope"));
+    }
 
     const FILTER: &str = r#" | findstr /v /r /i /c:"^ *[A-Za-z]*Pass[A-Za-z]* *:""#;
 
