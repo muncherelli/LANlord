@@ -877,6 +877,9 @@ impl Shell {
         self.nt4.poll();
         self.logon.poll();
         self.computers.poll();
+        // the host can change from another tab, while the Computers tab draws nothing
+        let host = self.host();
+        self.computers.close_stale_box(host.as_deref());
         self.dns.poll();
         self.commands.poll();
         self.poll_clock();

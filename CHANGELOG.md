@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- the Computers command box closes when you switch hosts from another tab, instead of staying open and refusing OK
 - the Computers tab no longer runs a command on the wrong server after switching hosts: an open command box only runs on the host it was opened on, and the pick and the last output are cleared as soon as another host is shown
 - the NT4 command helper (`lanlord-svc.exe`) no longer crashes with an illegal instruction on NT4: it is built without SSE and MMX, which NT4 does not enable, and the image build fails if the helper contains such an instruction
 - running commands on NT4 machines works: `lanlord-exec` starts commands through a small NT4 service helper (`lanlord-svc.exe`, built into the NT4 server image) instead of `cmd.exe`, which NT4 never let start as a service. A command that outlives its timeout, or a run that is cut short, now has the service stopped before it is deleted, which ends the helper's `cmd.exe`; programs it started may keep running
