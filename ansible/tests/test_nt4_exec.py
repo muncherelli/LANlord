@@ -193,6 +193,10 @@ class LanlordExecTest(unittest.TestCase):
     def kill_session(pgid):
         try:
             os.killpg(pgid, signal.SIGKILL)
+            # wait until the group is gone (a zombie may keep it from raising: stop after about 2 s)
+            for _ in range(40):
+                os.killpg(pgid, 0)
+                time.sleep(0.05)
         except ProcessLookupError:
             pass
 
