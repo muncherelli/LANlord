@@ -75,7 +75,7 @@ pub(crate) fn control_args() -> &'static [&'static str] {
 }
 
 /// quote `arg` so the remote shell sees it as one literal word.
-fn shell_quote(arg: &str) -> String {
+pub(crate) fn shell_quote(arg: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
     if !arg.is_empty() && arg.chars().all(plain) {
         arg.to_string()
