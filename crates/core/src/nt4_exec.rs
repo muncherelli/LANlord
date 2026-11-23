@@ -82,8 +82,8 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub truncated: bool,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 impl Outcome {
@@ -509,8 +509,9 @@ fn run_request(
                 on_chunk(err, &shown);
             }
         }
-        // output past the cap is dropped, so it is not kept in the debug log either
-        !(collector.is_full() && line.starts_with(concat!("LANLORD_EVENT ", r#"{"stream""#)))
+        // output events are never kept in the debug log: they hold the raw output, secrets
+        // included, as base64
+        !line.starts_with(concat!("LANLORD_EVENT ", r#"{"stream""#))
     });
     input.zeroize();
     for (err, redactor) in live.iter_mut().enumerate() {
@@ -1012,6 +1013,82 @@ esac"#;
         assert!(!calls[0].contains(PASSWORD), "{calls:?}");
         let stdin = std::fs::read_to_string(record.path()).unwrap();
         assert!(stdin.contains(PASSWORD) && stdin.contains(r#""command":"ver""#));
+    }
+
+    fn stream(name: &str, text: &str) -> String {
+        let data = base64::engine::general_purpose::STANDARD.encode(text);
+        event(&format!(r#"{{"stream":"{name}","data":"{data}"}}"#))
+    }
+
+    #[test]
+    fn secrets_are_hidden_in_the_text_and_in_the_live_output() {
+        let mut collector = Collector::default();
+        for line in [
+            stream(
+                "out",
+                "KeyType : (STRING) \"a\"\r\nAnonymousUserPass : (STRING) \"s3",
+            ),
+            stream("out", "cret\"\r\nwamuserpass : (EXPANDSZ) \"s3cret\""),
+            stream("err", "WAMUserPass : (STRING) \"s3cret\"\n"),
+            event(r#"{"exit":0}"#),
+        ] {
+            collector.feed(&line);
+        }
+        let outcome = collector.finish(0).unwrap();
+        assert_eq!(
+            outcome.stdout_text(),
+            "KeyType : (STRING) \"a\"\r\nAnonymousUserPass : (STRING) (hidden)\r\nwamuserpass : (EXPANDSZ) (hidden)"
+        );
+        assert_eq!(outcome.stderr_text(), "WAMUserPass : (STRING) (hidden)\n");
+    }
+
+    #[test]
+    fn a_secret_is_hidden_live_and_flushed_when_the_run_ends_mid_line() {
+        let identity = age::x25519::Identity::generate();
+        let sealed = sealed(&identity, PASSWORD);
+        let first = format!(
+            "{}\n{}\n{}\n{}",
+            stream(
+                "out",
+                "A : (STRING) \"x\"\nAnonymousUserPass : (STRING) \"s3"
+            ),
+            stream("out", "cret\""),
+            stream("err", "oops"),
+            event(r#"{"exit":0}"#)
+        );
+        let record = tempfile::NamedTempFile::new().unwrap();
+        let fake = Fake {
+            sealed: &sealed,
+            lease: "",
+            first: &first,
+            second: "",
+        };
+        let session = gateway(record.path(), &fake);
+        let mut seen = Vec::new();
+        let outcome = run(
+            &session,
+            &identity,
+            &mut no_password,
+            job(),
+            &mut |err, bytes| seen.push((err, bytes.to_vec())),
+        )
+        .unwrap();
+        let shown = |stream: bool| {
+            let bytes: Vec<u8> = seen
+                .iter()
+                .filter(|(err, _)| *err == stream)
+                .flat_map(|(_, b)| b.clone())
+                .collect();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert_eq!(
+            shown(false),
+            "A : (STRING) \"x\"\nAnonymousUserPass : (STRING) (hidden)"
+        );
+        assert_eq!(shown(true), "oops");
+        assert!(!outcome.stdout_text().contains("s3cret"));
+        assert_eq!(outcome.stderr_text(), "oops");
+        argv_calls(record.path());
     }
 
     #[test]

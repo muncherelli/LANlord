@@ -44,7 +44,10 @@ pub fn check_command(command: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// one thing a front end can ask an iis 4 machine to do.
+/// one thing a front end can ask an iis 4 machine to do. a preset that filters the metabase
+/// listing (`| findstr ...`) exits with the code of `findstr` (0 when lines are left, 1 when
+/// none are), not of `cscript`: the pipe is the last command of the batch file, and cmd on nt 4
+/// has no way to keep the first command's code without writing the unfiltered listing to disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub id: &'static str,
@@ -82,14 +85,14 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "adsutil-enum-w3svc",
         "Web service settings",
-        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC | find /v /i "pass""#,
+        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC | findstr /v /r /i /c:"^ *[A-Za-z]*Pass[A-Za-z]* *:""#,
         [],
         false
     ),
     preset!(
         "adsutil-enum-site",
         "Web site settings",
-        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC/{site} | find /v /i "pass""#,
+        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM W3SVC/{site} | findstr /v /r /i /c:"^ *[A-Za-z]*Pass[A-Za-z]* *:""#,
         ["site"],
         false
     ),
@@ -110,7 +113,7 @@ pub const PRESETS: &[Preset] = &[
     preset!(
         "adsutil-enum-ftp-site",
         "FTP site settings",
-        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM MSFTPSVC/{site} | find /v /i "pass""#,
+        r#"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples\adsutil.vbs ENUM MSFTPSVC/{site} | findstr /v /r /i /c:"^ *[A-Za-z]*Pass[A-Za-z]* *:""#,
         ["site"],
         false
     ),
@@ -268,9 +271,9 @@ const CP437_HIGH: [char; 128] = [
 /// what replaces the value of a secret property in output.
 const HIDDEN: &[u8] = b"(hidden)";
 
-/// is this line (without its line ending) a metabase string property whose name holds `Pass`,
-/// such as `AnonymousUserPass : (STRING) "..."`? returns where the value starts.
-fn secret_value_start(line: &[u8]) -> Option<usize> {
+/// a metabase property line, such as `AnonymousUserPass : (STRING) "..."`: returns the
+/// property name, the type and where the value starts.
+fn property(line: &[u8]) -> Option<(&[u8], &[u8], usize)> {
     let skip = |at: usize| {
         at + line[at..]
             .iter()
@@ -282,32 +285,57 @@ fn secret_value_start(line: &[u8]) -> Option<usize> {
         .iter()
         .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_')
         .count();
-    if !line[name..name + word].windows(4).any(|w| w == b"Pass") {
-        return None;
-    }
     let colon = skip(name + word);
-    if line.get(colon) != Some(&b':') {
+    if word == 0 || line.get(colon) != Some(&b':') {
         return None;
     }
     let tag = skip(colon + 1);
-    line[tag..].starts_with(b"(STRING)").then_some(tag + 8)
+    if line.get(tag) != Some(&b'(') {
+        return None;
+    }
+    let close = tag + line[tag..].iter().position(|&b| b == b')')?;
+    Some((&line[name..name + word], &line[tag + 1..close], close + 1))
 }
 
-/// the output with the value of every secret string property (a name holding `Pass`, as
-/// `AnonymousUserPass` or `WAMUserPass`) replaced by `(hidden)`, line by line.
+/// does a property hold a secret? a name with `pass` in any case, unless the value is a flag or
+/// a number, which cannot hold one.
+fn is_secret(name: &[u8], kind: &[u8]) -> bool {
+    name.to_ascii_lowercase().windows(4).any(|w| w == b"pass")
+        && !kind.eq_ignore_ascii_case(b"BOOLEAN")
+        && !kind.eq_ignore_ascii_case(b"INTEGER")
+}
+
+/// the output with the value of every secret property (a name holding `Pass`, as
+/// `AnonymousUserPass` or `WAMUserPass`) replaced by `(hidden)`, line by line. the indented
+/// lines that continue a list value are hidden too, up to the next property line.
 pub fn redact_secrets(output: &[u8]) -> Vec<u8> {
+    redact_lines(output, &mut false)
+}
+
+/// `redact_secrets` for output that comes in parts: `continued` says the last line was a secret
+/// whose value goes on in the lines after it.
+fn redact_lines(output: &[u8], continued: &mut bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(output.len());
     for raw in output.split_inclusive(|&b| b == b'\n') {
         let body = raw.strip_suffix(b"\n").unwrap_or(raw);
         let body = body.strip_suffix(b"\r").unwrap_or(body);
-        match secret_value_start(body) {
-            Some(start) => {
-                out.extend_from_slice(&body[..start]);
-                out.push(b' ');
-                out.extend_from_slice(HIDDEN);
-                out.extend_from_slice(&raw[body.len()..]);
-            }
-            None => out.extend_from_slice(raw),
+        let prop = property(body);
+        if let Some((_, _, start)) = prop.filter(|(name, kind, _)| is_secret(name, kind)) {
+            out.extend_from_slice(&body[..start]);
+            out.push(b' ');
+            out.extend_from_slice(HIDDEN);
+            out.extend_from_slice(&raw[body.len()..]);
+            *continued = true;
+        } else if *continued
+            && prop.is_none()
+            && body.first().is_some_and(u8::is_ascii_whitespace)
+            && !body.trim_ascii().is_empty()
+        {
+            out.extend_from_slice(HIDDEN);
+            out.extend_from_slice(&raw[body.len()..]);
+        } else {
+            *continued = false;
+            out.extend_from_slice(raw);
         }
     }
     out
@@ -317,6 +345,7 @@ pub fn redact_secrets(output: &[u8]) -> Vec<u8> {
 #[derive(Debug, Default)]
 pub struct LiveRedactor {
     pending: Vec<u8>,
+    continued: bool,
 }
 
 impl LiveRedactor {
@@ -327,7 +356,7 @@ impl LiveRedactor {
             Some(end) => {
                 let rest = self.pending.split_off(end + 1);
                 let done = std::mem::replace(&mut self.pending, rest);
-                redact_secrets(&done)
+                redact_lines(&done, &mut self.continued)
             }
             None => Vec::new(),
         }
@@ -335,7 +364,7 @@ impl LiveRedactor {
 
     /// the unfinished last line, redacted.
     pub fn finish(&mut self) -> Vec<u8> {
-        redact_secrets(&std::mem::take(&mut self.pending))
+        redact_lines(&std::mem::take(&mut self.pending), &mut self.continued)
     }
 }
 
@@ -376,6 +405,8 @@ mod tests {
 
     use super::*;
 
+    const FILTER: &str = r#" | findstr /v /r /i /c:"^ *[A-Za-z]*Pass[A-Za-z]* *:""#;
+
     const ADMIN: &str = r"cscript //nologo %SystemRoot%\system32\inetsrv\adminsamples";
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -391,7 +422,7 @@ mod tests {
         ] {
             let preset = find(id).unwrap();
             assert!(!preset.mutating);
-            assert!(preset.template.ends_with(r#" | find /v /i "pass""#), "{id}");
+            assert!(preset.template.ends_with(FILTER), "{id}");
         }
     }
 
@@ -404,6 +435,29 @@ mod tests {
             "KeyType : (STRING) \"IIsWebServer\"\r\n  AnonymousUserPass   : (STRING) (hidden)\r\nWAMUserPass: (STRING) (hidden)\nUNCPassword : (STRING) (hidden)\nAnonymousPasswordSync : (BOOLEAN) True\nServerComment : (STRING) \"a Pass b\"\nlast Pass : (STRING) \"z\""
         );
         assert!(!out.contains("s3cret"));
+    }
+
+    #[test]
+    fn every_secret_type_is_hidden_in_any_case() {
+        let text = b"password : (EXPANDSZ) \"s3cret\"\nUserPassList : (LIST) (2 Items)\n  \"s3cret1\"\n\t\"s3cret2\"\nServerComment : (STRING) \"x\"\n  \"kept\"\n[/W3SVC/1/ROOT/Passport]\nKeyType : (STRING) \"IIsWebVirtualDir\"\n";
+        let out = String::from_utf8(redact_secrets(text)).unwrap();
+        assert_eq!(
+            out,
+            "password : (EXPANDSZ) (hidden)\nUserPassList : (LIST) (hidden)\n(hidden)\n(hidden)\nServerComment : (STRING) \"x\"\n  \"kept\"\n[/W3SVC/1/ROOT/Passport]\nKeyType : (STRING) \"IIsWebVirtualDir\"\n"
+        );
+        assert!(!out.contains("s3cret"));
+    }
+
+    #[test]
+    fn a_list_secret_split_across_chunks_is_hidden() {
+        let mut live = LiveRedactor::default();
+        let mut out = live.push(b"UserPass : (LIST) (1 Items)\n  \"s3");
+        out.extend(live.push(b"cret\"\nNext : (STRING) \"a\"\n"));
+        out.extend(live.finish());
+        assert_eq!(
+            out,
+            b"UserPass : (LIST) (hidden)\n(hidden)\nNext : (STRING) \"a\"\n"
+        );
     }
 
     #[test]
