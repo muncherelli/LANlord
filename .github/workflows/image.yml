@@ -241,6 +241,7 @@ jobs:
   # because the build job only runs when an image input changed, and the script is not one (it is mounted, not
   # baked in). the container is the alpine the images are built on (the pin in the Dockerfile, so it is the same
   # busybox) with bash and python3 added: the script needs bash and the tests need python3; no samba build
+  # (--init: the tests orphan processes and check they are gone, so pid 1 must reap them)
   exec-tests:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -256,7 +257,7 @@ jobs:
             exit 0
           fi
           alpine=$(sed -n 's/^ARG ALPINE_IMAGE=//p' ansible/playbooks/nt4-domain/image/Dockerfile)
-          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo "$alpine" \
+          docker run --rm --init -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD:/repo:ro" -w /repo "$alpine" \
             sh -c 'apk add --no-cache bash python3 >/dev/null && python3 -m unittest discover -s ansible/tests -p test_nt4_exec.py'
 
   publish:
