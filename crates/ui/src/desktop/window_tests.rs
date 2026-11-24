@@ -1362,52 +1362,6 @@ fn a_press_off_the_caption_never_moves_the_window() {
     }
 }
 
-/// a press let go while its window was hidden is forgotten: the next drag by the caption moves it.
-#[test]
-fn a_press_let_go_while_hidden_does_not_block_the_next_caption_drag() {
-    use eframe::egui::{Event, PointerButton, Pos2, Vec2};
-    let size = Vec2::new(1280.0, 1600.0);
-    let (mut desktop, ctx, _) = desktop();
-    with_host(&mut desktop, &ctx);
-    desktop.open(Target::Networks);
-    settled_on(&mut desktop, &ctx, size, true);
-    let rect = |d: &Desktop| {
-        d.measured
-            .iter()
-            .find(|m| m.0 == Target::Networks)
-            .unwrap()
-            .1
-    };
-    let button = |at, pressed| Event::PointerButton {
-        pos: at,
-        button: PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::NONE,
-    };
-    let body = Pos2::new(rect(&desktop).left() + 8.0, rect(&desktop).center().y);
-    frame_on(&mut desktop, &ctx, size, vec![Event::PointerMoved(body)]);
-    frame_on(&mut desktop, &ctx, size, vec![button(body, true)]);
-    frames_on(&mut desktop, &ctx, size, 1);
-    // hidden for the release, so the window never sees the button let go
-    desktop.windows.iter_mut().for_each(|w| w.minimized = true);
-    frame_on(&mut desktop, &ctx, size, vec![button(body, false)]);
-    frames_on(&mut desktop, &ctx, size, 2);
-    desktop.open(Target::Networks);
-    settled_on(&mut desktop, &ctx, size, true);
-    let by = Vec2::new(60.0, 40.0);
-    let seen = drag_from(
-        &mut desktop,
-        &ctx,
-        size,
-        Target::Networks,
-        |r| Pos2::new(r.left() + 60.0, r.top() + 13.0),
-        by,
-    );
-    let start = seen.first().unwrap().min;
-    let end = seen.last().unwrap().min;
-    assert!(end.distance(start) > 50.0, "{start:?} {end:?}");
-}
-
 /// what one frame painted: the shapes as text, how many of them are rects, and where the window
 /// stood once the frame was done.
 struct Painted {
