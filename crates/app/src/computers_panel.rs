@@ -729,6 +729,7 @@ impl ComputersPanel {
                 lines.push("Nothing detected yet. Press Detect to look at the machine.".into())
             }
             (Some(facts), None, _) => {
+                lines.extend(facts.notes.iter().cloned());
                 if facts.sites.is_empty() {
                     lines.push(if facts.iis_seen() {
                         "No sites found.".into()
@@ -1077,6 +1078,38 @@ mod tests {
         assert!(!may_detect_hosting(&Grants::all(Level::View)));
         assert!(may_read_facts_hosting(&Grants::all(Level::View)));
         assert!(!may_read_facts_hosting(&Grants::all(Level::Hidden)));
+    }
+
+    #[test]
+    fn a_failed_detect_is_said_in_the_status_bar_and_the_list() {
+        let (mut panel, services, fake) = hosting();
+        panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        *fake.fail.lock().unwrap() = Some("no answer".into());
+        panel.update(Msg::Detect, &services, "a@b");
+        wait(&mut panel);
+        let (error, text) = panel.remote.note.clone().unwrap();
+        assert!(
+            error && text.starts_with("could not detect on NT4DEV01"),
+            "{text}"
+        );
+        assert!(panel.facts_error.is_some());
+    }
+
+    #[test]
+    fn a_note_of_the_detection_is_listed_with_the_sites() {
+        let (mut panel, services, _) = hosting();
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        let mut found = lanlord_model::hosting::facts("NT4DEV01", 1, "", "");
+        found.notes.push("the kept facts were damaged".into());
+        panel.facts = Some(found);
+        assert_eq!(
+            site_lines(&panel, &services)[0],
+            "the kept facts were damaged"
+        );
     }
 
     #[test]

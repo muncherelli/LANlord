@@ -592,6 +592,26 @@ fn the_hosting_window_does_not_detect_without_the_iis_part() {
 }
 
 #[test]
+fn the_hosting_window_detects_a_machine_and_lists_its_sites() {
+    use lanlord_app::computers_panel::Msg;
+    let mut shell = demo();
+    frame(&mut shell);
+    shell.open(module("hosting"));
+    frame_until(&mut shell, "ws1");
+    let host = shell.host().unwrap();
+    shell.hosting.select("ws1");
+    // the demo has hosting off, so the window turns the iis part off again on each frame; the
+    // detect is started before the next one
+    shell.hosting.set_can_detect(true);
+    shell.hosting.set_can_read_facts(true);
+    shell.hosting.set_iis_on(true);
+    shell.hosting.update(Msg::Detect, &shell.services, &host);
+    let text = frame_until(&mut shell, "intranet.example.lan");
+    assert!(text.contains("web 1  started  Intranet"), "{text}");
+    assert!(text.contains("detected 2 sites on ws1"), "{text}");
+}
+
+#[test]
 fn the_nt4_window_switches_tabs_and_dns_and_commands_draw_from_their_trees() {
     let mut shell = demo();
     frame(&mut shell);
