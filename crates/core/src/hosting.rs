@@ -67,7 +67,9 @@ pub fn store(host: &dyn Host, dir: &str, facts: &HostingFacts) -> Result<Option<
 /// threads, a lock on the directory for other processes.
 pub fn locked<T>(dir: &str, change: impl FnOnce() -> Result<T>) -> Result<T> {
     static HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _thread = HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _thread = HELD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     #[cfg(unix)]
     let _process = {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -85,6 +87,9 @@ pub fn locked<T>(dir: &str, change: impl FnOnce() -> Result<T>) -> Result<T> {
         // the lock goes with the file when it is dropped
         file
     };
+    // other systems have one lanlord process, so the mutex is enough there
+    #[cfg(not(unix))]
+    let _ = dir;
     change()
 }
 
