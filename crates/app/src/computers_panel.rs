@@ -6,7 +6,7 @@
 //! running line, then the result.
 
 use lanlord_model::access::Grants;
-use lanlord_model::hosting::{HostingFacts, SiteFact};
+use lanlord_model::hosting::{CheckResult, HostingFacts, SiteFact};
 use lanlord_model::nt4_exec::{self, Preset, PRESETS};
 use lanlord_model::operations::{Operation, DEFAULT_TIMEOUT_SECS};
 use web_time::Instant;
@@ -698,6 +698,8 @@ impl ComputersPanel {
         if hosting {
             nodes.push(Node::Gap(4.0));
             nodes.push(self.sites_group());
+            nodes.push(Node::Gap(4.0));
+            nodes.push(self.checks_group());
         }
         nodes.push(Node::Gap(4.0));
         nodes.push(self.output_group());
@@ -744,6 +746,31 @@ impl ComputersPanel {
             title: "Detected sites".into(),
             body: vec![Node::Lines {
                 id: "hosting-sites",
+                lines,
+                height: 90.0,
+                enabled: true,
+            }],
+        }
+    }
+
+    /// the hardening checks of the last detection of the picked machine, read-only.
+    fn checks_group(&self) -> Node<Msg> {
+        let mut title = "Hardening checks".to_string();
+        let lines = match (&self.facts, &self.facts_error) {
+            (_, Some(_)) | (None, None) => Vec::new(),
+            (Some(facts), None) if facts.checks.is_empty() => {
+                vec!["No checks kept for this machine. Press Detect.".to_string()]
+            }
+            (Some(facts), None) => {
+                let (fail, warn) = facts.check_counts();
+                title = format!("Hardening checks: {fail} fail, {warn} warn");
+                facts.checks.iter().map(CheckResult::line).collect()
+            }
+        };
+        Node::Group {
+            title,
+            body: vec![Node::Lines {
+                id: "hosting-checks",
                 lines,
                 height: 90.0,
                 enabled: true,
@@ -1058,6 +1085,50 @@ mod tests {
             .calls()
             .iter()
             .any(|c| c.starts_with("hosting-detect a@b NT4DEV01")));
+    }
+
+    fn check_lines(panel: &ComputersPanel, services: &Services) -> (String, Vec<String>) {
+        for node in panel.preview(services, Some("a@b")) {
+            if let Node::Group { title, body } = node {
+                for inner in body {
+                    if let Node::Lines {
+                        id: "hosting-checks",
+                        lines,
+                        ..
+                    } = inner
+                    {
+                        return (title, lines);
+                    }
+                }
+            }
+        }
+        panic!("no checks group");
+    }
+
+    #[test]
+    fn the_checks_of_the_picked_machine_are_listed_after_a_detect() {
+        let (mut panel, services, _) = hosting();
+        panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        // nothing was detected yet
+        let (title, lines) = check_lines(&panel, &services);
+        assert_eq!(title, "Hardening checks");
+        assert!(lines.is_empty(), "{lines:?}");
+        panel.update(Msg::Detect, &services, "a@b");
+        wait(&mut panel);
+        let (title, lines) = check_lines(&panel, &services);
+        assert_eq!(title, "Hardening checks: 1 fail, 1 warn");
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            "FAIL iis.samples  W3SVC/1/ROOT/IISSamples present"
+        );
+        // facts kept before the checks existed say so
+        panel.facts.as_mut().unwrap().checks.clear();
+        let (_, lines) = check_lines(&panel, &services);
+        assert!(lines[0].starts_with("No checks kept"), "{lines:?}");
     }
 
     #[test]

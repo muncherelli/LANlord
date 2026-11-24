@@ -17,6 +17,7 @@ pub mod env;
 pub mod exec;
 pub mod firstadmin;
 pub mod hosting;
+pub mod hosting_checks;
 pub mod hosts;
 pub mod identity;
 pub mod internet;

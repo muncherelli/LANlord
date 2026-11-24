@@ -672,8 +672,8 @@ enum Command {
         action: Option<MachinesCommand>,
     },
     /// run an IIS 4 preset on a domain machine through the gateway, or list the presets with
-    /// --list; the words `detect` (look for IIS on the machine and keep what is found) and `facts` (show
-    /// what was kept) stand in place of a preset; the exit code is the one the machine returned. the IIS
+    /// --list; the words `detect` (look for IIS on the machine and keep what is found), `facts` (show
+    /// what was kept) and `checks` (the hardening checks that were kept, as key=value lines) stand in place of a preset; the exit code is the one the machine returned. the IIS
     /// presets need the Hosting component with its iis part; the general presets (ver, ipconfig,
     /// net-start) run with `machines HOST preset`
     Hosting {
@@ -933,10 +933,11 @@ fn hosting(
     (preset, args): (&str, &[String]),
     (timeout, yes): (u32, bool),
 ) -> Result<()> {
-    // `detect` and `facts` are not presets: they look at the machine and the cache of what was found
-    if let Some(detect) = hosting_word(preset, args)? {
+    // `detect`, `facts` and `checks` are not presets: they look at the machine and the cache of
+    // what was found
+    if let Some(word) = hosting_word(preset, args)? {
         let machine = name.to_string();
-        let operation = if detect {
+        let operation = if word == HostingWord::Detect {
             Operation::HostingDetect { machine }
         } else {
             Operation::HostingFacts { machine }
@@ -947,7 +948,19 @@ fn hosting(
         let Some(facts) = facts else {
             bail!("nothing was detected on {name} yet; run `lanlord hosting {host} {name} detect`");
         };
-        for line in lanlord_core::hosting::facts_lines(&facts) {
+        if word == HostingWord::Checks && facts.checks.is_empty() {
+            bail!("no checks were kept for {name}; run `lanlord hosting {host} {name} detect`");
+        }
+        let facts_wanted = word != HostingWord::Checks;
+        let checks_wanted = word != HostingWord::Facts;
+        let mut lines = Vec::new();
+        if facts_wanted {
+            lines.extend(lanlord_core::hosting::facts_lines(&facts));
+        }
+        if checks_wanted {
+            lines.extend(lanlord_core::hosting::check_lines(&facts));
+        }
+        for line in lines {
             println!("{line}");
         }
         return Ok(());
@@ -960,17 +973,29 @@ fn hosting(
     run_preset(host, name, (preset, args), (timeout, yes))
 }
 
-/// `Some(true)` for `detect`, `Some(false)` for `facts`, `None` for a preset. neither takes arguments.
-fn hosting_word(preset: &str, args: &[String]) -> Result<Option<bool>> {
-    let detect = match preset {
-        "detect" => true,
-        "facts" => false,
+/// the words of `lanlord hosting` that stand in place of a preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostingWord {
+    /// look at the machine, then show the facts and the checks.
+    Detect,
+    /// show the kept facts.
+    Facts,
+    /// show the kept checks as `key=value` lines.
+    Checks,
+}
+
+/// the word, or `None` for a preset. no word takes arguments.
+fn hosting_word(preset: &str, args: &[String]) -> Result<Option<HostingWord>> {
+    let word = match preset {
+        "detect" => HostingWord::Detect,
+        "facts" => HostingWord::Facts,
+        "checks" => HostingWord::Checks,
         _ => return Ok(None),
     };
     if !args.is_empty() {
         bail!("{preset} takes no arguments");
     }
-    Ok(Some(detect))
+    Ok(Some(word))
 }
 
 /// run a preset on a machine, after the question a preset that changes it asks.
@@ -3310,8 +3335,19 @@ mod tests {
 
     #[test]
     fn detect_and_facts_are_words_of_hosting_and_not_presets() {
-        assert_eq!(hosting_word("detect", &[]).unwrap(), Some(true));
-        assert_eq!(hosting_word("facts", &[]).unwrap(), Some(false));
+        assert_eq!(
+            hosting_word("detect", &[]).unwrap(),
+            Some(HostingWord::Detect)
+        );
+        assert_eq!(
+            hosting_word("facts", &[]).unwrap(),
+            Some(HostingWord::Facts)
+        );
+        assert_eq!(
+            hosting_word("checks", &[]).unwrap(),
+            Some(HostingWord::Checks)
+        );
+        assert!(lanlord_model::nt4_exec::find("checks").is_none());
         assert_eq!(hosting_word("ver", &[]).unwrap(), None);
         assert!(hosting_word("detect", &["x".to_string()]).is_err());
         assert!(lanlord_model::nt4_exec::find("detect").is_none());

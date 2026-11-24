@@ -640,6 +640,27 @@ fn the_hosting_window_detects_a_machine_and_lists_its_sites() {
 }
 
 #[test]
+fn the_hosting_window_lists_the_hardening_checks_of_a_detection() {
+    use lanlord_app::computers_panel::Msg;
+    let mut shell = demo();
+    frame(&mut shell);
+    shell.open(module("hosting"));
+    let text = frame_until(&mut shell, "ws1");
+    assert!(text.contains("Hardening checks"), "{text}");
+    let host = shell.host().unwrap();
+    shell.hosting.select("ws1");
+    shell.hosting.set_can_detect(true);
+    shell.hosting.set_can_read_facts(true);
+    shell.hosting.set_iis_on(true);
+    shell.hosting.update(Msg::Detect, &shell.services, &host);
+    let text = frame_until(&mut shell, "Hardening checks: 1 fail, 1 warn");
+    assert!(
+        text.contains("FAIL iis.samples  W3SVC/1/ROOT/IISSamples present"),
+        "{text}"
+    );
+}
+
+#[test]
 fn the_nt4_window_switches_tabs_and_dns_and_commands_draw_from_their_trees() {
     let mut shell = demo();
     frame(&mut shell);

@@ -21,7 +21,8 @@ pub struct HostingFacts {
     pub detected_at: u64,
     pub services: Vec<ServiceFact>,
     pub sites: Vec<SiteFact>,
-    /// hardening checks; none run yet.
+    /// the hardening checks of the last detection, read-only; none for facts kept before checks
+    /// existed.
     #[serde(default)]
     pub checks: Vec<CheckResult>,
     /// what the server wants said about this detection (a damaged cache set aside); a reply only,
@@ -84,7 +85,22 @@ pub struct SiteFact {
 pub enum CheckStatus {
     Pass,
     Fail,
+    Warn,
+    NotApplicable,
+    /// the dump lacks the data, or the check does not run yet.
     Unknown,
+}
+
+impl CheckStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            CheckStatus::Pass => "pass",
+            CheckStatus::Fail => "fail",
+            CheckStatus::Warn => "warn",
+            CheckStatus::NotApplicable => "not-applicable",
+            CheckStatus::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,7 +111,24 @@ pub struct CheckResult {
     pub fix_available: bool,
 }
 
+impl CheckResult {
+    /// one line of text for a window: the status, the id and what was seen.
+    pub fn line(&self) -> String {
+        let status = match self.status {
+            CheckStatus::NotApplicable => "N/A".to_string(),
+            other => other.label().to_ascii_uppercase(),
+        };
+        format!("{status:<4} {}  {}", self.id, self.evidence)
+    }
+}
+
 impl HostingFacts {
+    /// how many checks failed and how many warn.
+    pub fn check_counts(&self) -> (usize, usize) {
+        let count = |status| self.checks.iter().filter(|c| c.status == status).count();
+        (count(CheckStatus::Fail), count(CheckStatus::Warn))
+    }
+
     /// is the iis admin service or any site there at all?
     pub fn iis_seen(&self) -> bool {
         !self.sites.is_empty() || self.services.iter().any(|s| s.running)
@@ -343,6 +376,36 @@ SMTPSVC=absent
     fn odd_lines_are_ignored() {
         assert!(parse_dump("garbage\nW3SVC=absent\nW3SVC/x/ServerComment=a\n\n").is_empty());
         assert_eq!(parse_binding(":notaport:"), None);
+    }
+
+    #[test]
+    fn a_check_reads_as_one_line_and_counts() {
+        let check = |id: &str, status| CheckResult {
+            id: id.into(),
+            status,
+            evidence: "seen".into(),
+            fix_available: false,
+        };
+        assert_eq!(
+            check("iis.samples", CheckStatus::Fail).line(),
+            "FAIL iis.samples  seen"
+        );
+        assert_eq!(
+            check("iis.printers", CheckStatus::NotApplicable).line(),
+            "N/A  iis.printers  seen"
+        );
+        let found = HostingFacts {
+            checks: vec![
+                check("a", CheckStatus::Fail),
+                check("b", CheckStatus::Warn),
+                check("c", CheckStatus::Fail),
+                check("d", CheckStatus::Pass),
+            ],
+            ..HostingFacts::default()
+        };
+        assert_eq!(found.check_counts(), (2, 1));
+        let json = serde_json::to_string(&check("x", CheckStatus::NotApplicable)).unwrap();
+        assert!(json.contains("\"not_applicable\""), "{json}");
     }
 
     #[test]

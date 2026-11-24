@@ -19,11 +19,14 @@ gServices = Array("W3SVC", "MSFTPSVC", "SMTPSVC")
 gSiteProps = Array("KeyType", "ServerComment", "ServerBindings", "SecureBindings", _
   "ServerState", "ServerAutoStart", "HttpRedirect", "DefaultDoc", "FilterLoadOrder", _
   "AnonymousUserName", "AnonymousUserPass", "WAMUserName", "WAMUserPass", "LogType", _
-  "LogOdbcUserName", "LogOdbcPassword")
+  "LogOdbcUserName", "LogOdbcPassword", "LogPluginClsid", "AllowAnonymous", "AccessFlags", _
+  "AuthFlags", "ScriptMaps", "AppIsolated", "AspEnableParentPaths", _
+  "AspScriptErrorSentToBrowser", "EnableDirBrowsing")
 
 ' properties of a virtual directory or folder
 gVdirProps = Array("KeyType", "Path", "AccessFlags", "AuthFlags", "ScriptMaps", "AppRoot", _
-  "AppFriendlyName", "HttpRedirect", "DefaultDoc", "DirBrowseFlags", _
+  "AppFriendlyName", "HttpRedirect", "DefaultDoc", "DirBrowseFlags", "AppIsolated", _
+  "AspEnableParentPaths", "AspScriptErrorSentToBrowser", "EnableDirBrowsing", _
   "AnonymousUserName", "AnonymousUserPass", "WAMUserName", "WAMUserPass", "UNCUserName", _
   "UNCPassword")
 
@@ -159,6 +162,74 @@ Sub Walk(oNode, sKey, nDepth)
   On Error GoTo 0
 End Sub
 
+' true when the registry holds the value or key (a key ends in a backslash)
+Function RegHas(oShell, sPath)
+  Dim vValue
+  On Error Resume Next
+  vValue = oShell.RegRead(sPath)
+  RegHas = (Err.Number = 0)
+  Err.Clear
+  On Error GoTo 0
+End Function
+
+Sub ShowPresent(sKey, bHere)
+  If bHere Then
+    WScript.Echo sKey & "=present"
+  Else
+    WScript.Echo sKey & "=absent"
+  End If
+End Sub
+
+' what the hardening checks need from the machine itself: files, folders and registry keys.
+' the lines start with Host/, which is not a service. nothing here reads a secret.
+Sub HostFacts()
+  Dim oShell, oFso, sDrive, sCommon, sReg, vStart, aNames, aAdc, n
+  Set oShell = Nothing
+  Set oFso = Nothing
+  On Error Resume Next
+  Set oShell = CreateObject("WScript.Shell")
+  Set oFso = CreateObject("Scripting.FileSystemObject")
+  If Err.Number <> 0 Or oShell Is Nothing Or oFso Is Nothing Then
+    Err.Clear
+    On Error GoTo 0
+    Exit Sub
+  End If
+  sDrive = oShell.ExpandEnvironmentStrings("%SystemDrive%")
+  sCommon = oShell.ExpandEnvironmentStrings("%CommonProgramFiles%")
+  On Error GoTo 0
+  ShowPresent "Host/Folder/IISSamples", oFso.FolderExists(sDrive & "\InetPub\iissamples")
+  ShowPresent "Host/Folder/ScriptsTools", oFso.FolderExists(sDrive & "\InetPub\scripts\tools")
+  ShowPresent "Host/File/codebrws.asp", _
+    oFso.FileExists(sDrive & "\InetPub\iissamples\sdk\asp\docs\codebrws.asp")
+  ShowPresent "Host/File/showcode.asp", _
+    oFso.FileExists(sCommon & "\System\msadc\Samples\SELECTOR\showcode.asp")
+  ShowPresent "Host/Folder/FPSE", oFso.FolderExists(sCommon & "\Microsoft Shared\web server extensions")
+  ShowPresent "Host/Reg/Hotfix/Q811114", _
+    RegHas(oShell, "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Hotfix\Q811114\Installed")
+  sReg = "HKLM\SYSTEM\CurrentControlSet\Services\W3SVC\Parameters\ADCLaunch\"
+  aAdc = Array("RDSServer.DataFactory", "AdvancedDataFactory", "VbBusObj.VbBusObjCls")
+  For n = LBound(aAdc) To UBound(aAdc)
+    ShowPresent "Host/Reg/ADCLaunch/" & aAdc(n), RegHas(oShell, sReg & aAdc(n) & "\")
+  Next
+  ' the start type of services a web server does not need: 2 automatic, 3 manual, 4 disabled
+  aNames = Array("Alerter", "ClipSrv", "Messenger", "NetDDE", "RpcLocator", "SimpTcp", "TlntSvr")
+  For n = LBound(aNames) To UBound(aNames)
+    vStart = Empty
+    On Error Resume Next
+    vStart = oShell.RegRead("HKLM\SYSTEM\CurrentControlSet\Services\" & aNames(n) & "\Start")
+    If Err.Number <> 0 Then
+      Err.Clear
+      vStart = Empty
+    End If
+    On Error GoTo 0
+    If IsEmpty(vStart) Then
+      WScript.Echo "Host/Svc/" & aNames(n) & "/Start=absent"
+    Else
+      WScript.Echo "Host/Svc/" & aNames(n) & "/Start=" & CStr(vStart)
+    End If
+  Next
+End Sub
+
 For gI = LBound(gServices) To UBound(gServices)
   gService = gServices(gI)
   Set gRoot = Nothing
@@ -174,3 +245,5 @@ For gI = LBound(gServices) To UBound(gServices)
   End If
   On Error GoTo 0
 Next
+
+HostFacts
