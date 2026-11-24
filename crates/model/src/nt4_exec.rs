@@ -624,10 +624,23 @@ mod tests {
             })
         };
         let gets: Vec<&&str> = code.iter().filter(|l| is_get(l)).collect();
-        assert_eq!(gets.len(), 1, "one Get, in SafeGet");
+        assert_eq!(gets.len(), 2, "two Gets: SafeGet and HasSecret");
         let text = code.join("\n");
-        let guard = text.find("If IsSecret(sName) Then Exit Function").unwrap();
-        assert!(guard < text.find(".Get(").unwrap());
+        // SafeGet looks at the name before it reads
+        let safe = &text[text.find("Function SafeGet").unwrap()..];
+        let guard = safe.find("If IsSecret(sName) Then Exit Function").unwrap();
+        assert!(guard < safe.find(".Get(").unwrap());
+        // HasSecret answers a Boolean: it prints nothing and returns nothing but its tests
+        let has = &text[text.find("Function HasSecret").unwrap()..];
+        let has = &has[..has.find("End Function").unwrap()];
+        assert!(!has.contains("Echo"));
+        for line in has.lines().filter(|l| l.contains("HasSecret =")) {
+            let value = line.split('=').nth(1).unwrap().trim();
+            assert!(
+                ["True", "False"].contains(&value) || value.starts_with('('),
+                "{line}"
+            );
+        }
         assert!(text.contains(r#"InStr(1, sName, "pass", 1)"#));
         assert!(!text.contains(".GetEx") && !text.contains(".GetInfo"));
     }

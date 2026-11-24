@@ -1718,6 +1718,10 @@ impl Desktop {
             "hosting" => {
                 let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
                 self.hosting.set_can_run(may);
+                let detect = lanlord_app::computers_panel::may_detect_hosting(&self.grants());
+                self.hosting.set_can_detect(detect);
+                let facts = lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
+                self.hosting.set_can_read_facts(facts);
                 let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
                 self.hosting.set_iis_on(iis);
                 self.hosting.show(ui, &self.services, host.as_deref());

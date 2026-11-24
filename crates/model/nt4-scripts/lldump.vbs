@@ -3,9 +3,11 @@
 ' it needs only what vbscript 5 and the nt4 option pack wsh have: no regular expressions, no
 ' dictionaries, no with blocks.
 '
-' a property whose name holds "pass" (AnonymousUserPass, WAMUserPass and so on) is never read:
-' SafeGet is the only place that calls Get, and it looks at the name first. the line for such a
-' property reads <key>=<redacted>.
+' a property whose name holds "pass" (AnonymousUserPass, WAMUserPass and so on) is never printed:
+' SafeGet and HasSecret are the only places that call Get. SafeGet looks at the name first and
+' refuses these; HasSecret only says whether such a property has a value and returns that
+' Boolean, never the value. the line for such a property reads <key>=<redacted> when it has a
+' value and <key>=<unset> when it has none.
 Option Explicit
 
 Dim gServices, gSiteProps, gVdirProps, gFilterProps, gI, gService, gRoot
@@ -59,7 +61,30 @@ Function Clean(vValue)
   Clean = s
 End Function
 
-' the value of a property, or Empty when it has none. the only Get in this file.
+' true when a secret property has a value; the value itself goes no further than this function.
+Function HasSecret(oObj, sName)
+  Dim vValue, n
+  HasSecret = False
+  On Error Resume Next
+  vValue = oObj.Get(sName)
+  If Err.Number <> 0 Then
+    Err.Clear
+    vValue = Empty
+  End If
+  On Error GoTo 0
+  If IsEmpty(vValue) Or IsNull(vValue) Then
+    HasSecret = False
+  ElseIf IsArray(vValue) Then
+    HasSecret = (UBound(vValue) >= LBound(vValue))
+  ElseIf IsObject(vValue) Then
+    HasSecret = True
+  Else
+    HasSecret = (Len(CStr(vValue)) > 0)
+  End If
+  vValue = Empty
+End Function
+
+' the value of a property, or Empty when it has none. with HasSecret, the only Get in this file.
 Function SafeGet(oObj, sName)
   SafeGet = Empty
   If IsSecret(sName) Then Exit Function
@@ -76,7 +101,11 @@ End Function
 Sub Show(oObj, sKey, sName)
   Dim vValue, n
   If IsSecret(sName) Then
-    WScript.Echo sKey & "/" & sName & "=<redacted>"
+    If HasSecret(oObj, sName) Then
+      WScript.Echo sKey & "/" & sName & "=<redacted>"
+    Else
+      WScript.Echo sKey & "/" & sName & "=<unset>"
+    End If
     Exit Sub
   End If
   vValue = SafeGet(oObj, sName)

@@ -12,6 +12,7 @@ pub mod dns_dhcp;
 pub mod doctor;
 pub mod engine;
 pub mod format;
+pub mod hosting;
 pub mod identity;
 pub mod internet;
 pub mod lan_edit;

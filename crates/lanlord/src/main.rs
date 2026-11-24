@@ -672,9 +672,10 @@ enum Command {
         action: Option<MachinesCommand>,
     },
     /// run an IIS 4 preset on a domain machine through the gateway, or list the presets with
-    /// --list; the exit code is the one the machine returned. the IIS presets need the Hosting
-    /// component with its iis part; the general presets (ver, ipconfig, net-start) run with
-    /// `machines HOST preset`
+    /// --list; the words `detect` (look for IIS on the machine and keep what is found) and `facts` (show
+    /// what was kept) stand in place of a preset; the exit code is the one the machine returned. the IIS
+    /// presets need the Hosting component with its iis part; the general presets (ver, ipconfig,
+    /// net-start) run with `machines HOST preset`
     Hosting {
         /// the gateway
         #[arg(required_unless_present = "list", conflicts_with = "list")]
@@ -932,12 +933,44 @@ fn hosting(
     (preset, args): (&str, &[String]),
     (timeout, yes): (u32, bool),
 ) -> Result<()> {
+    // `detect` and `facts` are not presets: they look at the machine and the cache of what was found
+    if let Some(detect) = hosting_word(preset, args)? {
+        let machine = name.to_string();
+        let operation = if detect {
+            Operation::HostingDetect { machine }
+        } else {
+            Operation::HostingFacts { machine }
+        };
+        let Reply::Hosting(facts) = execute(host, &operation, &mut ask)? else {
+            bail!("the server answered something other than hosting facts");
+        };
+        let Some(facts) = facts else {
+            bail!("nothing was detected on {name} yet; run `lanlord hosting {host} {name} detect`");
+        };
+        for line in lanlord_core::hosting::facts_lines(&facts) {
+            println!("{line}");
+        }
+        return Ok(());
+    }
     if lanlord_model::nt4_exec::find(preset).is_some()
         && !lanlord_model::nt4_exec::is_hosting(preset)
     {
         bail!("{preset} is not a hosting preset; run it with `lanlord machines {host} preset {name} {preset}`");
     }
     run_preset(host, name, (preset, args), (timeout, yes))
+}
+
+/// `Some(true)` for `detect`, `Some(false)` for `facts`, `None` for a preset. neither takes arguments.
+fn hosting_word(preset: &str, args: &[String]) -> Result<Option<bool>> {
+    let detect = match preset {
+        "detect" => true,
+        "facts" => false,
+        _ => return Ok(None),
+    };
+    if !args.is_empty() {
+        bail!("{preset} takes no arguments");
+    }
+    Ok(Some(detect))
 }
 
 /// run a preset on a machine, after the question a preset that changes it asks.
@@ -3273,6 +3306,20 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.starts_with("startweb <site>\tmutating\t")));
+    }
+
+    #[test]
+    fn detect_and_facts_are_words_of_hosting_and_not_presets() {
+        assert_eq!(hosting_word("detect", &[]).unwrap(), Some(true));
+        assert_eq!(hosting_word("facts", &[]).unwrap(), Some(false));
+        assert_eq!(hosting_word("ver", &[]).unwrap(), None);
+        assert!(hosting_word("detect", &["x".to_string()]).is_err());
+        assert!(lanlord_model::nt4_exec::find("detect").is_none());
+        assert!(lanlord_model::nt4_exec::find("facts").is_none());
+        let Command::Hosting { preset, .. } = parse(&["hosting", "gw", "ws1", "detect"]) else {
+            panic!("not hosting");
+        };
+        assert_eq!(preset.as_deref(), Some("detect"));
     }
 
     #[test]

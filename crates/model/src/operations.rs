@@ -209,6 +209,11 @@ pub enum Operation {
         #[serde(default = "default_timeout_secs")]
         timeout_secs: u32,
     },
+    /// look at an nt4 machine for iis (service state and the metabase) and keep what is found in
+    /// the machine's facts cache; the reply is the new facts. it only reads the machine.
+    HostingDetect { machine: String },
+    /// the cached facts of a machine, or none when it was never detected.
+    HostingFacts { machine: String },
 }
 
 /// how long a machine command may run when the caller says nothing.
@@ -259,6 +264,9 @@ impl Operation {
             Operation::MachineRun { .. }
             | Operation::MachinePreset { .. }
             | Operation::MachinePut { .. } => Need::manage(Area::Commands),
+            // detecting runs scripts on the machine; reading what was kept only looks
+            Operation::HostingDetect { .. } => Need::manage(Area::Hosting),
+            Operation::HostingFacts { .. } => Need::view(Area::Hosting),
             Operation::Power { .. } => Need::manage(Area::Status),
             Operation::ServerFacts | Operation::Doctor => Need::view(Area::Status),
             Operation::NetworkStatus => Need::view(Area::Network),
@@ -339,6 +347,8 @@ impl Operation {
                 | Operation::MachineRun { .. }
                 | Operation::MachinePreset { .. }
                 | Operation::MachinePut { .. }
+                | Operation::HostingDetect { .. }
+                | Operation::HostingFacts { .. }
         )
     }
 
@@ -443,6 +453,8 @@ pub enum Reply {
     ExitCode(i32),
     /// the machine names of the domain, without the trailing `$`, as `MachineRun` takes them.
     Machines(Vec<String>),
+    /// the hosting facts of a machine, or none when it was never detected.
+    Hosting(Option<Box<crate::hosting::HostingFacts>>),
     /// what a command on a machine did. the output is decoded text, capped at 1 MiB per stream
     /// (`truncated` says it was cut). `exit_code` is `None` when the run timed out.
     MachineRun {
@@ -698,6 +710,12 @@ mod tests {
                 files: vec!["aGk=".into()],
                 timeout_secs: 30,
             },
+            Operation::HostingDetect {
+                machine: "NT4SRV01".into(),
+            },
+            Operation::HostingFacts {
+                machine: "NT4SRV01".into(),
+            },
             Operation::ChangeInternet {
                 change: InternetChange::Network {
                     network: "lab".into(),
@@ -773,6 +791,8 @@ mod tests {
             Operation::MachinePreset { .. } => 50,
             Operation::RotateExecPassword => 51,
             Operation::MachinePut { .. } => 52,
+            Operation::HostingDetect { .. } => 53,
+            Operation::HostingFacts { .. } => 54,
         }
     }
 
@@ -784,7 +804,7 @@ mod tests {
         assert_eq!(slots, (0..VARIANTS).collect::<Vec<_>>());
     }
 
-    const VARIANTS: usize = 53;
+    const VARIANTS: usize = 55;
 
     #[test]
     fn every_operation_says_what_it_needs() {
@@ -836,6 +856,17 @@ mod tests {
         );
         assert_eq!(topic::machine_run_id("machine-run:0a1b2c3"), None);
         assert_eq!(Operation::Machines.requires(), Need::view(Area::Domain));
+        // detecting runs scripts on the machine, so it needs manage; reading the kept facts needs
+        // a view of hosting; commands rights give neither
+        let detect = Operation::HostingDetect {
+            machine: "NT4SRV01".into(),
+        };
+        let facts = Operation::HostingFacts {
+            machine: "NT4SRV01".into(),
+        };
+        assert_eq!(detect.requires(), Need::manage(Area::Hosting));
+        assert_eq!(facts.requires(), Need::view(Area::Hosting));
+        assert!(detect.needs_gateway_key() && facts.needs_gateway_key());
         let preset = |id: &str| {
             Operation::MachinePreset {
                 machine: "NT4SRV01".into(),
@@ -980,6 +1011,8 @@ mod tests {
             Reply::Text(Some("echo hi".into())),
             Reply::ExitCode(3),
             Reply::Machines(vec!["NT4SRV01".into()]),
+            Reply::Hosting(None),
+            Reply::Hosting(Some(Box::new(crate::hosting::HostingFacts::default()))),
             Reply::MachineRun {
                 exit_code: Some(3),
                 stdout: "out".into(),

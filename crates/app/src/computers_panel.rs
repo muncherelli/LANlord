@@ -6,6 +6,7 @@
 //! running line, then the result.
 
 use lanlord_model::access::Grants;
+use lanlord_model::hosting::{HostingFacts, SiteFact};
 use lanlord_model::nt4_exec::{self, Preset, PRESETS};
 use lanlord_model::operations::{Operation, DEFAULT_TIMEOUT_SECS};
 use web_time::Instant;
@@ -47,6 +48,26 @@ pub fn may_run_hosting(grants: &Grants) -> bool {
     )
 }
 
+/// may these grants detect iis on a machine? that runs scripts on it, so it needs manage.
+pub fn may_detect_hosting(grants: &Grants) -> bool {
+    grants.allows(
+        Operation::HostingDetect {
+            machine: String::new(),
+        }
+        .requires(),
+    )
+}
+
+/// may these grants read what detection found?
+pub fn may_read_facts_hosting(grants: &Grants) -> bool {
+    grants.allows(
+        Operation::HostingFacts {
+            machine: String::new(),
+        }
+        .requires(),
+    )
+}
+
 /// any preset that `nt4_exec::is_hosting` counts, to ask what the hosting presets need.
 const HOSTING_PRESET: &str = "w3svc-stop";
 
@@ -66,6 +87,7 @@ pub enum Msg {
     Pick(usize),
     Run,
     Iis,
+    Detect,
     Reload,
 }
 
@@ -87,6 +109,7 @@ pub enum BoxMsg {
 pub struct Gates {
     pub run: bool,
     pub iis: bool,
+    pub detect: bool,
     pub reload: bool,
 }
 
@@ -324,6 +347,16 @@ struct Running {
     what: String,
 }
 
+/// facts being read from the gateway: the cached ones when a machine is picked, or new ones
+/// after a detect.
+struct Fetch {
+    job: Job<Option<Box<HostingFacts>>>,
+    host: String,
+    machine: String,
+    /// a detect, not a read of the cache: its end is said in the status bar.
+    detect: bool,
+}
+
 /// what the last run did.
 struct LastRun {
     machine: String,
@@ -344,6 +377,13 @@ pub struct ComputersPanel {
     /// the host `selected` and `last` belong to.
     shown_host: Option<String>,
     can_run: bool,
+    /// the hosting window only: may the person detect, and may they read the kept facts?
+    can_detect: bool,
+    can_read_facts: bool,
+    /// the hosting window only: the facts of the picked machine, and why they are missing.
+    facts: Option<HostingFacts>,
+    facts_error: Option<String>,
+    fetching: Option<Fetch>,
     ask: Option<RunBox>,
     running: Option<Running>,
     last: Option<LastRun>,
@@ -378,6 +418,28 @@ fn output_lines(output: &RunOutput) -> Vec<String> {
     lines
 }
 
+/// one site for the page: kind, id, state, name, bindings and home.
+fn site_line(site: &SiteFact) -> String {
+    let bindings: Vec<String> = site
+        .bindings
+        .iter()
+        .map(|b| format!("{}:{}:{}", b.ip, b.port, b.host))
+        .collect();
+    let mut line = format!(
+        "{} {}  {}  {}  {}  {}",
+        site.kind.label(),
+        site.id,
+        site.state,
+        site.comment,
+        bindings.join(" "),
+        site.home
+    );
+    if site.has_password {
+        line.push_str("  (has a password)");
+    }
+    line
+}
+
 /// "1.2 s", or "3 min 5 s" for a long run.
 fn took(secs: f32) -> String {
     if secs < 60.0 {
@@ -398,8 +460,10 @@ impl ComputersPanel {
             if self.remote.source() != self.shown_host.as_deref() {
                 self.selected = None;
                 self.last = None;
+                self.forget_facts();
             }
         }
+        self.poll_facts();
         let Some(running) = self.running.take() else {
             return;
         };
@@ -414,6 +478,88 @@ impl ComputersPanel {
                 }
             }
         }
+    }
+
+    fn forget_facts(&mut self) {
+        self.facts = None;
+        self.facts_error = None;
+        self.fetching = None;
+    }
+
+    /// take the facts a fetch brought, when they are for the machine on screen.
+    fn poll_facts(&mut self) {
+        let Some(fetch) = self.fetching.take() else {
+            return;
+        };
+        let Some(result) = fetch.job.poll() else {
+            self.fetching = Some(fetch);
+            return;
+        };
+        let shown = self.shown_host.as_deref() == Some(fetch.host.as_str())
+            && self.current() == Some(&fetch.machine);
+        if !shown {
+            return;
+        }
+        match result {
+            Ok(facts) => {
+                if fetch.detect {
+                    let count = facts.as_ref().map_or(0, |f| f.sites.len());
+                    let sites = if count == 1 { "site" } else { "sites" };
+                    let what = format!("detected {count} {sites} on {}", fetch.machine);
+                    self.remote.say(false, what);
+                }
+                self.facts = facts.map(|f| *f);
+                self.facts_error = None;
+            }
+            Err(error) => {
+                if fetch.detect {
+                    self.remote.say(
+                        true,
+                        format!("could not detect on {}: {error}", fetch.machine),
+                    );
+                }
+                self.facts_error = Some(error);
+            }
+        }
+    }
+
+    /// read the cached facts of the picked machine, or detect them anew.
+    fn fetch_facts(&mut self, services: &Services, host: &str, detect: bool) {
+        let Some(machine) = self.current().cloned() else {
+            return;
+        };
+        self.facts = None;
+        self.facts_error = None;
+        let (target, name) = (host.to_string(), machine.clone());
+        let job = services.spawn(host, move |gateway, ask| {
+            if detect {
+                gateway.hosting_detect(&target, &name, ask)
+            } else {
+                gateway.hosting_facts(&target, &name, ask)
+            }
+        });
+        match job {
+            Some(job) => {
+                self.fetching = Some(Fetch {
+                    job,
+                    host: host.to_string(),
+                    machine,
+                    detect,
+                })
+            }
+            None => self.facts_error = Some("the gateway is busy, try again in a moment".into()),
+        }
+    }
+
+    /// may the person detect iis? set from their grants; the server decides anyway.
+    pub fn set_can_detect(&mut self, can: bool) {
+        self.can_detect = can;
+    }
+
+    /// may the person read the facts kept for a machine? set from their grants; the server
+    /// decides anyway.
+    pub fn set_can_read_facts(&mut self, can: bool) {
+        self.can_read_facts = can;
     }
 
     /// may the person run commands? set from their grants; the server decides anyway.
@@ -451,12 +597,21 @@ impl ComputersPanel {
     }
 
     pub fn gates(&self, services: &Services, host: &str) -> Gates {
-        let idle = !services.busy(host) && !self.remote.busy() && self.running.is_none();
+        let idle = !services.busy(host)
+            && !self.remote.busy()
+            && self.running.is_none()
+            && self.fetching.is_none();
         let picked = self.current().is_some() && self.remote.belongs_to(host);
         let may = idle && self.ask.is_none() && self.can_run && picked;
         Gates {
             run: may && self.mode == Mode::Plain,
             iis: may && (self.mode == Mode::Plain || self.iis_on),
+            detect: idle
+                && self.ask.is_none()
+                && self.can_detect
+                && self.iis_on
+                && picked
+                && self.mode == Mode::Hosting,
             reload: idle,
         }
     }
@@ -466,6 +621,7 @@ impl ComputersPanel {
         if host != self.shown_host.as_deref() {
             self.selected = None;
             self.last = None;
+            self.forget_facts();
             // a box opened on the old host would show its machine under the new one
             self.ask = None;
             self.shown_host = host.map(str::to_string);
@@ -487,6 +643,7 @@ impl ComputersPanel {
         let hosting = self.mode == Mode::Hosting;
         let mut buttons = Vec::new();
         if hosting {
+            buttons.push(Button::new("Detect", gates.detect, Msg::Detect).width(BUTTON));
             if self.iis_on {
                 buttons.push(Button::new("IIS presets...", gates.iis, Msg::Iis).width(BUTTON));
             }
@@ -538,6 +695,10 @@ impl ComputersPanel {
                 .into(),
             ));
         }
+        if hosting {
+            nodes.push(Node::Gap(4.0));
+            nodes.push(self.sites_group());
+        }
         nodes.push(Node::Gap(4.0));
         nodes.push(self.output_group());
         nodes.push(Node::Gap(4.0));
@@ -555,6 +716,39 @@ impl ComputersPanel {
             },
         });
         nodes
+    }
+
+    /// the detected sites of the picked machine, read-only.
+    fn sites_group(&self) -> Node<Msg> {
+        let mut lines = Vec::new();
+        match (&self.facts, &self.facts_error, self.current()) {
+            (_, Some(error), _) => lines.push(error.clone()),
+            (_, None, None) => lines.push("Pick a machine to see what was detected on it.".into()),
+            (None, None, Some(_)) if self.fetching.is_some() => lines.push("reading...".into()),
+            (None, None, Some(_)) => {
+                lines.push("Nothing detected yet. Press Detect to look at the machine.".into())
+            }
+            (Some(facts), None, _) => {
+                lines.extend(facts.notes.iter().cloned());
+                if facts.sites.is_empty() {
+                    lines.push(if facts.iis_seen() {
+                        "No sites found.".into()
+                    } else {
+                        "IIS not present, install the NT4 Option Pack.".into()
+                    });
+                }
+                lines.extend(facts.sites.iter().map(site_line));
+            }
+        }
+        Node::Group {
+            title: "Detected sites".into(),
+            body: vec![Node::Lines {
+                id: "hosting-sites",
+                lines,
+                height: 90.0,
+                enabled: true,
+            }],
+        }
     }
 
     fn output_group(&self) -> Node<Msg> {
@@ -592,6 +786,7 @@ impl ComputersPanel {
             Msg::Pick(_) => self.remote.belongs_to(host),
             Msg::Run => gates.run,
             Msg::Iis => gates.iis,
+            Msg::Detect => gates.detect,
             Msg::Reload => gates.reload,
         };
         if !allowed {
@@ -599,14 +794,20 @@ impl ComputersPanel {
         }
         let machine = self.current().cloned();
         match (msg, machine) {
-            (Msg::Pick(i), _) => self.selected = Some(i),
+            (Msg::Pick(i), _) => {
+                self.selected = Some(i);
+                if self.mode == Mode::Hosting && self.can_read_facts {
+                    self.fetch_facts(services, host, false);
+                }
+            }
+            (Msg::Detect, Some(_)) => self.fetch_facts(services, host, true),
             (Msg::Run, Some(machine)) => self.ask = Some(RunBox::free(host, &machine)),
             (Msg::Iis, Some(machine)) => {
                 let hosting = self.mode == Mode::Hosting;
                 self.ask = Some(RunBox::presets(host, &machine, hosting));
             }
             (Msg::Reload, _) => self.reload(services, host),
-            (Msg::Run | Msg::Iis, None) => {}
+            (Msg::Run | Msg::Iis | Msg::Detect, None) => {}
         }
     }
 
@@ -711,6 +912,11 @@ impl ComputersPanel {
         self.selected = self.names().iter().position(|n| n == name);
     }
 
+    /// the facts on screen, for tests.
+    pub fn facts_shown(&self) -> Option<&HostingFacts> {
+        self.facts.as_ref()
+    }
+
     pub fn last_summary(&self) -> Option<&str> {
         self.last.as_ref().map(|l| l.summary.as_str())
     }
@@ -784,7 +990,7 @@ mod tests {
 
     fn wait(panel: &mut ComputersPanel) {
         let start = std::time::Instant::now();
-        while panel.remote.busy() || panel.running.is_some() {
+        while panel.remote.busy() || panel.running.is_some() || panel.fetching.is_some() {
             panel.poll();
             assert!(start.elapsed() < Duration::from_secs(5), "never finished");
             std::thread::sleep(Duration::from_millis(5));
@@ -799,6 +1005,132 @@ mod tests {
             timed_out: false,
             truncated: false,
         }
+    }
+
+    /// the lines of the detected sites group.
+    fn site_lines(panel: &ComputersPanel, services: &Services) -> Vec<String> {
+        for node in panel.preview(services, Some("a@b")) {
+            if let Node::Group { body, .. } = node {
+                for inner in body {
+                    if let Node::Lines {
+                        id: "hosting-sites",
+                        lines,
+                        ..
+                    } = inner
+                    {
+                        return lines;
+                    }
+                }
+            }
+        }
+        panic!("no sites group");
+    }
+
+    #[test]
+    fn detecting_fills_the_site_list_and_picking_again_reads_the_cache() {
+        let (mut panel, services, fake) = hosting();
+        panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
+        assert!(!panel.gates(&services, "a@b").detect);
+        assert!(site_lines(&panel, &services)[0].starts_with("Pick a machine"));
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        // nothing is cached yet
+        assert!(site_lines(&panel, &services)[0].starts_with("Nothing detected"));
+        assert!(panel.gates(&services, "a@b").detect);
+        panel.update(Msg::Detect, &services, "a@b");
+        wait(&mut panel);
+        let lines = site_lines(&panel, &services);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with("web 1  started  Intranet"),
+            "{lines:?}"
+        );
+        assert!(lines[1].starts_with("ftp 1  stopped  Files"), "{lines:?}");
+        // another machine has no facts, and coming back finds the cached ones
+        panel.update(Msg::Pick(1), &services, "a@b");
+        wait(&mut panel);
+        assert!(panel.facts_shown().is_none());
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        assert_eq!(panel.facts_shown().unwrap().sites.len(), 2);
+        assert!(fake
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("hosting-detect a@b NT4DEV01")));
+    }
+
+    #[test]
+    fn detect_needs_hosting_rights_and_the_hosting_window() {
+        let (mut hosted, services, _) = hosting();
+        hosted.update(Msg::Pick(0), &services, "a@b");
+        // no right: the button is off and a message is ignored
+        assert!(!hosted.gates(&services, "a@b").detect);
+        hosted.update(Msg::Detect, &services, "a@b");
+        assert!(hosted.fetching.is_none());
+        let (mut plain, services, _) = panel_in(Mode::Plain);
+        plain.set_can_detect(true);
+        plain.update(Msg::Pick(0), &services, "a@b");
+        assert!(!plain.gates(&services, "a@b").detect);
+        use lanlord_model::access::{Grants, Level};
+        // detecting needs manage, reading the kept facts a view
+        assert!(may_detect_hosting(&Grants::all(Level::Manage)));
+        assert!(!may_detect_hosting(&Grants::all(Level::View)));
+        assert!(may_read_facts_hosting(&Grants::all(Level::View)));
+        assert!(!may_read_facts_hosting(&Grants::all(Level::Hidden)));
+    }
+
+    #[test]
+    fn a_failed_detect_is_said_in_the_status_bar_and_the_list() {
+        let (mut panel, services, fake) = hosting();
+        panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        *fake.fail.lock().unwrap() = Some("no answer".into());
+        panel.update(Msg::Detect, &services, "a@b");
+        wait(&mut panel);
+        let (error, text) = panel.remote.note.clone().unwrap();
+        assert!(
+            error && text.starts_with("could not detect on NT4DEV01"),
+            "{text}"
+        );
+        assert!(panel.facts_error.is_some());
+    }
+
+    #[test]
+    fn a_note_of_the_detection_is_listed_with_the_sites() {
+        let (mut panel, services, _) = hosting();
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        let mut found = lanlord_model::hosting::facts("NT4DEV01", 1, "", "");
+        found.notes.push("the kept facts were damaged".into());
+        panel.facts = Some(found);
+        assert_eq!(
+            site_lines(&panel, &services)[0],
+            "the kept facts were damaged"
+        );
+    }
+
+    #[test]
+    fn detect_is_off_without_the_iis_part_and_its_end_is_said() {
+        let (mut panel, services, _) = hosting();
+        panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        assert!(panel.gates(&services, "a@b").detect);
+        panel.update(Msg::Detect, &services, "a@b");
+        wait(&mut panel);
+        assert_eq!(
+            panel.remote.note,
+            Some((false, "detected 2 sites on NT4DEV01".to_string()))
+        );
+        panel.set_iis_on(false);
+        assert!(!panel.gates(&services, "a@b").detect);
+        let before = panel.fetching.is_none();
+        panel.update(Msg::Detect, &services, "a@b");
+        assert!(before && panel.fetching.is_none());
     }
 
     #[test]
@@ -1167,7 +1499,7 @@ mod tests {
 
     #[test]
     fn the_two_panels_offer_their_own_buttons_and_only_hosting_presets() {
-        let (mut plain, services, _) = panel();
+        let (mut plain, services, _) = panel_in(Mode::Plain);
         plain.select("NT4DEV01");
         plain.update(Msg::Iis, &services, "a@b");
         let dialog = plain.ask.as_mut().unwrap().view();
@@ -1231,7 +1563,7 @@ mod tests {
             }),
             _ => None,
         });
-        assert_eq!(toolbar, Some(1));
+        assert_eq!(toolbar, Some(2));
     }
 
     #[test]
