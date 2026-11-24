@@ -1285,6 +1285,83 @@ fn dragging_the_left_or_top_edge_past_the_least_size_keeps_the_far_edges_still()
     }
 }
 
+/// the rect of a window after a drag from the point `grab` picks, by `by`, on a desktop tall
+/// enough that no window scrolls: a scrolling body would take the drag for itself.
+fn dragged(
+    target: Target,
+    grab: impl Fn(egui::Rect) -> egui::Pos2,
+    by: egui::Vec2,
+) -> (egui::Rect, egui::Rect) {
+    let size = egui::Vec2::new(1280.0, 1600.0);
+    let (mut desktop, ctx, _) = desktop();
+    with_host(&mut desktop, &ctx);
+    desktop.open(target);
+    settled_on(&mut desktop, &ctx, size, target == Target::Networks);
+    let start = desktop.measured.iter().find(|m| m.0 == target).unwrap().1;
+    let seen = drag_from(&mut desktop, &ctx, size, target, grab, by);
+    (start, *seen.last().unwrap())
+}
+
+/// a window moves when it is dragged by its caption, and never when it is dragged by its body.
+#[test]
+fn a_window_moves_by_its_title_bar_and_not_by_its_body() {
+    use eframe::egui::{Pos2, Vec2};
+    let by = Vec2::new(60.0, 40.0);
+    type Grab = fn(egui::Rect) -> Pos2;
+    // the body point is in the margin beside the contents, clear of every widget and edge
+    let cases: [(Grab, bool); 2] = [
+        (|r| Pos2::new(r.left() + 60.0, r.top() + 13.0), true),
+        (|r| Pos2::new(r.left() + 8.0, r.center().y), false),
+    ];
+    for (grab, moves) in cases {
+        let (start, end) = dragged(Target::Networks, grab, by);
+        if moves {
+            assert!(
+                (end.min - (start.min + by)).length() < 1.5,
+                "{start:?} {end:?}"
+            );
+        } else {
+            assert!((end.min - start.min).length() < 1.5, "{start:?} {end:?}");
+        }
+    }
+}
+
+/// a press that began on the body or a title button never moves the window, wherever it goes.
+#[test]
+fn a_press_off_the_caption_never_moves_the_window() {
+    use eframe::egui::{Pos2, Vec2};
+    type Grab = fn(egui::Rect) -> Pos2;
+    let cases: [(Target, Grab, Vec2); 4] = [
+        // the body, dragged up across the caption
+        (
+            Target::Networks,
+            |r| Pos2::new(r.left() + 8.0, r.top() + 60.0),
+            Vec2::new(30.0, -90.0),
+        ),
+        // the close button, and the minimize button beside the maximize one
+        (
+            Target::Networks,
+            |r| Pos2::new(r.right() - 13.0, r.top() + 13.0),
+            Vec2::new(60.0, 40.0),
+        ),
+        (
+            Target::Networks,
+            |r| Pos2::new(r.right() - 47.0, r.top() + 13.0),
+            Vec2::new(60.0, 40.0),
+        ),
+        // the frame of a fixed window, which has no edges to size by
+        (
+            Target::MyServer,
+            |r| Pos2::new(r.left() + 1.0, r.center().y),
+            Vec2::new(60.0, 40.0),
+        ),
+    ];
+    for (target, grab, by) in cases {
+        let (start, end) = dragged(target, grab, by);
+        assert_eq!(start.min, end.min, "{target:?} {start:?} {end:?}");
+    }
+}
+
 /// what one frame painted: the shapes as text, how many of them are rects, and where the window
 /// stood once the frame was done.
 struct Painted {
