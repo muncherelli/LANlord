@@ -230,6 +230,8 @@ mod tests {
         assert_eq!(store(&host, "/h", &facts("WEB2", 1, "", "")).unwrap(), None);
     }
 
+    // the real host only runs on the gateway, a unix machine
+    #[cfg(unix)]
     #[test]
     fn detections_that_run_together_all_stay() {
         let dir = tempfile::tempdir().unwrap();
