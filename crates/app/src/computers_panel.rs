@@ -6,7 +6,7 @@
 //! running line, then the result.
 
 use lanlord_model::access::Grants;
-use lanlord_model::hosting::{CheckResult, HostingFacts, SiteFact};
+use lanlord_model::hosting::{HostingFacts, SiteFact};
 use lanlord_model::nt4_exec::{self, Preset, PRESETS};
 use lanlord_model::operations::{Operation, DEFAULT_TIMEOUT_SECS};
 use web_time::Instant;
@@ -419,6 +419,10 @@ fn output_lines(output: &RunOutput) -> Vec<String> {
 }
 
 /// one site for the page: kind, id, state, name, bindings and home.
+/// the widest a check line gets in a window: a terminal of 80 columns has a frame and a margin
+/// on each side, so the line is cut with an ellipsis rather than hidden.
+const CHECK_WIDTH: usize = 76;
+
 fn site_line(site: &SiteFact) -> String {
     let bindings: Vec<String> = site
         .bindings
@@ -764,7 +768,11 @@ impl ComputersPanel {
             (Some(facts), None) => {
                 let (fail, warn) = facts.check_counts();
                 title = format!("Hardening checks: {fail} fail, {warn} warn");
-                facts.checks.iter().map(CheckResult::line).collect()
+                facts
+                    .checks
+                    .iter()
+                    .map(|c| c.line_fit(CHECK_WIDTH))
+                    .collect()
             }
         };
         Node::Group {

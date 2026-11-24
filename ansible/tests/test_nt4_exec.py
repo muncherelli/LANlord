@@ -1495,6 +1495,16 @@ class LldumpTest(unittest.TestCase):
             self.assertNotRegex(l, r"(?i)pass|password|secret", l)
         self.assertIn("Sub HostFacts", self.text)
 
+    def test_host_paths_come_from_the_registry_not_win2000_variables(self):
+        code = "\n".join(self.code)
+        self.assertNotIn("CommonProgramFiles", code)
+        self.assertNotIn("ExpandEnvironmentStrings", code)
+        self.assertIn("CommonFilesDir", code)
+        self.assertIn("PathWWWRoot", code)
+        self.assertNotIn("InetPub", code)
+        # a path that did not resolve is unknown, not absent
+        self.assertIn("PathOk", code)
+
     def test_only_what_vbscript_5_on_nt4_has(self):
         for word in ("RegExp", "Dictionary", "Execute", "Eval("):
             self.assertNotIn(word, "\n".join(self.code))

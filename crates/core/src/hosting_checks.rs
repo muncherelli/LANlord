@@ -124,16 +124,30 @@ impl Dump {
     }
 }
 
-/// what a search found: the hits, and whether there was anything to search.
+/// what a search found: the hits, whether there was anything to search, and whether some of what
+/// it needed was missing or could not be told.
 struct Finding {
     hits: Vec<String>,
     looked: bool,
+    unsure: bool,
 }
 
 impl Finding {
+    fn none() -> Finding {
+        Finding {
+            hits: Vec::new(),
+            looked: false,
+            unsure: false,
+        }
+    }
+
+    /// two searches that must both have looked for the answer to be a pass.
     fn merge(mut self, other: Finding) -> Finding {
         self.hits.extend(other.hits);
-        self.looked |= other.looked;
+        self.hits.sort();
+        self.hits.dedup();
+        self.looked &= other.looked;
+        self.unsure |= other.unsure;
         self
     }
 }
@@ -162,37 +176,49 @@ fn finding(id: &str, found: Finding, (hit, clear): (&str, &str), fix: bool) -> C
         let names: Vec<String> = found.hits.iter().map(|h| format!("{h} {hit}")).collect();
         return result(id, CheckStatus::Fail, few(&names), fix);
     }
-    if found.looked {
+    if found.looked && !found.unsure {
         result(id, CheckStatus::Pass, clear, fix)
     } else {
         result(
             id,
             CheckStatus::Unknown,
-            "the dump has no data for this",
+            "the dump lacks some of the data for this",
             fix,
         )
     }
 }
 
+/// a boolean as the metabase prints it; anything else is not an answer.
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "-1" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 fn truthy(value: &str) -> bool {
-    matches!(value.to_ascii_lowercase().as_str(), "true" | "-1" | "1")
+    parse_bool(value) == Some(true)
 }
 
-fn bit(value: &str, mask: u64) -> bool {
-    value.trim().parse::<u64>().is_ok_and(|v| v & mask != 0)
+/// is any bit of `mask` set in a flags value? adsi returns flags with the top bit set as a
+/// negative number, so the value is read as signed and cut to 32 bits.
+fn bit(value: &str, mask: u32) -> Option<bool> {
+    let number = value.trim().parse::<i64>().ok()?;
+    Some((number as u32) & mask != 0)
 }
 
-/// the nodes of a service where `property` is set and `bad` says so; `looked` when any node has it.
-fn scan(dump: &Dump, service: &str, property: &str, bad: impl Fn(&str) -> bool) -> Finding {
-    let mut found = Finding {
-        hits: Vec::new(),
-        looked: false,
-    };
+/// the nodes of a service where `property` is set and `bad` says so; `looked` when any node has
+/// it, and `unsure` when a node has a value `bad` cannot read (`None`).
+fn scan(dump: &Dump, service: &str, property: &str, bad: impl Fn(&str) -> Option<bool>) -> Finding {
+    let mut found = Finding::none();
     for (node, props) in dump.under(service) {
         if let Some(value) = props.get(property).and_then(|v| v.first()) {
             found.looked = true;
-            if bad(value) {
-                found.hits.push(node.to_string());
+            match bad(value) {
+                Some(true) => found.hits.push(node.to_string()),
+                Some(false) => {}
+                None => found.unsure = true,
             }
         }
     }
@@ -209,19 +235,25 @@ fn vdir_hits(dump: &Dump, service: &str, names: &[&str]) -> Finding {
             .map(|(node, _)| node.to_string())
             .collect(),
         looked: dump.presence(service) == Presence::Present,
+        unsure: false,
     }
 }
 
-/// the machine's own facts of one kind that say `present`, for the names in `wanted`.
+/// the machine's own facts of one kind that say `present`, for the names in `wanted`. a name
+/// with no line, or one that says `unknown`, leaves the search unsure; with no line at all
+/// nothing was looked at.
 fn host_hits(dump: &Dump, kind: &str, wanted: &[&str]) -> Finding {
     let all = dump.host(kind);
+    let state = |name: &str| all.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
+    let known = |name: &&str| matches!(state(name), Some("present" | "absent"));
     Finding {
-        hits: all
+        hits: wanted
             .iter()
-            .filter(|(name, value)| *value == "present" && wanted.contains(name))
-            .map(|(name, _)| format!("{kind} {name}"))
+            .filter(|name| state(name) == Some("present"))
+            .map(|name| format!("{kind} {name}"))
             .collect(),
-        looked: !all.is_empty(),
+        looked: wanted.iter().any(known),
+        unsure: !wanted.iter().all(known),
     }
 }
 
@@ -244,23 +276,21 @@ fn tools(dump: &Dump) -> CheckResult {
     finding(
         "iis.tools",
         found,
-        ("present", "no scripts/tools, showcode or codebrws files"),
+        ("present", "no scripts/tools directory or showcode file"),
         true,
     )
 }
 
 fn msadc(dump: &Dump) -> CheckResult {
-    let mut found = vdir_hits(dump, "W3SVC", &["msadc"]);
-    let adc = dump.host("Reg/ADCLaunch");
-    let keys = Finding {
-        hits: adc
-            .iter()
-            .filter(|(_, value)| *value == "present")
-            .map(|(name, _)| format!("ADCLaunch {name}"))
-            .collect(),
-        looked: !adc.is_empty(),
-    };
-    found = found.merge(keys);
+    let found = vdir_hits(dump, "W3SVC", &["msadc"]).merge(host_hits(
+        dump,
+        "Reg/ADCLaunch",
+        &[
+            "RDSServer.DataFactory",
+            "AdvancedDataFactory",
+            "VbBusObj.VbBusObjCls",
+        ],
+    ));
     finding(
         "iis.msadc",
         found,
@@ -325,7 +355,7 @@ fn flag(
     dump: &Dump,
     (id, property): (&str, &str),
     what: &str,
-    bad: fn(&str) -> bool,
+    bad: fn(&str) -> Option<bool>,
 ) -> CheckResult {
     let found = scan(dump, "W3SVC", property, bad);
     finding(
@@ -337,9 +367,17 @@ fn flag(
 }
 
 fn dir_browsing(dump: &Dump) -> CheckResult {
-    let by_flag = scan(dump, "W3SVC", "EnableDirBrowsing", truthy);
-    let by_bits = scan(dump, "W3SVC", "DirBrowseFlags", |v| bit(v, 0x4000_0000));
-    let found = if by_flag.looked { by_flag } else { by_bits };
+    // either the flag or the browse bit (0x80000000) on says the directory is listed
+    let flag = scan(dump, "W3SVC", "EnableDirBrowsing", parse_bool);
+    let bits = scan(dump, "W3SVC", "DirBrowseFlags", |v| bit(v, 0x8000_0000));
+    let mut found = Finding {
+        hits: flag.hits,
+        looked: flag.looked || bits.looked,
+        unsure: flag.unsure || bits.unsure,
+    };
+    found.hits.extend(bits.hits);
+    found.hits.sort();
+    found.hits.dedup();
     finding(
         "iis.dir-browsing",
         found,
@@ -462,7 +500,7 @@ fn basic_no_tls(dump: &Dump) -> CheckResult {
             .filter_map(|(_, props)| props.get("AuthFlags")?.first())
             .collect();
         looked |= !flags.is_empty();
-        if flags.iter().any(|v| bit(v, 2)) && !has_tls(dump, site) {
+        if flags.iter().any(|v| bit(v, 2) == Some(true)) && !has_tls(dump, site) {
             hits.push(format!("{site} allows Basic and has no TLS binding"));
         }
     }
@@ -538,7 +576,7 @@ fn ftp_anon_write(dump: &Dump) -> CheckResult {
                     props
                         .get("AccessFlags")
                         .and_then(|v| v.first())
-                        .is_some_and(|v| bit(v, 2))
+                        .is_some_and(|v| bit(v, 2) == Some(true))
                 })
                 .map(|(node, _)| format!("{node} lets anonymous users write")),
         );
@@ -691,19 +729,19 @@ pub fn evaluate(text: &str) -> Vec<CheckResult> {
             &dump,
             ("iis.isolation", "AppIsolated"),
             "runs ASP in the web server process",
-            |v| v.trim() == "0",
+            |v| v.trim().parse::<i64>().ok().map(|n| n == 0),
         ),
         flag(
             &dump,
             ("iis.parent-paths", "AspEnableParentPaths"),
             "allows parent paths",
-            truthy,
+            parse_bool,
         ),
         flag(
             &dump,
             ("iis.errors-to-client", "AspScriptErrorSentToBrowser"),
             "sends script errors to the browser",
-            truthy,
+            parse_bool,
         ),
         dir_browsing(&dump),
         write_access(&dump),
@@ -792,6 +830,7 @@ Host/File/showcode.asp=absent
 Host/Reg/Hotfix/Q811114=absent
 Host/Reg/ADCLaunch/RDSServer.DataFactory=present
 Host/Reg/ADCLaunch/AdvancedDataFactory=absent
+Host/Reg/ADCLaunch/VbBusObj.VbBusObjCls=unknown
 Host/Svc/Alerter/Start=2
 Host/Svc/Messenger/Start=4
 Host/Svc/TlntSvr/Start=absent
@@ -826,6 +865,8 @@ Host/File/codebrws.asp=absent
 Host/File/showcode.asp=absent
 Host/Reg/Hotfix/Q811114=present
 Host/Reg/ADCLaunch/RDSServer.DataFactory=absent
+Host/Reg/ADCLaunch/AdvancedDataFactory=absent
+Host/Reg/ADCLaunch/VbBusObj.VbBusObjCls=absent
 Host/Svc/Alerter/Start=4
 ";
 
@@ -958,7 +999,7 @@ Host/Svc/Alerter/Start=4
         // a web service with no sites and no host lines still says unknown for the host files
         let bare = evaluate("W3SVC/Class=IIsWebService\n");
         assert_eq!(status(&bare, "iis.patch"), CheckStatus::Unknown);
-        assert_eq!(status(&bare, "iis.samples"), CheckStatus::Pass);
+        assert_eq!(status(&bare, "iis.samples"), CheckStatus::Unknown);
         assert_eq!(status(&bare, "iis.write"), CheckStatus::Unknown);
     }
 
@@ -1019,10 +1060,118 @@ Host/Svc/Alerter/Start=4
     #[test]
     fn directory_browsing_reads_the_flag_or_the_bits() {
         let base = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n";
-        let bits = evaluate(&format!("{base}W3SVC/1/ROOT/DirBrowseFlags=1073741854\n"));
+        // adsi prints the browse bit (0x80000000) as a negative number
+        let bits = evaluate(&format!("{base}W3SVC/1/ROOT/DirBrowseFlags=-2147483618\n"));
         assert_eq!(status(&bits, "iis.dir-browsing"), CheckStatus::Fail);
+        // the load-default bit (0x40000000) is not browsing
+        let default = evaluate(&format!("{base}W3SVC/1/ROOT/DirBrowseFlags=1073741854\n"));
+        assert_eq!(status(&default, "iis.dir-browsing"), CheckStatus::Pass);
+        // either one on is a fail
+        let both = evaluate(&format!(
+            "{base}W3SVC/1/ROOT/EnableDirBrowsing=False\nW3SVC/1/ROOT/DirBrowseFlags=-2147483618\n"
+        ));
+        assert_eq!(status(&both, "iis.dir-browsing"), CheckStatus::Fail);
         let off = evaluate(&format!("{base}W3SVC/1/ROOT/DirBrowseFlags=30\n"));
         assert_eq!(status(&off, "iis.dir-browsing"), CheckStatus::Pass);
+    }
+
+    #[test]
+    fn a_value_set_at_the_service_or_below_is_found_either_way() {
+        let tree = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n\
+                    W3SVC/1/ROOT/Class=IIsWebVirtualDir\nW3SVC/1/ROOT/app/Class=IIsWebDirectory\n";
+        // risky on the service, safe on the site below: the service default still fails
+        let top = evaluate(&format!(
+            "{tree}W3SVC/AspEnableParentPaths=True\nW3SVC/1/AspEnableParentPaths=False\n"
+        ));
+        let check = get(&top, "iis.parent-paths");
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert_eq!(check.evidence, "W3SVC allows parent paths");
+        // safe on the service, risky on one directory below
+        let low = evaluate(&format!(
+            "{tree}W3SVC/AspEnableParentPaths=False\nW3SVC/1/ROOT/app/AspEnableParentPaths=True\n"
+        ));
+        let check = get(&low, "iis.parent-paths");
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert_eq!(check.evidence, "W3SVC/1/ROOT/app allows parent paths");
+    }
+
+    #[test]
+    fn an_unreadable_boolean_is_unknown_not_off() {
+        let tree = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n";
+        for odd in ["maybe", "", "<object>"] {
+            let dump =
+                format!("{tree}W3SVC/AspEnableParentPaths={odd}\nW3SVC/EnableDirBrowsing={odd}\n");
+            let checks = evaluate(&dump);
+            assert_eq!(
+                status(&checks, "iis.parent-paths"),
+                CheckStatus::Unknown,
+                "{odd}"
+            );
+            assert_eq!(
+                status(&checks, "iis.dir-browsing"),
+                CheckStatus::Unknown,
+                "{odd}"
+            );
+        }
+        for (text, want) in [("TRUE", true), ("-1", true), ("False", false), ("0", false)] {
+            assert_eq!(parse_bool(text), Some(want), "{text}");
+        }
+        assert_eq!(parse_bool("2"), None);
+        let flags = evaluate(&format!("{tree}W3SVC/1/ROOT/AccessFlags=lots\n"));
+        assert_eq!(status(&flags, "iis.write"), CheckStatus::Unknown);
+    }
+
+    #[test]
+    fn checks_that_need_the_machine_are_unknown_without_its_lines() {
+        // the metabase alone cannot say whether the sample files are there
+        let web = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n";
+        let checks = evaluate(web);
+        for id in ["iis.samples", "iis.tools", "iis.msadc", "iis.frontpage"] {
+            assert_eq!(status(&checks, id), CheckStatus::Unknown, "{id}");
+        }
+        // an unknown line leaves the answer unknown, but a hit still fails
+        let unsure = evaluate(&format!(
+            "{web}Host/Folder/IISSamples=unknown\nHost/File/codebrws.asp=absent\n"
+        ));
+        assert_eq!(status(&unsure, "iis.samples"), CheckStatus::Unknown);
+        let hit = evaluate(&format!(
+            "{web}Host/Folder/IISSamples=present\nHost/File/codebrws.asp=unknown\n"
+        ));
+        assert_eq!(status(&hit, "iis.samples"), CheckStatus::Fail);
+    }
+
+    #[test]
+    fn adc_launch_keys_that_could_not_be_read_never_pass() {
+        let web = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n";
+        let keys = |a: &str, b: &str, c: &str| {
+            format!(
+                "{web}Host/Reg/ADCLaunch/RDSServer.DataFactory={a}\n\
+                 Host/Reg/ADCLaunch/AdvancedDataFactory={b}\n\
+                 Host/Reg/ADCLaunch/VbBusObj.VbBusObjCls={c}\n"
+            )
+        };
+        let unknown = evaluate(&keys("unknown", "unknown", "unknown"));
+        assert_eq!(status(&unknown, "iis.msadc"), CheckStatus::Unknown);
+        let clear = evaluate(&keys("absent", "absent", "absent"));
+        assert_eq!(status(&clear, "iis.msadc"), CheckStatus::Pass);
+        let found = evaluate(&keys("present", "unknown", "absent"));
+        assert_eq!(status(&found, "iis.msadc"), CheckStatus::Fail);
+    }
+
+    #[test]
+    fn a_common_files_path_that_could_not_be_found_is_unknown_not_absent() {
+        // lldump prints unknown when CommonFilesDir is not in the registry
+        let web = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n";
+        let dump =
+            format!("{web}Host/File/showcode.asp=unknown\nHost/Folder/ScriptsTools=absent\n");
+        assert_eq!(status(&evaluate(&dump), "iis.tools"), CheckStatus::Unknown);
+        let dump = format!("{web}Host/Folder/FPSE=unknown\n");
+        assert_eq!(
+            status(&evaluate(&dump), "iis.frontpage"),
+            CheckStatus::Unknown
+        );
+        let dump = format!("{web}Host/Folder/FPSE=present\n");
+        assert_eq!(status(&evaluate(&dump), "iis.frontpage"), CheckStatus::Warn);
     }
 
     #[test]

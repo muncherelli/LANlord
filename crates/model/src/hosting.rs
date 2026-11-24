@@ -112,6 +112,16 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
+    /// [`line`](Self::line) cut to `width` characters, with an ellipsis where it was cut.
+    pub fn line_fit(&self, width: usize) -> String {
+        let line = self.line();
+        if line.chars().count() <= width {
+            return line;
+        }
+        let cut: String = line.chars().take(width.saturating_sub(1)).collect();
+        format!("{cut}\u{2026}")
+    }
+
     /// one line of text for a window: the status, the id and what was seen.
     pub fn line(&self) -> String {
         let status = match self.status {
@@ -394,6 +404,14 @@ SMTPSVC=absent
             check("iis.printers", CheckStatus::NotApplicable).line(),
             "N/A  iis.printers  seen"
         );
+        let long = CheckResult {
+            evidence: "x".repeat(100),
+            ..check("iis.samples", CheckStatus::Fail)
+        };
+        let cut = long.line_fit(76);
+        assert_eq!(cut.chars().count(), 76);
+        assert!(cut.starts_with("FAIL iis.samples  xxx") && cut.ends_with('\u{2026}'));
+        assert_eq!(check("a", CheckStatus::Pass).line_fit(76), "PASS a  seen");
         let found = HostingFacts {
             checks: vec![
                 check("a", CheckStatus::Fail),

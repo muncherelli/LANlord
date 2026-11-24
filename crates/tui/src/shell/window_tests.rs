@@ -691,3 +691,44 @@ fn networks_list_every_interface_the_server_has() {
     }
     assert!(!text.contains("lo   127.0.0.1"), "{text}");
 }
+
+#[test]
+fn the_hardening_checks_scroll_into_view_on_a_small_screen() {
+    use lanlord_app::computers_panel::Msg;
+    let fake = Arc::new(Fake::new());
+    let mut shell = server(&fake);
+    open(&mut shell, module("hosting"));
+    until(&mut shell, "ws1");
+    let host = shell.host().unwrap();
+    shell.hosting.select("ws1");
+    shell.hosting.set_can_detect(true);
+    shell.hosting.set_can_read_facts(true);
+    shell.hosting.set_iis_on(true);
+    shell.hosting.update(Msg::Detect, &shell.services, &host);
+    let started = Instant::now();
+    while !small(&mut shell).contains("detected 2 sites") {
+        assert!(started.elapsed() < Duration::from_secs(5), "never detected");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // the wheel over the text at the top moves the page until the checks show
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 40,
+        row: 4,
+        modifiers: KeyModifiers::NONE,
+    };
+    let mut text = small(&mut shell);
+    for _ in 0..40 {
+        if text.contains("FAIL iis.samples") {
+            break;
+        }
+        shell.on_event(Event::Mouse(wheel), Instant::now());
+        text = small(&mut shell);
+    }
+    assert!(text.contains("Hardening checks: 1 fail, 1 warn"), "{text}");
+    assert!(
+        text.contains("FAIL iis.samples  W3SVC/1/ROOT/IISSamples present"),
+        "{text}"
+    );
+    assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+}
