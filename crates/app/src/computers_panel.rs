@@ -48,10 +48,20 @@ pub fn may_run_hosting(grants: &Grants) -> bool {
     )
 }
 
-/// may these grants detect iis on a machine and read what was found?
+/// may these grants detect iis on a machine? that runs scripts on it, so it needs manage.
 pub fn may_detect_hosting(grants: &Grants) -> bool {
     grants.allows(
         Operation::HostingDetect {
+            machine: String::new(),
+        }
+        .requires(),
+    )
+}
+
+/// may these grants read what detection found?
+pub fn may_read_facts_hosting(grants: &Grants) -> bool {
+    grants.allows(
+        Operation::HostingFacts {
             machine: String::new(),
         }
         .requires(),
@@ -343,6 +353,8 @@ struct Fetch {
     job: Job<Option<Box<HostingFacts>>>,
     host: String,
     machine: String,
+    /// a detect, not a read of the cache: its end is said in the status bar.
+    detect: bool,
 }
 
 /// what the last run did.
@@ -365,8 +377,9 @@ pub struct ComputersPanel {
     /// the host `selected` and `last` belong to.
     shown_host: Option<String>,
     can_run: bool,
-    /// the hosting window only: may the person detect and read facts?
+    /// the hosting window only: may the person detect, and may they read the kept facts?
     can_detect: bool,
+    can_read_facts: bool,
     /// the hosting window only: the facts of the picked machine, and why they are missing.
     facts: Option<HostingFacts>,
     facts_error: Option<String>,
@@ -489,10 +502,24 @@ impl ComputersPanel {
         }
         match result {
             Ok(facts) => {
+                if fetch.detect {
+                    let count = facts.as_ref().map_or(0, |f| f.sites.len());
+                    let sites = if count == 1 { "site" } else { "sites" };
+                    let what = format!("detected {count} {sites} on {}", fetch.machine);
+                    self.remote.say(false, what);
+                }
                 self.facts = facts.map(|f| *f);
                 self.facts_error = None;
             }
-            Err(error) => self.facts_error = Some(error),
+            Err(error) => {
+                if fetch.detect {
+                    self.remote.say(
+                        true,
+                        format!("could not detect on {}: {error}", fetch.machine),
+                    );
+                }
+                self.facts_error = Some(error);
+            }
         }
     }
 
@@ -517,15 +544,22 @@ impl ComputersPanel {
                     job,
                     host: host.to_string(),
                     machine,
+                    detect,
                 })
             }
             None => self.facts_error = Some("the gateway is busy, try again in a moment".into()),
         }
     }
 
-    /// may the person detect iis and read the facts? set from their grants; the server decides anyway.
+    /// may the person detect iis? set from their grants; the server decides anyway.
     pub fn set_can_detect(&mut self, can: bool) {
         self.can_detect = can;
+    }
+
+    /// may the person read the facts kept for a machine? set from their grants; the server
+    /// decides anyway.
+    pub fn set_can_read_facts(&mut self, can: bool) {
+        self.can_read_facts = can;
     }
 
     /// may the person run commands? set from their grants; the server decides anyway.
@@ -575,6 +609,7 @@ impl ComputersPanel {
             detect: idle
                 && self.ask.is_none()
                 && self.can_detect
+                && self.iis_on
                 && picked
                 && self.mode == Mode::Hosting,
             reload: idle,
@@ -760,7 +795,7 @@ impl ComputersPanel {
         match (msg, machine) {
             (Msg::Pick(i), _) => {
                 self.selected = Some(i);
-                if self.mode == Mode::Hosting && self.can_detect {
+                if self.mode == Mode::Hosting && self.can_read_facts {
                     self.fetch_facts(services, host, false);
                 }
             }
@@ -994,6 +1029,7 @@ mod tests {
     fn detecting_fills_the_site_list_and_picking_again_reads_the_cache() {
         let (mut panel, services, fake) = hosting();
         panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
         assert!(!panel.gates(&services, "a@b").detect);
         assert!(site_lines(&panel, &services)[0].starts_with("Pick a machine"));
         panel.update(Msg::Pick(0), &services, "a@b");
@@ -1036,8 +1072,32 @@ mod tests {
         plain.update(Msg::Pick(0), &services, "a@b");
         assert!(!plain.gates(&services, "a@b").detect);
         use lanlord_model::access::{Grants, Level};
-        assert!(may_detect_hosting(&Grants::all(Level::View)));
-        assert!(!may_detect_hosting(&Grants::all(Level::Hidden)));
+        // detecting needs manage, reading the kept facts a view
+        assert!(may_detect_hosting(&Grants::all(Level::Manage)));
+        assert!(!may_detect_hosting(&Grants::all(Level::View)));
+        assert!(may_read_facts_hosting(&Grants::all(Level::View)));
+        assert!(!may_read_facts_hosting(&Grants::all(Level::Hidden)));
+    }
+
+    #[test]
+    fn detect_is_off_without_the_iis_part_and_its_end_is_said() {
+        let (mut panel, services, _) = hosting();
+        panel.set_can_detect(true);
+        panel.set_can_read_facts(true);
+        panel.update(Msg::Pick(0), &services, "a@b");
+        wait(&mut panel);
+        assert!(panel.gates(&services, "a@b").detect);
+        panel.update(Msg::Detect, &services, "a@b");
+        wait(&mut panel);
+        assert_eq!(
+            panel.remote.note,
+            Some((false, "detected 2 sites on NT4DEV01".to_string()))
+        );
+        panel.set_iis_on(false);
+        assert!(!panel.gates(&services, "a@b").detect);
+        let before = panel.fetching.is_none();
+        panel.update(Msg::Detect, &services, "a@b");
+        assert!(before && panel.fetching.is_none());
     }
 
     #[test]

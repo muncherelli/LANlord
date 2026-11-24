@@ -568,7 +568,7 @@ fn the_hosting_window_lists_machines_and_offers_no_iis_presets_without_the_iis_p
 }
 
 #[test]
-fn the_hosting_window_detects_a_machine_and_lists_its_sites() {
+fn the_hosting_window_does_not_detect_without_the_iis_part() {
     use lanlord_app::computers_panel::Msg;
     let mut shell = demo();
     frame(&mut shell);
@@ -581,9 +581,14 @@ fn the_hosting_window_detects_a_machine_and_lists_its_sites() {
     let host = shell.host().unwrap();
     shell.hosting.select("ws1");
     shell.hosting.set_can_detect(true);
+    shell.hosting.set_can_read_facts(true);
+    // the demo has hosting off: Detect is greyed out and a message for it is ignored
     shell.hosting.update(Msg::Detect, &shell.services, &host);
-    let text = frame_until(&mut shell, "intranet.example.lan");
-    assert!(text.contains("web 1  started  Intranet"), "{text}");
+    for _ in 0..5 {
+        let text = frame(&mut shell);
+        assert!(!text.contains("intranet.example.lan"), "{text}");
+        assert!(!text.contains("sites on ws1"), "{text}");
+    }
 }
 
 #[test]
