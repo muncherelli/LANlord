@@ -264,9 +264,9 @@ impl Operation {
             Operation::MachineRun { .. }
             | Operation::MachinePreset { .. }
             | Operation::MachinePut { .. } => Need::manage(Area::Commands),
-            Operation::HostingDetect { .. } | Operation::HostingFacts { .. } => {
-                Need::view(Area::Hosting)
-            }
+            // detecting runs scripts on the machine; reading what was kept only looks
+            Operation::HostingDetect { .. } => Need::manage(Area::Hosting),
+            Operation::HostingFacts { .. } => Need::view(Area::Hosting),
             Operation::Power { .. } => Need::manage(Area::Status),
             Operation::ServerFacts | Operation::Doctor => Need::view(Area::Status),
             Operation::NetworkStatus => Need::view(Area::Network),
@@ -856,18 +856,17 @@ mod tests {
         );
         assert_eq!(topic::machine_run_id("machine-run:0a1b2c3"), None);
         assert_eq!(Operation::Machines.requires(), Need::view(Area::Domain));
-        // detection only reads, so a view of hosting is enough; commands rights do not give it
-        for operation in [
-            Operation::HostingDetect {
-                machine: "NT4SRV01".into(),
-            },
-            Operation::HostingFacts {
-                machine: "NT4SRV01".into(),
-            },
-        ] {
-            assert_eq!(operation.requires(), Need::view(Area::Hosting));
-            assert!(operation.needs_gateway_key());
-        }
+        // detecting runs scripts on the machine, so it needs manage; reading the kept facts needs
+        // a view of hosting; commands rights give neither
+        let detect = Operation::HostingDetect {
+            machine: "NT4SRV01".into(),
+        };
+        let facts = Operation::HostingFacts {
+            machine: "NT4SRV01".into(),
+        };
+        assert_eq!(detect.requires(), Need::manage(Area::Hosting));
+        assert_eq!(facts.requires(), Need::view(Area::Hosting));
+        assert!(detect.needs_gateway_key() && facts.needs_gateway_key());
         let preset = |id: &str| {
             Operation::MachinePreset {
                 machine: "NT4SRV01".into(),

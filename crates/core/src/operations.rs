@@ -609,6 +609,7 @@ fn dispatch(
             )?
         }
         Operation::HostingDetect { machine } => {
+            require_iis(session, ask)?;
             let identity = key()?;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -634,7 +635,11 @@ fn dispatch(
                     stdout: out.stdout_text(),
                 })
             })?;
-            hosting::store(&crate::engine::host::RealHost, hosting::FACTS_DIR, &found)?;
+            let note = hosting::locked(hosting::FACTS_DIR, || {
+                hosting::store(&crate::engine::host::RealHost, hosting::FACTS_DIR, &found)
+            })?;
+            let mut found = found;
+            found.notes.extend(note);
             Reply::Hosting(Some(Box::new(found)))
         }
         Operation::HostingFacts { machine } => Reply::Hosting(
@@ -1227,6 +1232,37 @@ esac"#,
                 timeout_secs: 5,
             };
             assert!(on_machines(&session, &run).is_ok(), "{plain:?}");
+        }
+    }
+
+    #[test]
+    fn detecting_is_refused_unless_hosting_has_its_iis_part_on() {
+        let events = crate::nt4_exec::tests::event(r#"{"exit":0}"#);
+        let off = [
+            "",
+            "components:\n  nt4-domain: {}\n",
+            "components:\n  nt4-domain: {}\n  hosting: {enabled: false, subcomponents: [iis]}\n",
+            "components:\n  nt4-domain: {}\n  hosting: {subcomponents: [frontpage]}\n",
+        ];
+        for plain in off {
+            let record = tempfile::NamedTempFile::new().unwrap();
+            let session = machine_gateway_with(record.path(), &events, plain);
+            let detect = Operation::HostingDetect {
+                machine: "ws1".into(),
+            };
+            let refused = on_machines(&session, &detect).unwrap_err();
+            let text = refused.to_string();
+            assert!(
+                text.contains("turn on the Hosting component (iis) to use IIS presets"),
+                "{plain:?}: {text}"
+            );
+            assert!(refused.downcast_ref::<access::Refused>().is_some());
+            // nothing reached the machine
+            assert_eq!(
+                std::fs::read_to_string(record.path()).unwrap(),
+                "",
+                "{plain:?}"
+            );
         }
     }
 

@@ -33,16 +33,59 @@ pub fn cached(host: &dyn Host, dir: &str, machine: &str) -> Result<Option<Hostin
     Ok(load(host, dir)?.remove(&key(machine)))
 }
 
-/// keep `facts`, replacing the older ones of the same machine.
-pub fn store(host: &dyn Host, dir: &str, facts: &HostingFacts) -> Result<()> {
-    let mut all = load(host, dir)?;
+/// keep `facts`, replacing the older ones of the same machine. a cache that cannot be read is
+/// moved to `facts.json.bad` and a new one is started; the reply says so. callers that may run
+/// together go through [`locked`].
+pub fn store(host: &dyn Host, dir: &str, facts: &HostingFacts) -> Result<Option<String>> {
+    let mut note = None;
+    let mut all = match load(host, dir) {
+        Ok(all) => all,
+        Err(error) => {
+            let Some(bytes) = host.read(&path(dir))? else {
+                return Err(error);
+            };
+            host.mkdir(dir, 0o700)?;
+            let bad = format!("{}.bad", path(dir));
+            host.write(&bad, &bytes, 0o600)?;
+            note = Some(format!(
+                "the kept facts were damaged and were moved to {bad}; started again with this machine"
+            ));
+            BTreeMap::new()
+        }
+    };
     all.insert(key(&facts.machine), facts.clone());
     host.mkdir(dir, 0o700)?;
     host.write(
         &path(dir),
         serde_json::to_string_pretty(&all)?.as_bytes(),
         0o600,
-    )
+    )?;
+    Ok(note)
+}
+
+/// run `change` with the facts of `dir` held by this process and by no other: a mutex for the
+/// threads, a lock on the directory for other processes.
+pub fn locked<T>(dir: &str, change: impl FnOnce() -> Result<T>) -> Result<T> {
+    static HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _thread = HELD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    #[cfg(unix)]
+    let _process = {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(format!("{dir}/.lock"))?;
+        file.lock()?;
+        // the lock goes with the file when it is dropped
+        file
+    };
+    change()
 }
 
 /// the facts as lines of text for a terminal: the services, then one line per site.
@@ -62,6 +105,7 @@ pub fn facts_lines(facts: &HostingFacts) -> Vec<String> {
     if facts.sites.is_empty() && !facts.iis_seen() {
         lines.push("IIS not present, install the NT4 Option Pack".into());
     }
+    lines.extend(facts.notes.iter().cloned());
     for site in &facts.sites {
         let bindings: Vec<String> = site
             .bindings
@@ -168,11 +212,42 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_cache_is_an_error_not_an_empty_one() {
+    fn a_damaged_cache_is_set_aside_and_started_again() {
         let host = FakeHost::new();
         host.write("/h/facts.json", b"{", 0o600).unwrap();
+        // reading says so, and does not touch it
         assert!(cached(&host, "/h", "WEB1").is_err());
-        assert!(store(&host, "/h", &facts("WEB1", 1, "", "")).is_err());
+        let note = store(&host, "/h", &facts("WEB1", 1, "", "")).unwrap();
+        assert!(note.unwrap().contains("facts.json.bad"));
+        assert_eq!(host.read("/h/facts.json.bad").unwrap().unwrap(), b"{");
+        assert!(cached(&host, "/h", "WEB1").unwrap().is_some());
+        // a sound cache has nothing to say
+        assert_eq!(store(&host, "/h", &facts("WEB2", 1, "", "")).unwrap(), None);
+    }
+
+    #[test]
+    fn detections_that_run_together_all_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosting").to_string_lossy().into_owned();
+        let threads: Vec<_> = (0..16)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let found = facts(&format!("WEB{n}"), 1, "", "");
+                    locked(&path, || {
+                        store(&crate::engine::host::RealHost, &path, &found)
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        for n in 0..16 {
+            let found = cached(&crate::engine::host::RealHost, &path, &format!("web{n}"));
+            assert!(found.unwrap().is_some(), "WEB{n} was lost");
+        }
     }
 
     #[test]

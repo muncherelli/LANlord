@@ -109,10 +109,13 @@ impl Host for RealHost {
         let name = target
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("{path} is not a file"))?;
+        // unique per call: two writers of one file in one process must not share a temp file
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let temp = dir.join(format!(
-            ".{}.lanlord-{}",
+            ".{}.lanlord-{}-{}",
             name.to_string_lossy(),
-            std::process::id()
+            std::process::id(),
+            WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let _ = std::fs::remove_file(&temp);
         let written = (|| -> std::io::Result<()> {
