@@ -170,6 +170,34 @@ fn double_clicking_an_icon_opens_its_window_and_the_title_bar_drags_it() {
 }
 
 #[test]
+fn a_drag_that_starts_in_the_window_body_never_moves_it() {
+    let mut shell = demo();
+    frame(&mut shell);
+    shell.open(Target::Console);
+    frame(&mut shell);
+    let (_, rect, layout, _) = shell.hits.windows.last().cloned().unwrap();
+    let grab = Position::new(rect.x + rect.width / 2, layout.title_bar.y + 3);
+    assert!(!layout.title_bar.contains(grab));
+    let now = Instant::now();
+    mouse(
+        &mut shell,
+        MouseEventKind::Down(MouseButton::Left),
+        grab,
+        now,
+    );
+    let to = Position::new(grab.x + 5, grab.y + 2);
+    mouse(&mut shell, MouseEventKind::Drag(MouseButton::Left), to, now);
+    mouse(&mut shell, MouseEventKind::Up(MouseButton::Left), to, now);
+    let after = shell
+        .windows
+        .iter()
+        .find(|w| w.target == Target::Console)
+        .unwrap()
+        .rect;
+    assert_eq!((after.x, after.y), (rect.x, rect.y));
+}
+
+#[test]
 fn the_close_box_closes_and_the_taskbar_button_minimises_and_restores() {
     let mut shell = demo();
     frame(&mut shell);
