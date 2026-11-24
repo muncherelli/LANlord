@@ -1435,17 +1435,31 @@ class LldumpTest(unittest.TestCase):
         self.code = [strip_comment(l) for l in self.text.splitlines()]
         self.code = [l for l in self.code if l.strip()]
 
-    def test_get_is_only_called_in_safeget_after_the_name_is_checked(self):
-        calls = [i for i, l in enumerate(self.code) if re.search(r"\.Get\s*\(", l, re.I)]
-        self.assertEqual(len(calls), 1)
-        start = next(i for i, l in enumerate(self.code) if l.startswith("Function SafeGet"))
+    def function_range(self, name):
+        start = next(i for i, l in enumerate(self.code) if l.startswith("Function " + name))
         end = next(i for i, l in enumerate(self.code) if i > start and l.startswith("End Function"))
-        self.assertTrue(start < calls[0] < end)
+        return start, end
+
+    def test_get_is_only_called_in_safeget_and_hassecret(self):
+        calls = [i for i, l in enumerate(self.code) if re.search(r"\.Get\s*\(", l, re.I)]
+        self.assertEqual(len(calls), 2)
+        start, end = self.function_range("SafeGet")
+        inside = [c for c in calls if start < c < end]
+        self.assertEqual(len(inside), 1)
         guard = next(i for i in range(start, end) if "IsSecret(sName)" in self.code[i])
         self.assertIn("Exit Function", self.code[guard])
-        self.assertLess(guard, calls[0])
+        self.assertLess(guard, inside[0])
         # the guard looks for "pass" in any case
         self.assertRegex(self.text, r'InStr\(1, sName, "pass", 1\)')
+        # the other Get is HasSecret, which answers a Boolean and prints nothing
+        start, end = self.function_range("HasSecret")
+        self.assertEqual([c for c in calls if start < c < end], [c for c in calls if c not in inside])
+        body = "\n".join(self.code[start:end])
+        self.assertNotIn("Echo", body)
+        for l in self.code[start:end]:
+            if "HasSecret =" in l:
+                value = l.split("=", 1)[1].strip()
+                self.assertTrue(value in ("True", "False") or value.startswith("("), l)
 
     def test_no_other_way_to_read_a_property(self):
         for l in self.code:
@@ -1462,6 +1476,8 @@ class LldumpTest(unittest.TestCase):
         show = self.text[self.text.index("Sub Show("):]
         self.assertLess(show.index("<redacted>"), show.index("SafeGet(oObj, sName)"))
         self.assertIn('"=<redacted>"', show)
+        # a secret with no value says so, and the marker is the only thing printed either way
+        self.assertIn('"=<unset>"', show)
 
     def test_it_dumps_the_services_and_the_wanted_properties(self):
         for word in ("W3SVC", "MSFTPSVC", "SMTPSVC", "ServerComment", "ServerBindings", "Path",

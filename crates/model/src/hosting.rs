@@ -24,6 +24,10 @@ pub struct HostingFacts {
     /// hardening checks; none run yet.
     #[serde(default)]
     pub checks: Vec<CheckResult>,
+    /// what the server wants said about this detection (a damaged cache set aside); a reply only,
+    /// never kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +140,15 @@ fn state_name(code: &str) -> &'static str {
     }
 }
 
+/// the text without control characters: a name from a machine must not move a terminal.
+fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .into()
+}
+
 /// the sites in the key=value lines of `lldump.vbs`. a line is `SERVICE/ID/Property=value`, with
 /// `[n]` after the property for the items of a list; the root directory of a site is `ROOT`.
 /// anything that is not a site line is ignored.
@@ -174,11 +187,15 @@ pub fn parse_dump(dump: &str) -> Vec<SiteFact> {
         let site = &mut sites[at];
         let Some(last) = rest.last() else { continue };
         let property = last.split('[').next().unwrap_or(last);
-        // a password property of the site or of anything below it: the value is dropped here
+        // a password property of the site or of anything below it: the value is dropped here, and
+        // only the script's own `<redacted>` (it has a value) counts, `<unset>` (it has none) and
+        // anything else do not
         if property.to_ascii_lowercase().contains("pass") {
-            site.has_password |= !value.trim().is_empty();
+            site.has_password |= value.trim() == "<redacted>";
             continue;
         }
+        let value = plain(value);
+        let value = value.as_str();
         match (rest.as_slice(), property) {
             ([_], "ServerComment") => site.comment = value.trim().into(),
             ([_], "ServerBindings") => site.bindings.extend(parse_binding(value)),
@@ -198,6 +215,7 @@ pub fn facts(machine: &str, detected_at: u64, net_start: &str, dump: &str) -> Ho
         services: parse_services(net_start),
         sites: parse_dump(dump),
         checks: Vec::new(),
+        notes: Vec::new(),
     }
 }
 
@@ -281,16 +299,34 @@ SMTPSVC=absent
                     W3SVC/1/AnonymousUserPass=hunter2\n\
                     W3SVC/1/ROOT/WAMUserPass=s3cret-value\n";
         let sites = parse_dump(dump);
-        assert!(sites[0].has_password);
+        // only the script's `<redacted>` says there is a password; a bare value is not trusted
+        assert!(!sites[0].has_password);
         let json = serde_json::to_string(&facts("WEBHOST", 1, "", dump)).unwrap();
         assert!(
             !json.contains("hunter2") && !json.contains("s3cret-value"),
             "{json}"
         );
         assert!(!json.contains("redacted"));
+        // `<unset>` says the property has no value
+        let unset = parse_dump("W3SVC/1/WAMUserPass=<unset>\nW3SVC/1/AnonymousUserPass=<unset>\n");
+        assert!(!unset[0].has_password);
+        let set = parse_dump("W3SVC/1/WAMUserPass=<unset>\nW3SVC/1/AnonymousUserPass=<redacted>\n");
+        assert!(set[0].has_password);
         // no password property at all
         let none = parse_dump("W3SVC/1/ServerComment=Intranet\n");
         assert!(!none[0].has_password);
+    }
+
+    #[test]
+    fn control_characters_are_dropped_from_the_fields() {
+        let dump = "W3SVC/1/ServerComment=In\u{1b}[31mtra\tnet\u{7}\n\
+                    W3SVC/1/ServerBindings[0]=:80:a.exa\u{1b}mple.lan\n\
+                    W3SVC/1/ROOT/Path=D:\\Si\u{8}tes\u{0}\n";
+        let site = &parse_dump(dump)[0];
+        assert_eq!(site.comment, "In[31mtranet");
+        assert_eq!(site.bindings[0].host, "a.example.lan");
+        assert_eq!(site.home, "D:\\Sites");
+        assert!(!format!("{site:?}").contains("\\u{1b}"));
     }
 
     #[test]
