@@ -219,6 +219,26 @@ Function Under(sBase, sRest)
   End If
 End Function
 
+' the folder a default-site virtual directory points at, or "" when the metabase has none.
+' this is what makes a custom web root (D:\Sites) work: the vdir path wins over the option pack's.
+Function VdirPath(sNode)
+  Dim oVdir, vPath
+  VdirPath = ""
+  Set oVdir = Nothing
+  On Error Resume Next
+  Set oVdir = GetObject("IIS://localhost/" & sNode)
+  If Err.Number <> 0 Or oVdir Is Nothing Then
+    Err.Clear
+    On Error GoTo 0
+    Exit Function
+  End If
+  On Error GoTo 0
+  vPath = SafeGet(oVdir, "Path")
+  If Not IsEmpty(vPath) And Not IsNull(vPath) And Not IsArray(vPath) Then
+    If PathOk(CStr(vPath)) Then VdirPath = CStr(vPath)
+  End If
+End Function
+
 Function FolderState(oFso, sPath)
   FolderState = "unknown"
   If Not PathOk(sPath) Then Exit Function
@@ -256,7 +276,7 @@ End Function
 ' nothing here reads a secret. nt4 has no %CommonProgramFiles%, so the common files folder
 ' comes from the registry, and the inetpub folder from the web root the option pack recorded.
 Sub HostFacts()
-  Dim oShell, oFso, sCommon, sInet, sReg, vStart, aNames, aAdc, n
+  Dim oShell, oFso, sCommon, sInet, sSamples, sScripts, sReg, vStart, aNames, aAdc, n
   Set oShell = Nothing
   Set oFso = Nothing
   On Error Resume Next
@@ -281,10 +301,15 @@ Sub HostFacts()
   End If
   If Not PathOk(sCommon) Then sCommon = ""
   If Not PathOk(sInet) Then sInet = ""
-  WScript.Echo "Host/Folder/IISSamples=" & FolderState(oFso, Under(sInet, "\iissamples"))
-  WScript.Echo "Host/Folder/ScriptsTools=" & FolderState(oFso, Under(sInet, "\scripts\tools"))
+  ' where the metabase puts the samples and scripts wins; the option pack's parent is the fallback
+  sSamples = VdirPath("W3SVC/1/ROOT/IISSamples")
+  If Not PathOk(sSamples) Then sSamples = Under(sInet, "\iissamples")
+  sScripts = VdirPath("W3SVC/1/ROOT/Scripts")
+  If Not PathOk(sScripts) Then sScripts = Under(sInet, "\scripts")
+  WScript.Echo "Host/Folder/IISSamples=" & FolderState(oFso, sSamples)
+  WScript.Echo "Host/Folder/ScriptsTools=" & FolderState(oFso, Under(sScripts, "\tools"))
   WScript.Echo "Host/File/codebrws.asp=" & _
-    FileState(oFso, Under(sInet, "\iissamples\sdk\asp\docs\codebrws.asp"))
+    FileState(oFso, Under(sSamples, "\sdk\asp\docs\codebrws.asp"))
   WScript.Echo "Host/File/showcode.asp=" & _
     FileState(oFso, Under(sCommon, "\System\msadc\Samples\SELECTOR\showcode.asp"))
   WScript.Echo "Host/Folder/FPSE=" & _

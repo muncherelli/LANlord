@@ -418,11 +418,11 @@ fn output_lines(output: &RunOutput) -> Vec<String> {
     lines
 }
 
-/// one site for the page: kind, id, state, name, bindings and home.
 /// the widest a check line gets in a window: a terminal of 80 columns has a frame and a margin
 /// on each side, so the line is cut with an ellipsis rather than hidden.
 const CHECK_WIDTH: usize = 76;
 
+/// one site for the page: kind, id, state, name, bindings and home.
 fn site_line(site: &SiteFact) -> String {
     let bindings: Vec<String> = site
         .bindings

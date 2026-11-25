@@ -1495,6 +1495,11 @@ class LldumpTest(unittest.TestCase):
             self.assertNotRegex(l, r"(?i)pass|password|secret", l)
         self.assertIn("Sub HostFacts", self.text)
 
+    def test_samples_and_scripts_follow_the_metabase_vdir_paths(self):
+        code = "\n".join(self.code)
+        self.assertIn('VdirPath("W3SVC/1/ROOT/IISSamples")', code)
+        self.assertIn('VdirPath("W3SVC/1/ROOT/Scripts")', code)
+
     def test_host_paths_come_from_the_registry_not_win2000_variables(self):
         code = "\n".join(self.code)
         self.assertNotIn("CommonProgramFiles", code)

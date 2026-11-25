@@ -493,6 +493,7 @@ fn has_tls(dump: &Dump, site: &str) -> bool {
 
 fn basic_no_tls(dump: &Dump) -> CheckResult {
     let mut looked = false;
+    let mut unsure = false;
     let mut hits = Vec::new();
     for site in dump.sites("W3SVC") {
         let flags: Vec<&String> = dump
@@ -500,11 +501,13 @@ fn basic_no_tls(dump: &Dump) -> CheckResult {
             .filter_map(|(_, props)| props.get("AuthFlags")?.first())
             .collect();
         looked |= !flags.is_empty();
-        if flags.iter().any(|v| bit(v, 2) == Some(true)) && !has_tls(dump, site) {
+        let basic: Vec<Option<bool>> = flags.iter().map(|v| bit(v, 2)).collect();
+        unsure |= basic.contains(&None);
+        if basic.contains(&Some(true)) && !has_tls(dump, site) {
             hits.push(format!("{site} allows Basic and has no TLS binding"));
         }
     }
-    match (hits.is_empty(), looked) {
+    match (hits.is_empty(), looked && !unsure) {
         (false, _) => result("iis.basic-no-tls", CheckStatus::Warn, few(&hits), false),
         (true, true) => result(
             "iis.basic-no-tls",
@@ -515,7 +518,7 @@ fn basic_no_tls(dump: &Dump) -> CheckResult {
         (true, false) => result(
             "iis.basic-no-tls",
             CheckStatus::Unknown,
-            "the dump has no authentication flags",
+            "the dump lacks readable authentication flags",
             false,
         ),
     }
@@ -566,23 +569,34 @@ fn ftp_anon_write(dump: &Dump) -> CheckResult {
     let id = "ftp.anon-write";
     let sites = dump.sites("MSFTPSVC");
     let mut hits = Vec::new();
+    let mut unsure = false;
     for site in &sites {
-        if !dump.first(site, "AllowAnonymous").is_some_and(truthy) {
-            continue;
+        match dump.first(site, "AllowAnonymous").map(parse_bool) {
+            Some(Some(true)) => {}
+            Some(None) => {
+                unsure = true;
+                continue;
+            }
+            _ => continue,
         }
-        hits.extend(
-            dump.under(site)
-                .filter(|(_, props)| {
-                    props
-                        .get("AccessFlags")
-                        .and_then(|v| v.first())
-                        .is_some_and(|v| bit(v, 2) == Some(true))
-                })
-                .map(|(node, _)| format!("{node} lets anonymous users write")),
-        );
+        for (node, props) in dump.under(site) {
+            if let Some(v) = props.get("AccessFlags").and_then(|v| v.first()) {
+                match bit(v, 2) {
+                    Some(true) => hits.push(format!("{node} lets anonymous users write")),
+                    Some(false) => {}
+                    None => unsure = true,
+                }
+            }
+        }
     }
     match (hits.is_empty(), sites.is_empty(), dump.presence("MSFTPSVC")) {
         (false, ..) => result(id, CheckStatus::Fail, few(&hits), true),
+        (true, false, _) if unsure => result(
+            id,
+            CheckStatus::Unknown,
+            "the dump lacks readable FTP flags",
+            true,
+        ),
         (true, false, _) => result(id, CheckStatus::Pass, "no anonymous FTP write", true),
         (true, true, Presence::Unseen) => {
             result(id, CheckStatus::Unknown, "the dump has no FTP data", true)
@@ -1093,6 +1107,32 @@ Host/Svc/Alerter/Start=4
         let check = get(&low, "iis.parent-paths");
         assert_eq!(check.status, CheckStatus::Fail);
         assert_eq!(check.evidence, "W3SVC/1/ROOT/app allows parent paths");
+    }
+
+    #[test]
+    fn unreadable_flags_are_unknown_for_basic_and_ftp_write() {
+        let web = "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\n";
+        let basic = evaluate(&format!("{web}W3SVC/1/AuthFlags=weird\n"));
+        assert_eq!(status(&basic, "iis.basic-no-tls"), CheckStatus::Unknown);
+        let ftp = "MSFTPSVC/Class=IIsFtpService\nMSFTPSVC/1/Class=IIsFtpServer\n";
+        let odd_access = evaluate(&format!(
+            "{ftp}MSFTPSVC/1/AllowAnonymous=True\nMSFTPSVC/1/ROOT/AccessFlags=lots\n"
+        ));
+        assert_eq!(status(&odd_access, "ftp.anon-write"), CheckStatus::Unknown);
+        let odd_anon = evaluate(&format!(
+            "{ftp}MSFTPSVC/1/AllowAnonymous=perhaps\nMSFTPSVC/1/ROOT/AccessFlags=3\n"
+        ));
+        assert_eq!(status(&odd_anon, "ftp.anon-write"), CheckStatus::Unknown);
+        let fine = evaluate(&format!(
+            "{ftp}MSFTPSVC/1/AllowAnonymous=True\nMSFTPSVC/1/ROOT/AccessFlags=1\n"
+        ));
+        assert_eq!(status(&fine, "ftp.anon-write"), CheckStatus::Pass);
+        let write = evaluate(&format!(
+            "{ftp}MSFTPSVC/1/AllowAnonymous=perhaps\nMSFTPSVC/1/ROOT/AccessFlags=3\n\
+             MSFTPSVC/2/Class=IIsFtpServer\nMSFTPSVC/2/AllowAnonymous=True\n\
+             MSFTPSVC/2/ROOT/AccessFlags=2\n"
+        ));
+        assert_eq!(status(&write, "ftp.anon-write"), CheckStatus::Fail);
     }
 
     #[test]
