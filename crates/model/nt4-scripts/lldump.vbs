@@ -235,7 +235,12 @@ Function VdirPath(sNode)
   On Error GoTo 0
   vPath = SafeGet(oVdir, "Path")
   If Not IsEmpty(vPath) And Not IsNull(vPath) And Not IsArray(vPath) Then
-    If PathOk(CStr(vPath)) Then VdirPath = CStr(vPath)
+    vPath = CStr(vPath)
+    ' a trailing backslash would double up when a sub folder is joined on
+    Do While Len(vPath) > 3 And Right(vPath, 1) = "\"
+      vPath = Left(vPath, Len(vPath) - 1)
+    Loop
+    If PathOk(vPath) Then VdirPath = vPath
   End If
 End Function
 

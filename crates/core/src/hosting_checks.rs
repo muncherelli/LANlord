@@ -197,6 +197,15 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+/// iis 4 reports `AppIsolated` as a boolean (`True`/`False`); iis 5 made it a number where 0 is
+/// in process, 1 isolated and 2 pooled. either way only "in process" is risky.
+fn in_process(value: &str) -> Option<bool> {
+    match parse_bool(value) {
+        Some(isolated) => Some(!isolated),
+        None => value.trim().parse::<i64>().ok().map(|n| n == 0),
+    }
+}
+
 fn truthy(value: &str) -> bool {
     parse_bool(value) == Some(true)
 }
@@ -743,7 +752,7 @@ pub fn evaluate(text: &str) -> Vec<CheckResult> {
             &dump,
             ("iis.isolation", "AppIsolated"),
             "runs ASP in the web server process",
-            |v| v.trim().parse::<i64>().ok().map(|n| n == 0),
+            in_process,
         ),
         flag(
             &dump,
@@ -865,7 +874,7 @@ W3SVC/1/LogPluginClsid={ff160663-de82-11cf-bc0a-00aa006111e0}
 W3SVC/1/AuthFlags=5
 W3SVC/1/ROOT/Class=IIsWebVirtualDir
 W3SVC/1/ROOT/AccessFlags=513
-W3SVC/1/ROOT/AppIsolated=2
+W3SVC/1/ROOT/AppIsolated=True
 W3SVC/1/ROOT/AspEnableParentPaths=False
 W3SVC/1/ROOT/AspScriptErrorSentToBrowser=False
 W3SVC/1/ROOT/EnableDirBrowsing=False
@@ -890,6 +899,21 @@ Host/Svc/Alerter/Start=4
 
     fn status(checks: &[CheckResult], id: &str) -> CheckStatus {
         get(checks, id).status
+    }
+
+    #[test]
+    fn isolation_reads_the_iis_4_boolean_and_the_iis_5_number() {
+        for (value, isolated) in [
+            ("True", Some(false)),
+            ("-1", Some(false)),
+            ("False", Some(true)),
+            ("0", Some(true)),
+            ("2", Some(false)),
+            ("", None),
+            ("yes", None),
+        ] {
+            assert_eq!(in_process(value), isolated, "{value}");
+        }
     }
 
     #[test]
