@@ -1742,6 +1742,10 @@ impl Desktop {
             "hosting" => {
                 let facts = lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
                 self.hosting_tree.set_can_read_facts(facts);
+                // F5 reads the kept facts again, as in a console
+                if ui.is_visible() && ui.input(|i| i.key_pressed(egui::Key::F5)) {
+                    self.hosting_tree.refresh();
+                }
                 self.hosting_tree.show(ui, &self.services, host.as_deref());
             }
             "dns" | "dhcp" => self.dns.show(ui, &self.services, host.as_deref()),

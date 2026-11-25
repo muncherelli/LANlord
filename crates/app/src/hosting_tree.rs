@@ -9,7 +9,7 @@ use lanlord_model::hosting::{HostingFacts, SiteFact, SiteKind};
 
 use crate::services::Services;
 use crate::tasks::Job;
-use crate::view::{Dialog, Node, Table, Tree, TreeRow};
+use crate::view::{Button, Dialog, Node, Table, Tree, TreeRow};
 
 /// how wide the tree is, in layout units.
 const TREE_WIDTH: f32 = 190.0;
@@ -55,6 +55,8 @@ pub enum Msg {
     Pick(usize),
     /// go to child `0` of the selected node.
     Child(usize),
+    /// read the kept facts again.
+    Refresh,
     /// a row of a list that goes nowhere.
     Nothing,
 }
@@ -82,6 +84,8 @@ pub struct HostingTree {
     selected: Id,
     /// the highlighted row of the details list.
     detail: Option<usize>,
+    /// machines whose kept facts are to be read again; the old facts show until the new arrive.
+    stale: HashSet<String>,
     can_read_facts: bool,
     facts: HashMap<String, Kept>,
     fetching: Option<Fetch>,
@@ -95,6 +99,7 @@ impl Default for HostingTree {
             open: HashSet::from([Id::Root, Id::Servers]),
             selected: Id::Root,
             detail: None,
+            stale: HashSet::new(),
             can_read_facts: false,
             facts: HashMap::new(),
             fetching: None,
@@ -309,9 +314,10 @@ impl HostingTree {
                 .iter()
                 .filter(|n| self.open.contains(&Id::Server((*n).clone()))),
         );
+        machines.extend(self.names().iter().filter(|n| self.stale.contains(*n)));
         let mut wanted: Vec<String> = Vec::new();
         for m in machines {
-            if !self.facts.contains_key(m) && !wanted.contains(m) {
+            if (!self.facts.contains_key(m) || self.stale.contains(m)) && !wanted.contains(m) {
                 wanted.push(m.clone());
             }
         }
@@ -358,16 +364,31 @@ impl HostingTree {
         match result {
             Ok(read) => {
                 for (machine, facts) in read {
+                    self.stale.remove(&machine);
                     let kept = facts.map_or_else(Kept::Failed, Kept::Facts);
                     self.facts.insert(machine, kept);
                 }
             }
             Err(error) => {
                 for machine in fetch.machines {
+                    self.stale.remove(&machine);
                     self.facts.insert(machine, Kept::Failed(error.clone()));
                 }
             }
         }
+    }
+
+    /// read the kept facts again, for the machine the picked node is about or for every machine.
+    /// it only asks the gateway for what it kept: detection is never run from here.
+    pub fn refresh(&mut self) {
+        if !self.can_read_facts {
+            return;
+        }
+        let machines: Vec<String> = match &self.selected {
+            Id::Server(m) | Id::Folder(m, _) | Id::Site(m, ..) => vec![m.clone()],
+            _ => self.names().to_vec(),
+        };
+        self.stale.extend(machines);
     }
 
     /// nothing carries over from another host.
@@ -404,7 +425,13 @@ impl HostingTree {
         }
         let mut nodes = vec![
             Node::Columns(vec![
-                (Some(TREE_WIDTH), vec![self.tree()]),
+                (
+                    Some(TREE_WIDTH),
+                    vec![
+                        self.tree(),
+                        Node::Button(Button::new("Refresh", self.can_read_facts, Msg::Refresh)),
+                    ],
+                ),
                 (None, self.details()),
             ]),
             Node::Gap(4.0),
@@ -607,6 +634,7 @@ impl HostingTree {
                     self.select(child);
                 }
             }
+            Msg::Refresh => self.refresh(),
             Msg::Nothing => {}
         }
     }
@@ -857,5 +885,42 @@ mod tests {
             .filter(|c| c.contains("hosting-facts") && c.contains("NT4DEV01"))
             .count();
         assert_eq!(again, 0);
+    }
+
+    #[test]
+    fn refresh_reads_the_kept_facts_again_and_never_detects() {
+        let (mut tree, services, fake) = tree();
+        fake.hosting_detect("a@b", "NT4DEV01", &mut never).unwrap();
+        click(&mut tree, &services, "NT4DEV01");
+        let before = fake.calls().len();
+        tree.update(Msg::Refresh, &services, "a@b");
+        // the old facts stay until the new ones arrive
+        assert!(tree.facts.contains_key("NT4DEV01"));
+        wait(&mut tree, &services);
+        let calls = fake.calls()[before..].to_vec();
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("hosting-facts") && c.contains("NT4DEV01")));
+        assert!(!calls.iter().any(|c| c.contains("hosting-detect")));
+        assert!(!calls.iter().any(|c| c.contains("NT4DEV02")), "{calls:?}");
+        // on Servers every machine is read again
+        click(&mut tree, &services, "Servers");
+        let before = fake.calls().len();
+        tree.update(Msg::Refresh, &services, "a@b");
+        wait(&mut tree, &services);
+        let calls = fake.calls()[before..].to_vec();
+        assert!(calls
+            .iter()
+            .any(|c| c.contains("hosting-facts") && c.contains("NT4DEV02")));
+    }
+
+    #[test]
+    fn refresh_needs_the_right_to_read_facts() {
+        let (mut tree, services, fake) = tree();
+        tree.set_can_read_facts(false);
+        let before = fake.calls().len();
+        tree.update(Msg::Refresh, &services, "a@b");
+        wait(&mut tree, &services);
+        assert_eq!(fake.calls().len(), before);
     }
 }

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - a console-style Hosting window: a tree of services, servers, sites, the gateway and profiles on
-  the left, a details list on the right, read-only; the old window stays as "Hosting (debug)"
+  the left, a details list on the right, read-only, with a Refresh button and F5 to read the kept facts again; the old window stays as "Hosting (debug)"
 - IIS 4 presets `smtpsvc-start`, `smtpsvc-stop` and `smtpsvc-restart`
 - the NT4 server container can run a command on a joined NT4 machine over SMB1; nothing is installed on the machine. A command that outlives its timeout has its `cmd.exe` ended, but programs it started may keep running (NT4 has no way to end them); output files they hold open are removed by the next run
 - a Computers tab in the NT4 Server window (and in the text interface) lists the domain machines and runs a command or a general preset (`ver`, `ipconfig`, `net-start`) on the one you pick, after a confirmation for anything that changes it; the output, exit code, duration and a timed-out state show under the list. It needs manage rights on Remote commands

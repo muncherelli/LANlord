@@ -1900,6 +1900,14 @@ impl Shell {
 
 // input
 impl Shell {
+    /// whether the keyboard goes to the hosting window.
+    fn hosting_window_is_active(&self) -> bool {
+        matches!(
+            self.active_owner(),
+            Some(Owner::Window(Target::Module(i))) if MODULES[i].id == "hosting"
+        )
+    }
+
     /// the box or window the keyboard goes to.
     fn active_owner(&self) -> Option<Owner> {
         if self.hits.dialog.is_some() {
@@ -2397,6 +2405,10 @@ impl Shell {
         }
         if key.code == KeyCode::F(8) && !self.before_desktop() && self.compat_alert() {
             self.open_compat();
+            return;
+        }
+        if key.code == KeyCode::F(5) && self.hosting_window_is_active() {
+            self.hosting_tree.refresh();
             return;
         }
         if key.code == KeyCode::F(10) && !self.before_desktop() {

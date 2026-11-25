@@ -767,4 +767,7 @@ fn the_hosting_window_is_a_tree_with_a_details_list_that_fits_a_small_screen() {
     // the old window is still there under its own name
     open(&mut shell, Target::HostingDebug);
     assert!(until(&mut shell, "ws1").contains("Hosting (debug)"));
+    // F5 reads the kept facts again: the tree is still there after it
+    key(&mut shell, KeyCode::F(5));
+    assert!(until(&mut shell, "Refresh").contains("ws1"));
 }
