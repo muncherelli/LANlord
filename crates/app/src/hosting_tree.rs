@@ -86,6 +86,10 @@ pub struct HostingTree {
     detail: Option<usize>,
     /// machines whose kept facts are to be read again; the old facts show until the new arrive.
     stale: HashSet<String>,
+    /// machines refreshed while a read was in flight: they are stale again when it lands.
+    pending: HashSet<String>,
+    /// why the last read of a machine failed, when its older facts were kept.
+    note: Option<String>,
     can_read_facts: bool,
     facts: HashMap<String, Kept>,
     fetching: Option<Fetch>,
@@ -100,6 +104,8 @@ impl Default for HostingTree {
             selected: Id::Root,
             detail: None,
             stale: HashSet::new(),
+            pending: HashSet::new(),
+            note: None,
             can_read_facts: false,
             facts: HashMap::new(),
             fetching: None,
@@ -361,19 +367,35 @@ impl HostingTree {
         if self.shown_host.as_deref() != Some(fetch.host.as_str()) {
             return;
         }
+        self.note = None;
         match result {
             Ok(read) => {
                 for (machine, facts) in read {
-                    self.stale.remove(&machine);
-                    let kept = facts.map_or_else(Kept::Failed, Kept::Facts);
-                    self.facts.insert(machine, kept);
+                    self.keep(machine, facts);
                 }
             }
             Err(error) => {
                 for machine in fetch.machines {
-                    self.stale.remove(&machine);
-                    self.facts.insert(machine, Kept::Failed(error.clone()));
+                    self.keep(machine, Err(error.clone()));
                 }
+            }
+        }
+        self.stale.extend(self.pending.drain());
+    }
+
+    /// what a read of a machine gave. a failure does not replace facts that were read before:
+    /// it is said in the status instead.
+    fn keep(&mut self, machine: String, read: Result<Option<Box<HostingFacts>>, String>) {
+        self.stale.remove(&machine);
+        match read {
+            Ok(facts) => {
+                self.facts.insert(machine, Kept::Facts(facts));
+            }
+            Err(error) if matches!(self.facts.get(&machine), Some(Kept::Facts(_))) => {
+                self.note = Some(format!("{machine}: {error}"));
+            }
+            Err(error) => {
+                self.facts.insert(machine, Kept::Failed(error));
             }
         }
     }
@@ -388,7 +410,11 @@ impl HostingTree {
             Id::Server(m) | Id::Folder(m, _) | Id::Site(m, ..) => vec![m.clone()],
             _ => self.names().to_vec(),
         };
-        self.stale.extend(machines);
+        if self.fetching.is_some() {
+            self.pending.extend(machines);
+        } else {
+            self.stale.extend(machines);
+        }
     }
 
     /// nothing carries over from another host.
@@ -436,6 +462,9 @@ impl HostingTree {
             ]),
             Node::Gap(4.0),
         ];
+        if let Some(note) = &self.note {
+            nodes.push(Node::Warning(note.clone()));
+        }
         nodes.push(crate::view::status(&self.remote));
         nodes
     }
@@ -922,5 +951,37 @@ mod tests {
         tree.update(Msg::Refresh, &services, "a@b");
         wait(&mut tree, &services);
         assert_eq!(fake.calls().len(), before);
+    }
+
+    #[test]
+    fn a_refresh_during_a_read_is_read_again_after_it() {
+        let (mut tree, services, fake) = tree();
+        click(&mut tree, &services, "NT4DEV01");
+        let before = fake.calls().len();
+        // a read is in flight when the refresh comes
+        tree.facts.clear();
+        tree.view(&services, Some("a@b"));
+        assert!(tree.fetching.is_some());
+        tree.update(Msg::Refresh, &services, "a@b");
+        wait(&mut tree, &services);
+        let reads = fake.calls()[before..]
+            .iter()
+            .filter(|c| c.contains("hosting-facts") && c.contains("NT4DEV01"))
+            .count();
+        assert!(reads >= 2, "{reads}");
+    }
+
+    #[test]
+    fn a_failed_read_keeps_the_older_facts_and_says_why() {
+        let (mut tree, _, _) = tree();
+        tree.facts.insert("NT4DEV01".into(), Kept::Facts(None));
+        tree.keep("NT4DEV01".into(), Err("no answer".into()));
+        assert!(matches!(
+            tree.facts.get("NT4DEV01"),
+            Some(Kept::Facts(None))
+        ));
+        assert_eq!(tree.note.as_deref(), Some("NT4DEV01: no answer"));
+        tree.keep("NT4DEV02".into(), Err("no answer".into()));
+        assert!(matches!(tree.facts.get("NT4DEV02"), Some(Kept::Failed(_))));
     }
 }

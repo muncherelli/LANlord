@@ -1743,7 +1743,13 @@ impl Desktop {
                 let facts = lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
                 self.hosting_tree.set_can_read_facts(facts);
                 // F5 reads the kept facts again, as in a console
-                if ui.is_visible() && ui.input(|i| i.key_pressed(egui::Key::F5)) {
+                let on_top =
+                    matches!(self.active, Some(Target::Module(i)) if MODULES[i].id == "hosting");
+                if on_top
+                    && ui.is_visible()
+                    && !ui.ctx().text_edit_focused()
+                    && ui.input(|i| i.key_pressed(egui::Key::F5))
+                {
                     self.hosting_tree.refresh();
                 }
                 self.hosting_tree.show(ui, &self.services, host.as_deref());

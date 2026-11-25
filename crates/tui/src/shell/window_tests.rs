@@ -767,7 +767,51 @@ fn the_hosting_window_is_a_tree_with_a_details_list_that_fits_a_small_screen() {
     // the old window is still there under its own name
     open(&mut shell, Target::HostingDebug);
     assert!(until(&mut shell, "ws1").contains("Hosting (debug)"));
-    // F5 reads the kept facts again: the tree is still there after it
+}
+
+#[test]
+fn f5_in_the_hosting_window_reads_the_kept_facts_again() {
+    let fake = Arc::new(Fake::new());
+    let mut shell = server(&fake);
+    open(&mut shell, module("hosting"));
+    until(&mut shell, "ws1");
+    let before = calls_starting(&fake, "hosting-facts");
     key(&mut shell, KeyCode::F(5));
-    assert!(until(&mut shell, "Refresh").contains("ws1"));
+    let started = Instant::now();
+    while calls_starting(&fake, "hosting-facts") == before {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "F5 read nothing"
+        );
+        frame(&mut shell);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // with the debug window on top, the keyboard is not the hosting window's: F5 does nothing
+    open(&mut shell, Target::HostingDebug);
+    until(&mut shell, "Hosting (debug)");
+    let before = calls_starting(&fake, "hosting-facts");
+    key(&mut shell, KeyCode::F(5));
+    for _ in 0..20 {
+        frame(&mut shell);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(calls_starting(&fake, "hosting-facts"), before);
+}
+
+#[test]
+fn enter_in_the_hosting_details_list_opens_the_highlighted_child() {
+    let fake = Arc::new(Fake::new());
+    let mut shell = server(&fake);
+    open(&mut shell, module("hosting"));
+    until(&mut shell, "ws1");
+    // tab through the tree and the button to the details list; Down highlights its first row
+    // without leaving the node, Enter opens it
+    for _ in 0..3 {
+        key(&mut shell, KeyCode::Tab);
+    }
+    key(&mut shell, KeyCode::Down);
+    assert!(!small(&mut shell).contains("No services yet"));
+    key(&mut shell, KeyCode::Enter);
+    let text = small(&mut shell);
+    assert!(text.contains("No services yet"), "{text}");
 }
