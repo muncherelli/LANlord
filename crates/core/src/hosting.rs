@@ -135,6 +135,22 @@ pub fn facts_lines(facts: &HostingFacts) -> Vec<String> {
     lines
 }
 
+/// the checks as `key=value` lines: for each check its status, what was seen and whether a fix
+/// exists. a kept detection from before the checks existed has none.
+pub fn check_lines(facts: &HostingFacts) -> Vec<String> {
+    facts
+        .checks
+        .iter()
+        .flat_map(|c| {
+            [
+                format!("{}.status={}", c.id, c.status.label()),
+                format!("{}.evidence={}", c.id, c.evidence),
+                format!("{}.fix_available={}", c.id, c.fix_available),
+            ]
+        })
+        .collect()
+}
+
 /// what one run on the machine did.
 pub struct Ran {
     pub exit_code: Option<i32>,
@@ -157,7 +173,9 @@ pub fn detect(
     if dump.timed_out || dump.exit_code != Some(0) {
         bail!("the IIS dump on {machine} did not finish; is the NT4 Option Pack installed?");
     }
-    Ok(facts(machine, now, &services.stdout, &dump.stdout))
+    let mut found = facts(machine, now, &services.stdout, &dump.stdout);
+    found.checks = crate::hosting_checks::evaluate(&dump.stdout);
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -278,6 +296,32 @@ mod tests {
             .services
             .iter()
             .any(|s| s.name == "W3SVC" && s.running));
+    }
+
+    #[test]
+    fn detect_keeps_the_checks_and_the_lines_are_key_value() {
+        let found = detect("WEB1", 7, &mut |preset| {
+            Ok(if preset == "iis-dump" {
+                ran(
+                    0,
+                    "W3SVC/Class=IIsWebService\nW3SVC/1/Class=IIsWebServer\nW3SVC/1/ROOT/IISSamples/Class=IIsWebVirtualDir\n",
+                )
+            } else {
+                ran(0, "")
+            })
+        })
+        .unwrap();
+        assert!(!found.checks.is_empty());
+        let lines = check_lines(&found);
+        assert_eq!(lines.len(), found.checks.len() * 3);
+        assert!(
+            lines.contains(&"iis.samples.status=fail".to_string()),
+            "{lines:?}"
+        );
+        assert!(lines.contains(&"iis.samples.fix_available=true".to_string()));
+        assert!(lines.iter().all(|l| l.contains('=')));
+        // facts kept before checks existed have no lines
+        assert!(check_lines(&facts("WEB2", 1, "", "")).is_empty());
     }
 
     #[test]

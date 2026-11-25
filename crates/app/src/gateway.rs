@@ -1405,12 +1405,37 @@ mod fake {
                     W3SVC/1/ServerState=2\nW3SVC/1/ROOT/Path=D:\\Sites\\intranet\n\
                     MSFTPSVC/1/ServerComment=Files\nMSFTPSVC/1/ServerBindings[0]=:21:\n\
                     MSFTPSVC/1/ServerState=4\nMSFTPSVC/1/ROOT/Path=D:\\Ftp\n";
-        facts(
+        let mut found = facts(
             machine,
             1_767_268_800,
             "   IIS Admin Service\n   World Wide Web Publishing Service",
             dump,
-        )
+        );
+        let check = |id: &str, status, evidence: &str| lanlord_model::hosting::CheckResult {
+            id: id.into(),
+            status,
+            evidence: evidence.into(),
+            fix_available: true,
+        };
+        use lanlord_model::hosting::CheckStatus;
+        found.checks = vec![
+            check(
+                "iis.samples",
+                CheckStatus::Fail,
+                "W3SVC/1/ROOT/IISSamples present",
+            ),
+            check(
+                "iis.urlscan",
+                CheckStatus::Warn,
+                "no URLScan filter in the filter list",
+            ),
+            check(
+                "iis.write",
+                CheckStatus::Pass,
+                "no web directory allows write",
+            ),
+        ];
+        found
     }
 
     fn fake_reply(stdout: String) -> Reply {

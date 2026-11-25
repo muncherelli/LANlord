@@ -1481,8 +1481,34 @@ class LldumpTest(unittest.TestCase):
 
     def test_it_dumps_the_services_and_the_wanted_properties(self):
         for word in ("W3SVC", "MSFTPSVC", "SMTPSVC", "ServerComment", "ServerBindings", "Path",
-                     "AccessFlags", "ScriptMaps", "FilterLoadOrder", "IIsFilter", "IIsWebVirtualDir"):
+                     "AccessFlags", "ScriptMaps", "FilterLoadOrder", "IIsFilter", "IIsWebVirtualDir",
+                     "AuthFlags", "AppIsolated", "AspEnableParentPaths",
+                     "AspScriptErrorSentToBrowser", "EnableDirBrowsing", "LogPluginClsid",
+                     "AllowAnonymous", "Host/Reg/Hotfix/Q811114", "ADCLaunch"):
             self.assertIn(word, self.text)
+
+    def test_host_facts_read_no_secret_and_no_service_password(self):
+        # registry and file reads are only existence checks and start types
+        reads = [l for l in self.code if "RegRead" in l]
+        self.assertTrue(reads)
+        for l in reads:
+            self.assertNotRegex(l, r"(?i)pass|password|secret", l)
+        self.assertIn("Sub HostFacts", self.text)
+
+    def test_samples_and_scripts_follow_the_metabase_vdir_paths(self):
+        code = "\n".join(self.code)
+        self.assertIn('VdirPath("W3SVC/1/ROOT/IISSamples")', code)
+        self.assertIn('VdirPath("W3SVC/1/ROOT/Scripts")', code)
+
+    def test_host_paths_come_from_the_registry_not_win2000_variables(self):
+        code = "\n".join(self.code)
+        self.assertNotIn("CommonProgramFiles", code)
+        self.assertNotIn("ExpandEnvironmentStrings", code)
+        self.assertIn("CommonFilesDir", code)
+        self.assertIn("PathWWWRoot", code)
+        self.assertNotIn("InetPub", code)
+        # a path that did not resolve is unknown, not absent
+        self.assertIn("PathOk", code)
 
     def test_only_what_vbscript_5_on_nt4_has(self):
         for word in ("RegExp", "Dictionary", "Execute", "Eval("):

@@ -19,11 +19,14 @@ gServices = Array("W3SVC", "MSFTPSVC", "SMTPSVC")
 gSiteProps = Array("KeyType", "ServerComment", "ServerBindings", "SecureBindings", _
   "ServerState", "ServerAutoStart", "HttpRedirect", "DefaultDoc", "FilterLoadOrder", _
   "AnonymousUserName", "AnonymousUserPass", "WAMUserName", "WAMUserPass", "LogType", _
-  "LogOdbcUserName", "LogOdbcPassword")
+  "LogOdbcUserName", "LogOdbcPassword", "LogPluginClsid", "AllowAnonymous", "AccessFlags", _
+  "AuthFlags", "ScriptMaps", "AppIsolated", "AspEnableParentPaths", _
+  "AspScriptErrorSentToBrowser", "EnableDirBrowsing")
 
 ' properties of a virtual directory or folder
 gVdirProps = Array("KeyType", "Path", "AccessFlags", "AuthFlags", "ScriptMaps", "AppRoot", _
-  "AppFriendlyName", "HttpRedirect", "DefaultDoc", "DirBrowseFlags", _
+  "AppFriendlyName", "HttpRedirect", "DefaultDoc", "DirBrowseFlags", "AppIsolated", _
+  "AspEnableParentPaths", "AspScriptErrorSentToBrowser", "EnableDirBrowsing", _
   "AnonymousUserName", "AnonymousUserPass", "WAMUserName", "WAMUserPass", "UNCUserName", _
   "UNCPassword")
 
@@ -159,6 +162,189 @@ Sub Walk(oNode, sKey, nDepth)
   On Error GoTo 0
 End Sub
 
+' present when the registry value can be read, absent when it cannot (the value or its key is
+' not there). only for a value: a key's default value may be unset, which looks the same.
+Function RegValueState(oShell, sPath)
+  Dim vValue
+  On Error Resume Next
+  vValue = oShell.RegRead(sPath)
+  If Err.Number = 0 Then
+    RegValueState = "present"
+  Else
+    RegValueState = "absent"
+  End If
+  Err.Clear
+  On Error GoTo 0
+End Function
+
+' present when a key's default value can be read, else unknown: on nt4 the error for a missing
+' key and for a key with no default value is the same, so a failed read proves nothing.
+Function RegKeyState(oShell, sPath)
+  Dim vValue
+  On Error Resume Next
+  vValue = oShell.RegRead(sPath)
+  If Err.Number = 0 Then
+    RegKeyState = "present"
+  Else
+    RegKeyState = "unknown"
+  End If
+  Err.Clear
+  On Error GoTo 0
+End Function
+
+' a registry string value, or "" when it cannot be read
+Function RegText(oShell, sPath)
+  Dim vValue
+  RegText = ""
+  On Error Resume Next
+  vValue = oShell.RegRead(sPath)
+  If Err.Number = 0 Then
+    If Not IsArray(vValue) And Not IsNull(vValue) Then RegText = CStr(vValue)
+  End If
+  Err.Clear
+  On Error GoTo 0
+End Function
+
+' false for an empty path or one with an unexpanded %variable%
+Function PathOk(sPath)
+  PathOk = (Len(sPath) > 0 And Left(sPath, 1) <> "%")
+End Function
+
+' base and rest joined, or "" when there is no base to put the rest under
+Function Under(sBase, sRest)
+  If PathOk(sBase) Then
+    Under = sBase & sRest
+  Else
+    Under = ""
+  End If
+End Function
+
+' the folder a default-site virtual directory points at, or "" when the metabase has none.
+' this is what makes a custom web root (D:\Sites) work: the vdir path wins over the option pack's.
+Function VdirPath(sNode)
+  Dim oVdir, vPath
+  VdirPath = ""
+  Set oVdir = Nothing
+  On Error Resume Next
+  Set oVdir = GetObject("IIS://localhost/" & sNode)
+  If Err.Number <> 0 Or oVdir Is Nothing Then
+    Err.Clear
+    On Error GoTo 0
+    Exit Function
+  End If
+  On Error GoTo 0
+  vPath = SafeGet(oVdir, "Path")
+  If Not IsEmpty(vPath) And Not IsNull(vPath) And Not IsArray(vPath) Then
+    vPath = CStr(vPath)
+    ' a trailing backslash would double up when a sub folder is joined on
+    Do While Len(vPath) > 3 And Right(vPath, 1) = "\"
+      vPath = Left(vPath, Len(vPath) - 1)
+    Loop
+    If PathOk(vPath) Then VdirPath = vPath
+  End If
+End Function
+
+Function FolderState(oFso, sPath)
+  FolderState = "unknown"
+  If Not PathOk(sPath) Then Exit Function
+  On Error Resume Next
+  If oFso.FolderExists(sPath) Then
+    FolderState = "present"
+  Else
+    FolderState = "absent"
+  End If
+  If Err.Number <> 0 Then
+    Err.Clear
+    FolderState = "unknown"
+  End If
+  On Error GoTo 0
+End Function
+
+Function FileState(oFso, sPath)
+  FileState = "unknown"
+  If Not PathOk(sPath) Then Exit Function
+  On Error Resume Next
+  If oFso.FileExists(sPath) Then
+    FileState = "present"
+  Else
+    FileState = "absent"
+  End If
+  If Err.Number <> 0 Then
+    Err.Clear
+    FileState = "unknown"
+  End If
+  On Error GoTo 0
+End Function
+
+' what the hardening checks need from the machine itself: files, folders and registry keys.
+' the lines start with Host/, which is not a service, and say present, absent or unknown.
+' nothing here reads a secret. nt4 has no %CommonProgramFiles%, so the common files folder
+' comes from the registry, and the inetpub folder from the web root the option pack recorded.
+Sub HostFacts()
+  Dim oShell, oFso, sCommon, sInet, sSamples, sScripts, sReg, vStart, aNames, aAdc, n
+  Set oShell = Nothing
+  Set oFso = Nothing
+  On Error Resume Next
+  Set oShell = CreateObject("WScript.Shell")
+  Set oFso = CreateObject("Scripting.FileSystemObject")
+  If Err.Number <> 0 Or oShell Is Nothing Or oFso Is Nothing Then
+    Err.Clear
+    On Error GoTo 0
+    Exit Sub
+  End If
+  On Error GoTo 0
+  sCommon = RegText(oShell, "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CommonFilesDir")
+  sInet = RegText(oShell, "HKLM\SOFTWARE\Microsoft\InetStp\PathWWWRoot")
+  If PathOk(sInet) Then
+    On Error Resume Next
+    sInet = oFso.GetParentFolderName(sInet)
+    If Err.Number <> 0 Then
+      Err.Clear
+      sInet = ""
+    End If
+    On Error GoTo 0
+  End If
+  If Not PathOk(sCommon) Then sCommon = ""
+  If Not PathOk(sInet) Then sInet = ""
+  ' where the metabase puts the samples and scripts wins; the option pack's parent is the fallback
+  sSamples = VdirPath("W3SVC/1/ROOT/IISSamples")
+  If Not PathOk(sSamples) Then sSamples = Under(sInet, "\iissamples")
+  sScripts = VdirPath("W3SVC/1/ROOT/Scripts")
+  If Not PathOk(sScripts) Then sScripts = Under(sInet, "\scripts")
+  WScript.Echo "Host/Folder/IISSamples=" & FolderState(oFso, sSamples)
+  WScript.Echo "Host/Folder/ScriptsTools=" & FolderState(oFso, Under(sScripts, "\tools"))
+  WScript.Echo "Host/File/codebrws.asp=" & _
+    FileState(oFso, Under(sSamples, "\sdk\asp\docs\codebrws.asp"))
+  WScript.Echo "Host/File/showcode.asp=" & _
+    FileState(oFso, Under(sCommon, "\System\msadc\Samples\SELECTOR\showcode.asp"))
+  WScript.Echo "Host/Folder/FPSE=" & _
+    FolderState(oFso, Under(sCommon, "\Microsoft Shared\web server extensions"))
+  WScript.Echo "Host/Reg/Hotfix/Q811114=" & _
+    RegValueState(oShell, "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Hotfix\Q811114\Installed")
+  sReg = "HKLM\SYSTEM\CurrentControlSet\Services\W3SVC\Parameters\ADCLaunch\"
+  aAdc = Array("RDSServer.DataFactory", "AdvancedDataFactory", "VbBusObj.VbBusObjCls")
+  For n = LBound(aAdc) To UBound(aAdc)
+    WScript.Echo "Host/Reg/ADCLaunch/" & aAdc(n) & "=" & RegKeyState(oShell, sReg & aAdc(n) & "\")
+  Next
+  ' the start type of services a web server does not need: 2 automatic, 3 manual, 4 disabled
+  aNames = Array("Alerter", "ClipSrv", "Messenger", "NetDDE", "RpcLocator", "SimpTcp", "TlntSvr")
+  For n = LBound(aNames) To UBound(aNames)
+    vStart = Empty
+    On Error Resume Next
+    vStart = oShell.RegRead("HKLM\SYSTEM\CurrentControlSet\Services\" & aNames(n) & "\Start")
+    If Err.Number <> 0 Then
+      Err.Clear
+      vStart = Empty
+    End If
+    On Error GoTo 0
+    If IsEmpty(vStart) Then
+      WScript.Echo "Host/Svc/" & aNames(n) & "/Start=absent"
+    Else
+      WScript.Echo "Host/Svc/" & aNames(n) & "/Start=" & CStr(vStart)
+    End If
+  Next
+End Sub
+
 For gI = LBound(gServices) To UBound(gServices)
   gService = gServices(gI)
   Set gRoot = Nothing
@@ -174,3 +360,5 @@ For gI = LBound(gServices) To UBound(gServices)
   End If
   On Error GoTo 0
 Next
+
+HostFacts
