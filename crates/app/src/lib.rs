@@ -25,6 +25,7 @@ pub mod devtools;
 pub mod dns_panel;
 pub mod form;
 pub mod gateway;
+pub mod hosting_tree;
 pub mod hostlist;
 pub mod hosts_window;
 pub mod log;

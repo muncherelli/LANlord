@@ -241,6 +241,7 @@ fn node_ui<M: Clone>(ui: &mut Ui, node: &Node<M>) -> Option<M> {
         }
         .show(ui)
         .map(table.select),
+        Node::Tree(tree) => crate::view_tree::tree(ui, tree),
         Node::Buttons(buttons) => controls::buttons(ui, |ui| {
             let mut sent = None;
             for button in buttons {

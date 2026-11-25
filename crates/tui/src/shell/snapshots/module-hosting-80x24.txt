@@ -1,24 +1,24 @@
 ┌ ▤ Hosting ──────────────────────────────────────────────────────────── _ □ × ┐
-│ Hosting                                                                      │
-│ Status: available                                                            │
+│  - LANlord Hosting          LANlord Hosting                                  │
+│      Services                Name               Description                  │
+│    - Servers                 Services           What you host, defined once  │
+│      + ws1                   Servers            The machines that host it    │
+│    + Gateway                 Gateway            How it is published          │
+│    + Profiles                Profiles           The web technologies         │
 │                                                                              │
-│ Manage IIS 4 web and FTP hosting on your NT4 servers                         │
-│ ──────────────────────────────────────────────────────────────────────────── │
-│ IIS presets run on a domain machine as a domain administrator.               │
-│ ┌ Machines ────────────────────────────────────────────────────────────────┐ │
-│ │  Machine                                                                 │ │
-│ │  ws1                                                                     │ │
-│ │                                                                          │ │
-│ │                                                                          │ │
-│ │                                                                          │ │
-│ │ [    Detect    ] [   Refresh    ]                                        │ │
-│ └──────────────────────────────────────────────────────────────────────────┘ │
-│ Turn on the IIS part of the Hosting component to use the presets.            │
-│ ┌ Detected sites ──────────────────────────────────────────────────────────┐ │
-│ │ Pick a machine to see what was detected on it.                           │ │
-│ │                                                                          │ │
-│ │                                                                          │ │
-│ │                                                                          │ │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ [ Refresh ]                                                                  │
 │ loaded the machines                                                          │
 └──────────────────────────────────────────────────────────────────────────────┘
+
 [ L LANlord ] [ ▤ Hosting ]                                           12:00 PM

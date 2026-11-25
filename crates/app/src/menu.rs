@@ -161,6 +161,19 @@ pub fn rows(state: &State) -> Vec<Row> {
                 })
             }),
     );
+    // the first hosting window, kept next to the Hosting one while the new one is built
+    let hosting = MODULES.iter().position(|m| m.id == "hosting");
+    if hosting.is_some_and(|i| state.modules.contains(&i))
+        && Target::HostingDebug.visible(&state.grants)
+    {
+        rows.push(Row::Item(Item {
+            art: Some("hosting"),
+            ..Item::new(
+                Target::HostingDebug.title(),
+                Action::Open(Target::HostingDebug),
+            )
+        }));
+    }
     for target in [
         Target::MyServer,
         Target::Networks,
@@ -309,6 +322,28 @@ mod tests {
         for item in ["My Server", "My Account..."] {
             assert!(user.iter().any(|l| l == item), "{item}");
         }
+    }
+
+    #[test]
+    fn the_hosting_debug_window_is_in_the_menu_only_with_the_hosting_component() {
+        let at = MODULES.iter().position(|m| m.id == "hosting").unwrap();
+        let has = |modules: Vec<usize>| {
+            let state = State {
+                host: Some("local"),
+                signed_in: None,
+                switch_server: false,
+                grants: Grants::all(Level::Manage),
+                ready: true,
+                updates: None,
+                developer: false,
+                modules,
+            };
+            rows(&state)
+                .iter()
+                .any(|r| matches!(r, Row::Item(i) if i.label() == "Hosting (debug)"))
+        };
+        assert!(has(vec![at]));
+        assert!(!has(Vec::new()));
     }
 
     #[test]

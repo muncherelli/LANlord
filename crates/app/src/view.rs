@@ -39,6 +39,8 @@ pub enum Node<M> {
     },
     /// a list with columns; clicking a row sends `select(row)`.
     Table(Table<M>),
+    /// an expandable tree, like the left pane of a management console.
+    Tree(Tree<M>),
     /// a row of buttons, right aligned, first one rightmost.
     Buttons(Vec<Button<M>>),
     /// a read-only "label: value" line.
@@ -258,6 +260,60 @@ pub struct Table<M> {
     pub select: fn(usize) -> M,
 }
 
+/// a tree given as the rows that are showing, top to bottom: the window keeps which branches
+/// are open and builds the rows again from that. clicking a row sends `select(row)`, clicking
+/// the box of a branch (or Space, or Right and Left on the keyboard) sends `open(row, open)`.
+pub struct Tree<M> {
+    /// keeps the tree's scroll position between frames.
+    pub id: &'static str,
+    pub rows: Vec<TreeRow>,
+    pub selected: Option<usize>,
+    pub height: f32,
+    pub select: fn(usize) -> M,
+    pub open: fn(usize, bool) -> M,
+}
+
+/// one showing row of a `Tree`.
+pub struct TreeRow {
+    /// how many branches it is inside of: 0 for the top.
+    pub depth: u8,
+    pub label: String,
+    /// a small icon by id, for the front ends that draw them.
+    pub icon: Option<&'static str>,
+    /// `None` for a leaf, else whether the branch is open.
+    pub open: Option<bool>,
+}
+
+impl<M> Tree<M> {
+    /// the message of a key on the selected row, if it sends one. Right opens a closed branch,
+    /// or goes to the first child of an open one; Left closes an open branch, or goes to the
+    /// parent; Space is a click on the box: `open(row, !open)`.
+    pub fn key(&self, key: TreeKey) -> Option<M> {
+        let at = self.selected?;
+        let row = self.rows.get(at)?;
+        match (key, row.open) {
+            (TreeKey::Right, Some(false)) => Some((self.open)(at, true)),
+            (TreeKey::Left, Some(true)) => Some((self.open)(at, false)),
+            (TreeKey::Right, Some(true)) => {
+                self.rows.get(at + 1).filter(|r| r.depth > row.depth)?;
+                Some((self.select)(at + 1))
+            }
+            (TreeKey::Left, _) => {
+                let parent = self.rows[..at].iter().rposition(|r| r.depth < row.depth)?;
+                Some((self.select)(parent))
+            }
+            (TreeKey::Right, _) => None,
+        }
+    }
+}
+
+/// a key that moves around a `Tree` beyond up and down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeKey {
+    Left,
+    Right,
+}
+
 pub struct Button<M> {
     pub label: String,
     pub enabled: bool,
@@ -446,6 +502,12 @@ fn hash_nodes<M>(nodes: &[Node<M>], h: &mut impl std::hash::Hasher) {
                 t.height.to_bits().hash(h);
                 t.steady.hash(h);
             }
+            Node::Tree(t) => {
+                t.rows
+                    .iter()
+                    .for_each(|r| (r.depth, &r.label, r.open).hash(h));
+                t.height.to_bits().hash(h);
+            }
             Node::Buttons(b) | Node::Toolbar(b) => b.iter().for_each(|b| b.label.hash(h)),
             Node::Button(b) => (&b.label, b.width.map(f32::to_bits)).hash(h),
             Node::Field { label, value } => (label, value).hash(h),
@@ -532,5 +594,49 @@ mod tests {
             [false, true, false],
             "[1] must not match [10]"
         );
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    fn row(depth: u8, open: Option<bool>) -> TreeRow {
+        TreeRow {
+            depth,
+            label: String::new(),
+            icon: None,
+            open,
+        }
+    }
+
+    fn tree(selected: usize) -> Tree<String> {
+        Tree {
+            id: "t",
+            rows: vec![
+                row(0, Some(true)),
+                row(1, Some(false)),
+                row(1, None),
+                row(0, None),
+            ],
+            selected: Some(selected),
+            height: 100.0,
+            select: |n| format!("select {n}"),
+            open: |n, o| format!("open {n} {o}"),
+        }
+    }
+
+    #[test]
+    fn right_opens_a_closed_branch_or_enters_an_open_one() {
+        assert_eq!(tree(1).key(TreeKey::Right).as_deref(), Some("open 1 true"));
+        assert_eq!(tree(0).key(TreeKey::Right).as_deref(), Some("select 1"));
+        assert_eq!(tree(2).key(TreeKey::Right), None);
+    }
+
+    #[test]
+    fn left_closes_an_open_branch_or_goes_to_the_parent() {
+        assert_eq!(tree(0).key(TreeKey::Left).as_deref(), Some("open 0 false"));
+        assert_eq!(tree(2).key(TreeKey::Left).as_deref(), Some("select 0"));
+        assert_eq!(tree(3).key(TreeKey::Left), None);
     }
 }

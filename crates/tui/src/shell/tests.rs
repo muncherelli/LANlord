@@ -581,7 +581,7 @@ fn the_hosting_window_lists_machines_and_offers_no_iis_presets_without_the_iis_p
     use lanlord_app::computers_panel::Msg;
     let mut shell = demo();
     frame(&mut shell);
-    let hosting = module("hosting");
+    let hosting = Target::HostingDebug;
     shell.open(hosting);
     // the demo has hosting off, so there are no presets and the window says why
     let text = frame_until(&mut shell, "ws1");
@@ -600,7 +600,7 @@ fn the_hosting_window_does_not_detect_without_the_iis_part() {
     use lanlord_app::computers_panel::Msg;
     let mut shell = demo();
     frame(&mut shell);
-    shell.open(module("hosting"));
+    shell.open(Target::HostingDebug);
     let text = frame_until(&mut shell, "ws1");
     assert!(
         text.contains("Detect") && text.contains("Detected sites"),
@@ -624,7 +624,7 @@ fn the_hosting_window_detects_a_machine_and_lists_its_sites() {
     use lanlord_app::computers_panel::Msg;
     let mut shell = demo();
     frame(&mut shell);
-    shell.open(module("hosting"));
+    shell.open(Target::HostingDebug);
     frame_until(&mut shell, "ws1");
     let host = shell.host().unwrap();
     shell.hosting.select("ws1");
@@ -644,7 +644,7 @@ fn the_hosting_window_lists_the_hardening_checks_of_a_detection() {
     use lanlord_app::computers_panel::Msg;
     let mut shell = demo();
     frame(&mut shell);
-    shell.open(module("hosting"));
+    shell.open(Target::HostingDebug);
     let text = frame_until(&mut shell, "ws1");
     assert!(text.contains("Hardening checks"), "{text}");
     let host = shell.host().unwrap();

@@ -27,6 +27,7 @@ use crate::controls;
 use crate::dialogs::{Answer, TextDialog};
 use crate::dns_panel::DnsPanel;
 use crate::form::Form;
+use crate::hosting_tree::HostingTree;
 use crate::icons;
 use crate::login::{Auth, LoginBox, Outcome, SignedIn};
 use crate::my_server::{self, MyServer};
@@ -95,7 +96,9 @@ pub struct Desktop {
     ctx: egui::Context,
     settings: SettingsEditor,
     nt4: Nt4Window,
-    /// the body of the hosting window.
+    /// the body of the hosting window with its tree.
+    hosting_tree: HostingTree,
+    /// the body of the debug hosting window.
     hosting: ComputersPanel,
     account: AccountWindow,
     permissions: PermissionsWindow,
@@ -193,6 +196,7 @@ impl Desktop {
             services,
             settings: SettingsEditor::default(),
             nt4: Nt4Window::default(),
+            hosting_tree: HostingTree::default(),
             hosting: ComputersPanel::hosting(),
             account: AccountWindow::default(),
             permissions: PermissionsWindow::default(),
@@ -375,6 +379,7 @@ impl Desktop {
         self.close_requests.clear();
         self.settings = SettingsEditor::default();
         self.nt4 = Nt4Window::default();
+        self.hosting_tree = HostingTree::default();
         self.hosting = ComputersPanel::hosting();
         self.account = AccountWindow::default();
         self.permissions = PermissionsWindow::default();
@@ -656,6 +661,7 @@ impl Desktop {
         self.permissions.poll();
         self.settings.poll();
         self.nt4.poll();
+        self.hosting_tree.poll();
         self.hosting.poll();
         self.dns.poll();
         self.commands.poll();
@@ -1648,6 +1654,7 @@ impl Desktop {
                     self.close_requests.push(Target::Welcome);
                 }
             }
+            Target::HostingDebug => self.hosting_debug_window(ui),
             Target::MyAccount => self.account_window(ui),
             Target::Permissions => self.permissions_window(ui),
             Target::Progress => self.progress_window(ui),
@@ -1706,9 +1713,26 @@ impl Desktop {
         lanlord_app::desktop::modules(self.enabled().as_ref())
     }
 
-    fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
-        view::show::<()>(ui, &module_window::header(module));
+    /// the first hosting window: its machines, buttons and output, for debugging.
+    fn hosting_debug_window(&mut self, ui: &mut Ui) {
         let host = self.host();
+        let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
+        self.hosting.set_can_run(may);
+        let detect = lanlord_app::computers_panel::may_detect_hosting(&self.grants());
+        self.hosting.set_can_detect(detect);
+        let facts = lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
+        self.hosting.set_can_read_facts(facts);
+        let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
+        self.hosting.set_iis_on(iis);
+        self.hosting.show(ui, &self.services, host.as_deref());
+    }
+
+    fn module_window(&mut self, ui: &mut Ui, module: &'static Module) {
+        let host = self.host();
+        // the hosting window is a console of its own: it has no module header
+        if module.id != "hosting" {
+            view::show::<()>(ui, &module_window::header(module));
+        }
         match module.id {
             "nt4-domain" => {
                 let may = lanlord_app::computers_panel::may_run(&self.grants());
@@ -1716,15 +1740,19 @@ impl Desktop {
                 self.nt4.show(ui, &self.services, host.as_deref());
             }
             "hosting" => {
-                let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
-                self.hosting.set_can_run(may);
-                let detect = lanlord_app::computers_panel::may_detect_hosting(&self.grants());
-                self.hosting.set_can_detect(detect);
                 let facts = lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
-                self.hosting.set_can_read_facts(facts);
-                let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
-                self.hosting.set_iis_on(iis);
-                self.hosting.show(ui, &self.services, host.as_deref());
+                self.hosting_tree.set_can_read_facts(facts);
+                // F5 reads the kept facts again, as in a console
+                let on_top =
+                    matches!(self.active, Some(Target::Module(i)) if MODULES[i].id == "hosting");
+                if on_top
+                    && ui.is_visible()
+                    && !ui.ctx().text_edit_focused()
+                    && ui.input(|i| i.key_pressed(egui::Key::F5))
+                {
+                    self.hosting_tree.refresh();
+                }
+                self.hosting_tree.show(ui, &self.services, host.as_deref());
             }
             "dns" | "dhcp" => self.dns.show(ui, &self.services, host.as_deref()),
             "remote-commands" => {

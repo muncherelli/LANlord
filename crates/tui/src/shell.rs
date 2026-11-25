@@ -17,6 +17,7 @@ use lanlord_app::desktop::{self, Target};
 use lanlord_app::dns_panel::DnsPanel;
 use lanlord_app::form::{Form, FormAnswer};
 use lanlord_app::gateway::Gateway;
+use lanlord_app::hosting_tree::HostingTree;
 use lanlord_app::hostlist::HostList;
 use lanlord_app::login::{self, Auth, LoginBox, SignedIn};
 use lanlord_app::logon_panel::LogonPanel;
@@ -32,7 +33,7 @@ use lanlord_app::settings_window::SettingsWindow;
 use lanlord_app::tasks::PasswordRequest;
 use lanlord_app::updates::Notice;
 use lanlord_app::users_panel::UsersPanel;
-use lanlord_app::view::{Dialog, Node};
+use lanlord_app::view::{Dialog, Node, TreeKey};
 use lanlord_app::wake::Wake;
 use lanlord_app::welcome::Welcome;
 use lanlord_app::{hosts_window, module_window};
@@ -281,7 +282,9 @@ pub struct Shell {
     nt4: Nt4Panel,
     logon: LogonPanel,
     computers: ComputersPanel,
-    /// the body of the hosting window.
+    /// the body of the hosting window with its tree.
+    hosting_tree: HostingTree,
+    /// the body of the debug hosting window.
     hosting: ComputersPanel,
     dns: DnsPanel,
     commands: CommandPanel,
@@ -395,6 +398,7 @@ impl Shell {
             nt4: Nt4Panel::default(),
             logon: LogonPanel::default(),
             computers: ComputersPanel::default(),
+            hosting_tree: HostingTree::default(),
             hosting: hosting_panel(),
             dns: DnsPanel::default(),
             commands: CommandPanel::default(),
@@ -521,6 +525,7 @@ impl Shell {
         self.nt4_tab = 0;
         self.logon = LogonPanel::default();
         self.computers = ComputersPanel::default();
+        self.hosting_tree = HostingTree::default();
         self.hosting = hosting_panel();
         self.dns = DnsPanel::default();
         self.commands = CommandPanel::default();
@@ -888,6 +893,7 @@ impl Shell {
         self.nt4.poll();
         self.logon.poll();
         self.computers.poll();
+        self.hosting_tree.poll();
         self.hosting.poll();
         // the host can change from another tab, while the Computers tab draws nothing
         let host = self.host();
@@ -1051,21 +1057,13 @@ impl Shell {
                 match module.id {
                     "nt4-domain" => self.nt4_window(module, pass, &state),
                     "hosting" => {
-                        let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
-                        self.hosting.set_can_run(may);
-                        let detect =
-                            lanlord_app::computers_panel::may_detect_hosting(&self.grants());
-                        self.hosting.set_can_detect(detect);
                         let facts =
                             lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
-                        self.hosting.set_can_read_facts(facts);
-                        let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
-                        self.hosting.set_iis_on(iis);
-                        let mut nodes = module_window::header(module);
-                        nodes.extend(self.hosting.view(&self.services, host.as_deref()));
+                        self.hosting_tree.set_can_read_facts(facts);
+                        let nodes = self.hosting_tree.view(&self.services, host.as_deref());
                         let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
                         if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
-                            self.hosting.update(msg, &self.services, host);
+                            self.hosting_tree.update(msg, &self.services, host);
                         }
                         answer
                     }
@@ -1116,6 +1114,22 @@ impl Shell {
                     }
                 } else if self.clock_panel.closing() {
                     self.close_requests.push(Target::DateTime);
+                }
+                answer
+            }
+            Target::HostingDebug => {
+                let may = lanlord_app::computers_panel::may_run_hosting(&self.grants());
+                self.hosting.set_can_run(may);
+                let detect = lanlord_app::computers_panel::may_detect_hosting(&self.grants());
+                self.hosting.set_can_detect(detect);
+                let facts = lanlord_app::computers_panel::may_read_facts_hosting(&self.grants());
+                self.hosting.set_can_read_facts(facts);
+                let iis = self.enabled().is_some_and(|s| s.iis_allowed().is_ok());
+                self.hosting.set_iis_on(iis);
+                let nodes = self.hosting.view(&self.services, host.as_deref());
+                let (answer, msg) = drive(&nodes, &mut pass, &state, palette);
+                if let (Some(msg), Some(host)) = (msg, host.as_deref()) {
+                    self.hosting.update(msg, &self.services, host);
                 }
                 answer
             }
@@ -1886,6 +1900,14 @@ impl Shell {
 
 // input
 impl Shell {
+    /// whether the keyboard goes to the hosting window.
+    fn hosting_window_is_active(&self) -> bool {
+        matches!(
+            self.active_owner(),
+            Some(Owner::Window(Target::Module(i))) if MODULES[i].id == "hosting"
+        )
+    }
+
     /// the box or window the keyboard goes to.
     fn active_owner(&self) -> Option<Owner> {
         if self.hits.dialog.is_some() {
@@ -2310,6 +2332,19 @@ impl Shell {
         }
     }
 
+    /// Enter on a list picks its highlighted row again, which a list may take to mean "open".
+    fn list_enter(&mut self, owner: Owner, region: &Region) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        if let Some((Some(selected), _)) = answer.list {
+            self.send(owner, region.path.clone(), Input::Row(selected));
+        }
+    }
+
     fn list_step(&mut self, owner: Owner, region: &Region, step: i32) {
         let answer = self.pass(
             owner,
@@ -2370,6 +2405,10 @@ impl Shell {
         }
         if key.code == KeyCode::F(8) && !self.before_desktop() && self.compat_alert() {
             self.open_compat();
+            return;
+        }
+        if key.code == KeyCode::F(5) && self.hosting_window_is_active() {
+            self.hosting_tree.refresh();
             return;
         }
         if key.code == KeyCode::F(10) && !self.before_desktop() {
@@ -2494,6 +2533,13 @@ impl Shell {
                 self.toggle_fold(owner, &region.key);
             }
             (Part::List, KeyCode::Char(' ')) => self.list_mark(owner, &region),
+            (Part::List, KeyCode::Enter) => self.list_enter(owner, &region),
+            (Part::List, KeyCode::Left) => {
+                self.send(owner, region.path.clone(), Input::Key(TreeKey::Left));
+            }
+            (Part::List, KeyCode::Right) => {
+                self.send(owner, region.path.clone(), Input::Key(TreeKey::Right));
+            }
             (Part::List, KeyCode::Up) => self.list_step(owner, &region, -1),
             (Part::List, KeyCode::Down) => self.list_step(owner, &region, 1),
             (Part::Spin(0), KeyCode::Up | KeyCode::Right) => {
