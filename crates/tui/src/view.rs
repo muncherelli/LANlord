@@ -154,6 +154,8 @@ pub enum Input {
     Day(usize),
     /// the tick box of row `n` of a check list clicked.
     Mark(usize),
+    /// a key that moves around a tree: Left, Right or Space.
+    Key(lanlord_app::view::TreeKey),
     /// a secret field's whole new text.
     SecretText(Zeroizing<String>),
     /// Enter in a secret field, with its final text.
@@ -221,6 +223,13 @@ pub fn act<M: Clone>(nodes: &[Node<M>], path: &[usize], input: Input) -> Option<
         ) => enabled.then(|| toggle.clone()),
         (Node::Table(table), Input::Row(n)) if n < table.rows.len() => Some((table.select)(n)),
         (Node::List { items, select, .. }, Input::Row(n)) if n < items.len() => Some(select(n)),
+        (Node::Tree(tree), Input::Row(n)) if n < tree.rows.len() => Some((tree.select)(n)),
+        (Node::Tree(tree), Input::Mark(n)) => tree
+            .rows
+            .get(n)
+            .and_then(|row| row.open)
+            .map(|open| (tree.open)(n, !open)),
+        (Node::Tree(tree), Input::Key(key)) => tree.key(key),
         (Node::CheckList(list), Input::Row(n)) if n < list.rows.len() => Some((list.select)(n)),
         (Node::CheckList(list), Input::Mark(n)) => list
             .rows
@@ -333,6 +342,7 @@ pub fn field_enters<M>(nodes: &[Node<M>], path: &[usize]) -> bool {
 pub fn list_state<M>(nodes: &[Node<M>], path: &[usize]) -> Option<(Option<usize>, usize)> {
     match find(nodes, path)? {
         Node::Table(table) => Some((table.selected, table.rows.len())),
+        Node::Tree(tree) => Some((tree.selected, tree.rows.len())),
         Node::List {
             items, selected, ..
         } => Some((*selected, items.len())),
@@ -508,6 +518,7 @@ impl<'a> Painter<'a> {
             }
             Node::Labelled { body, .. } => self.label_column.get() + self.natural_width(body),
             Node::Table(table) => table_width(table),
+            Node::Tree(tree) => tree_width(tree),
             Node::Group { title, body } | Node::Details { title, body, .. } => {
                 self.natural_width(body).max(title.chars().count() as u16) + BOXED
             }
@@ -609,6 +620,7 @@ impl<'a> Painter<'a> {
                 2 + inner(body, width.saturating_sub(BOXED))
             }
             Node::Table(table) => rows(table.height).max(3),
+            Node::Tree(tree) => rows(tree.height).max(3),
             // the open page only: a terminal has no room to spare for the tallest of the others
             Node::Tabs { body, .. } => 3 + inner(body, width.saturating_sub(2)),
             Node::Danger(body) => 2 + inner(body, width.saturating_sub(BOXED)),
@@ -1333,6 +1345,7 @@ impl<'a> Painter<'a> {
                     self.push(line, path, Part::Row(n), false);
                 }
             }
+            Node::Tree(tree) => self.tree(tree, area, buf, path),
             Node::List {
                 items,
                 selected,
@@ -1502,6 +1515,58 @@ impl<'a> Painter<'a> {
     }
 
     /// `body` in `inner`, scrolled by the wheel when it is taller than the room.
+    /// a tree: one row per node showing, indented by depth, with a `+` or `-` before a branch.
+    fn tree<M>(
+        &mut self,
+        tree: &lanlord_app::view::Tree<M>,
+        area: Rect,
+        buf: &mut Buffer,
+        path: &[usize],
+    ) {
+        let p = self.palette;
+        let inner = self.sunken(area, buf, WHITE);
+        self.push(inner, path, Part::List, true);
+        let body = padded(inner);
+        let offset = controls::List::offset(tree.selected, inner.height);
+        for (n, row) in tree
+            .rows
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(usize::from(inner.height))
+        {
+            let y = inner.y + (n - offset) as u16;
+            let line = Rect::new(inner.x, y, inner.width, 1);
+            let (fg, bg) = if tree.selected == Some(n) {
+                self.selection(path)
+            } else {
+                (BLACK, WHITE)
+            };
+            fill(buf, line, p, bg);
+            let x = body.x.saturating_add(u16::from(row.depth) * 2);
+            let room = body.right().saturating_sub(x);
+            let sign = match row.open {
+                Some(true) => "-",
+                Some(false) => "+",
+                None => " ",
+            };
+            text(buf, x, y, room, sign, bold(self.st(fg, bg)));
+            text(
+                buf,
+                x + 2,
+                y,
+                room.saturating_sub(2),
+                &row.label,
+                self.st(fg, bg),
+            );
+            self.push(line, path, Part::Row(n), false);
+            if row.open.is_some() {
+                let sign_box = Rect::new(x, y, 3.min(room), 1);
+                self.push(sign_box, path, Part::Mark(n), false);
+            }
+        }
+    }
+
     fn scrolled_body<M>(
         &mut self,
         body: &[Node<M>],
@@ -1908,6 +1973,17 @@ fn column_widths<M>(table: &lanlord_app::view::Table<M>, room: u16) -> Vec<u16> 
 
 /// the columns a table asks for: its fixed columns, the longest text of the last one and the
 /// inset on both sides.
+/// the widest row of a tree: its indent, sign and label.
+fn tree_width<M>(tree: &lanlord_app::view::Tree<M>) -> u16 {
+    let widest = tree
+        .rows
+        .iter()
+        .map(|r| u16::from(r.depth) * 2 + 2 + r.label.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    widest + 2 * INSET
+}
+
 fn table_width<M>(table: &lanlord_app::view::Table<M>) -> u16 {
     let last = table.headings.len().saturating_sub(1);
     let fixed: u16 = table.widths.iter().take(last).map(|w| cols(*w)).sum();

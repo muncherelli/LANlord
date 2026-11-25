@@ -697,7 +697,7 @@ fn the_hardening_checks_scroll_into_view_on_a_small_screen() {
     use lanlord_app::computers_panel::Msg;
     let fake = Arc::new(Fake::new());
     let mut shell = server(&fake);
-    open(&mut shell, module("hosting"));
+    open(&mut shell, Target::HostingDebug);
     until(&mut shell, "ws1");
     let host = shell.host().unwrap();
     shell.hosting.select("ws1");
@@ -731,4 +731,40 @@ fn the_hardening_checks_scroll_into_view_on_a_small_screen() {
         "{text}"
     );
     assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+}
+
+#[test]
+fn the_hosting_window_is_a_tree_with_a_details_list_that_fits_a_small_screen() {
+    let fake = Arc::new(Fake::new());
+    let mut shell = server(&fake);
+    open(&mut shell, module("hosting"));
+    until(&mut shell, "ws1");
+    let text = small(&mut shell);
+    for needle in [
+        "LANlord Hosting",
+        "Services",
+        "Servers",
+        "ws1",
+        "Gateway",
+        "Profiles",
+    ] {
+        assert!(text.contains(needle), "{needle}:\n{text}");
+    }
+    assert!(text.lines().all(|l| l.chars().count() <= 80), "{text}");
+    // tab puts the focus on the tree, Down goes to Services: its details say it is empty
+    key(&mut shell, KeyCode::Tab);
+    key(&mut shell, KeyCode::Down);
+    let text = small(&mut shell);
+    assert!(text.contains("No services yet"), "{text}");
+    // Down to Servers, Left closes it and the machine goes; Right opens it again
+    key(&mut shell, KeyCode::Down);
+    key(&mut shell, KeyCode::Left);
+    // the details list of Servers still names the machine, so look for its row in the tree
+    let in_tree = |text: &str| text.contains("+ ws1") || text.contains("- ws1");
+    assert!(!in_tree(&small(&mut shell)));
+    key(&mut shell, KeyCode::Right);
+    assert!(in_tree(&small(&mut shell)));
+    // the old window is still there under its own name
+    open(&mut shell, Target::HostingDebug);
+    assert!(until(&mut shell, "ws1").contains("Hosting (debug)"));
 }

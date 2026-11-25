@@ -389,7 +389,7 @@ pub struct ComputersPanel {
     last: Option<LastRun>,
 }
 
-fn load(
+pub(crate) fn load(
     gateway: &dyn crate::gateway::Gateway,
     host: &str,
     ask: crate::ask::AskPassword,

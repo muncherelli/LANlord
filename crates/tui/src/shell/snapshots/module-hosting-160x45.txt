@@ -1,44 +1,44 @@
-              ┌ ▤ Hosting ──────────────────────────────────────────────────────────────── _ □ × ┐
-      ≡       │ Hosting                                                                          │
-  My Server   │ Status: available                                                                │
-              │                                                                                  │
-              │ Manage IIS 4 web and FTP hosting on your NT4 servers                             │
-      □       │ ──────────────────────────────────────────────────────────────────────────────── │
-   Networks   │ IIS presets run on a domain machine as a domain administrator.                   │
-              │ ┌ Machines ────────────────────────────────────────────────────────────────────┐ │
-              │ │  Machine                                                                     │ │
-      ►       │ │  ws1                                                                         │ │
-   Gateway    │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-      ▦       │ │ [    Detect    ] [   Refresh    ]                                            │ │
-   Settings   │ └──────────────────────────────────────────────────────────────────────────────┘ │
-              │ Turn on the IIS part of the Hosting component to use the presets.                │
-              │ ┌ Detected sites ──────────────────────────────────────────────────────────────┐ │
-      >       │ │ Pick a machine to see what was detected on it.                               │ │
-   Console    │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-      ▣       │ │                                                                              │ │
-    Hosts     │ └──────────────────────────────────────────────────────────────────────────────┘ │
-              │ ┌ Hardening checks ────────────────────────────────────────────────────────────┐ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ └──────────────────────────────────────────────────────────────────────────────┘ │
-              │ ┌ Output ──────────────────────────────────────────────────────────────────────┐ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ │                                                                              │ │
-              │ └──────────────────────────────────────────────────────────────────────────────┘ │
-              │ loaded the machines                                                              │
-              └──────────────────────────────────────────────────────────────────────────────────┘
+              ┌ ▤ Hosting ───────────────────────────────────────────────────────────────────────── _ □ × ┐
+      ≡       │  - LANlord Hosting          LANlord Hosting                                               │
+  My Server   │      Services                Name               Description                               │
+              │    - Servers                 Services           What you host, defined once               │
+              │      + ws1                   Servers            The machines that host it                 │
+      □       │    + Gateway                 Gateway            How it is published                       │
+   Networks   │    + Profiles                Profiles           The web technologies                      │
+              │                                                                                           │
+              │                                                                                           │
+      ►       │                                                                                           │
+   Gateway    │                                                                                           │
+              │                                                                                           │
+              │                                                                                           │
+      ▦       │                                                                                           │
+   Settings   │                                                                                           │
+              │                                                                                           │
+              │                                                                                           │
+      >       │                                                                                           │
+   Console    │                                                                                           │
+              │ loaded the machines                                                                       │
+              └───────────────────────────────────────────────────────────────────────────────────────────┘
+      ▣
+    Hosts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

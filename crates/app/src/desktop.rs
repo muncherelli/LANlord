@@ -30,6 +30,9 @@ pub enum Target {
     Progress,
     /// the Task Manager, opened from the menu or by double-clicking the tray's network icon.
     TaskManager,
+    /// the first hosting window, with its buttons and its output: kept for debugging while
+    /// the Hosting module's own window is the console-style tree. opened from the menu.
+    HostingDebug,
 }
 
 /// the console opens as 80 columns by 24 rows of text, the size of a terminal.
@@ -57,6 +60,7 @@ impl Target {
             Self::Permissions => "permissions",
             Self::Progress => "apply-progress",
             Self::TaskManager => "taskmgr",
+            Self::HostingDebug => "hosting-debug",
         }
     }
 
@@ -76,6 +80,7 @@ impl Target {
             Self::Permissions => "Users and Permissions",
             Self::Progress => "Applying Settings",
             Self::TaskManager => "Task Manager",
+            Self::HostingDebug => "Hosting (debug)",
         }
     }
 
@@ -90,7 +95,8 @@ impl Target {
             | Self::Settings
             | Self::Permissions
             | Self::Progress
-            | Self::TaskManager => true,
+            | Self::TaskManager
+            | Self::HostingDebug => true,
             // the modules with a list of logins, hosts or commands; the rest are plain forms
             Self::Module(i) => matches!(
                 MODULES[i].id,
@@ -130,6 +136,7 @@ impl Target {
             Self::MyServer | Self::TaskManager => Some(Area::Status),
             Self::Networks => Some(Area::Network),
             Self::Console => Some(Area::Commands),
+            Self::HostingDebug => Some(Area::Hosting),
             Self::Settings | Self::Components => Some(Area::Services),
             Self::DateTime => Some(Area::Clock),
             Self::Permissions => Some(Area::Users),
@@ -186,7 +193,7 @@ impl Target {
                 "nt4-domain" => (600.0, 600.0),
                 "dns" | "dhcp" => (620.0, 580.0),
                 "remote-commands" => (580.0, 580.0),
-                "hosting" => (560.0, 640.0),
+                "hosting" => (620.0, 400.0),
                 _ => (480.0, 320.0),
             },
             // 6 more each way than the 8 pixel margin needed, for the 11 pixel margin
@@ -206,6 +213,7 @@ impl Target {
             Self::Permissions => (640.0, 520.0),
             Self::Progress => (480.0, 360.0),
             Self::TaskManager => (500.0, 490.0),
+            Self::HostingDebug => (560.0, 640.0),
         }
     }
 }
@@ -358,6 +366,11 @@ mod tests {
         let mut hosts = Grants::default();
         hosts.0.insert(Area::Hosting, Level::Manage);
         assert!(hosting.visible(&hosts));
+        // the debug window needs the same rights and is not on the desktop
+        assert_eq!(Target::HostingDebug.area(), hosting.area());
+        assert_eq!(Target::HostingDebug.opens_at(), hosting.opens_at());
+        assert!(Target::HostingDebug.visible(&hosts) && !Target::HostingDebug.visible(&commands));
+        assert!(!icons(Some(&on)).contains(&Target::HostingDebug));
     }
 
     #[test]

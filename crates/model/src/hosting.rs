@@ -39,7 +39,7 @@ pub struct ServiceFact {
 }
 
 /// the kind of a site.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SiteKind {
     Web,

@@ -216,6 +216,7 @@ fn scenes() -> Vec<Scene> {
         Target::Permissions,
         Target::Progress,
         Target::TaskManager,
+        Target::HostingDebug,
     ] {
         all.push(scene(target.id(), move |size| window(size, target)));
     }

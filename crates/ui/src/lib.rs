@@ -17,6 +17,8 @@ mod desktop;
 mod dialogs;
 mod dns_panel;
 mod form;
+#[allow(dead_code)] // the glue wraps more than the tree window calls
+mod hosting_tree;
 // generated art; the update animations in it are only drawn where lanlord updates itself
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 mod icon_data;
@@ -37,6 +39,7 @@ mod theme;
 mod update_panel;
 mod users_panel;
 mod view;
+mod view_tree;
 mod view_wizard;
 mod widgets;
 mod windows;
