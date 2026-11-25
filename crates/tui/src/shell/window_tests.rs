@@ -756,7 +756,7 @@ fn the_hosting_window_is_a_tree_with_a_details_list_that_fits_a_small_screen() {
     key(&mut shell, KeyCode::Down);
     let text = small(&mut shell);
     assert!(text.contains("No services yet"), "{text}");
-    // Down to Servers, Left closes it and the machine goes; Right opens it again
+    // down to Servers, Left closes it and the machine goes; Right opens it again
     key(&mut shell, KeyCode::Down);
     key(&mut shell, KeyCode::Left);
     // the details list of Servers still names the machine, so look for its row in the tree

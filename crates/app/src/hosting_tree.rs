@@ -50,7 +50,10 @@ pub enum Msg {
     Select(usize),
     /// the branch at row `0` was opened or closed.
     Open(usize, bool),
-    /// the row `0` of the details list was picked: go to that child of the selected node.
+    /// the row `0` of the details list was picked: it is highlighted, and a row that already is
+    /// goes on to `Child`. so a click, then a click or Enter, opens a child.
+    Pick(usize),
+    /// go to child `0` of the selected node.
     Child(usize),
     /// a row of a list that goes nowhere.
     Nothing,
@@ -77,6 +80,8 @@ pub struct HostingTree {
     shown_host: Option<String>,
     open: HashSet<Id>,
     selected: Id,
+    /// the highlighted row of the details list.
+    detail: Option<usize>,
     can_read_facts: bool,
     facts: HashMap<String, Kept>,
     fetching: Option<Fetch>,
@@ -89,6 +94,7 @@ impl Default for HostingTree {
             shown_host: None,
             open: HashSet::from([Id::Root, Id::Servers]),
             selected: Id::Root,
+            detail: None,
             can_read_facts: false,
             facts: HashMap::new(),
             fetching: None,
@@ -140,17 +146,18 @@ fn list(
     headings: Vec<&'static str>,
     widths: Vec<f32>,
     rows: Vec<Vec<String>>,
+    selected: Option<usize>,
 ) -> Node<Msg> {
     Node::Table(Table {
         id,
         headings,
         widths,
         rows,
-        selected: None,
+        selected,
         bad: Vec::new(),
         height: 150.0,
         steady: true,
-        select: Msg::Child,
+        select: Msg::Pick,
     })
 }
 
@@ -161,7 +168,7 @@ fn plain(
     widths: Vec<f32>,
     rows: Vec<Vec<String>>,
 ) -> Node<Msg> {
-    let Node::Table(table) = list(id, headings, widths, rows) else {
+    let Node::Table(table) = list(id, headings, widths, rows, None) else {
         unreachable!("list builds a table")
     };
     Node::Table(Table {
@@ -442,6 +449,7 @@ impl HostingTree {
             vec!["Name", "Description"],
             vec![130.0],
             rows,
+            self.detail,
         )
     }
 
@@ -461,6 +469,7 @@ impl HostingTree {
     /// what the gateway kept for a machine, in a word for a list.
     fn state_of(&self, machine: &str) -> Option<&'static str> {
         match self.facts.get(machine) {
+            None if !self.can_read_facts => Some("needs rights"),
             None => Some("reading..."),
             Some(Kept::Failed(_)) => Some("unreadable"),
             Some(Kept::Facts(None)) => Some("not detected"),
@@ -497,6 +506,7 @@ impl HostingTree {
             vec!["Name", "Platform", "Sites", "Last detected"],
             vec![100.0, 90.0, 50.0],
             rows,
+            self.detail,
         )
     }
 
@@ -516,6 +526,7 @@ impl HostingTree {
             vec!["Name", "Sites"],
             vec![130.0],
             rows,
+            self.detail,
         ));
         nodes.push(Node::Gap(4.0));
         let summary = match (self.facts.get(machine), self.facts_of(machine)) {
@@ -554,6 +565,7 @@ impl HostingTree {
             vec!["Description", "State", "Binding(s)", "Home directory"],
             vec![110.0, 60.0, 120.0],
             rows,
+            self.detail,
         )
     }
 
@@ -588,7 +600,8 @@ impl HostingTree {
                 }
             }
             Msg::Open(row, open) => self.set_open(row, open),
-            Msg::Child(n) => {
+            Msg::Pick(n) if self.detail != Some(n) => self.detail = Some(n),
+            Msg::Pick(n) | Msg::Child(n) => {
                 if let Some(child) = self.children(&self.selected).get(n).cloned() {
                     self.open.insert(self.selected.clone());
                     self.select(child);
@@ -598,15 +611,9 @@ impl HostingTree {
         }
     }
 
-    /// pick a node. a server or the list of them is read again from what the gateway kept.
+    /// pick a node. the facts already read stay: only the missing ones are read.
     fn select(&mut self, id: Id) {
-        match &id {
-            Id::Servers => self.facts.clear(),
-            Id::Server(m) => {
-                self.facts.remove(m);
-            }
-            _ => {}
-        }
+        self.detail = None;
         self.selected = id;
     }
 
@@ -637,7 +644,7 @@ impl HostingTree {
 
     pub fn update_dialog(&mut self, _msg: (), _services: &Services, _host: Option<&str>) {}
 
-    /// the picked node's name and its open branches' names, for tests.
+    /// the picked node's name, for tests.
     pub fn selected_label(&self) -> String {
         self.label(&self.selected)
     }
@@ -814,5 +821,41 @@ mod tests {
         tree.update(Msg::Open(servers, false), &services, "a@b");
         assert_eq!(tree.selected_label(), "Servers");
         assert!(!tree.shown_labels().iter().any(|l| l == "NT4DEV01"));
+    }
+
+    #[test]
+    fn the_details_list_highlights_a_row_and_a_second_pick_opens_it() {
+        let (mut tree, services, _) = tree();
+        click(&mut tree, &services, "Servers");
+        tree.update(Msg::Pick(1), &services, "a@b");
+        assert_eq!(tree.selected_label(), "Servers");
+        assert_eq!(tree.detail, Some(1));
+        tree.update(Msg::Pick(1), &services, "a@b");
+        assert_eq!(tree.selected_label(), "NT4DEV02");
+        assert_eq!(tree.detail, None);
+    }
+
+    #[test]
+    fn the_servers_list_says_when_facts_need_rights() {
+        let (mut tree, services, _) = tree();
+        tree.set_can_read_facts(false);
+        click(&mut tree, &services, "Servers");
+        assert!(text_of(&tree.details()).contains("needs rights"));
+    }
+
+    #[test]
+    fn picking_servers_again_keeps_the_facts_read() {
+        let (mut tree, services, fake) = tree();
+        fake.hosting_detect("a@b", "NT4DEV01", &mut never).unwrap();
+        click(&mut tree, &services, "NT4DEV01");
+        let before = fake.calls().len();
+        click(&mut tree, &services, "Servers");
+        click(&mut tree, &services, "NT4DEV01");
+        assert!(tree.facts.contains_key("NT4DEV01"));
+        let again = fake.calls()[before..]
+            .iter()
+            .filter(|c| c.contains("hosting-facts") && c.contains("NT4DEV01"))
+            .count();
+        assert_eq!(again, 0);
     }
 }

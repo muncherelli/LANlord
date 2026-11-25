@@ -2324,6 +2324,19 @@ impl Shell {
         }
     }
 
+    /// Enter on a list picks its highlighted row again, which a list may take to mean "open".
+    fn list_enter(&mut self, owner: Owner, region: &Region) {
+        let answer = self.pass(
+            owner,
+            Pass::Query {
+                path: region.path.clone(),
+            },
+        );
+        if let Some((Some(selected), _)) = answer.list {
+            self.send(owner, region.path.clone(), Input::Row(selected));
+        }
+    }
+
     fn list_step(&mut self, owner: Owner, region: &Region, step: i32) {
         let answer = self.pass(
             owner,
@@ -2508,6 +2521,7 @@ impl Shell {
                 self.toggle_fold(owner, &region.key);
             }
             (Part::List, KeyCode::Char(' ')) => self.list_mark(owner, &region),
+            (Part::List, KeyCode::Enter) => self.list_enter(owner, &region),
             (Part::List, KeyCode::Left) => {
                 self.send(owner, region.path.clone(), Input::Key(TreeKey::Left));
             }

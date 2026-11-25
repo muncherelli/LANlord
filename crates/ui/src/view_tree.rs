@@ -198,8 +198,84 @@ pub fn tree<M: Clone>(ui: &mut Ui, tree: &Tree<M>) -> Option<M> {
     if clicked_in {
         focus.request_focus();
     }
+    if focus.has_focus() {
+        // the arrows are the tree's: otherwise egui moves the focus to the next widget
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+    }
     if focus.has_focus() && sent.is_none() {
         sent = keys(ui, tree);
     }
     sent
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+    use lanlord_app::view::Tree;
+
+    use super::*;
+
+    fn rows() -> Vec<TreeRow> {
+        let row = |label: &str| TreeRow {
+            depth: 0,
+            label: label.into(),
+            icon: None,
+            open: None,
+        };
+        vec![row("one"), row("two"), row("three"), row("four")]
+    }
+
+    #[test]
+    fn two_arrows_in_a_row_move_the_selection_twice() {
+        let mut harness = Harness::new_ui_state(
+            |ui, selected: &mut usize| {
+                let tree = Tree {
+                    id: "t",
+                    rows: rows(),
+                    selected: Some(*selected),
+                    height: 100.0,
+                    select: |n| n,
+                    open: |n, _| n,
+                };
+                if let Some(to) = super::tree(ui, &tree) {
+                    *selected = to;
+                }
+                // a widget the focus could wander to
+                let _ = ui.button("elsewhere");
+            },
+            0,
+        );
+        harness.run();
+        // a click on a row picks it and gives the tree the keyboard
+        let pos = Pos2::new(40.0, 30.0);
+        harness.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            harness.run();
+        }
+        harness.run();
+        assert_eq!(*harness.state(), 1);
+        harness.key_press(Key::ArrowDown);
+        harness.run();
+        harness.key_press(Key::ArrowDown);
+        harness.run();
+        assert_eq!(*harness.state(), 3);
+        harness.key_press(Key::ArrowUp);
+        harness.run();
+        assert_eq!(*harness.state(), 2);
+    }
 }

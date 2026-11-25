@@ -154,7 +154,7 @@ pub enum Input {
     Day(usize),
     /// the tick box of row `n` of a check list clicked.
     Mark(usize),
-    /// a key that moves around a tree: Left, Right or Space.
+    /// a key that moves around a tree: Left or Right.
     Key(lanlord_app::view::TreeKey),
     /// a secret field's whole new text.
     SecretText(Zeroizing<String>),
@@ -1514,7 +1514,6 @@ impl<'a> Painter<'a> {
         }
     }
 
-    /// `body` in `inner`, scrolled by the wheel when it is taller than the room.
     /// a tree: one row per node showing, indented by depth, with a `+` or `-` before a branch.
     fn tree<M>(
         &mut self,
@@ -1567,6 +1566,7 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// `body` in `inner`, scrolled by the wheel when it is taller than the room.
     fn scrolled_body<M>(
         &mut self,
         body: &[Node<M>],
@@ -1971,8 +1971,6 @@ fn column_widths<M>(table: &lanlord_app::view::Table<M>, room: u16) -> Vec<u16> 
     widths
 }
 
-/// the columns a table asks for: its fixed columns, the longest text of the last one and the
-/// inset on both sides.
 /// the widest row of a tree: its indent, sign and label.
 fn tree_width<M>(tree: &lanlord_app::view::Tree<M>) -> u16 {
     let widest = tree
@@ -1984,6 +1982,8 @@ fn tree_width<M>(tree: &lanlord_app::view::Tree<M>) -> u16 {
     widest + 2 * INSET
 }
 
+/// the columns a table asks for: its fixed columns, the longest text of the last one and the
+/// inset on both sides.
 fn table_width<M>(table: &lanlord_app::view::Table<M>) -> u16 {
     let last = table.headings.len().saturating_sub(1);
     let fixed: u16 = table.widths.iter().take(last).map(|w| cols(*w)).sum();
