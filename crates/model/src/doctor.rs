@@ -452,9 +452,9 @@ fn nft_check(said: &str) -> Check {
         (Status::Ok, "nftables works".to_string(), None)
     } else if said == "missing" {
         (
-            Status::Fail,
-            "the nft command isn't installed".to_string(),
-            Some("install nftables (pacman -S nftables, or apt install nftables)".to_string()),
+            Status::Unknown,
+            "nftables isn't installed yet; lanlord's docker module installs it".to_string(),
+            None,
         )
     } else if said.is_empty() {
         (Status::Unknown, "not tried".to_string(), None)
@@ -1105,8 +1105,9 @@ vde_plug=missing
         assert_eq!(dummy.fix, None);
         assert_eq!(check(&report, "link-vlan").status, Status::Unknown);
         let nft = check(&report, "nftables");
-        assert_eq!(nft.status, Status::Fail);
-        assert!(nft.fix.as_deref().unwrap().contains("nftables"));
+        assert_eq!(nft.status, Status::Unknown);
+        assert!(nft.detail.contains("installs it"));
+        assert_eq!(nft.fix, None);
         let docker = check(&report, "docker");
         assert_eq!(docker.status, Status::Warn);
         assert_eq!(docker.detail, "docker is installed but not running");
