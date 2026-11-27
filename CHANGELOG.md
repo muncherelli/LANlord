@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-27
+
 ### Fixed
 
 - installing on a fresh Debian host no longer fails at the firewall step: the install now installs
