@@ -102,7 +102,9 @@
 
     - name: install docker on debian
       ansible.builtin.apt:
-        name: docker.io
+        name:
+          - docker.io
+          - nftables
         state: present
         update_cache: true
       when: ansible_facts['os_family'] == 'Debian'
@@ -112,13 +114,6 @@
       register: pacman_nftables
       changed_when: "'there is nothing to do' not in pacman_nftables.stdout"
       when: ansible_facts['os_family'] == 'Archlinux'
-
-    - name: install nftables on debian
-      ansible.builtin.apt:
-        name: nftables
-        state: present
-        update_cache: true
-      when: ansible_facts['os_family'] == 'Debian'
 
     - name: start docker
       block:

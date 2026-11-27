@@ -450,6 +450,12 @@ fn forward_check(said: &str) -> Check {
 fn nft_check(said: &str) -> Check {
     let (status, detail, fix) = if said == "ok" {
         (Status::Ok, "nftables works".to_string(), None)
+    } else if said == "missing-installed" {
+        (
+            Status::Fail,
+            "the nft command isn't installed, so the firewall rules can't load".to_string(),
+            Some("install nftables (pacman -S nftables, or apt install nftables)".to_string()),
+        )
     } else if said == "missing" {
         (
             Status::Unknown,
@@ -858,6 +864,16 @@ vde_plug=missing
             lines.push(format!("{key}={value}"));
         }
         Report::parse(&lines.join("\n"))
+    }
+
+    #[test]
+    fn a_missing_nft_fails_only_on_an_installed_gateway() {
+        let installed = nft_check("missing-installed");
+        assert_eq!(installed.status, Status::Fail);
+        assert!(installed.fix.as_deref().unwrap().contains("nftables"));
+        let fresh = nft_check("missing");
+        assert_eq!(fresh.status, Status::Unknown);
+        assert_eq!(fresh.fix, None);
     }
 
     #[test]
