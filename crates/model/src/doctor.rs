@@ -450,11 +450,17 @@ fn forward_check(said: &str) -> Check {
 fn nft_check(said: &str) -> Check {
     let (status, detail, fix) = if said == "ok" {
         (Status::Ok, "nftables works".to_string(), None)
-    } else if said == "missing" {
+    } else if said == "missing-installed" {
         (
             Status::Fail,
-            "the nft command isn't installed".to_string(),
+            "the nft command isn't installed, so the firewall rules can't load".to_string(),
             Some("install nftables (pacman -S nftables, or apt install nftables)".to_string()),
+        )
+    } else if said == "missing" {
+        (
+            Status::Unknown,
+            "nftables isn't installed yet; lanlord's docker module installs it".to_string(),
+            None,
         )
     } else if said.is_empty() {
         (Status::Unknown, "not tried".to_string(), None)
@@ -861,6 +867,16 @@ vde_plug=missing
     }
 
     #[test]
+    fn a_missing_nft_fails_only_on_an_installed_gateway() {
+        let installed = nft_check("missing-installed");
+        assert_eq!(installed.status, Status::Fail);
+        assert!(installed.fix.as_deref().unwrap().contains("nftables"));
+        let fresh = nft_check("missing");
+        assert_eq!(fresh.status, Status::Unknown);
+        assert_eq!(fresh.fix, None);
+    }
+
+    #[test]
     fn an_unprivileged_proxmox_container_is_told_what_to_change_on_the_host() {
         let report = Report::parse(UNPRIVILEGED_PROXMOX);
         assert_eq!(
@@ -1105,8 +1121,9 @@ vde_plug=missing
         assert_eq!(dummy.fix, None);
         assert_eq!(check(&report, "link-vlan").status, Status::Unknown);
         let nft = check(&report, "nftables");
-        assert_eq!(nft.status, Status::Fail);
-        assert!(nft.fix.as_deref().unwrap().contains("nftables"));
+        assert_eq!(nft.status, Status::Unknown);
+        assert!(nft.detail.contains("installs it"));
+        assert_eq!(nft.fix, None);
         let docker = check(&report, "docker");
         assert_eq!(docker.status, Status::Warn);
         assert_eq!(docker.detail, "docker is installed but not running");

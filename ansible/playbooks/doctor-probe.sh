@@ -163,7 +163,12 @@ else:
   say ip_forward "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)"
 
   if ! have nft; then
-    say nft missing
+    # an installed gateway has the firewall file; the installer puts nft there itself
+    if [ -e /etc/lanlord/firewall.nft ]; then
+      say nft missing-installed
+    else
+      say nft missing
+    fi
   elif out=$(nft list tables 2>&1); then
     say nft ok
   else

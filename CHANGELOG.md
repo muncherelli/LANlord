@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- installing on a fresh Debian host no longer fails at the firewall step: the install now installs
+  nftables itself, and doctor no longer reports a missing nft as a failure before the install
+
 ### Added
 
 - a console-style Hosting window: a tree of services, servers, sites, the gateway and profiles on

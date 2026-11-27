@@ -347,6 +347,22 @@ class SshFirewallTemplateTest(unittest.TestCase):
         text = self.render([{'name': 'lab', 'interface': 'eth1', 'address': '192.0.2.1/24'}], [])
         self.assertNotIn('dport { 22', text)
 
+    def test_nftables_is_installed_before_the_first_nft_step(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "playbooks", "docker.yml")
+        with open(path) as f:
+            text = f.read()
+        first_nft = text.index("nft -c -f")
+        arch = text.index("- name: install nftables on arch")
+        self.assertLess(arch, first_nft)
+        arch_step = text[arch:].split("\n    - name:")[0]
+        self.assertIn("pacman -S --needed --noconfirm nftables", arch_step)
+        self.assertIn("== 'Archlinux'", arch_step)
+        debian = text.index("- name: install docker on debian")
+        self.assertLess(debian, first_nft)
+        debian_step = text[debian:].split("\n    - name:")[0]
+        self.assertIn("- nftables", debian_step)
+        self.assertIn("== 'Debian'", debian_step)
+
     def test_the_ports_are_read_from_sshd(self):
         path = os.path.join(os.path.dirname(__file__), "..", "playbooks", "docker.yml")
         with open(path) as f:
